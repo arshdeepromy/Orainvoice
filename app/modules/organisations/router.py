@@ -1,0 +1,802 @@
+"""Organisation router — onboarding wizard and org-level endpoints."""
+
+from __future__ import annotations
+
+import uuid
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db_session
+from app.modules.auth.rbac import require_role
+from app.modules.organisations.schemas import (
+    AssignUserBranchesRequest,
+    AssignUserBranchesResponse,
+    BranchCreateRequest,
+    BranchCreateResponse,
+    BranchListResponse,
+    BranchResponse,
+    MFAPolicyUpdateRequest,
+    MFAPolicyUpdateResponse,
+    OrgCarjamUsageResponse,
+    OrgUserResponse,
+    OnboardingStepRequest,
+    OnboardingStepResponse,
+    OrgSettingsResponse,
+    OrgSettingsUpdateRequest,
+    OrgSettingsUpdateResponse,
+    SeatLimitResponse,
+    UserDeactivateResponse,
+    UserInviteRequest,
+    UserInviteResponse,
+    UserListResponse,
+    UserUpdateRequest,
+    UserUpdateResponse,
+)
+from app.modules.organisations.service import (
+    SeatLimitExceeded,
+    assign_user_branches,
+    create_branch,
+    deactivate_org_user,
+    get_org_settings,
+    invite_org_user,
+    list_branches,
+    list_org_users,
+    save_onboarding_step,
+    update_mfa_policy,
+    update_org_settings,
+    update_org_user,
+)
+
+router = APIRouter()
+
+
+@router.post(
+    "/onboarding",
+    response_model=OnboardingStepResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    summary="Save onboarding wizard step",
+    dependencies=[require_role("org_admin")],
+)
+async def save_onboarding(
+    payload: OnboardingStepRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Save one or more onboarding wizard fields for the current organisation.
+
+    Any field can be omitted (skipped). The workspace is usable immediately
+    regardless of completion state.
+
+    Requirements: 8.2, 8.3, 8.4, 8.5
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id or user_id format"},
+        )
+
+    try:
+        result = await save_onboarding_step(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            org_name=payload.org_name,
+            logo_url=payload.logo_url,
+            primary_colour=payload.primary_colour,
+            secondary_colour=payload.secondary_colour,
+            gst_number=payload.gst_number,
+            gst_percentage=payload.gst_percentage,
+            invoice_prefix=payload.invoice_prefix,
+            invoice_start_number=payload.invoice_start_number,
+            default_due_days=payload.default_due_days,
+            payment_terms_text=payload.payment_terms_text,
+            first_service_name=payload.first_service_name,
+            first_service_price=payload.first_service_price,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    msg = "Step skipped" if result["skipped"] else "Onboarding step saved"
+    return OnboardingStepResponse(
+        message=msg,
+        updated_fields=result["updated_fields"],
+        onboarding_complete=result["onboarding_complete"],
+        skipped=result["skipped"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Organisation Settings CRUD (Task 6.3)
+# Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/settings",
+    response_model=OrgSettingsResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="Get organisation settings and branding",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def get_settings(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the current organisation's settings and branding configuration.
+
+    Accessible to both Org_Admin and Salesperson roles.
+
+    Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6
+    """
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id format"},
+        )
+
+    try:
+        settings_data = await get_org_settings(db, org_id=org_uuid)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc)},
+        )
+
+    return OrgSettingsResponse(**settings_data)
+
+
+@router.put(
+    "/settings",
+    response_model=OrgSettingsUpdateResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    summary="Update organisation settings",
+    dependencies=[require_role("org_admin")],
+)
+async def update_settings(
+    payload: OrgSettingsUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update the current organisation's settings and branding.
+
+    Only Org_Admin role can update settings. Only provided (non-null)
+    fields are updated; omitted fields remain unchanged.
+
+    Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id or user_id format"},
+        )
+
+    # Build kwargs from non-None payload fields
+    update_kwargs = {
+        k: v
+        for k, v in payload.model_dump().items()
+        if v is not None
+    }
+
+    try:
+        result = await update_org_settings(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            ip_address=ip_address,
+            **update_kwargs,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    if not result["updated_fields"]:
+        return OrgSettingsUpdateResponse(
+            message="No fields to update",
+            updated_fields=[],
+        )
+
+    return OrgSettingsUpdateResponse(
+        message="Organisation settings updated",
+        updated_fields=result["updated_fields"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Branch Management (Task 6.4)
+# Requirements: 9.7, 9.8
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/branches",
+    response_model=BranchListResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="List organisation branches",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def get_branches(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return all active branches for the current organisation.
+
+    Accessible to both Org_Admin and Salesperson roles.
+
+    Requirements: 9.7
+    """
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id format"},
+        )
+
+    branches = await list_branches(db, org_id=org_uuid)
+    return BranchListResponse(
+        branches=[BranchResponse(**b) for b in branches]
+    )
+
+
+@router.post(
+    "/branches",
+    response_model=BranchCreateResponse,
+    status_code=201,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    summary="Create a new branch",
+    dependencies=[require_role("org_admin")],
+)
+async def create_new_branch(
+    payload: BranchCreateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a new branch location for the current organisation.
+
+    Only Org_Admin role can create branches.
+
+    Requirements: 9.7
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id or user_id format"},
+        )
+
+    try:
+        branch_data = await create_branch(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            name=payload.name,
+            address=payload.address,
+            phone=payload.phone,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    return BranchCreateResponse(
+        message="Branch created",
+        branch=BranchResponse(**branch_data),
+    )
+
+
+@router.post(
+    "/branches/assign-user",
+    response_model=AssignUserBranchesResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    summary="Assign a user to branches",
+    dependencies=[require_role("org_admin")],
+)
+async def assign_user_to_branches(
+    payload: AssignUserBranchesRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Assign a user to one or more branches within the organisation.
+
+    Only Org_Admin role can assign users to branches.
+
+    Requirements: 9.8
+    """
+    acting_user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        acting_uuid = uuid.UUID(acting_user_id) if acting_user_id else uuid.uuid4()
+        target_uuid = uuid.UUID(payload.user_id)
+        branch_uuids = [uuid.UUID(bid) for bid in payload.branch_ids]
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid UUID format"},
+        )
+
+    try:
+        result = await assign_user_branches(
+            db,
+            org_id=org_uuid,
+            acting_user_id=acting_uuid,
+            target_user_id=target_uuid,
+            branch_ids=branch_uuids,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    return AssignUserBranchesResponse(
+        message="User assigned to branches",
+        user_id=result["user_id"],
+        branch_ids=result["branch_ids"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# User Management (Task 6.5)
+# Requirements: 10.1, 10.2, 10.3, 10.4, 10.5
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/users",
+    response_model=UserListResponse,
+    responses={401: {"description": "Authentication required"}, 403: {"description": "Org_Admin role required"}},
+    summary="List organisation users",
+    dependencies=[require_role("org_admin")],
+)
+async def get_users(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return all users for the current organisation with seat limit info.
+
+    Requirements: 10.1, 10.4
+    """
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
+
+    result = await list_org_users(db, org_id=org_uuid)
+    return UserListResponse(
+        users=[OrgUserResponse(**u) for u in result["users"]],
+        total=result["total"],
+        seat_limit=result["seat_limit"],
+    )
+
+
+@router.post(
+    "/users/invite",
+    response_model=UserInviteResponse,
+    status_code=201,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        409: {"description": "Seat limit reached"},
+    },
+    summary="Invite a new user to the organisation",
+    dependencies=[require_role("org_admin")],
+)
+async def invite_user(
+    payload: UserInviteRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Invite a new user with a 48-hour signup link and assign a role.
+
+    Enforces user seat limits per the subscription plan.
+    When the seat limit is reached, returns 409 with upgrade message.
+
+    Requirements: 10.1, 10.4, 10.5
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid UUID format"})
+
+    try:
+        user_data = await invite_org_user(
+            db,
+            org_id=org_uuid,
+            inviter_user_id=user_uuid,
+            email=payload.email,
+            role=payload.role,
+            ip_address=ip_address,
+        )
+    except SeatLimitExceeded as exc:
+        return JSONResponse(
+            status_code=409,
+            content=SeatLimitResponse(
+                detail=str(exc),
+                current_users=exc.current_users,
+                seat_limit=exc.seat_limit,
+            ).model_dump(),
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return UserInviteResponse(
+        message="User invited successfully",
+        user=OrgUserResponse(**user_data),
+    )
+
+
+@router.put(
+    "/users/{target_user_id}",
+    response_model=UserUpdateResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    summary="Update user role or status",
+    dependencies=[require_role("org_admin")],
+)
+async def update_user(
+    target_user_id: str,
+    payload: UserUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update a user's role or active status. Deactivating invalidates sessions.
+
+    Requirements: 10.1, 10.2
+    """
+    acting_user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        acting_uuid = uuid.UUID(acting_user_id) if acting_user_id else uuid.uuid4()
+        target_uuid = uuid.UUID(target_user_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid UUID format"})
+
+    try:
+        result = await update_org_user(
+            db,
+            org_id=org_uuid,
+            acting_user_id=acting_uuid,
+            target_user_id=target_uuid,
+            role=payload.role,
+            is_active=payload.is_active,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return UserUpdateResponse(
+        message="User updated successfully",
+        user=OrgUserResponse(
+            id=result["id"],
+            email=result["email"],
+            role=result["role"],
+            is_active=result["is_active"],
+            is_email_verified=result["is_email_verified"],
+            last_login_at=result["last_login_at"],
+            created_at=result["created_at"],
+        ),
+    )
+
+
+@router.delete(
+    "/users/{target_user_id}",
+    response_model=UserDeactivateResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    summary="Deactivate a user",
+    dependencies=[require_role("org_admin")],
+)
+async def delete_user(
+    target_user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Deactivate a user and immediately invalidate all their sessions.
+
+    Requirements: 10.2
+    """
+    acting_user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        acting_uuid = uuid.UUID(acting_user_id) if acting_user_id else uuid.uuid4()
+        target_uuid = uuid.UUID(target_user_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid UUID format"})
+
+    try:
+        result = await deactivate_org_user(
+            db,
+            org_id=org_uuid,
+            acting_user_id=acting_uuid,
+            target_user_id=target_uuid,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return UserDeactivateResponse(
+        message="User deactivated",
+        user_id=result["user_id"],
+        sessions_invalidated=result["sessions_invalidated"],
+    )
+
+
+@router.put(
+    "/users/mfa-policy",
+    response_model=MFAPolicyUpdateResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    summary="Configure MFA policy for the organisation",
+    dependencies=[require_role("org_admin")],
+)
+async def set_mfa_policy(
+    payload: MFAPolicyUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Configure whether MFA is optional or mandatory for all org users.
+
+    Requirements: 10.3
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid UUID format"})
+
+    try:
+        result = await update_mfa_policy(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            mfa_policy=payload.mfa_policy,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return MFAPolicyUpdateResponse(
+        message="MFA policy updated",
+        mfa_policy=result["mfa_policy"],
+    )
+
+
+@router.get(
+    "/carjam-usage",
+    response_model=OrgCarjamUsageResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Organisation not found"},
+    },
+    summary="Organisation Carjam usage for billing dashboard",
+    dependencies=[require_role("org_admin")],
+)
+async def get_org_carjam_usage(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the organisation's own Carjam usage for the current month.
+
+    Shows total lookups, included in plan, overage count, and charge.
+    Displayed on the billing dashboard so Org_Admins are aware of
+    accrued charges.
+
+    Requirement 16.4.
+    """
+    from app.modules.admin.service import get_org_carjam_usage as _get_usage
+
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
+
+    try:
+        usage = await _get_usage(db, org_uuid)
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return OrgCarjamUsageResponse(**usage)
+
+
+# ---------------------------------------------------------------------------
+# Audit log viewing — Org Admin (Req 51.1, 51.2, 51.4)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/audit-log",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    summary="Organisation audit log",
+    dependencies=[require_role("org_admin")],
+)
+async def get_org_audit_log(
+    request: Request,
+    page: int = 1,
+    page_size: int = 50,
+    action: str | None = None,
+    entity_type: str | None = None,
+    user_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return paginated, filterable audit log scoped to the caller's org.
+
+    Only Org_Admin users can access this endpoint.
+    Requirements: 51.1, 51.2, 51.4.
+    """
+    from app.modules.admin.schemas import AuditLogEntry, AuditLogListResponse
+    from app.modules.admin.service import list_audit_logs
+
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
+
+    result = await list_audit_logs(
+        db,
+        org_id=org_uuid,
+        action=action,
+        entity_type=entity_type,
+        user_id=user_id,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        page_size=page_size,
+    )
+
+    return AuditLogListResponse(
+        entries=[AuditLogEntry(**e) for e in result["entries"]],
+        total=result["total"],
+        page=result["page"],
+        page_size=result["page_size"],
+    )

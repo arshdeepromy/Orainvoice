@@ -1,0 +1,192 @@
+/**
+ * Print-optimised CSS for WorkshopPro NZ
+ * Applied globally via @media print — hides navigation, sidebar, header,
+ * footer, action buttons, and non-essential UI. Renders a clean branded
+ * layout with proper margins and page breaks.
+ * Requirements: 75.1, 75.2, 75.3
+ */
+
+@media print {
+  /* ------------------------------------------------------------------ */
+  /*  Hide non-essential UI                                              */
+  /* ------------------------------------------------------------------ */
+
+  /* Navigation, sidebar, header, footer */
+  nav,
+  aside,
+  header,
+  footer,
+  [role="navigation"],
+  [data-print-hide] {
+    display: none !important;
+  }
+
+  /* Action buttons, toasts, alerts, modals, overlays */
+  .no-print,
+  [data-print-hide],
+  [role="dialog"],
+  [role="alertdialog"],
+  .toast-container {
+    display: none !important;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Page setup                                                         */
+  /* ------------------------------------------------------------------ */
+
+  @page {
+    margin: 15mm;
+    size: A4;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Body and layout reset                                              */
+  /* ------------------------------------------------------------------ */
+
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    font-size: 12pt;
+    line-height: 1.4;
+  }
+
+  /* Remove flex layout from the main app shell so content flows naturally */
+  body > #root,
+  body > #root > div {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Content area                                                       */
+  /* ------------------------------------------------------------------ */
+
+  [data-print-content],
+  main,
+  [role="main"] {
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Typography — black text on white for readability                   */
+  /* ------------------------------------------------------------------ */
+
+  * {
+    color: #111 !important;
+    text-shadow: none !important;
+  }
+
+  /* Preserve badge/status colours */
+  [data-status-badge] {
+    color: inherit !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .badge-print {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Links — no underline in print, show as plain text */
+  a {
+    text-decoration: none !important;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Tables — prevent awkward page breaks                               */
+  /* ------------------------------------------------------------------ */
+
+  table {
+    page-break-inside: auto;
+    border-collapse: collapse;
+    width: 100%;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tfoot {
+    display: table-footer-group;
+  }
+
+  tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+
+  th,
+  td {
+    border: 1px solid #d1d5db !important;
+    padding: 6px 10px !important;
+  }
+
+  thead th {
+    background-color: #f3f4f6 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Sections — page break control                                      */
+  /* ------------------------------------------------------------------ */
+
+  section {
+    page-break-inside: avoid;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    page-break-after: avoid;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Print-only elements                                                */
+  /* ------------------------------------------------------------------ */
+
+  .print\\:block {
+    display: block !important;
+  }
+
+  .print\\:hidden {
+    display: none !important;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Borders and backgrounds — clean look                               */
+  /* ------------------------------------------------------------------ */
+
+  .rounded-lg,
+  .rounded-md {
+    border-radius: 0 !important;
+  }
+
+  /* Remove hover states */
+  .hover\:bg-gray-50:hover {
+    background-color: transparent !important;
+  }
+
+  /* Ensure summary/total sections are visible */
+  .bg-gray-50,
+  .bg-white {
+    background-color: white !important;
+  }
+
+  /* Keep highlighted rows for GST/totals */
+  .bg-blue-50,
+  .bg-green-50 {
+    background-color: #f0f9ff !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
