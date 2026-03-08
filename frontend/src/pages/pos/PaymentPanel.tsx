@@ -106,6 +106,7 @@ export default function PaymentPanel({ total, onComplete, onCancel }: PaymentPan
               <input
                 id="cash-tendered"
                 type="number"
+                inputMode="numeric"
                 min={0}
                 step={0.01}
                 value={cashTendered}
@@ -153,6 +154,7 @@ export default function PaymentPanel({ total, onComplete, onCancel }: PaymentPan
               <input
                 id="split-cash"
                 type="number"
+                inputMode="numeric"
                 min={0}
                 max={total}
                 step={0.01}

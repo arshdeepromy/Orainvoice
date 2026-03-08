@@ -14,7 +14,7 @@ interface TemplateBlock {
 
 interface NotificationTemplate {
   id: string
-  name: string
+  template_type: string
   subject: string
   channel: 'email' | 'sms'
   body_blocks: TemplateBlock[]
@@ -48,6 +48,14 @@ const BLOCK_TYPES = [
   { value: 'footer', label: 'Footer' },
 ]
 
+/** Format a template_type like "invoice_issued" into "Invoice Issued" */
+function formatTemplateType(templateType: string): string {
+  return templateType
+    .split('_')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+}
+
 /**
  * Template editor — visual block editor with drag-and-drop, template variables,
  * and preview mode. Supports both email (block editor) and SMS (text editor with
@@ -73,8 +81,13 @@ export default function TemplateEditor() {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<TemplatesResponse>('/notifications/templates')
-      setTemplates(res.data.templates)
+      const [emailRes, smsRes] = await Promise.all([
+        apiClient.get<TemplatesResponse>('/notifications/templates'),
+        apiClient.get<TemplatesResponse>('/notifications/sms-templates'),
+      ])
+      const emailTemplates = (emailRes.data.templates || []).map((t) => ({ ...t, channel: 'email' as const }))
+      const smsTemplates = (smsRes.data.templates || []).map((t) => ({ ...t, channel: 'sms' as const }))
+      setTemplates([...emailTemplates, ...smsTemplates])
     } catch {
       setError('Failed to load templates.')
     } finally {
@@ -99,7 +112,10 @@ export default function TemplateEditor() {
       const body = selected.channel === 'sms'
         ? { subject: editSubject, body_text: editSmsText }
         : { subject: editSubject, body_blocks: editBlocks }
-      await apiClient.put(`/notifications/templates/${selected.id}`, body)
+      const endpoint = selected.channel === 'sms'
+        ? `/notifications/sms-templates/${selected.template_type}`
+        : `/notifications/templates/${selected.template_type}`
+      await apiClient.put(endpoint, body)
       await fetchTemplates()
       setSelected(null)
     } catch {
@@ -244,7 +260,7 @@ export default function TemplateEditor() {
                     ${selected?.id === t.id ? 'bg-blue-50 border-l-2 border-blue-600' : ''}`}
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-gray-900">{t.name}</span>
+                    <span className="text-sm font-medium text-gray-900">{formatTemplateType(t.template_type)}</span>
                     <Badge variant={t.channel === 'email' ? 'info' : 'neutral'}>
                       {t.channel.toUpperCase()}
                     </Badge>
@@ -268,7 +284,7 @@ export default function TemplateEditor() {
             /* SMS text editor */
             <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-lg font-medium text-gray-900">{selected.name}</h3>
+                <h3 className="text-lg font-medium text-gray-900">{formatTemplateType(selected.template_type)}</h3>
                 <Badge variant="neutral">SMS</Badge>
               </div>
               <Input
@@ -301,7 +317,7 @@ export default function TemplateEditor() {
             /* Email block editor */
             <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-lg font-medium text-gray-900">{selected.name}</h3>
+                <h3 className="text-lg font-medium text-gray-900">{formatTemplateType(selected.template_type)}</h3>
                 <Badge variant="info">EMAIL</Badge>
               </div>
               <Input

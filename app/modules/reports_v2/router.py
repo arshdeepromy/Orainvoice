@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_db_session as get_db
 from app.modules.reports_v2.models import ReportSchedule
 from app.modules.reports_v2.schemas import (
     ReportFilters,

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
@@ -8,6 +9,8 @@ import { DataTable, type Column } from '@/components/ui/DataTable'
 interface GlobalAdminData {
   platform_mrr: number
   active_orgs: number
+  total_orgs: number
+  churn_rate: number
   error_counts: ErrorCounts
   integration_health: IntegrationStatus[]
   billing_issues: BillingIssue[]
@@ -43,7 +46,7 @@ const billingColumns: Column<Row>[] = [
     key: 'amount',
     header: 'Amount',
     sortable: true,
-    render: (row) => `$${Number(row.amount).toFixed(2)}`,
+    render: (row) => `${Number(row.amount).toFixed(2)}`,
   },
   {
     key: 'created_at',
@@ -59,48 +62,74 @@ const integrationStatusVariant: Record<IntegrationStatus['status'], 'success' | 
   down: 'error',
 }
 
+const defaultErrorCounts: ErrorCounts = { info: 0, warning: 0, error: 0, critical: 0 }
+
+/** Fetch a single endpoint, returning fallback on any error */
+async function safeFetch<T>(url: string, fallback: T, params?: Record<string, unknown>): Promise<T> {
+  try {
+    const res = await apiClient.get<T>(url, params ? { params } : undefined)
+    return res.data
+  } catch {
+    return fallback
+  }
+}
+
 export function GlobalAdminDashboard() {
   const [data, setData] = useState<GlobalAdminData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     async function fetchDashboard() {
-      try {
-        const [mrrRes, orgsRes, errorsRes, integrationsRes, billingRes] =
-          await Promise.all([
-            apiClient.get<{ mrr: number }>('/admin/reports/mrr'),
-            apiClient.get<{ total_active: number }>('/admin/reports/organisations'),
-            apiClient.get<ErrorCounts>('/admin/errors', {
-              params: { summary: true },
-            }),
-            apiClient.get<IntegrationStatus[]>('/admin/integrations'),
-            apiClient.get<BillingIssue[]>('/admin/reports/billing-issues'),
-          ])
-        if (!cancelled) {
-          setData({
-            platform_mrr: mrrRes.data.mrr,
-            active_orgs: orgsRes.data.total_active,
-            error_counts: errorsRes.data,
-            integration_health: integrationsRes.data,
-            billing_issues: billingRes.data,
-          })
+      // Each call is independent — failures don't block others
+      const [analyticsOverview, mrrData, errorDashboard, integrations, billing] =
+        await Promise.all([
+          safeFetch<{ total_orgs?: number; active_orgs?: number; mrr?: number; churn_rate?: number }>(
+            '/api/v2/admin/analytics/overview', {}
+          ),
+          safeFetch<{ total_mrr_nzd?: number; mrr?: number }>('/admin/reports/mrr', {}),
+          safeFetch<{ by_severity?: Array<{ label: string; count_1h?: number; count_24h?: number; count_7d?: number; count?: number }>; total_24h?: number }>(
+            '/admin/errors/dashboard', {}
+          ),
+          safeFetch<IntegrationStatus[]>('/admin/integrations', []).then((val) =>
+            Array.isArray(val) ? val : []
+          ),
+          safeFetch<BillingIssue[]>('/admin/reports/billing-issues', []).then((val) =>
+            Array.isArray(val) ? val : []
+          ),
+        ])
+
+      if (cancelled) return
+
+      // Parse error counts from the dashboard endpoint's by_severity array
+      const errorCounts = { ...defaultErrorCounts }
+      if (errorDashboard.by_severity && Array.isArray(errorDashboard.by_severity)) {
+        for (const item of errorDashboard.by_severity) {
+          const key = item.label?.toLowerCase() as keyof ErrorCounts
+          if (key in errorCounts) {
+            errorCounts[key] = item.count_24h ?? item.count ?? 0
+          }
         }
-      } catch {
-        if (!cancelled) setError('Failed to load admin dashboard data')
-      } finally {
-        if (!cancelled) setIsLoading(false)
       }
+
+      setData({
+        platform_mrr: mrrData.total_mrr_nzd ?? analyticsOverview.mrr ?? 0,
+        active_orgs: analyticsOverview.active_orgs ?? analyticsOverview.total_orgs ?? 0,
+        total_orgs: analyticsOverview.total_orgs ?? 0,
+        churn_rate: analyticsOverview.churn_rate ?? 0,
+        error_counts: errorCounts,
+        integration_health: integrations,
+        billing_issues: billing,
+      })
+      setIsLoading(false)
     }
     fetchDashboard()
-    return () => {
-      cancelled = true
-    }
+    // Refresh every 60 seconds
+    const interval = setInterval(fetchDashboard, 60_000)
+    return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
   if (isLoading) return <Spinner size="lg" label="Loading admin dashboard" className="py-20" />
-  if (error) return <AlertBanner variant="error">{error}</AlertBanner>
   if (!data) return null
 
   const totalErrors = data.error_counts.info + data.error_counts.warning + data.error_counts.error + data.error_counts.critical
@@ -122,14 +151,27 @@ export function GlobalAdminDashboard() {
           label="Platform MRR"
           value={`$${data.platform_mrr.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`}
         />
-        <KpiCard label="Active Organisations" value={data.active_orgs} />
-        <KpiCard label="Total Errors (Recent)" value={totalErrors} variant={totalErrors > 0 ? 'warning' : undefined} />
+        <KpiCard
+          label="Active Organisations"
+          value={data.active_orgs}
+          subtitle={data.total_orgs > data.active_orgs ? `${data.total_orgs} total` : undefined}
+        />
+        <KpiCard label="Total Errors (24h)" value={totalErrors} variant={totalErrors > 0 ? 'warning' : undefined} />
         <KpiCard label="Billing Issues" value={data.billing_issues.length} variant={data.billing_issues.length > 0 ? 'error' : undefined} />
       </div>
 
+      {data.churn_rate > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          30-day churn rate: <span className="font-semibold">{data.churn_rate}%</span>
+        </div>
+      )}
+
       {/* Error counts by severity */}
       <section>
-        <h2 className="mb-3 text-lg font-medium text-gray-900">Errors by Severity</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-medium text-gray-900">Errors by Severity</h2>
+          <Link to="/admin/errors" className="text-sm text-blue-600 hover:underline">View error log →</Link>
+        </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <SeverityCard label="Critical" count={data.error_counts.critical} variant="error" />
           <SeverityCard label="Error" count={data.error_counts.error} variant="error" />
@@ -140,7 +182,10 @@ export function GlobalAdminDashboard() {
 
       {/* Integration health */}
       <section>
-        <h2 className="mb-3 text-lg font-medium text-gray-900">Integration Health</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-medium text-gray-900">Integration Health</h2>
+          <Link to="/admin/integrations" className="text-sm text-blue-600 hover:underline">Manage integrations →</Link>
+        </div>
         {data.integration_health.length === 0 ? (
           <p className="text-sm text-gray-500">No integrations configured</p>
         ) : (
@@ -153,7 +198,9 @@ export function GlobalAdminDashboard() {
                 <div>
                   <p className="font-medium capitalize text-gray-900">{integration.name}</p>
                   <p className="text-xs text-gray-500">
-                    Checked {new Date(integration.last_checked).toLocaleTimeString('en-NZ')}
+                    {integration.last_checked
+                      ? `Checked ${new Date(integration.last_checked).toLocaleTimeString('en-NZ')}`
+                      : 'Not configured'}
                   </p>
                 </div>
                 <Badge variant={integrationStatusVariant[integration.status]}>
@@ -183,10 +230,12 @@ function KpiCard({
   label,
   value,
   variant,
+  subtitle,
 }: {
   label: string
   value: number | string
   variant?: 'error' | 'warning'
+  subtitle?: string
 }) {
   const textColor =
     variant === 'error'
@@ -198,6 +247,7 @@ function KpiCard({
     <div className="rounded-lg border border-gray-200 bg-white p-5">
       <p className="text-sm font-medium text-gray-500">{label}</p>
       <p className={`mt-1 text-2xl font-semibold ${textColor}`}>{value}</p>
+      {subtitle && <p className="mt-0.5 text-xs text-gray-400">{subtitle}</p>}
     </div>
   )
 }

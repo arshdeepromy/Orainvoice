@@ -23,6 +23,7 @@ import app.modules.admin.models  # noqa: F401
 from app.modules.auth.models import User  # noqa: F401
 import app.modules.inventory.models  # noqa: F401
 import app.modules.catalogue.models  # noqa: F401
+import app.modules.suppliers.models  # noqa: F401
 
 from app.modules.notifications.models import NotificationTemplate
 from app.modules.notifications.schemas import (
@@ -519,3 +520,224 @@ class TestUpdateTemplate:
             subject="X",
         )
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Locale-aware template rendering tests (Req 2.21)
+# ---------------------------------------------------------------------------
+
+from app.modules.notifications.service import (
+    _get_org_locale,
+    get_template_for_locale,
+)
+
+
+class TestGetOrgLocale:
+    """Test _get_org_locale helper."""
+
+    @pytest.mark.asyncio
+    async def test_returns_en_when_no_locale_set(self):
+        db = AsyncMock()
+        locale_result = MagicMock()
+        locale_result.scalar_one_or_none.return_value = None
+        db.execute = AsyncMock(return_value=locale_result)
+
+        result = await _get_org_locale(db, org_id=uuid.uuid4())
+        assert result == "en"
+
+    @pytest.mark.asyncio
+    async def test_returns_language_code_from_locale(self):
+        db = AsyncMock()
+        locale_result = MagicMock()
+        locale_result.scalar_one_or_none.return_value = "fr"
+        db.execute = AsyncMock(return_value=locale_result)
+
+        result = await _get_org_locale(db, org_id=uuid.uuid4())
+        assert result == "fr"
+
+    @pytest.mark.asyncio
+    async def test_extracts_language_from_locale_with_region(self):
+        db = AsyncMock()
+        locale_result = MagicMock()
+        locale_result.scalar_one_or_none.return_value = "en-NZ"
+        db.execute = AsyncMock(return_value=locale_result)
+
+        result = await _get_org_locale(db, org_id=uuid.uuid4())
+        assert result == "en"
+
+    @pytest.mark.asyncio
+    async def test_returns_en_for_empty_string(self):
+        db = AsyncMock()
+        locale_result = MagicMock()
+        locale_result.scalar_one_or_none.return_value = ""
+        db.execute = AsyncMock(return_value=locale_result)
+
+        result = await _get_org_locale(db, org_id=uuid.uuid4())
+        assert result == "en"
+
+
+class TestGetTemplateForLocale:
+    """Test locale-aware template selection with English fallback (Req 2.21)."""
+
+    @pytest.mark.asyncio
+    async def test_english_locale_returns_default_template(self):
+        """Orgs with English locale get the default template directly."""
+        org_id = uuid.uuid4()
+        tpl = _make_template("invoice_issued", org_id=org_id)
+
+        db = AsyncMock()
+
+        # _get_org_locale query returns "en"
+        locale_result = MagicMock()
+        locale_result.scalar_one_or_none.return_value = "en"
+
+        # get_template: seed check (count >= 16), then get template
+        count_result = MagicMock()
+        count_result.scalar.return_value = 16
+
+        get_result = MagicMock()
+        get_result.scalar_one_or_none.return_value = tpl
+
+        db.execute = AsyncMock(
+            side_effect=[locale_result, count_result, get_result]
+        )
+
+        result = await get_template_for_locale(
+            db, org_id=org_id, template_type="invoice_issued"
+        )
+        assert result is not None
+        assert result["template_type"] == "invoice_issued"
+
+    @pytest.mark.asyncio
+    async def test_non_english_locale_with_translation_returns_locale_template(self):
+        """Orgs with non-English locale get locale-specific template when available."""
+        org_id = uuid.uuid4()
+        fr_tpl = _make_template("invoice_issued_fr", org_id=org_id)
+
+        db = AsyncMock()
+
+        # _get_org_locale returns "fr"
+        locale_result = MagicMock()
+        locale_result.scalar_one_or_none.return_value = "fr"
+
+        # _seed_email_templates: count >= 16 (already seeded)
+        count_result = MagicMock()
+        count_result.scalar.return_value = 16
+
+        # Locale-specific template lookup returns the French template
+        locale_tpl_result = MagicMock()
+        locale_tpl_result.scalar_one_or_none.return_value = fr_tpl
+
+        db.execute = AsyncMock(
+            side_effect=[locale_result, count_result, locale_tpl_result]
+        )
+
+        result = await get_template_for_locale(
+            db, org_id=org_id, template_type="invoice_issued"
+        )
+        assert result is not None
+        assert result["template_type"] == "invoice_issued_fr"
+
+    @pytest.mark.asyncio
+    async def test_non_english_locale_without_translation_falls_back_to_english(self):
+        """Orgs with non-English locale fall back to English when no translation exists."""
+        org_id = uuid.uuid4()
+        en_tpl = _make_template("invoice_issued", org_id=org_id)
+
+        db = AsyncMock()
+
+        # _get_org_locale returns "de"
+        locale_result = MagicMock()
+        locale_result.scalar_one_or_none.return_value = "de"
+
+        # _seed_email_templates: count >= 16 (already seeded)
+        count_result = MagicMock()
+        count_result.scalar.return_value = 16
+
+        # Locale-specific template lookup returns None (no German variant)
+        locale_tpl_result = MagicMock()
+        locale_tpl_result.scalar_one_or_none.return_value = None
+
+        # Fallback: get_template -> seed check (already seeded), then get English template
+        count_result_2 = MagicMock()
+        count_result_2.scalar.return_value = 16
+
+        en_tpl_result = MagicMock()
+        en_tpl_result.scalar_one_or_none.return_value = en_tpl
+
+        db.execute = AsyncMock(
+            side_effect=[
+                locale_result,
+                count_result,
+                locale_tpl_result,
+                count_result_2,
+                en_tpl_result,
+            ]
+        )
+
+        result = await get_template_for_locale(
+            db, org_id=org_id, template_type="invoice_issued"
+        )
+        assert result is not None
+        assert result["template_type"] == "invoice_issued"
+
+    @pytest.mark.asyncio
+    async def test_no_locale_config_returns_english_template(self):
+        """Orgs without locale config (None) get English template — preservation."""
+        org_id = uuid.uuid4()
+        tpl = _make_template("payment_received", org_id=org_id)
+
+        db = AsyncMock()
+
+        # _get_org_locale returns None -> defaults to "en"
+        locale_result = MagicMock()
+        locale_result.scalar_one_or_none.return_value = None
+
+        # get_template: seed check, then get template
+        count_result = MagicMock()
+        count_result.scalar.return_value = 16
+
+        get_result = MagicMock()
+        get_result.scalar_one_or_none.return_value = tpl
+
+        db.execute = AsyncMock(
+            side_effect=[locale_result, count_result, get_result]
+        )
+
+        result = await get_template_for_locale(
+            db, org_id=org_id, template_type="payment_received"
+        )
+        assert result is not None
+        assert result["template_type"] == "payment_received"
+
+    @pytest.mark.asyncio
+    async def test_sms_channel_with_locale(self):
+        """SMS templates also support locale-aware selection."""
+        org_id = uuid.uuid4()
+        fr_sms_tpl = _make_template(
+            "invoice_issued_fr", org_id=org_id, channel="sms"
+        )
+
+        db = AsyncMock()
+
+        # _get_org_locale returns "fr"
+        locale_result = MagicMock()
+        locale_result.scalar_one_or_none.return_value = "fr"
+
+        # _seed_sms_templates: count >= 4 (already seeded)
+        count_result = MagicMock()
+        count_result.scalar.return_value = 4
+
+        # Locale-specific SMS template found
+        locale_tpl_result = MagicMock()
+        locale_tpl_result.scalar_one_or_none.return_value = fr_sms_tpl
+
+        db.execute = AsyncMock(
+            side_effect=[locale_result, count_result, locale_tpl_result]
+        )
+
+        result = await get_template_for_locale(
+            db, org_id=org_id, template_type="invoice_issued", channel="sms"
+        )
+        assert result is not None
+        assert result["template_type"] == "invoice_issued_fr"

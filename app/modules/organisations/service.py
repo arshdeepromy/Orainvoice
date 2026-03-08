@@ -829,6 +829,27 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def _compute_trial_end(plan, now: datetime) -> datetime:
+    """Compute trial end date from plan's trial_duration and trial_duration_unit.
+
+    Falls back to _TRIAL_DAYS if the plan has no trial configured.
+    """
+    duration = plan.trial_duration or 0
+    unit = plan.trial_duration_unit or "days"
+
+    if duration <= 0:
+        # Fallback to default 14-day trial
+        return now + timedelta(days=_TRIAL_DAYS)
+
+    if unit == "weeks":
+        return now + timedelta(weeks=duration)
+    elif unit == "months":
+        # Approximate months as 30 days each
+        return now + timedelta(days=duration * 30)
+    else:
+        return now + timedelta(days=duration)
+
+
 async def public_signup(
     db: AsyncSession,
     *,
@@ -882,7 +903,7 @@ async def public_signup(
 
     # 3. Create organisation with trial status
     now = datetime.now(timezone.utc)
-    trial_ends_at = now + timedelta(days=_TRIAL_DAYS)
+    trial_ends_at = _compute_trial_end(plan, now)
 
     org = Organisation(
         name=org_name,

@@ -7,6 +7,8 @@ import { Input } from '@/components/ui/Input'
 import { Tabs } from '@/components/ui/Tabs'
 import { ToastContainer, useToast } from '@/components/ui/Toast'
 import apiClient from '@/api/client'
+import { SmsProviders } from './SmsProviders'
+import { EmailProviders } from './EmailProviders'
 
 /* ── Types ── */
 
@@ -17,48 +19,39 @@ export interface IntegrationConfig {
   fields: Record<string, string>
 }
 
-export type IntegrationName = 'carjam' | 'stripe' | 'smtp' | 'twilio'
+export type IntegrationName = 'carjam' | 'stripe'
 
 /* ── Field definitions per integration ── */
 
 interface FieldDef {
   key: string
   label: string
-  type: 'text' | 'password' | 'number'
+  type: 'text' | 'password' | 'number' | 'select'
   placeholder?: string
   helperText?: string
+  backendKey?: string
+  options?: { value: string; label: string }[]
+  /** Show this field only when the given sibling key matches one of the pipe-separated values */
+  visibleWhen?: { key: string; oneOf: string }
 }
 
 const INTEGRATION_FIELDS: Record<IntegrationName, FieldDef[]> = {
   carjam: [
-    { key: 'api_key', label: 'API key', type: 'password', placeholder: '••••••••' },
+    { key: 'api_key', label: 'API key', type: 'password', placeholder: '••••••••', backendKey: 'api_key_last4' },
     { key: 'endpoint_url', label: 'Endpoint URL', type: 'text', placeholder: 'https://api.carjam.co.nz/v2' },
-    { key: 'per_lookup_cost', label: 'Per-lookup cost (NZD)', type: 'number', placeholder: '0.50' },
-    { key: 'global_rate_limit', label: 'Global rate limit (calls/min)', type: 'number', placeholder: '60' },
+    { key: 'per_lookup_cost_nzd', label: 'Per-lookup cost (NZD)', type: 'number', placeholder: '0.50' },
+    { key: 'global_rate_limit_per_minute', label: 'Global rate limit (calls/min)', type: 'number', placeholder: '60' },
   ],
   stripe: [
-    { key: 'platform_account', label: 'Platform account ID', type: 'text', placeholder: 'acct_...' },
+    { key: 'platform_account_id', label: 'Platform account ID', type: 'password', placeholder: 'acct_...', backendKey: 'platform_account_id_last4' },
     { key: 'webhook_endpoint', label: 'Webhook endpoint URL', type: 'text', placeholder: 'https://...' },
-    { key: 'signing_secret', label: 'Webhook signing secret', type: 'password', placeholder: '••••••••' },
-  ],
-  smtp: [
-    { key: 'api_key', label: 'API key', type: 'password', placeholder: '••••••••' },
-    { key: 'domain', label: 'Sending domain', type: 'text', placeholder: 'mail.workshoppro.co.nz' },
-    { key: 'from_name', label: 'From name', type: 'text', placeholder: 'WorkshopPro NZ' },
-    { key: 'reply_to', label: 'Reply-to address', type: 'text', placeholder: 'support@workshoppro.co.nz' },
-  ],
-  twilio: [
-    { key: 'account_sid', label: 'Account SID', type: 'text', placeholder: 'AC...' },
-    { key: 'auth_token', label: 'Auth token', type: 'password', placeholder: '••••••••' },
-    { key: 'sender_number', label: 'Sender phone number', type: 'text', placeholder: '+6421...' },
+    { key: 'signing_secret', label: 'Webhook signing secret', type: 'password', placeholder: '••••••••', backendKey: 'signing_secret_last4' },
   ],
 }
 
 const INTEGRATION_LABELS: Record<IntegrationName, string> = {
   carjam: 'Carjam',
   stripe: 'Stripe',
-  smtp: 'SMTP / Email',
-  twilio: 'Twilio',
 }
 
 const MASKED_VALUE = '••••••••'
@@ -92,9 +85,16 @@ function IntegrationPanel({
       const fieldValues: Record<string, string> = {}
       for (const f of fields) {
         if (f.type === 'password') {
-          fieldValues[f.key] = config.fields[f.key] ? MASKED_VALUE : ''
+          // Backend returns masked fields with a different key (e.g. api_key_last4)
+          const bk = f.backendKey ?? f.key
+          fieldValues[f.key] = config.fields[bk] ? MASKED_VALUE : ''
+        } else if (f.type === 'select' && f.options) {
+          // Use backend value or default to first option
+          fieldValues[f.key] = config.fields[f.key] != null
+            ? String(config.fields[f.key])
+            : f.options[0]?.value ?? ''
         } else {
-          fieldValues[f.key] = config.fields[f.key] ?? ''
+          fieldValues[f.key] = config.fields[f.key] != null ? String(config.fields[f.key]) : ''
         }
       }
       setValues(fieldValues)
@@ -125,9 +125,14 @@ function IntegrationPanel({
     e.preventDefault()
     setSaving(true)
     try {
-      // Only send fields that have been changed (non-masked values)
+      // Only send fields that have been changed (non-masked values) and are currently visible
       const payload: Record<string, string> = {}
       for (const f of fields) {
+        // Skip fields hidden by visibleWhen condition
+        if (f.visibleWhen) {
+          const depValue = values[f.visibleWhen.key] ?? ''
+          if (!f.visibleWhen.oneOf.split('|').includes(depValue)) continue
+        }
         const val = values[f.key]
         if (f.type === 'password' && val === MASKED_VALUE) continue // unchanged
         payload[f.key] = val
@@ -194,9 +199,29 @@ function IntegrationPanel({
         </p>
       )}
 
-      {fields.map((f) => (
+      {fields.map((f) => {
+        // Conditional visibility: skip fields whose visibleWhen condition is not met
+        if (f.visibleWhen) {
+          const depValue = values[f.visibleWhen.key] ?? ''
+          if (!f.visibleWhen.oneOf.split('|').includes(depValue)) return null
+        }
+
+        return (
         <div key={f.key}>
-          {f.type === 'password' && values[f.key] === MASKED_VALUE ? (
+          {f.type === 'select' && f.options ? (
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-gray-700">{f.label}</label>
+              <select
+                className="rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900"
+                value={values[f.key] ?? ''}
+                onChange={(e) => handleChange(f.key, e.target.value)}
+              >
+                {f.options.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+          ) : f.type === 'password' && values[f.key] === MASKED_VALUE ? (
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-gray-700">{f.label}</label>
               <div className="flex items-center gap-2">
@@ -226,7 +251,8 @@ function IntegrationPanel({
             />
           )}
         </div>
-      ))}
+        )
+      })}
 
       {testResult && (
         <AlertBanner
@@ -266,14 +292,14 @@ export function Integrations() {
       content: <IntegrationPanel name="stripe" onToast={addToast} />,
     },
     {
-      id: 'smtp',
-      label: 'SMTP / Email',
-      content: <IntegrationPanel name="smtp" onToast={addToast} />,
+      id: 'sms-providers',
+      label: 'SMS Providers',
+      content: <SmsProviders />,
     },
     {
-      id: 'twilio',
-      label: 'Twilio',
-      content: <IntegrationPanel name="twilio" onToast={addToast} />,
+      id: 'email-providers',
+      label: 'Email Providers',
+      content: <EmailProviders />,
     },
   ]
 

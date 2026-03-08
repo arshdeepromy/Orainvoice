@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 /**
- * Validates: Requirement — ProgressClaim Module
+ * Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8
  */
 
 vi.mock('@/api/client', () => {
@@ -14,6 +14,31 @@ vi.mock('@/api/client', () => {
     default: { get: mockGet, post: mockPost, put: mockPut },
   }
 })
+
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({
+    isAuthenticated: true,
+    user: { id: 'u1', email: 'test@test.com', name: 'Test', role: 'org_admin', org_id: 'org-1' },
+  }),
+}))
+
+const mockDismissToast = vi.fn()
+vi.mock('@/hooks/useModuleGuard', () => ({
+  useModuleGuard: () => ({
+    isAllowed: true,
+    isLoading: false,
+    toasts: [],
+    dismissToast: mockDismissToast,
+  }),
+}))
+
+vi.mock('@/contexts/FeatureFlagContext', () => ({
+  useFlag: () => true,
+}))
+
+vi.mock('@/contexts/TerminologyContext', () => ({
+  useTerm: (_key: string, fallback: string) => fallback,
+}))
 
 import apiClient from '@/api/client'
 import ProgressClaimList from '../pages/construction/ProgressClaimList'
@@ -69,7 +94,7 @@ describe('ProgressClaimList', () => {
     expect(await screen.findByText(/No progress claims found/)).toBeInTheDocument()
   })
 
-  it('renders status filter dropdown', async () => {
+  it('renders status filter dropdown with all status options', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { claims: [], total: 0, page: 1, page_size: 50 },
     })
@@ -77,7 +102,13 @@ describe('ProgressClaimList', () => {
     await waitFor(() => {
       expect(screen.queryByRole('status')).not.toBeInTheDocument()
     })
-    expect(screen.getByLabelText('Status')).toBeInTheDocument()
+    const select = screen.getByLabelText('Status')
+    expect(select).toBeInTheDocument()
+    expect(within(select as HTMLElement).getByText('Draft')).toBeInTheDocument()
+    expect(within(select as HTMLElement).getByText('Submitted')).toBeInTheDocument()
+    expect(within(select as HTMLElement).getByText('Approved')).toBeInTheDocument()
+    expect(within(select as HTMLElement).getByText('Paid')).toBeInTheDocument()
+    expect(within(select as HTMLElement).getByText('Disputed')).toBeInTheDocument()
   })
 
   it('shows create form when New Claim clicked', async () => {
@@ -88,7 +119,7 @@ describe('ProgressClaimList', () => {
     await screen.findByRole('grid', { name: 'Progress claims list' })
 
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'New claim' }))
+    await user.click(screen.getByRole('button', { name: /New/i }))
 
     expect(screen.getByRole('form', { name: 'Create progress claim' })).toBeInTheDocument()
   })
@@ -108,6 +139,87 @@ describe('ProgressClaimList', () => {
       const lastCall = calls[calls.length - 1][0] as string
       expect(lastCall).toContain('status=approved')
     })
+  })
+
+  it('renders status badges with correct colours', async () => {
+    ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { claims: mockClaims, total: 2, page: 1, page_size: 50 },
+    })
+    render(<ProgressClaimList />)
+    await screen.findByRole('grid', { name: 'Progress claims list' })
+
+    expect(screen.getByTestId('status-badge-draft')).toBeInTheDocument()
+    expect(screen.getByTestId('status-badge-approved')).toBeInTheDocument()
+  })
+
+  it('shows Submit button for draft claims', async () => {
+    ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { claims: mockClaims, total: 2, page: 1, page_size: 50 },
+    })
+    render(<ProgressClaimList />)
+    await screen.findByRole('grid', { name: 'Progress claims list' })
+
+    expect(screen.getByRole('button', { name: /Submit claim 1/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Submit claim 2/ })).not.toBeInTheDocument()
+  })
+
+  it('updates claim status without page reload', async () => {
+    ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { claims: mockClaims, total: 2, page: 1, page_size: 50 },
+    })
+    ;(apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { ...mockClaims[0], status: 'submitted' },
+    })
+    render(<ProgressClaimList />)
+    await screen.findByRole('grid', { name: 'Progress claims list' })
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /Submit claim 1/ }))
+
+    await waitFor(() => {
+      expect(apiClient.put).toHaveBeenCalledWith(
+        '/api/v2/progress-claims/claim-1',
+        { status: 'submitted' },
+      )
+    })
+  })
+
+  it('renders PDF generation button for each claim', async () => {
+    ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { claims: mockClaims, total: 2, page: 1, page_size: 50 },
+    })
+    render(<ProgressClaimList />)
+    await screen.findByRole('grid', { name: 'Progress claims list' })
+
+    expect(screen.getByRole('button', { name: /Generate PDF for claim 1/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Generate PDF for claim 2/ })).toBeInTheDocument()
+  })
+
+  it('calls PDF endpoint when Generate PDF clicked', async () => {
+    const mockBlob = new Blob(['pdf-content'], { type: 'application/pdf' })
+    ;(apiClient.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.includes('/pdf')) {
+        return Promise.resolve({ data: mockBlob })
+      }
+      return Promise.resolve({
+        data: { claims: mockClaims, total: 2, page: 1, page_size: 50 },
+      })
+    })
+
+    const mockOpen = vi.spyOn(window, 'open').mockImplementation(() => null)
+    render(<ProgressClaimList />)
+    await screen.findByRole('grid', { name: 'Progress claims list' })
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /Generate PDF for claim 1/ }))
+
+    await waitFor(() => {
+      expect(apiClient.get).toHaveBeenCalledWith(
+        '/api/v2/progress-claims/claim-1/pdf',
+        { responseType: 'blob' },
+      )
+    })
+    mockOpen.mockRestore()
   })
 })
 
@@ -143,7 +255,23 @@ describe('ProgressClaimForm', () => {
     await user.type(screen.getByLabelText('Contract Value'), '100000')
     await user.type(screen.getByLabelText('Work Completed to Date'), '200000')
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Work completed exceeds revised contract value')
+    const alerts = screen.getAllByRole('alert')
+    const overContractAlert = alerts.find((el) =>
+      el.textContent?.includes('Work completed exceeds revised contract value'),
+    )
+    expect(overContractAlert).toBeTruthy()
+  })
+
+  it('shows cumulative validation error when exceeding revised contract', async () => {
+    render(<ProgressClaimForm projectId="proj-1" cumulativePreviousClaimed={90000} />)
+    const user = userEvent.setup()
+
+    await user.type(screen.getByLabelText('Contract Value'), '100000')
+    await user.type(screen.getByLabelText('Work Completed to Date'), '20000')
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/exceeds revised contract value/)
+    })
   })
 
   it('submits form with correct data', async () => {

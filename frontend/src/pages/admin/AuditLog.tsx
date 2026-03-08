@@ -45,7 +45,7 @@ export interface AuditEntry {
 }
 
 export interface AuditLogResponse {
-  items: AuditEntry[]
+  entries: AuditEntry[]
   total: number
 }
 
@@ -262,12 +262,31 @@ export function AuditLog() {
     setLoadError(false)
     try {
       const params: Record<string, string> = {}
-      if (search) params.search = search
+      if (search) params.action = search
       if (actionFilter) params.action = actionFilter
       if (dateFrom) params.date_from = dateFrom
       if (dateTo) params.date_to = dateTo
-      const res = await apiClient.get<AuditLogResponse>('/admin/audit-log', { params })
-      setEntries(res.data.items)
+      const res = await apiClient.get<{
+        entries: Array<Record<string, any>>
+        total: number
+      }>('/admin/audit-log', { params })
+      const mapped: AuditEntry[] = (res.data.entries ?? []).map((e) => ({
+        id: e.id,
+        timestamp: e.created_at,
+        user_id: e.user_id ?? '',
+        user_email: '',
+        action: e.action as AuditAction,
+        entity_type: e.entity_type ?? '',
+        entity_id: e.entity_id,
+        description: e.action ?? '',
+        before_value: e.before_value ? JSON.stringify(e.before_value) : null,
+        after_value: e.after_value ? JSON.stringify(e.after_value) : null,
+        ip_address: e.ip_address,
+        device_info: e.device_info,
+        org_id: e.org_id,
+        org_name: null,
+      }))
+      setEntries(mapped)
       setTotal(res.data.total)
     } catch {
       setLoadError(true)
@@ -281,13 +300,13 @@ export function AuditLog() {
   }, [fetchAuditLog])
 
   /* ── Open detail ── */
-  const openDetail = async (entryId: string) => {
-    try {
-      const res = await apiClient.get<AuditEntry>(`/admin/audit-log/${entryId}`)
-      setSelectedEntry(res.data)
+  const openDetail = (entryId: string) => {
+    const entry = entries.find((e) => e.id === entryId)
+    if (entry) {
+      setSelectedEntry(entry)
       setDetailOpen(true)
-    } catch {
-      addToast('error', 'Failed to load audit entry details')
+    } else {
+      addToast('error', 'Audit entry not found')
     }
   }
 

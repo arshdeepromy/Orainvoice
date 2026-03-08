@@ -195,7 +195,7 @@ class POSService:
                     org_id, user_id, offline_txn,
                 )
                 results.append(result_item)
-            except Exception as exc:
+            except (ValueError, KeyError, ConnectionError, OSError) as exc:
                 logger.exception(
                     "Failed to sync offline transaction %s", offline_txn.offline_id,
                 )

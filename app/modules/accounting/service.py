@@ -151,8 +151,8 @@ async def handle_oauth_callback(
             token_data = await xero_client.exchange_code(code, redirect_uri)
         else:
             token_data = await myob_client.exchange_code(code, redirect_uri)
-    except Exception as exc:
-        logger.error("OAuth token exchange failed for %s: %s", provider, exc)
+    except (ConnectionError, TimeoutError, OSError) as exc:
+        logger.error("OAuth token exchange failed for %s: %s", provider, exc, exc_info=True)
         return f"Token exchange failed: {exc}"
 
     access_token = token_data.get("access_token", "")
@@ -238,8 +238,8 @@ async def _ensure_valid_token(
             token_data = await xero_client.refresh_tokens(refresh_token)
         else:
             token_data = await myob_client.refresh_tokens(refresh_token)
-    except Exception as exc:
-        logger.error("Token refresh failed for %s org %s: %s", conn.provider, conn.org_id, exc)
+    except (ConnectionError, TimeoutError, OSError) as exc:
+        logger.error("Token refresh failed for %s org %s: %s", conn.provider, conn.org_id, exc, exc_info=True)
         return None
 
     new_access = token_data.get("access_token", "")
@@ -386,10 +386,10 @@ async def sync_entity(
             status="synced",
             external_id=external_id,
         )
-    except Exception as exc:
+    except (ValueError, KeyError, ConnectionError, TimeoutError, OSError) as exc:
         logger.error(
             "Sync failed for %s %s %s (org %s): %s",
-            provider, entity_type, entity_id, org_id, exc,
+            provider, entity_type, entity_id, org_id, exc, exc_info=True,
         )
         entry = await _log_sync(
             db,
@@ -503,7 +503,8 @@ async def retry_failed_syncs(
                 synced += 1
             else:
                 failed += 1
-        except Exception:
+        except (ValueError, KeyError, ConnectionError, TimeoutError, OSError) as exc:
+            logger.error("Retry failed for sync entry %s: %s", entry.id, exc, exc_info=True)
             failed += 1
 
     return {

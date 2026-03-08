@@ -29,7 +29,7 @@ def upgrade() -> None:
         sa.Column(
             "assigned_location_ids",
             postgresql.JSONB(),
-            server_default="'[]'",
+            server_default=sa.text("'[]'::jsonb"),
             nullable=False,
         ),
     )

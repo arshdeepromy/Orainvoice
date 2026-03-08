@@ -68,14 +68,27 @@ class Base(DeclarativeBase):
 # ---------------------------------------------------------------------------
 
 async def _set_rls_org_id(session: AsyncSession, org_id: str | None) -> None:
-    """Execute ``SET app.current_org_id`` so RLS policies filter correctly."""
+    """Execute ``SET app.current_org_id`` so RLS policies filter correctly.
+    Uses PostgreSQL's set_config(name, value, is_local) function which
+    is equivalent to SET LOCAL but supports parameterized queries,
+    eliminating any SQL injection risk.
+    """
     if org_id is not None:
-        await session.execute(
-            text("SET LOCAL app.current_org_id = :org_id"),
-            {"org_id": str(org_id)},
-        )
+        # Validate that org_id is a real UUID
+        import uuid as _uuid
+        try:
+            validated = str(_uuid.UUID(str(org_id)))
+        except (ValueError, AttributeError):
+            validated = ""
+        if validated:
+            await session.execute(
+                text("SELECT set_config('app.current_org_id', :org_id, true)"),
+                {"org_id": validated},
+            )
+        else:
+            await session.execute(text("RESET app.current_org_id"))
     else:
-        # Reset to empty string so RLS policies deny all tenant rows
+        # Reset so RLS policies deny all tenant rows
         # (global admin requests should not see tenant data).
         await session.execute(text("RESET app.current_org_id"))
 

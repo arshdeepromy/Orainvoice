@@ -21,6 +21,12 @@ depends_on: tuple[str, ...] | None = None
 
 
 def upgrade() -> None:
+    # Table was originally created in migration 0006 with a different schema.
+    # Drop and recreate with the new schema (uses JSONB line_items, versioning, etc.)
+    op.execute("ALTER TABLE IF EXISTS quotes DISABLE ROW LEVEL SECURITY")
+    op.execute("DROP TABLE IF EXISTS quote_line_items CASCADE")
+    op.execute("DROP TABLE IF EXISTS quotes CASCADE")
+
     op.create_table(
         "quotes",
         sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),

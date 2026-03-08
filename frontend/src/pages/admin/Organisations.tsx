@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
@@ -325,6 +326,7 @@ function MovePlanModal({
 /* ── Main Page ── */
 
 export function Organisations() {
+  const navigate = useNavigate()
   const [orgs, setOrgs] = useState<Organisation[]>([])
   const [plans, setPlans] = useState<Plan[]>([])
   const [loading, setLoading] = useState(true)
@@ -346,11 +348,22 @@ export function Organisations() {
     setError(false)
     try {
       const [orgsRes, plansRes] = await Promise.all([
-        apiClient.get<Organisation[]>('/admin/organisations'),
-        apiClient.get<Plan[]>('/admin/plans'),
+        apiClient.get<{ organisations: Array<Record<string, any>>; total: number }>('/admin/organisations'),
+        apiClient.get<{ plans: Plan[]; total: number }>('/admin/plans'),
       ])
-      setOrgs(orgsRes.data)
-      setPlans(plansRes.data)
+      setOrgs((orgsRes.data.organisations ?? []).map((o) => ({
+        id: o.id,
+        name: o.name,
+        plan_name: o.plan_name,
+        plan_id: o.plan_id,
+        status: o.status as OrgStatus,
+        billing_status: (o.status === 'active' ? 'current' : o.status === 'trial' ? 'trial' : 'overdue') as BillingStatus,
+        signup_date: o.created_at,
+        storage_used_gb: Math.round((o.storage_used_bytes ?? 0) / (1024 * 1024 * 1024) * 10) / 10,
+        storage_quota_gb: o.storage_quota_gb,
+        last_login: null,
+      })))
+      setPlans(plansRes.data.plans)
     } catch {
       setError(true)
       addToast('error', 'Failed to load organisations')
@@ -397,7 +410,7 @@ export function Organisations() {
     if (!suspendOrg) return
     setSaving(true)
     try {
-      await apiClient.put(`/admin/organisations/${suspendOrg.id}`, { status: 'suspended', reason })
+      await apiClient.put(`/admin/organisations/${suspendOrg.id}`, { action: 'suspend', reason })
       addToast('success', `Organisation "${suspendOrg.name}" suspended`)
       setSuspendOrg(null)
       fetchData()
@@ -410,7 +423,7 @@ export function Organisations() {
 
   const handleReinstate = async (org: Organisation) => {
     try {
-      await apiClient.put(`/admin/organisations/${org.id}`, { status: 'active' })
+      await apiClient.put(`/admin/organisations/${org.id}`, { action: 'reinstate' })
       addToast('success', `Organisation "${org.name}" reinstated`)
       fetchData()
     } catch {
@@ -422,7 +435,16 @@ export function Organisations() {
     if (!deleteOrg) return
     setSaving(true)
     try {
-      await apiClient.delete(`/admin/organisations/${deleteOrg.id}`, { data: { reason } })
+      // Step 1: Request deletion (get confirmation token)
+      const res = await apiClient.put(`/admin/organisations/${deleteOrg.id}`, {
+        action: 'delete_request',
+        reason,
+      })
+      const token = res.data.confirmation_token
+      // Step 2: Confirm deletion
+      await apiClient.delete(`/admin/organisations/${deleteOrg.id}`, {
+        data: { reason, confirmation_token: token },
+      })
       addToast('success', `Organisation "${deleteOrg.name}" deleted`)
       setDeleteOrg(null)
       fetchData()
@@ -437,7 +459,10 @@ export function Organisations() {
     if (!movePlanOrg) return
     setSaving(true)
     try {
-      await apiClient.put(`/admin/organisations/${movePlanOrg.id}`, { plan_id: planId })
+      await apiClient.put(`/admin/organisations/${movePlanOrg.id}`, {
+        action: 'move_plan',
+        new_plan_id: planId,
+      })
       addToast('success', `Organisation "${movePlanOrg.name}" moved to new plan`)
       setMovePlanOrg(null)
       fetchData()
@@ -493,7 +518,15 @@ export function Organisations() {
       key: 'id',
       header: 'Actions',
       render: (row) => (
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          {row.status !== 'deleted' && (
+            <Button size="sm" variant="secondary" onClick={() => {
+              sessionStorage.setItem('admin_view_as_org', JSON.stringify({ id: row.id, name: row.name }))
+              navigate('/dashboard')
+            }}>
+              View as Org
+            </Button>
+          )}
           {row.status !== 'suspended' && row.status !== 'deleted' && (
             <Button size="sm" variant="secondary" onClick={() => setSuspendOrg(row)}>
               Suspend

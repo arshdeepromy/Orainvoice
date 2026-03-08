@@ -792,3 +792,137 @@ def report_carjam_overage_task():
         len(result["errors"]),
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# SMS overage billing (Req 4.1–4.5)
+# ---------------------------------------------------------------------------
+
+
+async def _report_sms_overage_async() -> dict:
+    """Check all active orgs for SMS overage and add line items to Stripe.
+
+    For each org whose SMS usage exceeds the plan's included quota (after
+    FIFO package credit deduction), create a Stripe InvoiceItem so the
+    overage charge appears on the next renewal invoice.
+
+    After capturing overage, resets ``sms_sent_this_month`` to 0 and logs
+    to the audit log with action ``sms_overage.billed``.
+
+    Requirements: 4.1, 4.2, 4.3, 4.4, 4.5
+    """
+    import math
+
+    from sqlalchemy import select, update
+
+    from app.core.audit import write_audit_log
+    from app.core.database import async_session_factory
+    from app.integrations.stripe_billing import create_invoice_item
+    from app.modules.admin.models import Organisation, SubscriptionPlan
+    from app.modules.admin.service import compute_sms_overage_for_billing
+
+    reported = 0
+    skipped = 0
+    errors: list[str] = []
+
+    async with async_session_factory() as session:
+        async with session.begin():
+            # Find all active/trial orgs with a Stripe customer
+            stmt = (
+                select(Organisation, SubscriptionPlan)
+                .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
+                .where(Organisation.status.in_(("active", "trial")))
+                .where(Organisation.stripe_customer_id.isnot(None))
+            )
+            result = await session.execute(stmt)
+            rows = result.all()
+
+            for org, plan in rows:
+                # Compute overage with FIFO credit deduction
+                overage_data = await compute_sms_overage_for_billing(
+                    session, org.id
+                )
+                overage_count = overage_data["overage_count"]
+                per_sms_cost = overage_data["per_sms_cost_nzd"]
+                total_charge = overage_data["total_charge_nzd"]
+
+                if overage_count <= 0:
+                    # Reset counter even when no overage (Req 4.4)
+                    org.sms_sent_this_month = 0
+                    skipped += 1
+                    continue
+
+                try:
+                    # Convert NZD to cents for Stripe
+                    unit_amount_cents = math.ceil(per_sms_cost * 100)
+                    description = (
+                        f"SMS overage: {overage_count} messages "
+                        f"× ${per_sms_cost:.4f}"
+                    )
+
+                    await create_invoice_item(
+                        customer_id=org.stripe_customer_id,
+                        description=description,
+                        quantity=overage_count,
+                        unit_amount_cents=unit_amount_cents,
+                        currency="nzd",
+                        metadata={
+                            "org_id": str(org.id),
+                            "type": "sms_overage",
+                            "overage_count": str(overage_count),
+                            "per_sms_cost_nzd": str(per_sms_cost),
+                        },
+                    )
+
+                    # Reset counter after capturing overage (Req 4.4)
+                    org.sms_sent_this_month = 0
+
+                    # Audit log (Req 4.5)
+                    await write_audit_log(
+                        session,
+                        action="sms_overage.billed",
+                        entity_type="organisation",
+                        org_id=org.id,
+                        entity_id=org.id,
+                        after_value={
+                            "overage_count": overage_count,
+                            "per_sms_cost_nzd": per_sms_cost,
+                            "total_charge_nzd": total_charge,
+                        },
+                    )
+
+                    reported += 1
+                    logger.info(
+                        "Billed SMS overage for org %s: %d messages × $%.4f = $%.2f",
+                        org.id,
+                        overage_count,
+                        per_sms_cost,
+                        total_charge,
+                    )
+                except Exception as exc:
+                    errors.append(str(org.id))
+                    logger.error(
+                        "Error billing SMS overage for org %s: %s",
+                        org.id,
+                        exc,
+                    )
+
+    return {"reported": reported, "skipped": skipped, "errors": errors}
+
+
+def report_sms_overage_task():
+    """Celery Beat task: bill SMS overage to Stripe for all active orgs.
+
+    Runs daily to ensure SMS overage charges are added as line items on
+    the next renewal invoice.
+
+    Requirements: 4.1, 4.2, 4.3, 4.4, 4.5
+    """
+    result = _run_async(_report_sms_overage_async())
+    logger.info(
+        "SMS overage billing: %d reported, %d skipped, %d errors",
+        result["reported"],
+        result["skipped"],
+        len(result["errors"]),
+    )
+    return result

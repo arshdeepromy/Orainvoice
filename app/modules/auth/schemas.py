@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, EmailStr
 
@@ -252,3 +253,24 @@ class ResendInviteResponse(BaseModel):
     """Response after resending an invitation."""
     message: str
     invitation_expires_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Public plan schemas (public signup flow)
+# ---------------------------------------------------------------------------
+
+class PublicPlanResponse(BaseModel):
+    """Single plan returned by the public plans endpoint."""
+    id: str
+    name: str
+    monthly_price_nzd: Decimal
+    trial_duration: int = 0
+    trial_duration_unit: str = "days"
+    sms_included: bool = False
+    sms_included_quota: int = 0
+    per_sms_cost_nzd: float = 0
+
+
+class PublicPlanListResponse(BaseModel):
+    """GET /api/v1/auth/plans response."""
+    plans: list[PublicPlanResponse]

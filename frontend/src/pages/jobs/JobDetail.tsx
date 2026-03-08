@@ -1,12 +1,20 @@
 /**
- * Job detail page with full form, checklist, attachments,
- * status timeline, and convert-to-invoice button.
+ * Enhanced job detail page with V2 features:
+ * - Job profitability panel (revenue, costs, margin)
+ * - "Convert to Invoice" button on completed jobs
+ * - Job template selection dropdown on creation
+ * - Full form, checklist, attachments, status timeline
+ * - Context integration (TerminologyContext, FeatureFlagContext, useModuleGuard)
  *
- * Validates: Requirement 11.1, 11.5, 11.6, 11.7
+ * Validates: Requirements 8.1, 8.5, 8.6, 8.7
  */
 
-import React, { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import apiClient from '@/api/client'
+import { useModuleGuard } from '@/hooks/useModuleGuard'
+import { useTerm } from '@/contexts/TerminologyContext'
+import { ToastContainer } from '@/components/ui/Toast'
+import { calculateJobProfitability } from '@/utils/jobCalcs'
 
 interface JobData {
   id: string
@@ -19,6 +27,8 @@ interface JobData {
   customer_id: string | null
   location_id: string | null
   site_address: string | null
+  project_id: string | null
+  project_name?: string
   scheduled_start: string | null
   scheduled_end: string | null
   actual_start: string | null
@@ -60,19 +70,37 @@ interface StatusHistoryEntry {
   notes: string | null
 }
 
+interface JobTemplate {
+  id: string
+  name: string
+  description: string
+}
+
+interface JobFinancials {
+  total_revenue: number
+  time_costs: number
+  expense_costs: number
+  material_costs: number
+}
+
 interface Props {
   jobId?: string
 }
 
-const TABS = ['Details', 'Checklist', 'Attachments', 'Timeline'] as const
+const TABS = ['Details', 'Profitability', 'Checklist', 'Attachments', 'Timeline'] as const
 type Tab = typeof TABS[number]
 
 export default function JobDetail({ jobId }: Props) {
+  const { isAllowed, isLoading: guardLoading, toasts, dismissToast } = useModuleGuard('jobs')
+  const jobLabel = useTerm('job', 'Job')
+  const projectLabel = useTerm('project', 'Project')
+
   const [job, setJob] = useState<JobData | null>(null)
   const [loading, setLoading] = useState(!!jobId)
   const [activeTab, setActiveTab] = useState<Tab>('Details')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [history, setHistory] = useState<StatusHistoryEntry[]>([])
+  const [financials, setFinancials] = useState<JobFinancials | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   // Form state for create mode
@@ -81,6 +109,8 @@ export default function JobDetail({ jobId }: Props) {
   const [priority, setPriority] = useState('normal')
   const [siteAddress, setSiteAddress] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
+  const [templates, setTemplates] = useState<JobTemplate[]>([])
+  const [selectedTemplate, setSelectedTemplate] = useState('')
 
   const isCreate = !jobId
 
@@ -96,6 +126,15 @@ export default function JobDetail({ jobId }: Props) {
       setJob(jobRes.data)
       setAttachments(attachRes.data)
       setHistory(histRes.data)
+
+      // Fetch financials for profitability panel
+      try {
+        const finRes = await apiClient.get(`/api/v2/jobs/${jobId}/financials`)
+        setFinancials(finRes.data)
+      } catch {
+        // Financials endpoint may not exist yet; use defaults
+        setFinancials(null)
+      }
     } catch {
       setError('Failed to load job')
     } finally {
@@ -103,29 +142,46 @@ export default function JobDetail({ jobId }: Props) {
     }
   }, [jobId])
 
+  const fetchTemplates = useCallback(async () => {
+    try {
+      const res = await apiClient.get('/api/v2/job-templates')
+      setTemplates(res.data.templates || res.data || [])
+    } catch {
+      setTemplates([])
+    }
+  }, [])
+
   useEffect(() => { fetchJob() }, [fetchJob])
+  useEffect(() => { if (isCreate) fetchTemplates() }, [isCreate, fetchTemplates])
 
   const handleCreate = async () => {
     setFormError(null)
     if (!title.trim()) {
-      setFormError('Job title is required.')
+      setFormError(`${jobLabel} title is required.`)
       return
     }
     try {
-      await apiClient.post('/api/v2/jobs', {
+      const payload: Record<string, unknown> = {
         title, description, priority, site_address: siteAddress || null,
-      })
+      }
+      if (selectedTemplate) payload.template_id = selectedTemplate
+      await apiClient.post('/api/v2/jobs', payload)
     } catch {
-      setFormError('Failed to create job')
+      setFormError(`Failed to create ${jobLabel.toLowerCase()}`)
     }
   }
 
   const handleConvertToInvoice = async () => {
     if (!job) return
     try {
-      await apiClient.post(`/api/v2/jobs/${job.id}/convert-to-invoice`, {
+      const res = await apiClient.post(`/api/v2/jobs/${job.id}/convert-to-invoice`, {
         time_entries: [], expenses: [], materials: [],
       })
+      // Navigate to the new invoice if ID is returned
+      if (res.data?.invoice_id) {
+        window.location.href = `/invoices/${res.data.invoice_id}`
+        return
+      }
       await fetchJob()
     } catch {
       setError('Failed to convert to invoice')
@@ -148,28 +204,75 @@ export default function JobDetail({ jobId }: Props) {
     }
   }
 
-  if (loading) {
-    return <div role="status" aria-label="Loading job">Loading job…</div>
+  /* Profitability calculation */
+  const profitability = financials
+    ? calculateJobProfitability(
+        financials.total_revenue,
+        financials.time_costs + financials.expense_costs + financials.material_costs,
+      )
+    : null
+
+  if (guardLoading || loading) {
+    return (
+      <>
+        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+        <div role="status" aria-label="Loading job">Loading job…</div>
+      </>
+    )
   }
+
+  if (!isAllowed) return <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
   // Create mode
   if (isCreate) {
     return (
       <div>
-        <h1>New Job</h1>
+        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+        <h1>New {jobLabel}</h1>
         {formError && <div role="alert">{formError}</div>}
         <form onSubmit={e => { e.preventDefault(); handleCreate() }}>
+          {/* Template selection */}
+          {templates.length > 0 && (
+            <div style={{ marginBottom: '1rem' }}>
+              <label htmlFor="template-select">{jobLabel} Template</label>
+              <select
+                id="template-select"
+                value={selectedTemplate}
+                onChange={e => setSelectedTemplate(e.target.value)}
+                style={{ minHeight: 44, display: 'block', marginTop: '0.25rem' }}
+              >
+                <option value="">No template (blank {jobLabel.toLowerCase()})</option>
+                {templates.map(t => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div>
-            <label htmlFor="job-title">Job title *</label>
-            <input id="job-title" value={title} onChange={e => setTitle(e.target.value)} />
+            <label htmlFor="job-title">{jobLabel} title *</label>
+            <input
+              id="job-title"
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              style={{ minHeight: 44 }}
+            />
           </div>
           <div>
             <label htmlFor="job-description">Description</label>
-            <textarea id="job-description" value={description} onChange={e => setDescription(e.target.value)} />
+            <textarea
+              id="job-description"
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+            />
           </div>
           <div>
             <label htmlFor="job-priority">Priority</label>
-            <select id="job-priority" value={priority} onChange={e => setPriority(e.target.value)}>
+            <select
+              id="job-priority"
+              value={priority}
+              onChange={e => setPriority(e.target.value)}
+              style={{ minHeight: 44 }}
+            >
               <option value="low">Low</option>
               <option value="normal">Normal</option>
               <option value="high">High</option>
@@ -178,9 +281,14 @@ export default function JobDetail({ jobId }: Props) {
           </div>
           <div>
             <label htmlFor="job-site-address">Site address</label>
-            <input id="job-site-address" value={siteAddress} onChange={e => setSiteAddress(e.target.value)} />
+            <input
+              id="job-site-address"
+              value={siteAddress}
+              onChange={e => setSiteAddress(e.target.value)}
+              style={{ minHeight: 44 }}
+            />
           </div>
-          <button type="submit">Create Job</button>
+          <button type="submit" style={{ minWidth: 44, minHeight: 44 }}>Create {jobLabel}</button>
         </form>
       </div>
     )
@@ -190,10 +298,16 @@ export default function JobDetail({ jobId }: Props) {
 
   return (
     <div>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
       <h1>{job.job_number}: {job.title}</h1>
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
         <span className={`status-badge status-${job.status}`}>{job.status}</span>
         <span className={`priority-badge priority-${job.priority}`}>{job.priority}</span>
+        {job.project_name && (
+          <span style={{ fontSize: '0.85rem', color: '#6B7280' }}>
+            {projectLabel}: {job.project_name}
+          </span>
+        )}
       </div>
       {error && <div role="alert">{error}</div>}
 
@@ -205,6 +319,7 @@ export default function JobDetail({ jobId }: Props) {
             role="tab"
             aria-selected={activeTab === tab}
             onClick={() => setActiveTab(tab)}
+            style={{ minWidth: 44, minHeight: 44 }}
           >
             {tab}
           </button>
@@ -228,6 +343,41 @@ export default function JobDetail({ jobId }: Props) {
                 : 'No staff assigned'}
             </dd>
           </dl>
+        </div>
+      )}
+
+      {activeTab === 'Profitability' && (
+        <div role="tabpanel" aria-label="Profitability">
+          {financials && profitability ? (
+            <div data-testid="profitability-panel">
+              <h2>{jobLabel} Profitability</h2>
+              <dl>
+                <dt>Total Revenue</dt>
+                <dd>${financials.total_revenue.toFixed(2)}</dd>
+                <dt>Time Costs</dt>
+                <dd>${financials.time_costs.toFixed(2)}</dd>
+                <dt>Expense Costs</dt>
+                <dd>${financials.expense_costs.toFixed(2)}</dd>
+                <dt>Material Costs</dt>
+                <dd>${financials.material_costs.toFixed(2)}</dd>
+                <dt>Total Costs</dt>
+                <dd>${(financials.time_costs + financials.expense_costs + financials.material_costs).toFixed(2)}</dd>
+                <dt>Profit Margin</dt>
+                <dd>${profitability.margin.toFixed(2)}</dd>
+                <dt>Margin Percentage</dt>
+                <dd
+                  style={{
+                    color: profitability.marginPercentage >= 0 ? '#10B981' : '#EF4444',
+                    fontWeight: 600,
+                  }}
+                >
+                  {profitability.marginPercentage.toFixed(1)}%
+                </dd>
+              </dl>
+            </div>
+          ) : (
+            <p>No financial data available for this {jobLabel.toLowerCase()}.</p>
+          )}
         </div>
       )}
 
@@ -295,7 +445,11 @@ export default function JobDetail({ jobId }: Props) {
 
       {/* Convert to invoice button */}
       {job.status === 'completed' && !job.converted_invoice_id && (
-        <button onClick={handleConvertToInvoice} aria-label="Convert to invoice">
+        <button
+          onClick={handleConvertToInvoice}
+          aria-label="Convert to invoice"
+          style={{ minWidth: 44, minHeight: 44, marginTop: '1rem' }}
+        >
           Convert to Invoice
         </button>
       )}

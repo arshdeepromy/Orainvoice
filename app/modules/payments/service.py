@@ -5,6 +5,7 @@ Requirements: 24.1, 24.2, 24.3
 
 from __future__ import annotations
 
+import logging
 import uuid
 from decimal import Decimal
 
@@ -15,6 +16,8 @@ from app.core.audit import write_audit_log
 from app.modules.invoices.models import Invoice
 from app.modules.invoices.service import _validate_transition
 from app.modules.payments.models import Payment
+
+logger = logging.getLogger(__name__)
 
 
 async def record_cash_payment(
@@ -241,8 +244,8 @@ async def generate_stripe_payment_link(
                         f"following link:\n\n{payment_url}"
                     ),
                 )
-            except Exception:
-                pass  # Non-blocking; link is still returned
+            except (ConnectionError, TimeoutError, OSError) as exc:
+                logger.warning("Failed to send payment link email for invoice %s: %s", invoice.id, exc)
     elif send_via == "sms":
         customer_result = await db.execute(
             select(Customer).where(Customer.id == invoice.customer_id)
@@ -260,8 +263,8 @@ async def generate_stripe_payment_link(
                         f"{payment_url}"
                     ),
                 )
-            except Exception:
-                pass  # Non-blocking; link is still returned
+            except (ConnectionError, TimeoutError, OSError) as exc:
+                logger.warning("Failed to send payment link SMS for invoice %s: %s", invoice.id, exc)
 
     # Audit log
     await write_audit_log(
@@ -436,8 +439,8 @@ async def handle_stripe_webhook(
                     f"Remaining balance: {invoice.currency} {invoice.balance_due}\n"
                 ),
             )
-    except Exception:
-        pass  # Best-effort; do not fail the webhook
+    except (ConnectionError, TimeoutError, OSError, ImportError) as exc:
+        logger.warning("Failed to send payment receipt email for invoice %s: %s", invoice.id, exc)
 
     return {
         "status": "processed",

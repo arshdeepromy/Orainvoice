@@ -819,3 +819,184 @@ async def update_notification_settings(
         )
 
     return NotificationPreferenceItem(**updated)
+
+
+# ---------------------------------------------------------------------------
+# Bounce webhook endpoints (Req 2.20 — Brevo & SendGrid bounce handling)
+# ---------------------------------------------------------------------------
+
+import logging
+
+from app.config import settings as app_settings
+from app.core.webhook_security import verify_webhook_signature
+from app.modules.notifications.schemas import (
+    BrevoBounceWebhookRequest,
+    SendGridBounceEvent,
+)
+from app.modules.notifications.service import flag_bounced_email_on_customer
+
+logger = logging.getLogger(__name__)
+
+BREVO_BOUNCE_EVENTS = {"hard_bounce", "soft_bounce", "blocked", "invalid_email"}
+SENDGRID_BOUNCE_EVENTS = {"bounce", "dropped", "deferred"}
+
+
+@router.post("/webhooks/brevo-bounce")
+async def brevo_bounce_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Receive Brevo bounce webhook events and flag customer emails.
+
+    Verifies the webhook signature using HMAC-SHA256 with the configured
+    brevo_webhook_secret. Extracts bounced emails and calls
+    flag_bounced_email_on_customer() for each.
+
+    Returns 200 on success, 401 on invalid signature.
+    Requirements: 2.20
+    """
+    raw_body = await request.body()
+    signature = request.headers.get("X-Brevo-Signature", "")
+
+    if not app_settings.brevo_webhook_secret or not verify_webhook_signature(
+        raw_body, signature, app_settings.brevo_webhook_secret
+    ):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid webhook signature"},
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid JSON payload"},
+        )
+
+    payload = BrevoBounceWebhookRequest(**body) if isinstance(body, dict) else None
+
+    bounced_emails: list[str] = []
+
+    if payload and payload.events:
+        for ev in payload.events:
+            if ev.event in BREVO_BOUNCE_EVENTS and ev.email:
+                bounced_emails.append(ev.email)
+    elif payload and payload.event and payload.email:
+        if payload.event in BREVO_BOUNCE_EVENTS:
+            bounced_emails.append(payload.email)
+
+    # Flag bounced emails across all orgs (webhook is global)
+    total_flagged = 0
+    for email in bounced_emails:
+        # Brevo webhooks are global — we flag across all orgs by querying
+        # without org_id filter. Use a sentinel org_id approach: iterate
+        # orgs that have this customer email.
+        from app.modules.customers.models import Customer
+        from sqlalchemy import select as sa_select
+
+        stmt = sa_select(Customer.org_id).where(
+            Customer.email == email,
+            Customer.email_bounced == False,  # noqa: E712
+        ).distinct()
+        result = await db.execute(stmt)
+        org_ids = result.scalars().all()
+
+        for oid in org_ids:
+            count = await flag_bounced_email_on_customer(
+                db, org_id=oid, email_address=email
+            )
+            total_flagged += count
+
+    logger.info(
+        "Brevo bounce webhook processed: %d emails, %d customers flagged",
+        len(bounced_emails),
+        total_flagged,
+    )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "message": "Bounce events processed",
+            "emails_processed": len(bounced_emails),
+            "customers_flagged": total_flagged,
+        },
+    )
+
+
+@router.post("/webhooks/sendgrid-bounce")
+async def sendgrid_bounce_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Receive SendGrid Event Webhook bounce events and flag customer emails.
+
+    Verifies the webhook signature using HMAC-SHA256 with the configured
+    sendgrid_webhook_secret. SendGrid sends an array of event objects.
+
+    Returns 200 on success, 401 on invalid signature.
+    Requirements: 2.20
+    """
+    raw_body = await request.body()
+    signature = request.headers.get("X-Twilio-Email-Event-Webhook-Signature", "")
+
+    if not app_settings.sendgrid_webhook_secret or not verify_webhook_signature(
+        raw_body, signature, app_settings.sendgrid_webhook_secret
+    ):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid webhook signature"},
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid JSON payload"},
+        )
+
+    # SendGrid sends an array of event objects
+    events: list[dict] = body if isinstance(body, list) else [body] if isinstance(body, dict) else []
+
+    bounced_emails: list[str] = []
+    for raw_event in events:
+        try:
+            ev = SendGridBounceEvent(**raw_event)
+            if ev.event in SENDGRID_BOUNCE_EVENTS and ev.email:
+                bounced_emails.append(ev.email)
+        except Exception:
+            continue  # Skip malformed events
+
+    total_flagged = 0
+    for email in bounced_emails:
+        from app.modules.customers.models import Customer
+        from sqlalchemy import select as sa_select
+
+        stmt = sa_select(Customer.org_id).where(
+            Customer.email == email,
+            Customer.email_bounced == False,  # noqa: E712
+        ).distinct()
+        result = await db.execute(stmt)
+        org_ids = result.scalars().all()
+
+        for oid in org_ids:
+            count = await flag_bounced_email_on_customer(
+                db, org_id=oid, email_address=email
+            )
+            total_flagged += count
+
+    logger.info(
+        "SendGrid bounce webhook processed: %d emails, %d customers flagged",
+        len(bounced_emails),
+        total_flagged,
+    )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "message": "Bounce events processed",
+            "emails_processed": len(bounced_emails),
+            "customers_flagged": total_flagged,
+        },
+    )

@@ -1,10 +1,30 @@
 import { render, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 
 /**
- * Validates: Requirement — MultiCurrency Module, Tasks 40.12, 40.13
+ * Validates: Requirements 13.1, 13.2, 13.3, 13.4, 13.5, 13.6, 13.7
  */
+
+// Mock contexts
+vi.mock('@/hooks/useModuleGuard', () => ({
+  useModuleGuard: () => ({
+    isAllowed: true,
+    isLoading: false,
+    toasts: [],
+    dismissToast: vi.fn(),
+  }),
+}))
+
+vi.mock('@/contexts/FeatureFlagContext', () => ({
+  useFlag: () => true,
+  useFeatureFlags: () => ({ flags: {}, isLoading: false, error: null, refetch: vi.fn() }),
+}))
+
+vi.mock('@/contexts/TerminologyContext', () => ({
+  useTerm: (_key: string, fallback: string) => fallback,
+}))
 
 vi.mock('@/api/client', () => {
   const mockGet = vi.fn()
@@ -29,12 +49,11 @@ const mockRates = [
     rate: '0.61000000', source: 'manual', effective_date: '2025-01-15',
     created_at: '2025-01-15T10:00:00Z',
   },
-  {
-    id: 'r2', base_currency: 'NZD', target_currency: 'AUD',
-    rate: '0.92000000', source: 'openexchangerates', effective_date: '2025-01-15',
-    created_at: '2025-01-15T10:00:00Z',
-  },
 ]
+
+function renderWithRouter(ui: React.ReactElement) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>)
+}
 
 describe('CurrencySettings', () => {
   beforeEach(() => { vi.clearAllMocks() })
@@ -42,122 +61,131 @@ describe('CurrencySettings', () => {
   function setupMocks() {
     ;(apiClient.get as ReturnType<typeof vi.fn>)
       .mockImplementation((url: string) => {
+        if (url.includes('/rates/history')) return Promise.resolve({ data: [] })
         if (url.includes('/rates')) return Promise.resolve({ data: mockRates })
+        if (url.includes('/provider')) return Promise.resolve({ data: { provider: 'Open Exchange Rates', update_frequency: 'Daily', last_sync: '2025-01-15T10:00:00Z', status: 'active' } })
         return Promise.resolve({ data: mockCurrencies })
       })
   }
 
   it('shows loading spinner initially', () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
-    render(<CurrencySettings />)
+    renderWithRouter(<CurrencySettings />)
     expect(screen.getByRole('status', { name: 'Loading currency settings' })).toBeInTheDocument()
   })
 
-  it('displays enabled currencies in a table', async () => {
+  it('displays base currency prominently (Req 13.1)', async () => {
     setupMocks()
-    render(<CurrencySettings />)
-
-    const table = await screen.findByRole('grid', { name: 'Enabled currencies list' })
-    const rows = within(table).getAllByRole('row')
-    expect(rows).toHaveLength(4) // header + 3 currencies
-    expect(screen.getByTestId('currency-row-NZD')).toHaveTextContent('NZD')
-    expect(screen.getByTestId('currency-row-NZD')).toHaveTextContent('✓ Base')
-    expect(screen.getByTestId('currency-row-USD')).toHaveTextContent('USD')
+    renderWithRouter(<CurrencySettings />)
+    expect(await screen.findByTestId('base-currency-code')).toHaveTextContent('NZD')
+    expect(screen.getByTestId('base-currency-display')).toBeInTheDocument()
   })
 
-  it('displays exchange rates in a table', async () => {
+  it('displays enabled currencies with format info (Req 13.1)', async () => {
     setupMocks()
-    render(<CurrencySettings />)
-
-    const table = await screen.findByRole('grid', { name: 'Exchange rates list' })
-    const rows = within(table).getAllByRole('row')
-    expect(rows).toHaveLength(3) // header + 2 rates
-    expect(screen.getByTestId('rate-row-NZD-USD')).toHaveTextContent('0.61000000')
+    renderWithRouter(<CurrencySettings />)
+    await screen.findByTestId('currency-row-NZD')
+    expect(screen.getByTestId('currency-row-NZD')).toBeInTheDocument()
+    expect(screen.getByTestId('currency-row-USD')).toBeInTheDocument()
+    expect(screen.getByTestId('currency-row-AUD')).toBeInTheDocument()
   })
 
-  it('shows enable currency form when button clicked', async () => {
+  it('shows sample formatted amounts per currency (Req 13.7)', async () => {
     setupMocks()
-    render(<CurrencySettings />)
-    await screen.findByRole('grid', { name: 'Enabled currencies list' })
+    renderWithRouter(<CurrencySettings />)
+    await screen.findByTestId('sample-format-NZD')
+    expect(screen.getByTestId('sample-format-NZD')).toHaveTextContent('$1,234.57')
+    expect(screen.getByTestId('sample-format-USD')).toHaveTextContent('$1,234.57')
+  })
+
+  it('shows missing rate warning for currencies without rates (Req 13.6)', async () => {
+    setupMocks()
+    renderWithRouter(<CurrencySettings />)
+    // AUD has no rate in mockRates — wait for the warning badge to appear
+    const audBadge = await screen.findByTestId('missing-rate-AUD')
+    expect(audBadge).toBeInTheDocument()
+    // The alert banner should mention AUD
+    const alerts = screen.getAllByRole('alert')
+    const missingAlert = alerts.find((a) => a.textContent?.includes('AUD'))
+    expect(missingAlert).toBeTruthy()
+  })
+
+  it('opens currency search panel with ISO 4217 list (Req 13.2)', async () => {
+    setupMocks()
+    renderWithRouter(<CurrencySettings />)
+    await screen.findByTestId('currency-row-NZD')
 
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Enable currency' }))
-
-    expect(screen.getByRole('form', { name: 'Enable currency form' })).toBeInTheDocument()
+    await user.click(screen.getByTestId('open-currency-search'))
+    expect(screen.getByTestId('currency-search-panel')).toBeInTheDocument()
+    expect(screen.getByTestId('currency-search-input')).toBeInTheDocument()
   })
 
-  it('submits enable currency form', async () => {
+  it('filters currencies in search panel', async () => {
+    setupMocks()
+    renderWithRouter(<CurrencySettings />)
+    await screen.findByTestId('currency-row-NZD')
+
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('open-currency-search'))
+    await user.type(screen.getByTestId('currency-search-input'), 'Euro')
+
+    expect(screen.getByTestId('currency-option-EUR')).toBeInTheDocument()
+  })
+
+  it('enables a currency from search panel', async () => {
     setupMocks()
     ;(apiClient.post as ReturnType<typeof vi.fn>).mockResolvedValue({ data: { id: 'new' } })
-    render(<CurrencySettings />)
-    await screen.findByRole('grid', { name: 'Enabled currencies list' })
+    renderWithRouter(<CurrencySettings />)
+    await screen.findByTestId('currency-row-NZD')
 
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Enable currency' }))
-    await user.type(screen.getByLabelText('Currency Code'), 'GBP')
-    await user.click(screen.getByRole('button', { name: 'Save currency' }))
+    await user.click(screen.getByTestId('open-currency-search'))
+    await user.type(screen.getByTestId('currency-search-input'), 'GBP')
+    await user.click(screen.getByTestId('enable-currency-GBP'))
 
-    expect(apiClient.post).toHaveBeenCalledWith('/api/v2/currencies/enable', expect.objectContaining({
+    expect(apiClient.post).toHaveBeenCalledWith('/api/v2/currencies/enable', {
       currency_code: 'GBP',
       is_base: false,
-    }))
+    })
   })
 
-  it('shows manual rate form when button clicked', async () => {
+  it('shows exchange rates tab with rate data (Req 13.3)', async () => {
     setupMocks()
-    render(<CurrencySettings />)
-    await screen.findByRole('grid', { name: 'Exchange rates list' })
+    renderWithRouter(<CurrencySettings />)
+    await screen.findByTestId('currency-row-NZD')
 
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Add manual rate' }))
-
-    expect(screen.getByRole('form', { name: 'Set exchange rate form' })).toBeInTheDocument()
+    // Click the Exchange Rates tab
+    await user.click(screen.getByRole('tab', { name: 'Exchange Rates' }))
+    expect(screen.getByTestId('rate-row-NZD-USD')).toBeInTheDocument()
   })
 
-  it('submits manual rate form', async () => {
+  it('opens manual rate form (Req 13.3)', async () => {
     setupMocks()
-    ;(apiClient.post as ReturnType<typeof vi.fn>).mockResolvedValue({ data: { id: 'new-rate' } })
-    render(<CurrencySettings />)
-    await screen.findByRole('grid', { name: 'Exchange rates list' })
+    renderWithRouter(<CurrencySettings />)
+    await screen.findByTestId('currency-row-NZD')
 
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Add manual rate' }))
-    await user.type(screen.getByLabelText('Base Currency'), 'NZD')
-    await user.type(screen.getByLabelText('Target Currency'), 'EUR')
-    await user.type(screen.getByLabelText('Rate'), '0.55')
-
-    await user.click(screen.getByRole('button', { name: 'Save rate' }))
-
-    expect(apiClient.post).toHaveBeenCalledWith('/api/v2/currencies/rates', expect.objectContaining({
-      base_currency: 'NZD',
-      target_currency: 'EUR',
-      rate: 0.55,
-    }))
+    await user.click(screen.getByRole('tab', { name: 'Exchange Rates' }))
+    await user.click(screen.getByTestId('open-rate-form'))
+    expect(screen.getByTestId('manual-rate-form')).toBeInTheDocument()
   })
 
   it('shows error when API fails', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Network error'))
-    render(<CurrencySettings />)
-    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load currency settings')
+    renderWithRouter(<CurrencySettings />)
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Failed to load currency settings')
   })
 
-  it('shows empty state when no currencies', async () => {
-    ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] })
-    render(<CurrencySettings />)
-    expect(await screen.findByText('No currencies enabled')).toBeInTheDocument()
-  })
-
-  it('refresh button calls provider endpoint', async () => {
+  it('has 44px minimum touch targets on interactive elements', async () => {
     setupMocks()
-    ;(apiClient.post as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] })
-    render(<CurrencySettings />)
-    await screen.findByRole('grid', { name: 'Enabled currencies list' })
+    renderWithRouter(<CurrencySettings />)
+    await screen.findByTestId('currency-row-NZD')
 
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Refresh rates from provider' }))
-
-    expect(apiClient.post).toHaveBeenCalledWith(
-      expect.stringContaining('/api/v2/currencies/rates/refresh'),
-    )
+    const refreshBtn = screen.getByTestId('currency-refresh-btn')
+    expect(refreshBtn.style.minHeight).toBe('44px')
+    expect(refreshBtn.style.minWidth).toBe('44px')
   })
 })

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -18,6 +19,8 @@ from app.modules.receipt_printer.schemas import (
     PrinterConfigUpdate,
     PrintJobCreate,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 2
@@ -225,7 +228,8 @@ class PrinterService:
                 job.status = "completed"
                 job.completed_at = datetime.now(timezone.utc)
                 return
-            except Exception as exc:
+            except (ConnectionError, TimeoutError, OSError) as exc:
+                logger.error("Print dispatch failed for job %s (attempt %d): %s", job.id, job.retry_count + 1, exc, exc_info=True)
                 job.retry_count += 1
                 job.error_details = str(exc)
                 if job.retry_count >= MAX_RETRIES:

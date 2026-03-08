@@ -6,13 +6,13 @@ PostgreSQL session variable `app.current_org_id` set so that RLS policies
 filter rows to the correct tenant.
 """
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.core.database import set_current_org_id
 
 
-class TenantMiddleware(BaseHTTPMiddleware):
+class TenantMiddleware:
     """Propagate the authenticated org_id into a request-scoped context.
 
     The actual ``SET app.current_org_id`` SQL statement is executed by the
@@ -22,16 +22,17 @@ class TenantMiddleware(BaseHTTPMiddleware):
     or unauthenticated requests).
     """
 
-    async def dispatch(self, request: Request, call_next):
-        # org_id is set by AuthMiddleware; default to None when absent.
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
         org_id: str | None = getattr(request.state, "org_id", None)
-
-        # Store in request.state for direct access by route handlers.
         request.state.current_org_id = org_id
-
-        # Store in the context variable so the DB session factory can
-        # read it when creating sessions during this request.
         set_current_org_id(org_id)
 
-        response = await call_next(request)
-        return response
+        await self.app(scope, receive, send)

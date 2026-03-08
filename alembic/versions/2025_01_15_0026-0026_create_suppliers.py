@@ -21,27 +21,18 @@ depends_on: tuple[str, ...] | None = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    # Table already created in migration 0004. Add missing columns.
+    op.add_column("suppliers", sa.Column("notes", sa.Text(), nullable=True))
+    op.add_column(
         "suppliers",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
-        sa.Column("org_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("name", sa.String(255), nullable=False),
-        sa.Column("contact_name", sa.String(255), nullable=True),
-        sa.Column("email", sa.String(255), nullable=True),
-        sa.Column("phone", sa.String(50), nullable=True),
-        sa.Column("address", sa.Text(), nullable=True),
-        sa.Column("notes", sa.Text(), nullable=True),
         sa.Column("is_active", sa.Boolean(), server_default=sa.text("true"), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.PrimaryKeyConstraint("id"),
-        sa.ForeignKeyConstraint(["org_id"], ["organisations.id"], name="fk_suppliers_org_id"),
     )
-    op.create_index("idx_suppliers_org", "suppliers", ["org_id"])
-    op.create_index("idx_suppliers_org_active", "suppliers", ["org_id", "is_active"])
+    op.execute("CREATE INDEX IF NOT EXISTS idx_suppliers_org ON suppliers (org_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_suppliers_org_active ON suppliers (org_id, is_active)")
 
 
 def downgrade() -> None:
     op.drop_index("idx_suppliers_org_active", table_name="suppliers")
     op.drop_index("idx_suppliers_org", table_name="suppliers")
-    op.drop_table("suppliers")
+    op.drop_column("suppliers", "is_active")
+    op.drop_column("suppliers", "notes")

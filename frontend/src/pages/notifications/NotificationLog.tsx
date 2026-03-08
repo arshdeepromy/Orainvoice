@@ -10,7 +10,7 @@ interface LogEntry {
   id: string
   recipient: string
   channel: 'email' | 'sms'
-  template_name: string
+  template_type: string
   subject: string
   status: 'queued' | 'sent' | 'delivered' | 'bounced' | 'opened' | 'failed'
   created_at: string
@@ -54,7 +54,6 @@ export default function NotificationLog() {
     setError('')
     try {
       const params: Record<string, string | number> = { page, page_size: pageSize }
-      if (search.trim()) params.search = search.trim()
       if (statusFilter) params.status = statusFilter
       if (channelFilter) params.channel = channelFilter
       const res = await apiClient.get<LogResponse>('/notifications/log', { params })
@@ -65,12 +64,24 @@ export default function NotificationLog() {
     } finally {
       setLoading(false)
     }
-  }, [page, search, statusFilter, channelFilter])
+  }, [page, statusFilter, channelFilter])
 
   useEffect(() => { fetchLog() }, [fetchLog])
 
   // Reset page when filters change
-  useEffect(() => { setPage(1) }, [search, statusFilter, channelFilter])
+  useEffect(() => { setPage(1) }, [statusFilter, channelFilter])
+
+  // Client-side search filter (backend doesn't support search parameter)
+  const filteredEntries = search.trim()
+    ? entries.filter((entry) => {
+        const q = search.trim().toLowerCase()
+        return (
+          entry.recipient.toLowerCase().includes(q) ||
+          entry.template_type.toLowerCase().includes(q) ||
+          entry.subject.toLowerCase().includes(q)
+        )
+      })
+    : entries
 
   return (
     <div>
@@ -125,7 +136,7 @@ export default function NotificationLog() {
         </div>
       )}
 
-      {loading && !entries.length && (
+      {loading && !filteredEntries.length && (
         <div className="py-16"><Spinner label="Loading notification log" /></div>
       )}
 
@@ -145,7 +156,7 @@ export default function NotificationLog() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {entries.length === 0 ? (
+                {filteredEntries.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-12 text-center text-sm text-gray-500">
                       {search || statusFilter || channelFilter
@@ -154,7 +165,7 @@ export default function NotificationLog() {
                     </td>
                   </tr>
                 ) : (
-                  entries.map((entry) => (
+                  filteredEntries.map((entry) => (
                     <tr key={entry.id} className="hover:bg-gray-50">
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">{entry.recipient}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm">
@@ -162,7 +173,7 @@ export default function NotificationLog() {
                           {entry.channel.toUpperCase()}
                         </Badge>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{entry.template_name}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{entry.template_type}</td>
                       <td className="px-4 py-3 text-sm text-gray-700 max-w-xs truncate">{entry.subject}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm">
                         <Badge variant={STATUS_BADGE[entry.status]}>

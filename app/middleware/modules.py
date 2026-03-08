@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import logging
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.core.modules import ModuleService, CORE_MODULES
 from app.core.database import async_session_factory
@@ -64,24 +64,35 @@ def _resolve_module(path: str) -> str | None:
     return None
 
 
-class ModuleMiddleware(BaseHTTPMiddleware):
+class ModuleMiddleware:
     """Return 403 for requests to endpoints of disabled modules."""
 
-    async def dispatch(self, request: Request, call_next):
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
         path = request.url.path
         org_id = getattr(request.state, "org_id", None)
 
         # Only check module-gated paths for authenticated org requests
         if not org_id:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         module_slug = _resolve_module(path)
         if module_slug is None:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         # Core modules are always enabled
         if module_slug in CORE_MODULES:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         try:
             async with async_session_factory() as session:
@@ -91,15 +102,18 @@ class ModuleMiddleware(BaseHTTPMiddleware):
         except Exception:
             logger.exception("Module check failed for %s/%s", org_id, module_slug)
             # Fail open — don't block requests if the check itself fails
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         if not enabled:
-            return JSONResponse(
+            response = JSONResponse(
                 status_code=403,
                 content={
                     "detail": f"Module '{module_slug}' is not enabled for your organisation.",
                     "module": module_slug,
                 },
             )
+            await response(scope, receive, send)
+            return
 
-        return await call_next(request)
+        await self.app(scope, receive, send)

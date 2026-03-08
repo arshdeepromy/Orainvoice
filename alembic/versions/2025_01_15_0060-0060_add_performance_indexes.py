@@ -30,15 +30,13 @@ def upgrade() -> None:
     op.create_index(
         "idx_customers_org_name",
         "customers",
-        ["org_id", "name"],
+        ["org_id", "last_name", "first_name"],
     )
 
-    # Products by org + SKU (barcode/SKU lookup)
-    op.create_index(
-        "idx_products_org_sku",
-        "products",
-        ["org_id", "sku"],
-        unique=True,
+    # Products by org + SKU (barcode/SKU lookup) — unique constraint already
+    # exists from migration 0027 (uq_products_org_sku), so just add a plain index
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_products_org_sku ON products (org_id, sku)"
     )
 
     # Jobs by org + status (kanban board, filtered lists)

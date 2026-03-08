@@ -135,15 +135,15 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // Fetch settings when user authenticates with an org
+  // Fetch settings when user authenticates with an org (skip for global_admin without org context)
   useEffect(() => {
-    if (isAuthenticated && user?.org_id) {
+    if (isAuthenticated && user?.org_id && user?.role !== 'global_admin') {
       fetchSettings()
     } else {
       setSettings(null)
       clearBrandingCssVars()
     }
-  }, [isAuthenticated, user?.org_id, fetchSettings])
+  }, [isAuthenticated, user?.org_id, user?.role, fetchSettings])
 
   const value = useMemo<TenantContextValue>(
     () => ({ settings, isLoading, error, refetch: fetchSettings }),

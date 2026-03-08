@@ -9,6 +9,7 @@ a typed Pydantic report model.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -59,6 +60,8 @@ from app.modules.reports_v2.schemas import (
     VariationRegisterItem,
     VariationRegisterReport,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -158,8 +161,8 @@ class ReportService:
             rate = result.scalar_one_or_none()
             if rate is not None and rate > 0:
                 return Decimal("1") / Decimal(str(rate))
-        except Exception:
-            pass
+        except (ImportError, ConnectionError, OSError) as exc:
+            logger.warning("Failed to fetch exchange rate for %s->%s: %s", from_currency, to_currency, exc)
         return Decimal("1")
 
     def _convert_amount(
@@ -342,8 +345,8 @@ class ReportService:
                     Invoice.status.in_(["issued", "paid", "partially_paid"]),
                 )
                 revenue = Decimal(str((await self.db.execute(inv_stmt)).scalar() or 0))
-            except Exception:
-                pass
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to fetch job revenue for job %s: %s", job.id, exc)
 
             # Labour from time entries
             try:
@@ -352,8 +355,8 @@ class ReportService:
                     func.coalesce(func.sum(TimeEntry.duration_minutes * TimeEntry.hourly_rate / 60), 0),
                 ).where(TimeEntry.org_id == org_id, TimeEntry.job_id == job.id)
                 labour = Decimal(str((await self.db.execute(te_stmt)).scalar() or 0))
-            except Exception:
-                pass
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to fetch job labour costs for job %s: %s", job.id, exc)
 
             # Expenses
             try:
@@ -362,8 +365,8 @@ class ReportService:
                     Expense.org_id == org_id, Expense.job_id == job.id,
                 )
                 expense = Decimal(str((await self.db.execute(exp_stmt)).scalar() or 0))
-            except Exception:
-                pass
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to fetch job expenses for job %s: %s", job.id, exc)
 
             cost = labour + material + expense
             profit = revenue - cost
@@ -508,8 +511,8 @@ class ReportService:
                     Expense.org_id == org_id, Expense.project_id == p.id,
                 )
                 costs += Decimal(str((await self.db.execute(exp_stmt)).scalar() or 0))
-            except Exception:
-                pass
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to fetch project expenses for project %s: %s", p.id, exc)
 
             # Sum labour
             try:
@@ -518,8 +521,8 @@ class ReportService:
                     func.coalesce(func.sum(TimeEntry.duration_minutes * TimeEntry.hourly_rate / 60), 0),
                 ).where(TimeEntry.org_id == org_id, TimeEntry.project_id == p.id)
                 costs += Decimal(str((await self.db.execute(te_stmt)).scalar() or 0))
-            except Exception:
-                pass
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to fetch project labour costs for project %s: %s", p.id, exc)
 
             profit = contract - costs
             margin = (profit / contract * 100).quantize(Decimal("0.01")) if contract > 0 else Decimal("0")
@@ -561,8 +564,8 @@ class ReportService:
                 claimed = Decimal(str(row.claimed or 0))
                 paid = Decimal(str(row.paid or 0))
                 retention = Decimal(str(row.retention or 0))
-            except Exception:
-                pass
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to fetch progress claims for project %s: %s", p.id, exc)
 
             items.append(ProgressClaimSummaryItem(
                 project_id=p.id,
@@ -603,7 +606,8 @@ class ReportService:
                     cost_impact=impact,
                 ))
             return VariationRegisterReport(items=items, total_impact=total_impact)
-        except Exception:
+        except (ImportError, ConnectionError, OSError) as exc:
+            logger.warning("Failed to generate variation register report: %s", exc)
             return VariationRegisterReport()
 
     async def _generate_retention_summary(
@@ -632,8 +636,8 @@ class ReportService:
                 row = (await self.db.execute(ret_stmt)).one()
                 held = Decimal(str(row.held or 0))
                 released = Decimal(str(row.released or 0))
-            except Exception:
-                pass
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to fetch retention data for project %s: %s", p.id, exc)
 
             items.append(RetentionSummaryItem(
                 project_id=p.id,
@@ -809,7 +813,8 @@ class ReportService:
 
             avg = Decimal(str(total_turnover / len(tables))).quantize(Decimal("0.01")) if tables else Decimal("0")
             return TableTurnoverReport(items=items, avg_turnover=avg)
-        except Exception:
+        except (ImportError, ConnectionError, OSError) as exc:
+            logger.warning("Failed to generate table turnover report: %s", exc)
             return TableTurnoverReport()
 
     async def _generate_avg_order_value(
@@ -869,7 +874,8 @@ class ReportService:
                 for row in result.all()
             ]
             return KitchenPrepTimeReport(items=items)
-        except Exception:
+        except (ImportError, ConnectionError, OSError) as exc:
+            logger.warning("Failed to generate kitchen prep time report: %s", exc)
             return KitchenPrepTimeReport()
 
     async def _generate_tip_summary(
@@ -904,7 +910,8 @@ class ReportService:
                     tip_count=row.cnt,
                 ))
             return TipSummaryReport(items=items, grand_total=grand)
-        except Exception:
+        except (ImportError, ConnectionError, OSError) as exc:
+            logger.warning("Failed to generate tip summary report: %s", exc)
             return TipSummaryReport()
 
     # ==================================================================
@@ -949,8 +956,8 @@ class ReportService:
                 if filters.date_to:
                     exp_stmt = exp_stmt.where(Expense.date <= filters.date_to)
                 gst_on_purchases = Decimal(str((await self.db.execute(exp_stmt)).scalar() or 0))
-            except Exception:
-                pass
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to fetch GST on purchases: %s", exc)
 
             return GSTReturnReport(
                 total_sales_incl=total_incl,
@@ -960,7 +967,8 @@ class ReportService:
                 gst_on_purchases=gst_on_purchases,
                 net_gst=gst_collected - gst_on_purchases,
             )
-        except Exception:
+        except (ImportError, ConnectionError, OSError) as exc:
+            logger.warning("Failed to generate GST return report: %s", exc)
             return GSTReturnReport()
 
     async def _generate_bas_return(
@@ -999,8 +1007,8 @@ class ReportService:
                 if filters.date_to:
                     exp_stmt = exp_stmt.where(Expense.date <= filters.date_to)
                 gst_on_purchases = Decimal(str((await self.db.execute(exp_stmt)).scalar() or 0))
-            except Exception:
-                pass
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to fetch BAS purchases GST: %s", exc)
 
             return BASReport(
                 total_sales=total_sales,
@@ -1008,7 +1016,8 @@ class ReportService:
                 gst_on_purchases=gst_on_purchases,
                 net_gst=gst_on_sales - gst_on_purchases,
             )
-        except Exception:
+        except (ImportError, ConnectionError, OSError) as exc:
+            logger.warning("Failed to generate BAS return report: %s", exc)
             return BASReport()
 
     async def _generate_vat_return(
@@ -1053,8 +1062,8 @@ class ReportService:
                 exp_row = (await self.db.execute(exp_stmt)).one()
                 total_purchases = Decimal(str(exp_row.total or 0))
                 vat_reclaimed = Decimal(str(exp_row.vat or 0))
-            except Exception:
-                pass
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to fetch VAT on purchases: %s", exc)
 
             return VATReturnReport(
                 box1_vat_due_sales=vat_due,
@@ -1067,5 +1076,6 @@ class ReportService:
                 box8_total_supplies_ex_vat=Decimal("0"),
                 box9_total_acquisitions_ex_vat=Decimal("0"),
             )
-        except Exception:
+        except (ImportError, ConnectionError, OSError) as exc:
+            logger.warning("Failed to generate VAT return report: %s", exc)
             return VATReturnReport()

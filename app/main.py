@@ -1,7 +1,11 @@
 """FastAPI application factory and middleware registration."""
 
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import settings
 from app.middleware.auth import AuthMiddleware
@@ -12,7 +16,10 @@ from app.middleware.tenant import TenantMiddleware
 from app.middleware.api_version import APIVersionMiddleware
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.middleware.modules import ModuleMiddleware
+from app.middleware.feature_flags import FeatureFlagMiddleware
 from app.core.pen_test_mode import PenTestMiddleware
+
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -23,6 +30,79 @@ def create_app() -> FastAPI:
         docs_url="/docs" if settings.debug else None,
         redoc_url="/redoc" if settings.debug else None,
     )
+
+    # ------------------------------------------------------------------
+    # Global exception handlers — catch unhandled errors and return JSON
+    # instead of bare 500 responses.
+    # ------------------------------------------------------------------
+
+    @app.exception_handler(SQLAlchemyError)
+    async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
+        logger.error("Database error on %s %s: %s", request.method, request.url.path, exc)
+        detail = str(exc.orig) if hasattr(exc, "orig") and exc.orig else str(exc)
+
+        # Persist to error_log table
+        try:
+            import traceback as tb
+            from app.core.errors import log_error, Severity, Category
+            from app.core.database import async_session_factory
+            async with async_session_factory() as session:
+                await log_error(
+                    session,
+                    severity=Severity.ERROR,
+                    category=Category.DATA,
+                    module="sqlalchemy",
+                    function_name="exception_handler",
+                    message=f"Database error: {detail[:500]}",
+                    stack_trace=tb.format_exc(),
+                    org_id=getattr(request.state, "org_id", None) if hasattr(request, "state") else None,
+                    user_id=getattr(request.state, "user_id", None) if hasattr(request, "state") else None,
+                    http_method=request.method,
+                    http_endpoint=request.url.path,
+                )
+                await session.commit()
+        except Exception:
+            logger.warning("Failed to persist DB error to error_log", exc_info=True)
+
+        if not settings.debug:
+            detail = "A database error occurred"
+        return JSONResponse(
+            status_code=503,
+            content={"detail": detail, "error_type": "database_error"},
+        )
+
+    @app.exception_handler(Exception)
+    async def general_exception_handler(request: Request, exc: Exception):
+        logger.error("Unhandled error on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+        detail = str(exc) if settings.debug else "Internal server error"
+
+        # Persist to error_log table
+        try:
+            import traceback as tb
+            from app.core.errors import log_error, Severity, Category
+            from app.core.database import async_session_factory
+            async with async_session_factory() as session:
+                await log_error(
+                    session,
+                    severity=Severity.ERROR,
+                    category=None,
+                    module=type(exc).__module__ or "unknown",
+                    function_name=type(exc).__name__,
+                    message=str(exc)[:500],
+                    stack_trace=tb.format_exc(),
+                    org_id=getattr(request.state, "org_id", None) if hasattr(request, "state") else None,
+                    user_id=getattr(request.state, "user_id", None) if hasattr(request, "state") else None,
+                    http_method=request.method,
+                    http_endpoint=request.url.path,
+                )
+                await session.commit()
+        except Exception:
+            logger.warning("Failed to persist error to error_log", exc_info=True)
+
+        return JSONResponse(
+            status_code=500,
+            content={"detail": detail, "error_type": "internal_error"},
+        )
 
     # ------------------------------------------------------------------
     # Middleware stack (order matters — outermost first, innermost last).
@@ -38,21 +118,25 @@ def create_app() -> FastAPI:
     #   4. RateLimit        (reject before heavy processing)
     #   5. Auth             (decode JWT, populate request.state)
     #   6. RBAC             (enforce role-based path access)
-    #   7. Idempotency      (check/store idempotency keys)
-    #   8. Module           (check module enablement per org)
-    #   9. Tenant           (set org context for RLS)
+    #   7. FeatureFlag      (gate endpoints by feature flag evaluation)
+    #   8. Idempotency      (check/store idempotency keys)
+    #   9. Module           (check module enablement per org)
+    #  10. Tenant           (set org context for RLS)
     #
     # Because Starlette reverses the order, we add them bottom-up:
     # ------------------------------------------------------------------
 
-    # 9 → registered first so it runs last (innermost)
+    # 10 → registered first so it runs last (innermost)
     app.add_middleware(TenantMiddleware)
 
-    # 8
+    # 9
     app.add_middleware(ModuleMiddleware)
 
-    # 7
+    # 8
     app.add_middleware(IdempotencyMiddleware)
+
+    # 7
+    app.add_middleware(FeatureFlagMiddleware)
 
     # 6
     app.add_middleware(RBACMiddleware)
@@ -128,22 +212,28 @@ def create_app() -> FastAPI:
 
     # --- V2 Routers (universal platform) ---
     # Existing V1 modules are also available under /api/v2/ for continuity.
-    app.include_router(auth_router, prefix="/api/v2/auth", tags=["v2-auth"])
-    app.include_router(admin_router, prefix="/api/v2/admin", tags=["v2-admin"])
-    app.include_router(org_router, prefix="/api/v2/org", tags=["v2-organisations"])
-    app.include_router(customers_router, prefix="/api/v2/customers", tags=["v2-customers"])
-    app.include_router(invoices_router, prefix="/api/v2/invoices", tags=["v2-invoices"])
-    app.include_router(payments_router, prefix="/api/v2/payments", tags=["v2-payments"])
-    app.include_router(billing_router, prefix="/api/v2/billing", tags=["v2-billing"])
-    app.include_router(catalogue_router, prefix="/api/v2/catalogue", tags=["v2-catalogue"])
-    app.include_router(storage_router, prefix="/api/v2/storage", tags=["v2-storage"])
-    app.include_router(notifications_router, prefix="/api/v2/notifications", tags=["v2-notifications"])
-    app.include_router(quotes_router, prefix="/api/v2/quotes", tags=["v2-quotes"])
-    app.include_router(bookings_router, prefix="/api/v2/bookings", tags=["v2-bookings"])
-    app.include_router(inventory_router, prefix="/api/v2/inventory", tags=["v2-inventory"])
-    app.include_router(reports_router, prefix="/api/v2/reports", tags=["v2-reports"])
-    app.include_router(webhooks_router, prefix="/api/v2/webhooks", tags=["v2-webhooks"])
-    app.include_router(accounting_router, prefix="/api/v2/org/accounting", tags=["v2-accounting"])
+    # Deduplicated: use a loop instead of repeating include_router calls.
+    _V1_ROUTERS_FOR_V2 = [
+        (auth_router, "/api/v2/auth", "v2-auth"),
+        (admin_router, "/api/v2/admin", "v2-admin"),
+        (org_router, "/api/v2/org", "v2-organisations"),
+        (customers_router, "/api/v2/customers", "v2-customers"),
+        (invoices_router, "/api/v2/invoices", "v2-invoices"),
+        (payments_router, "/api/v2/payments", "v2-payments"),
+        (billing_router, "/api/v2/billing", "v2-billing"),
+        (catalogue_router, "/api/v2/catalogue", "v2-catalogue"),
+        (storage_router, "/api/v2/storage", "v2-storage"),
+        (notifications_router, "/api/v2/notifications", "v2-notifications"),
+        (quotes_router, "/api/v2/quotes", "v2-quotes"),
+        (bookings_router, "/api/v2/bookings", "v2-bookings"),
+        (inventory_router, "/api/v2/inventory", "v2-inventory"),
+        (reports_router, "/api/v2/reports", "v2-reports"),
+        (webhooks_router, "/api/v2/webhooks", "v2-webhooks"),
+        (accounting_router, "/api/v2/org/accounting", "v2-accounting"),
+        (portal_router, "/api/v2/portal", "v2-portal"),
+    ]
+    for _v2_router, _v2_prefix, _v2_tag in _V1_ROUTERS_FOR_V2:
+        app.include_router(_v2_router, prefix=_v2_prefix, tags=[_v2_tag])
     # --- New universal-platform module routers ---
     from app.modules.feature_flags.router import admin_router as ff_admin_router
     from app.modules.feature_flags.router import org_router as ff_org_router
@@ -342,8 +432,13 @@ def create_app() -> FastAPI:
     from app.modules.reports_v2.router import router as reports_v2_router
     app.include_router(reports_v2_router, prefix="/api/v2/reports", tags=["v2-reports-v2"])
 
-    # --- Enhanced customer portal (v2) ---
-    app.include_router(portal_router, prefix="/api/v2/portal", tags=["v2-portal"])
+    # --- SMS Verification Providers ---
+    from app.modules.sms_providers.router import router as sms_providers_router
+    app.include_router(sms_providers_router, prefix="/api/v2/admin/sms-providers", tags=["v2-admin-sms-providers"])
+
+    # --- Email Providers ---
+    from app.modules.email_providers.router import router as email_providers_router
+    app.include_router(email_providers_router, prefix="/api/v2/admin/email-providers", tags=["v2-admin-email-providers"])
 
     @app.get("/health")
     async def health_check():

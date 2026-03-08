@@ -20,8 +20,9 @@ dependencies = [
     "python-multipart>=0.0.9",
     "email-validator>=2.1.0",
     "alembic>=1.13.0",
-    "py_webauthn>=2.0.0",
+    "webauthn>=2.0.0",
     "pyotp>=2.9.0",
+    "stripe>=7.0.0",
 ]
 
 [project.optional-dependencies]
@@ -34,4 +35,4 @@ dev = [
 
 [build-system]
 requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"

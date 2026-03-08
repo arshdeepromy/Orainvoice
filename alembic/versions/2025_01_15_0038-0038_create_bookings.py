@@ -21,6 +21,11 @@ depends_on: tuple[str, ...] | None = None
 
 
 def upgrade() -> None:
+    # Table was originally created in migration 0006 with a different schema.
+    # Drop and recreate with the new schema (staff_id FK, confirmation_token, etc.)
+    op.execute("ALTER TABLE IF EXISTS bookings DISABLE ROW LEVEL SECURITY")
+    op.execute("DROP TABLE IF EXISTS bookings CASCADE")
+
     op.create_table(
         "bookings",
         sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),

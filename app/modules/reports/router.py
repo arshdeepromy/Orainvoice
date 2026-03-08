@@ -26,6 +26,7 @@ from app.modules.reports.schemas import (
     InvoiceStatusReportResponse,
     OutstandingInvoicesResponse,
     RevenueSummaryResponse,
+    SmsUsageResponse,
     StorageUsageResponse,
     TopServicesResponse,
 )
@@ -37,6 +38,7 @@ from app.modules.reports.service import (
     get_invoice_status_report,
     get_outstanding_invoices,
     get_revenue_summary,
+    get_sms_usage,
     get_storage_usage,
     get_top_services,
     resolve_date_range,
@@ -299,6 +301,35 @@ async def carjam_usage_report(
 
     data = await get_carjam_usage(db, org_id)
     return CarjamUsageResponse(**data)
+
+
+# ---------------------------------------------------------------------------
+# GET /reports/sms-usage — SMS Usage Report
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/sms-usage",
+    response_model=SmsUsageResponse,
+    summary="SMS usage report",
+    dependencies=[require_role("org_admin")],
+)
+async def sms_usage_report(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """SMS usage for the organisation.
+
+    Returns total sent, included quota, package credits, overage count,
+    overage charge, per-SMS cost, and reset timestamp.
+
+    Requirements: 7.1
+    """
+    org_id = _extract_org_id(request)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    data = await get_sms_usage(db, org_id)
+    return SmsUsageResponse(**data)
 
 
 # ---------------------------------------------------------------------------

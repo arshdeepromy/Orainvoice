@@ -8,6 +8,7 @@ aggregate views, and franchise dashboard.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -16,6 +17,8 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.franchise.models import FranchiseGroup, Location, StockTransfer
+
+logger = logging.getLogger(__name__)
 
 
 class FranchiseService:
@@ -219,7 +222,8 @@ class FranchiseService:
                 )
                 out_result = await self.db.execute(outstanding_stmt)
                 outstanding = Decimal(str(out_result.scalar() or 0))
-            except Exception:
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to aggregate invoices for location %s: %s", loc.id, exc)
                 revenue = Decimal("0")
                 outstanding = Decimal("0")
 
@@ -288,10 +292,11 @@ class FranchiseService:
                     and_(Invoice.org_id.in_(org_ids), Invoice.status == "issued"),
                 )
                 total_outstanding = Decimal(str((await self.db.execute(out_stmt)).scalar() or 0))
-            except Exception:
-                pass
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to aggregate franchise invoices: %s", exc)
 
-        except Exception:
+        except (ImportError, ConnectionError, OSError) as exc:
+            logger.warning("Failed to build franchise dashboard for group %s: %s", franchise_group_id, exc)
             org_count = 0
             loc_count = 0
             total_revenue = Decimal("0")

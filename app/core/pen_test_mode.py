@@ -1,19 +1,9 @@
 """Penetration-test diagnostic mode.
 
-When the ``PEN_TEST_MODE`` environment variable is set to a truthy value
-(``"1"``, ``"true"``, ``"yes"``), this middleware injects diagnostic headers
-into every HTTP response:
+When ``PEN_TEST_MODE`` is set, injects diagnostic headers into responses.
+**Must NOT be enabled in production.**
 
-  • ``X-Debug-SQL-Queries``   — number of SQL queries executed
-  • ``X-Debug-Cache-Hits``    — Redis cache hit count
-  • ``X-Debug-Cache-Misses``  — Redis cache miss count
-  • ``X-Debug-Timing-Ms``     — total request processing time in ms
-
-These headers help penetration testers identify N+1 queries, cache
-inefficiencies, and slow endpoints without access to server logs.
-
-**This middleware MUST NOT be enabled in production.**  The ``is_enabled()``
-check rejects ``environment == "production"`` even if the env var is set.
+Implemented as pure ASGI middleware to avoid request body stream corruption.
 """
 
 from __future__ import annotations
@@ -21,9 +11,8 @@ from __future__ import annotations
 import os
 import time
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import settings
 
@@ -75,25 +64,38 @@ def record_cache_miss(request: Request) -> None:
         get_metrics(request).cache_misses += 1
 
 
-class PenTestMiddleware(BaseHTTPMiddleware):
-    """Inject diagnostic headers when ``PEN_TEST_MODE`` is enabled."""
+class PenTestMiddleware:
+    """Inject diagnostic headers when ``PEN_TEST_MODE`` is enabled.
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    Pure ASGI implementation — does not wrap the receive channel.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         if not is_enabled():
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
-        # Initialise metrics and start timer.
+        request = Request(scope)
         request.state._pen_test_metrics = _RequestMetrics()
         start = time.perf_counter()
 
-        response: Response = await call_next(request)
+        async def inject_debug_headers(message):
+            if message["type"] == "http.response.start":
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                metrics = get_metrics(request)
+                headers = list(message.get("headers", []))
+                headers.append((b"x-debug-sql-queries", str(metrics.sql_query_count).encode()))
+                headers.append((b"x-debug-cache-hits", str(metrics.cache_hits).encode()))
+                headers.append((b"x-debug-cache-misses", str(metrics.cache_misses).encode()))
+                headers.append((b"x-debug-timing-ms", f"{elapsed_ms:.1f}".encode()))
+                message["headers"] = headers
+            await send(message)
 
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        metrics = get_metrics(request)
-
-        response.headers["X-Debug-SQL-Queries"] = str(metrics.sql_query_count)
-        response.headers["X-Debug-Cache-Hits"] = str(metrics.cache_hits)
-        response.headers["X-Debug-Cache-Misses"] = str(metrics.cache_misses)
-        response.headers["X-Debug-Timing-Ms"] = f"{elapsed_ms:.1f}"
-
-        return response
+        await self.app(scope, receive, inject_debug_headers)

@@ -1,24 +1,15 @@
 """Security headers middleware.
 
-Adds the following headers to every response:
-  • Content-Security-Policy (CSP)
-  • Strict-Transport-Security (HSTS) — max-age=31536000; includeSubDomains
-  • X-Frame-Options: DENY
-  • X-Content-Type-Options: nosniff
-  • X-XSS-Protection: 1; mode=block
-  • Referrer-Policy: strict-origin-when-cross-origin
-  • Permissions-Policy (restrictive defaults)
+Adds security headers to every response and enforces CSRF protection.
 
-CSRF protection is enforced by requiring an ``X-CSRF-Token`` header on all
-state-changing requests (POST/PUT/PATCH/DELETE) that carry a session cookie.
-API clients using Bearer tokens are exempt because the token itself acts as
-a CSRF mitigation (it cannot be sent automatically by a browser form).
+Implemented as pure ASGI middleware to avoid request body stream corruption.
 """
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.config import settings
 from app.core.security import REQUIRED_SECURITY_HEADERS
 
 # Methods that mutate state.
@@ -31,17 +22,27 @@ _CSRF_EXEMPT_PATHS: set[str] = {
 }
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Inject security headers and enforce CSRF protection."""
+class SecurityHeadersMiddleware:
+    """Inject security headers and enforce CSRF protection.
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    Pure ASGI implementation — does not wrap the receive channel.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
+
         # --- CSRF protection ---
         if (
             request.method in _STATE_CHANGING_METHODS
             and request.url.path not in _CSRF_EXEMPT_PATHS
         ):
-            # If the request uses cookie-based auth (has session cookie but
-            # no Bearer token), require an X-CSRF-Token header.
             has_bearer = (
                 request.headers.get("authorization", "").startswith("Bearer ")
             )
@@ -49,19 +50,26 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             if has_session_cookie and not has_bearer:
                 csrf_token = request.headers.get("x-csrf-token")
                 if not csrf_token:
-                    return JSONResponse(
+                    response = JSONResponse(
                         status_code=403,
                         content={"detail": "Missing CSRF token"},
                     )
+                    await response(scope, receive, send)
+                    return
 
-        response: Response = await call_next(request)
+        is_api = request.url.path.startswith("/api")
+        is_dev = settings.environment == "development"
 
-        # --- Security headers (Requirement 52.3) ---
-        # Apply all required headers from the central security config.
-        for header_name, header_value in REQUIRED_SECURITY_HEADERS.items():
-            response.headers[header_name] = header_value
+        async def inject_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                for name, value in REQUIRED_SECURITY_HEADERS.items():
+                    headers.append((name.lower().encode(), value.encode()))
+                headers.append((b"x-xss-protection", b"1; mode=block"))
+                if is_api and is_dev:
+                    headers.append((b"cache-control", b"no-store, no-cache, must-revalidate, max-age=0"))
+                    headers.append((b"pragma", b"no-cache"))
+                message["headers"] = headers
+            await send(message)
 
-        # Additional hardening headers (beyond Req 52.3 minimum)
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-
-        return response
+        await self.app(scope, receive, inject_headers)

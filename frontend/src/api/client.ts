@@ -21,11 +21,21 @@ apiClient.interceptors.request.use((config) => {
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`
   }
+
+  // Fix v2 URL paths: calls using `/api/v2/...` would get double-prefixed
+  // as `/api/v1/api/v2/...` because baseURL is `/api/v1`.
+  // Strip the baseURL for absolute API paths so they resolve correctly.
+  const url = config.url ?? ''
+  if (url.startsWith('/api/')) {
+    config.baseURL = ''
+  }
+
   return config
 })
 
 async function refreshAccessToken(): Promise<string | null> {
   try {
+    // Refresh token is sent automatically via httpOnly cookie (withCredentials: true)
     const res = await axios.post<{ access_token: string }>(
       '/api/v1/auth/token/refresh',
       {},

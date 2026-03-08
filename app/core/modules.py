@@ -201,13 +201,19 @@ class ModuleService:
         for mod in registry_modules:
             is_core = mod.is_core
             is_enabled = is_core or mod.slug in enabled_slugs
+            deps = mod.dependencies or []
+            if isinstance(deps, str):
+                try:
+                    deps = json.loads(deps)
+                except (ValueError, TypeError):
+                    deps = []
             modules.append({
                 "slug": mod.slug,
                 "display_name": mod.display_name,
                 "description": mod.description,
                 "category": mod.category,
                 "is_core": is_core,
-                "dependencies": mod.dependencies or [],
+                "dependencies": deps if isinstance(deps, list) else [],
                 "status": mod.status,
                 "is_enabled": is_enabled,
             })

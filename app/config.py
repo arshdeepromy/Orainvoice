@@ -1,5 +1,6 @@
 """Application settings loaded from environment variables."""
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -48,6 +49,10 @@ class Settings(BaseSettings):
     smtp_from_email: str = "noreply@workshoppro.nz"
     smtp_from_name: str = "WorkshopPro NZ"
 
+    # --- Bounce webhook secrets ---
+    brevo_webhook_secret: str = ""
+    sendgrid_webhook_secret: str = ""
+
     # --- Twilio SMS ---
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
@@ -87,7 +92,22 @@ class Settings(BaseSettings):
     # --- CORS ---
     cors_origins: list[str] = ["http://localhost:5173"]
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+
+    @model_validator(mode="after")
+    def _validate_secrets_not_default(self) -> "Settings":
+        """Reject default placeholder secrets in production/staging."""
+        if self.environment in ("production", "staging"):
+            placeholder = "change-me-in-production"
+            if self.jwt_secret == placeholder:
+                raise ValueError(
+                    f"jwt_secret must not be the default placeholder in {self.environment}"
+                )
+            if self.encryption_master_key == placeholder:
+                raise ValueError(
+                    f"encryption_master_key must not be the default placeholder in {self.environment}"
+                )
+        return self
 
 
 settings = Settings()

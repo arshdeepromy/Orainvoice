@@ -33,10 +33,36 @@ class FeatureFlag(Base):
     )
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category: Mapped[str] = mapped_column(
+        String(50),
+        default="Core",
+        server_default="Core",
+        nullable=False,
+        index=True,
+    )
+    access_level: Mapped[str] = mapped_column(
+        String(50),
+        default="all_users",
+        server_default="all_users",
+        nullable=False,
+    )
+    dependencies: Mapped[list] = mapped_column(
+        JSONB,
+        default=list,
+        server_default="[]",
+        nullable=False,
+    )
     default_value: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, index=True,
+    )
     targeting_rules: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=True,
+    )
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id"),
         nullable=True,

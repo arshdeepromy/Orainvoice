@@ -1,4 +1,5 @@
 export function registerServiceWorker(): void {
+  if (import.meta.env.DEV) return
   if (!('serviceWorker' in navigator)) return
 
   window.addEventListener('load', () => {

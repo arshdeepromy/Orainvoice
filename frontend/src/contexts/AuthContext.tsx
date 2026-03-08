@@ -19,6 +19,29 @@ export interface AuthUser {
   org_id: string | null
 }
 
+/** Decode a JWT payload (no signature verification — the server is trusted). */
+function decodeJwtPayload(token: string): Record<string, unknown> {
+  try {
+    const base64 = token.split('.')[1]
+    const json = atob(base64.replace(/-/g, '+').replace(/_/g, '/'))
+    return JSON.parse(json)
+  } catch {
+    return {}
+  }
+}
+
+function userFromToken(token: string): AuthUser | null {
+  const payload = decodeJwtPayload(token)
+  if (!payload.user_id || !payload.email) return null
+  return {
+    id: payload.user_id as string,
+    email: payload.email as string,
+    name: (payload.email as string).split('@')[0],
+    role: (payload.role as UserRole) ?? 'salesperson',
+    org_id: (payload.org_id as string) ?? null,
+  }
+}
+
 interface LoginCredentials {
   email: string
   password: string
@@ -56,21 +79,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [mfaPending, setMfaPending] = useState(false)
   const [mfaSessionToken, setMfaSessionToken] = useState<string | null>(null)
 
-  // On mount, try to restore session via refresh token cookie
+  // On mount, try to restore session via refresh token
   useEffect(() => {
     let cancelled = false
     async function restore() {
       try {
+        // Attempt to restore session — refresh token is sent via httpOnly cookie
         const res = await apiClient.post<{
           access_token: string
-          user: AuthUser
-        }>('/auth/token/refresh')
+        }>('/auth/token/refresh', {})
         if (!cancelled) {
           setAccessToken(res.data.access_token)
-          setUser(res.data.user)
+          const decoded = userFromToken(res.data.access_token)
+          if (decoded) {
+            setUser(decoded)
+          }
         }
       } catch {
         // No valid session — stay logged out
+        setAccessToken(null)
       } finally {
         if (!cancelled) setIsLoading(false)
       }
@@ -84,18 +111,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const handleAuthResponse = useCallback(
     (data: {
       access_token?: string
+      refresh_token?: string
       user?: AuthUser
       mfa_required?: boolean
       mfa_session_token?: string
+      mfa_token?: string
+      mfa_methods?: string[]
     }) => {
-      if (data.mfa_required && data.mfa_session_token) {
+      if (data.mfa_required && (data.mfa_token || data.mfa_session_token)) {
         setMfaPending(true)
-        setMfaSessionToken(data.mfa_session_token)
+        setMfaSessionToken(data.mfa_token ?? data.mfa_session_token ?? null)
         return
       }
-      if (data.access_token && data.user) {
+      if (data.access_token) {
         setAccessToken(data.access_token)
-        setUser(data.user)
+        // Refresh token is now stored as httpOnly cookie by the server
+        // Extract user from JWT payload
+        const decoded = userFromToken(data.access_token)
+        if (decoded) {
+          setUser(decoded)
+        }
         setMfaPending(false)
         setMfaSessionToken(null)
       }
@@ -108,7 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const res = await apiClient.post('/auth/login', {
         email: creds.email,
         password: creds.password,
-        remember: creds.remember ?? false,
+        remember_me: creds.remember ?? false,
       })
       handleAuthResponse(res.data)
     },
@@ -147,7 +182,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const res = await apiClient.post('/auth/mfa/verify', {
         code,
         method,
-        mfa_session_token: mfaSessionToken,
+        mfa_token: mfaSessionToken,
       })
       handleAuthResponse(res.data)
     },

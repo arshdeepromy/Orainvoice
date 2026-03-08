@@ -466,6 +466,53 @@ async def get_carjam_usage(
 
 
 # ---------------------------------------------------------------------------
+# SMS Usage Report
+# ---------------------------------------------------------------------------
+
+async def get_sms_usage(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+) -> dict:
+    """SMS usage for the organisation.
+
+    Delegates to the admin service's get_org_sms_usage and adds reset_at.
+    Requirements: 7.1
+    """
+    from app.modules.admin.service import get_org_sms_usage
+
+    try:
+        usage = await get_org_sms_usage(db, org_id)
+    except ValueError:
+        return {
+            "total_sent": 0,
+            "included_in_plan": 0,
+            "package_credits_remaining": 0,
+            "effective_quota": 0,
+            "overage_count": 0,
+            "overage_charge_nzd": 0.0,
+            "per_sms_cost_nzd": 0.0,
+            "reset_at": None,
+        }
+
+    # Fetch reset_at from the organisation record
+    result = await db.execute(
+        select(Organisation.sms_sent_reset_at).where(Organisation.id == org_id)
+    )
+    reset_at = result.scalar()
+
+    return {
+        "total_sent": usage["total_sent"],
+        "included_in_plan": usage["included_in_plan"],
+        "package_credits_remaining": usage["package_credits_remaining"],
+        "effective_quota": usage["effective_quota"],
+        "overage_count": usage["overage_count"],
+        "overage_charge_nzd": usage["overage_charge_nzd"],
+        "per_sms_cost_nzd": usage["per_sms_cost_nzd"],
+        "reset_at": reset_at,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Storage Usage Report
 # ---------------------------------------------------------------------------
 

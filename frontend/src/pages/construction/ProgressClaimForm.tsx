@@ -1,12 +1,30 @@
+/**
+ * Standalone Progress Claim Form page with auto-calculated fields,
+ * real-time cumulative validation, and TerminologyContext integration.
+ *
+ * Validates: Requirements 3.3, 3.4, 3.5, 3.8
+ */
 import { useState } from 'react'
 import apiClient from '@/api/client'
+import { useTerm } from '@/contexts/TerminologyContext'
+import {
+  calculateProgressClaimFields,
+  validateCumulativeNotExceeded,
+} from '@/utils/progressClaimCalcs'
 
 interface ProgressClaimFormProps {
   projectId?: string
+  cumulativePreviousClaimed?: number
   onSaved?: () => void
 }
 
-export default function ProgressClaimForm({ projectId = '', onSaved }: ProgressClaimFormProps) {
+export default function ProgressClaimForm({
+  projectId = '',
+  cumulativePreviousClaimed = 0,
+  onSaved,
+}: ProgressClaimFormProps) {
+  const claimLabel = useTerm('progress_claim', 'Progress Claim')
+
   const [contractValue, setContractValue] = useState('')
   const [variations, setVariations] = useState('0')
   const [workToDate, setWorkToDate] = useState('')
@@ -23,14 +41,22 @@ export default function ProgressClaimForm({ projectId = '', onSaved }: ProgressC
   const m = Number(materials) || 0
   const r = Number(retention) || 0
 
-  const revisedContract = cv + v
-  const thisPeriod = wtd - wp
-  const amountDue = thisPeriod + m - r
-  const completionPct = revisedContract > 0
-    ? ((wtd / revisedContract) * 100).toFixed(2)
-    : '0.00'
+  const calc = calculateProgressClaimFields({
+    originalContractValue: cv,
+    approvedVariations: v,
+    workCompletedToDate: wtd,
+    workCompletedPrevious: wp,
+    materialsOnSite: m,
+    retentionWithheld: r,
+  })
 
-  const isOverContract = wtd > revisedContract && revisedContract > 0
+  const isOverContract = wtd > calc.revisedContractValue && calc.revisedContractValue > 0
+
+  const cumulativeError = validateCumulativeNotExceeded(
+    cumulativePreviousClaimed,
+    calc.amountDue,
+    calc.revisedContractValue,
+  )
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -38,6 +64,10 @@ export default function ProgressClaimForm({ projectId = '', onSaved }: ProgressC
 
     if (isOverContract) {
       setError('Work completed to date cannot exceed revised contract value')
+      return
+    }
+    if (cumulativeError) {
+      setError(cumulativeError)
       return
     }
 
@@ -63,45 +93,96 @@ export default function ProgressClaimForm({ projectId = '', onSaved }: ProgressC
   return (
     <form onSubmit={handleSubmit} aria-label="Progress claim form">
       {error && <div role="alert">{error}</div>}
+      {cumulativeError && !error && <div role="alert">{cumulativeError}</div>}
 
       <div>
         <label htmlFor="pcf-contract-value">Contract Value</label>
-        <input id="pcf-contract-value" type="number" step="0.01" value={contractValue} onChange={(e) => setContractValue(e.target.value)} required />
+        <input
+          id="pcf-contract-value"
+          type="number"
+          step="0.01"
+          inputMode="numeric"
+          value={contractValue}
+          onChange={(e) => setContractValue(e.target.value)}
+          required
+          style={{ minHeight: 44 }}
+        />
       </div>
       <div>
         <label htmlFor="pcf-variations">Variations to Date</label>
-        <input id="pcf-variations" type="number" step="0.01" value={variations} onChange={(e) => setVariations(e.target.value)} />
+        <input
+          id="pcf-variations"
+          type="number"
+          step="0.01"
+          inputMode="numeric"
+          value={variations}
+          onChange={(e) => setVariations(e.target.value)}
+          style={{ minHeight: 44 }}
+        />
       </div>
       <div>
         <label htmlFor="pcf-work-to-date">Work Completed to Date</label>
-        <input id="pcf-work-to-date" type="number" step="0.01" value={workToDate} onChange={(e) => setWorkToDate(e.target.value)} required />
+        <input
+          id="pcf-work-to-date"
+          type="number"
+          step="0.01"
+          inputMode="numeric"
+          value={workToDate}
+          onChange={(e) => setWorkToDate(e.target.value)}
+          required
+          style={{ minHeight: 44 }}
+        />
       </div>
       <div>
         <label htmlFor="pcf-work-previous">Work Completed Previous</label>
-        <input id="pcf-work-previous" type="number" step="0.01" value={workPrevious} onChange={(e) => setWorkPrevious(e.target.value)} />
+        <input
+          id="pcf-work-previous"
+          type="number"
+          step="0.01"
+          inputMode="numeric"
+          value={workPrevious}
+          onChange={(e) => setWorkPrevious(e.target.value)}
+          style={{ minHeight: 44 }}
+        />
       </div>
       <div>
         <label htmlFor="pcf-materials">Materials on Site</label>
-        <input id="pcf-materials" type="number" step="0.01" value={materials} onChange={(e) => setMaterials(e.target.value)} />
+        <input
+          id="pcf-materials"
+          type="number"
+          step="0.01"
+          inputMode="numeric"
+          value={materials}
+          onChange={(e) => setMaterials(e.target.value)}
+          style={{ minHeight: 44 }}
+        />
       </div>
       <div>
         <label htmlFor="pcf-retention">Retention Withheld</label>
-        <input id="pcf-retention" type="number" step="0.01" value={retention} onChange={(e) => setRetention(e.target.value)} />
+        <input
+          id="pcf-retention"
+          type="number"
+          step="0.01"
+          inputMode="numeric"
+          value={retention}
+          onChange={(e) => setRetention(e.target.value)}
+          style={{ minHeight: 44 }}
+        />
       </div>
 
-      <div aria-label="Calculated fields">
-        <p>Revised Contract: <span data-testid="revised-contract">${revisedContract.toLocaleString()}</span></p>
-        <p>This Period: <span data-testid="this-period">${thisPeriod.toLocaleString()}</span></p>
-        <p>Amount Due: <span data-testid="amount-due">${amountDue.toLocaleString()}</span></p>
-        <p>Completion: <span data-testid="completion-pct">{completionPct}%</span></p>
+      <div aria-label="Calculated fields" style={{ marginTop: 12, padding: 12, backgroundColor: '#f9fafb', borderRadius: 6 }}>
+        <p>Revised Contract: <span data-testid="revised-contract">${calc.revisedContractValue.toLocaleString()}</span></p>
+        <p>This Period: <span data-testid="this-period">${calc.workCompletedThisPeriod.toLocaleString()}</span></p>
+        <p>Amount Due: <span data-testid="amount-due">${calc.amountDue.toLocaleString()}</span></p>
+        <p>Completion: <span data-testid="completion-pct">{calc.completionPercentage.toFixed(2)}%</span></p>
       </div>
 
       {isOverContract && (
         <div role="alert">Work completed exceeds revised contract value</div>
       )}
 
-      <button type="submit" disabled={saving} aria-label="Save Claim">
-        {saving ? 'Saving…' : 'Save Claim'}
+      <button type="submit" disabled={saving || !!cumulativeError} aria-label="Save Claim" style={{ minWidth: 44, minHeight: 44 }}>
+        {saving ? 'Saving…' : `Save ${claimLabel}`}
       </button>
     </form>
   )

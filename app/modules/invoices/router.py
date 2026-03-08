@@ -686,7 +686,7 @@ async def duplicate_invoice_endpoint(
 @router.post(
     "/{invoice_id}/credit-note",
     response_model=CreditNoteCreateResponse,
-    dependencies=[Depends(require_role("org_admin", "salesperson"))],
+    dependencies=[require_role("org_admin", "salesperson")],
 )
 async def create_credit_note_endpoint(
     invoice_id: uuid.UUID,
@@ -752,7 +752,7 @@ async def create_credit_note_endpoint(
 @router.get(
     "/{invoice_id}/credit-notes",
     response_model=CreditNoteListResponse,
-    dependencies=[Depends(require_role("org_admin", "salesperson"))],
+    dependencies=[require_role("org_admin", "salesperson")],
 )
 async def list_credit_notes_endpoint(
     invoice_id: uuid.UUID,
@@ -811,7 +811,7 @@ from app.modules.invoices.service import (
     response_model=RecurringScheduleResponse,
     status_code=201,
     summary="Create a recurring invoice schedule",
-    dependencies=[Depends(require_role("org_admin", "salesperson"))],
+    dependencies=[require_role("org_admin", "salesperson")],
 )
 async def create_recurring_schedule_endpoint(
     payload: RecurringScheduleCreate,
@@ -852,7 +852,7 @@ async def create_recurring_schedule_endpoint(
     "/recurring",
     response_model=RecurringScheduleListResponse,
     summary="List recurring invoice schedules",
-    dependencies=[Depends(require_role("org_admin", "salesperson"))],
+    dependencies=[require_role("org_admin", "salesperson")],
 )
 async def list_recurring_schedules_endpoint(
     request: Request,
@@ -884,7 +884,7 @@ async def list_recurring_schedules_endpoint(
     "/recurring/{schedule_id}",
     response_model=RecurringScheduleResponse,
     summary="Update a recurring invoice schedule",
-    dependencies=[Depends(require_role("org_admin", "salesperson"))],
+    dependencies=[require_role("org_admin", "salesperson")],
 )
 async def update_recurring_schedule_endpoint(
     schedule_id: uuid.UUID,
@@ -930,7 +930,7 @@ async def update_recurring_schedule_endpoint(
     "/recurring/{schedule_id}/pause",
     response_model=RecurringScheduleResponse,
     summary="Pause a recurring invoice schedule",
-    dependencies=[Depends(require_role("org_admin", "salesperson"))],
+    dependencies=[require_role("org_admin", "salesperson")],
 )
 async def pause_recurring_schedule_endpoint(
     schedule_id: uuid.UUID,
@@ -966,7 +966,7 @@ async def pause_recurring_schedule_endpoint(
     "/recurring/{schedule_id}/cancel",
     response_model=RecurringScheduleResponse,
     summary="Cancel a recurring invoice schedule",
-    dependencies=[Depends(require_role("org_admin", "salesperson"))],
+    dependencies=[require_role("org_admin", "salesperson")],
 )
 async def cancel_recurring_schedule_endpoint(
     schedule_id: uuid.UUID,
@@ -1006,7 +1006,7 @@ async def cancel_recurring_schedule_endpoint(
 @router.post(
     "/export",
     summary="Bulk export invoices by date range",
-    dependencies=[Depends(require_role("org_admin"))],
+    dependencies=[require_role("org_admin")],
 )
 async def bulk_export_endpoint(
     payload: BulkExportRequest,
@@ -1089,7 +1089,7 @@ async def bulk_export_endpoint(
     "/bulk-delete",
     response_model=BulkDeleteResponse,
     summary="Permanently delete invoices (irrecoverable)",
-    dependencies=[Depends(require_role("org_admin"))],
+    dependencies=[require_role("org_admin")],
 )
 async def bulk_delete_endpoint(
     payload: BulkDeleteRequest,

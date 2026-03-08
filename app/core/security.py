@@ -87,9 +87,10 @@ class DatabaseSSLConfig:
         """
         ctx = ssl.create_default_context()
         ctx.minimum_version = ssl.TLSVersion.TLSv1_3
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE  # Use CERT_REQUIRED in production with proper CA
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
         return {"ssl": ctx}
+
 
     def to_engine_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments suitable for ``create_async_engine``."""

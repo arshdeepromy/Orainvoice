@@ -888,3 +888,61 @@ async def _mark_migration_failed(job_id: str, error: str) -> None:
                 ),
                 {"err": error, "jid": job_id},
             )
+
+# ---------------------------------------------------------------------------
+# Monthly SMS counter reset (Req 2.5) — safety net
+# ---------------------------------------------------------------------------
+
+
+async def _reset_sms_counters_async() -> dict:
+    """Reset ``sms_sent_this_month`` to 0 for all organisations.
+
+    This is a safety-net task that runs monthly to ensure SMS counters are
+    zeroed even if the overage billing task (which also resets counters)
+    was skipped or failed for some organisations.
+
+    Updates ``sms_sent_reset_at`` to the current timestamp.
+
+    Requirements: 2.5
+    """
+    from sqlalchemy import update
+
+    from app.core.database import async_session_factory
+    from app.modules.admin.models import Organisation
+
+    now = datetime.now(timezone.utc)
+    reset_count = 0
+    errors: list[str] = []
+
+    async with async_session_factory() as session:
+        async with session.begin():
+            try:
+                stmt = (
+                    update(Organisation)
+                    .values(sms_sent_this_month=0, sms_sent_reset_at=now)
+                )
+                result = await session.execute(stmt)
+                reset_count = result.rowcount
+            except Exception as exc:
+                errors.append(str(exc))
+                logger.error("Error resetting SMS counters: %s", exc)
+
+    return {"reset": reset_count, "errors": errors}
+
+
+@celery_app.task(name="app.tasks.scheduled.reset_sms_counters_task")
+def reset_sms_counters_task():
+    """Celery Beat task: monthly SMS counter reset for all organisations.
+
+    Runs on the 1st of each month at 00:05 NZST as a safety net to ensure
+    all organisation SMS counters are zeroed for the new billing period.
+
+    Requirements: 2.5
+    """
+    result = _run_async(_reset_sms_counters_async())
+    logger.info(
+        "SMS counter reset: %d orgs reset, %d errors",
+        result["reset"],
+        len(result["errors"]),
+    )
+    return result

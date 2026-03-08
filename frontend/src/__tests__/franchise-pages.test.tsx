@@ -1,9 +1,9 @@
-import { render, screen, within, waitFor } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 /**
- * Validates: Requirement 8 — Extended RBAC / Multi-Location, Task 43.15
+ * Validates: Requirements 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8
  */
 
 vi.mock('@/api/client', () => {
@@ -14,6 +14,31 @@ vi.mock('@/api/client', () => {
     default: { get: mockGet, post: mockPost, put: mockPut },
   }
 })
+
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({
+    isAuthenticated: true,
+    user: { id: 'u1', email: 'test@test.com', name: 'Test', role: 'org_admin', org_id: 'org-1', assigned_locations: [] },
+  }),
+}))
+
+const mockDismissToast = vi.fn()
+vi.mock('@/hooks/useModuleGuard', () => ({
+  useModuleGuard: () => ({
+    isAllowed: true,
+    isLoading: false,
+    toasts: [],
+    dismissToast: mockDismissToast,
+  }),
+}))
+
+vi.mock('@/contexts/FeatureFlagContext', () => ({
+  useFlag: () => true,
+}))
+
+vi.mock('@/contexts/TerminologyContext', () => ({
+  useTerm: (_key: string, fallback: string) => fallback,
+}))
 
 import apiClient from '@/api/client'
 import LocationList from '../pages/franchise/LocationList'
@@ -39,13 +64,13 @@ const mockTransfers = [
   {
     id: 'tf-1', org_id: 'org-1', from_location_id: 'loc-1',
     to_location_id: 'loc-2', product_id: 'prod-1', quantity: '10.000',
-    status: 'pending', requested_by: 'user-1', approved_by: null,
+    status: 'pending', notes: 'Urgent', requested_by: 'user-1', approved_by: null,
     created_at: '2025-01-15T10:00:00Z', completed_at: null,
   },
   {
     id: 'tf-2', org_id: 'org-1', from_location_id: 'loc-2',
     to_location_id: 'loc-1', product_id: 'prod-2', quantity: '5.000',
-    status: 'approved', requested_by: 'user-2', approved_by: 'user-1',
+    status: 'approved', notes: null, requested_by: 'user-2', approved_by: 'user-1',
     created_at: '2025-01-15T11:00:00Z', completed_at: null,
   },
 ]
@@ -78,10 +103,11 @@ describe('LocationList', () => {
       .mockResolvedValue({ data: mockLocations })
   }
 
-  it('shows loading spinner initially', () => {
+  it('shows loading spinner initially', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
-    render(<LocationList />)
+    const { unmount } = render(<LocationList />)
     expect(screen.getByRole('status', { name: 'Loading locations' })).toBeInTheDocument()
+    unmount()
   })
 
   it('displays locations in a table', async () => {
@@ -91,7 +117,7 @@ describe('LocationList', () => {
     const table = await screen.findByRole('grid', { name: 'Locations list' })
     const rows = within(table).getAllByRole('row')
     expect(rows).toHaveLength(3) // header + 2 locations
-    expect(screen.getByTestId('location-row-Main Branch')).toHaveTextContent('Main Branch')
+    expect(await screen.findByTestId('location-row-Main Branch')).toHaveTextContent('Main Branch')
     expect(screen.getByTestId('location-row-South Branch')).toHaveTextContent('South Branch')
   })
 
@@ -113,14 +139,59 @@ describe('LocationList', () => {
 
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Add location' }))
-    await user.type(screen.getByLabelText('Location Name'), 'North Branch')
-    await user.type(screen.getByLabelText('Address'), '789 North Rd')
-    await user.click(screen.getByRole('button', { name: 'Save location' }))
+    const form = await screen.findByRole('form', { name: 'Create location form' })
+    const nameInput = within(form).getByLabelText('Location Name')
+    const addressInput = within(form).getByLabelText('Address')
+    await user.type(nameInput, 'North Branch')
+    await user.type(addressInput, '789 North Rd')
+    await user.click(within(form).getByRole('button', { name: 'Save location' }))
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/v2/locations', expect.objectContaining({
       name: 'North Branch',
       address: '789 North Rd',
     }))
+  })
+
+  it('shows edit form when edit button clicked', async () => {
+    setupMocks()
+    render(<LocationList />)
+    await screen.findByRole('grid', { name: 'Locations list' })
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Edit Main Branch' }))
+    expect(screen.getByRole('form', { name: 'Edit location form' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Location Name')).toHaveValue('Main Branch')
+  })
+
+  it('submits edit location', async () => {
+    setupMocks()
+    ;(apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({ data: {} })
+    render(<LocationList />)
+    await screen.findByRole('grid', { name: 'Locations list' })
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Edit Main Branch' }))
+    const form = await screen.findByRole('form', { name: 'Edit location form' })
+    const nameInput = within(form).getByLabelText('Location Name')
+    await user.clear(nameInput)
+    await user.type(nameInput, 'Updated Branch')
+    await user.click(within(form).getByRole('button', { name: 'Update location' }))
+
+    expect(apiClient.put).toHaveBeenCalledWith('/api/v2/locations/loc-1', expect.objectContaining({
+      name: 'Updated Branch',
+    }))
+  })
+
+  it('calls deactivate API when deactivate clicked', async () => {
+    setupMocks()
+    ;(apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({ data: {} })
+    render(<LocationList />)
+    await screen.findByRole('grid', { name: 'Locations list' })
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Deactivate Main Branch' }))
+
+    expect(apiClient.put).toHaveBeenCalledWith('/api/v2/locations/loc-1', { is_active: false })
   })
 
   it('shows error when API fails', async () => {
@@ -145,13 +216,17 @@ describe('StockTransfers', () => {
 
   function setupMocks() {
     ;(apiClient.get as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({ data: mockTransfers })
+      .mockImplementation((url: string) => {
+        if (url.includes('/api/v2/locations')) return Promise.resolve({ data: mockLocations })
+        return Promise.resolve({ data: mockTransfers })
+      })
   }
 
-  it('shows loading spinner initially', () => {
+  it('shows loading spinner initially', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
-    render(<StockTransfers />)
+    const { unmount } = render(<StockTransfers />)
     expect(screen.getByRole('status', { name: 'Loading transfers' })).toBeInTheDocument()
+    unmount()
   })
 
   it('displays transfers in a table', async () => {
@@ -191,7 +266,7 @@ describe('StockTransfers', () => {
     expect(apiClient.put).toHaveBeenCalledWith('/api/v2/stock-transfers/tf-1/approve')
   })
 
-  it('shows request transfer form', async () => {
+  it('shows request transfer form with location dropdowns', async () => {
     setupMocks()
     render(<StockTransfers />)
     await screen.findByRole('grid', { name: 'Stock transfers list' })
@@ -199,6 +274,17 @@ describe('StockTransfers', () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Request transfer' }))
     expect(screen.getByRole('form', { name: 'Create transfer form' })).toBeInTheDocument()
+    // Should have location dropdowns since locations were loaded
+    expect(screen.getByLabelText('Source Location')).toBeInTheDocument()
+    expect(screen.getByLabelText('Destination Location')).toBeInTheDocument()
+  })
+
+  it('displays transfer notes and dates', async () => {
+    setupMocks()
+    render(<StockTransfers />)
+    await screen.findByRole('grid', { name: 'Stock transfers list' })
+
+    expect(screen.getByText('Urgent')).toBeInTheDocument()
   })
 
   it('shows error when API fails', async () => {
@@ -240,6 +326,30 @@ describe('FranchiseDashboard', () => {
     expect(screen.getByTestId('loc-metric-Main Branch')).toBeInTheDocument()
   })
 
+  it('displays per-location performance chart', async () => {
+    ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: mockHeadOffice })
+    render(<FranchiseDashboard />)
+
+    await screen.findByTestId('head-office-view')
+    expect(screen.getByTestId('performance-chart')).toBeInTheDocument()
+    expect(screen.getByTestId('chart-bar-Main Branch')).toBeInTheDocument()
+    expect(screen.getByTestId('chart-bar-South Branch')).toBeInTheDocument()
+  })
+
+  it('supports per-location filtering', async () => {
+    ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: mockHeadOffice })
+    render(<FranchiseDashboard />)
+
+    await screen.findByTestId('head-office-view')
+    const user = userEvent.setup()
+    const filter = screen.getByLabelText('Filter by Location')
+    await user.selectOptions(filter, 'loc-1')
+
+    // After filtering, only Main Branch should be visible in chart
+    expect(screen.getByTestId('chart-bar-Main Branch')).toBeInTheDocument()
+    expect(screen.queryByTestId('chart-bar-South Branch')).not.toBeInTheDocument()
+  })
+
   it('switches to franchise view', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>)
       .mockImplementation((url: string) => {
@@ -261,5 +371,42 @@ describe('FranchiseDashboard', () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Network error'))
     render(<FranchiseDashboard />)
     expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load head-office dashboard')
+  })
+})
+
+// -----------------------------------------------------------------------
+// filterByUserLocations utility
+// -----------------------------------------------------------------------
+
+import { filterByUserLocations } from '../utils/franchiseUtils'
+
+describe('filterByUserLocations', () => {
+  const data = [
+    { id: '1', location_id: 'loc-1', name: 'Item A' },
+    { id: '2', location_id: 'loc-2', name: 'Item B' },
+    { id: '3', location_id: 'loc-3', name: 'Item C' },
+  ]
+
+  it('returns all data for org_admin role', () => {
+    const result = filterByUserLocations(data, ['loc-1'], 'org_admin')
+    expect(result).toHaveLength(3)
+  })
+
+  it('filters data for location_manager role', () => {
+    const result = filterByUserLocations(data, ['loc-1', 'loc-3'], 'location_manager')
+    expect(result).toHaveLength(2)
+    expect(result.map((d) => d.location_id)).toEqual(['loc-1', 'loc-3'])
+  })
+
+  it('returns empty for location_manager with no assigned locations', () => {
+    const result = filterByUserLocations(data, [], 'location_manager')
+    expect(result).toHaveLength(0)
+  })
+
+  it('supports custom location key', () => {
+    const items = [{ id: '1', loc: 'loc-1' }, { id: '2', loc: 'loc-2' }]
+    const result = filterByUserLocations(items, ['loc-1'], 'location_manager', 'loc')
+    expect(result).toHaveLength(1)
+    expect(result[0].id).toBe('1')
   })
 })

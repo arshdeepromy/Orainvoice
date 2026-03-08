@@ -113,7 +113,7 @@ export default function LocationDetail({ locationId }: Props) {
           </div>
           <div>
             <label htmlFor="edit-phone">Phone</label>
-            <input id="edit-phone" type="text" value={form.phone}
+            <input id="edit-phone" type="tel" value={form.phone}
               onChange={(e) => setForm({ ...form, phone: e.target.value })} />
           </div>
           <div>

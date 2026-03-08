@@ -33,6 +33,21 @@ export function useFlag(flagKey: string): boolean {
   return ctx.flags[flagKey] ?? false
 }
 
+export function FeatureGate({
+  flagKey,
+  fallback,
+  children,
+}: {
+  flagKey: string
+  fallback?: ReactNode
+  children: ReactNode
+}): ReactNode {
+  const { flags, isLoading } = useFeatureFlags()
+  if (isLoading) return null
+  if (flags[flagKey]) return children
+  return fallback ?? null
+}
+
 export function FeatureFlagProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, user } = useAuth()
   const [flags, setFlags] = useState<FlagMap>({})
@@ -43,7 +58,7 @@ export function FeatureFlagProvider({ children }: { children: ReactNode }) {
     setIsLoading(true)
     setError(null)
     try {
-      const res = await apiClient.get<FlagMap>('/v2/flags')
+      const res = await apiClient.get<FlagMap>('/api/v2/flags')
       setFlags(res.data)
     } catch {
       setError('Failed to load feature flags')

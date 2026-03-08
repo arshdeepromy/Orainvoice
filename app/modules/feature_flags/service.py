@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
-from app.core.feature_flags import OrgContext, evaluate_flag
+from app.core.feature_flags import OrgContext, evaluate_flag, evaluate_flags_bulk
 from app.core.redis import redis_pool
 from app.modules.feature_flags.models import FeatureFlag
 from app.modules.feature_flags.schemas import (
@@ -72,6 +72,9 @@ class FeatureFlagCRUDService:
             key=payload.key,
             display_name=payload.display_name,
             description=payload.description,
+            category=payload.category,
+            access_level=payload.access_level,
+            dependencies=payload.dependencies,
             default_value=payload.default_value,
             is_active=payload.is_active,
             targeting_rules=[r.model_dump() for r in payload.targeting_rules],
@@ -119,6 +122,9 @@ class FeatureFlagCRUDService:
 
         for attr, value in updates.items():
             setattr(flag, attr, value)
+
+        if updated_by:
+            flag.updated_by = uuid.UUID(updated_by)
 
         await self.db.flush()
 
@@ -183,8 +189,8 @@ class FeatureFlagCRUDService:
             cached = await redis_pool.get(cache_key)
             if cached is not None:
                 return cached == "1"
-        except Exception:
-            logger.warning("Redis read failed for flag %s, falling back to DB", flag_key)
+        except (ConnectionError, TimeoutError, OSError) as exc:
+            logger.warning("Redis read failed for flag %s, falling back to DB: %s", flag_key, exc)
 
         # 2. Load from DB
         try:
@@ -192,8 +198,8 @@ class FeatureFlagCRUDService:
                 select(FeatureFlag).where(FeatureFlag.key == flag_key)
             )
             flag = result.scalar_one_or_none()
-        except Exception:
-            logger.warning("DB read failed for flag %s, returning False", flag_key)
+        except (ConnectionError, OSError) as exc:
+            logger.warning("DB read failed for flag %s, returning False: %s", flag_key, exc)
             return False
 
         if not flag:
@@ -210,13 +216,17 @@ class FeatureFlagCRUDService:
         # 4. Cache result
         try:
             await redis_pool.setex(cache_key, CACHE_TTL_SECONDS, "1" if value else "0")
-        except Exception:
-            logger.warning("Redis write failed for flag %s", flag_key)
+        except (ConnectionError, TimeoutError, OSError) as exc:
+            logger.warning("Redis write failed for flag %s: %s", flag_key, exc)
 
         return value
 
     async def evaluate_all_for_org(self, org_id: str) -> list[OrgFlagEvaluation]:
-        """Evaluate all active flags for an org, building context from DB."""
+        """Evaluate all active flags for an org, building context from DB.
+
+        Uses ``evaluate_flags_bulk`` from the core evaluation engine to ensure
+        consistency with the middleware, which also delegates to ``evaluate_flag``.
+        """
         # Build org context — fetch org details
         org_context = await self._build_org_context(org_id)
 
@@ -225,21 +235,27 @@ class FeatureFlagCRUDService:
                 select(FeatureFlag).where(FeatureFlag.is_active == True)  # noqa: E712
             )
             flags = result.scalars().all()
-        except Exception:
-            logger.warning("DB read failed when listing flags for org %s", org_id)
+        except (ConnectionError, OSError) as exc:
+            logger.warning("DB read failed when listing flags for org %s: %s", org_id, exc)
             return []
 
-        evaluations = []
-        for flag in flags:
-            value = evaluate_flag(
-                is_active=flag.is_active,
-                default_value=flag.default_value,
-                targeting_rules=flag.targeting_rules or [],
-                org_context=org_context,
-            )
-            evaluations.append(OrgFlagEvaluation(key=flag.key, enabled=value))
+        # Convert ORM objects to dicts for the pure bulk evaluation function
+        flag_dicts = [
+            {
+                "key": flag.key,
+                "is_active": flag.is_active,
+                "default_value": flag.default_value,
+                "targeting_rules": flag.targeting_rules or [],
+            }
+            for flag in flags
+        ]
 
-        return evaluations
+        bulk_results = evaluate_flags_bulk(flags=flag_dicts, org_context=org_context)
+
+        return [
+            OrgFlagEvaluation(key=key, enabled=value)
+            for key, value in bulk_results.items()
+        ]
 
     # ------------------------------------------------------------------
     # Helpers
@@ -258,7 +274,8 @@ class FeatureFlagCRUDService:
                 {"org_id": org_id},
             )
             row = result.first()
-        except Exception:
+        except (ConnectionError, OSError) as exc:
+            logger.warning("Failed to build org context for %s: %s", org_id, exc)
             return OrgContext(org_id=org_id)
 
         if not row:
@@ -282,8 +299,8 @@ class FeatureFlagCRUDService:
                 if cat_row:
                     trade_cat_slug = cat_row.cat_slug
                     trade_fam_slug = cat_row.fam_slug
-            except Exception:
-                pass
+            except (ConnectionError, OSError) as exc:
+                logger.warning("Failed to resolve trade category for org %s: %s", org_id, exc)
 
         return OrgContext(
             org_id=org_id,
@@ -293,8 +310,14 @@ class FeatureFlagCRUDService:
         )
 
     async def _invalidate_cache(self, flag_key: str) -> None:
-        """Delete all cached evaluations for a flag (wildcard pattern)."""
+        """Delete all cached evaluations for a flag and all middleware per-org caches.
+
+        Invalidates two cache layers:
+        1. Per-flag evaluation cache: ``flag:{flag_key}:*`` keys
+        2. Middleware per-org cache: ``ff:*`` keys (ensures propagation within 5s)
+        """
         try:
+            # 1. Invalidate per-flag evaluation cache (flag:{key}:*)
             pattern = f"{CACHE_KEY_PREFIX}{flag_key}:*"
             cursor = 0
             while True:
@@ -303,8 +326,24 @@ class FeatureFlagCRUDService:
                     await redis_pool.delete(*keys)
                 if cursor == 0:
                     break
-        except Exception:
-            logger.warning("Redis cache invalidation failed for flag %s", flag_key)
+        except (ConnectionError, TimeoutError, OSError) as exc:
+            logger.warning("Redis cache invalidation failed for flag %s: %s", flag_key, exc)
+
+        try:
+            # 2. Invalidate middleware per-org cache (ff:*)
+            from app.middleware.feature_flags import _CACHE_KEY_PREFIX as MW_CACHE_PREFIX
+
+            mw_pattern = f"{MW_CACHE_PREFIX}*"
+            cursor = 0
+            while True:
+                cursor, keys = await redis_pool.scan(cursor, match=mw_pattern, count=100)
+                if keys:
+                    await redis_pool.delete(*keys)
+                if cursor == 0:
+                    break
+        except (ConnectionError, TimeoutError, OSError) as exc:
+            logger.warning("Redis middleware cache invalidation failed for flag %s: %s", flag_key, exc)
+
 
     @staticmethod
     def _to_response(flag: FeatureFlag) -> FeatureFlagResponse:
@@ -315,10 +354,14 @@ class FeatureFlagCRUDService:
             key=flag.key,
             display_name=flag.display_name,
             description=flag.description,
+            category=flag.category,
+            access_level=flag.access_level,
+            dependencies=flag.dependencies or [],
             default_value=flag.default_value,
             is_active=flag.is_active,
             targeting_rules=[TargetingRule(**r) for r in rules],
             created_by=flag.created_by,
+            updated_by=flag.updated_by,
             created_at=flag.created_at,
             updated_at=flag.updated_at,
         )

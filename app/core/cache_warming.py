@@ -20,6 +20,7 @@ import logging
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.database import async_session_factory
 from app.core.redis import redis_pool
 
@@ -31,7 +32,8 @@ MODULE_REGISTRY_KEY = "cache:module_registry:all"
 COMPLIANCE_PROFILES_KEY = "cache:compliance_profiles:all"
 FEATURE_FLAGS_KEY = "cache:feature_flags:all"
 
-CACHE_TTL = 300  # 5 minutes
+# Short TTL in development so changes are picked up quickly
+CACHE_TTL = 10 if settings.environment == "development" else 300
 
 
 async def warm_trade_categories(session: AsyncSession) -> int:

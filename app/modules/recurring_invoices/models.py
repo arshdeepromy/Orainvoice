@@ -30,6 +30,7 @@ class RecurringSchedule(Base):
             "status IN ('active', 'paused', 'completed', 'cancelled')",
             name="ck_recurring_schedules_status",
         ),
+        {"extend_existing": True},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

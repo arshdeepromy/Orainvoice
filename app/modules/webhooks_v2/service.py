@@ -191,7 +191,7 @@ class WebhookService:
                 log.status = "failed"
                 log.error_details = resp.text[:500] if resp.text else None
                 webhook.consecutive_failures += 1
-        except Exception as exc:
+        except (ConnectionError, TimeoutError, OSError) as exc:
             elapsed_ms = int((time.monotonic() - start) * 1000)
             log.response_time_ms = elapsed_ms
             log.status = "failed"

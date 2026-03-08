@@ -157,12 +157,12 @@ export default function StaffDetail({ staffId }: Props) {
           </div>
           <div>
             <label htmlFor="staff-hourly-rate">Hourly Rate</label>
-            <input id="staff-hourly-rate" type="number" step="0.01" value={hourlyRate}
+            <input id="staff-hourly-rate" type="number" step="0.01" inputMode="numeric" value={hourlyRate}
               onChange={e => setHourlyRate(e.target.value)} />
           </div>
           <div>
             <label htmlFor="staff-overtime-rate">Overtime Rate</label>
-            <input id="staff-overtime-rate" type="number" step="0.01" value={overtimeRate}
+            <input id="staff-overtime-rate" type="number" step="0.01" inputMode="numeric" value={overtimeRate}
               onChange={e => setOvertimeRate(e.target.value)} />
           </div>
           <div>

@@ -85,15 +85,7 @@ class Booking(Base):
             "status IN ('scheduled','confirmed','completed','cancelled','no_show')",
             name="ck_bookings_status",
         ),
+        {"extend_existing": True},
     )
 
-    # Relationships
-    organisation = relationship("Organisation", backref="bookings")
-    customer = relationship("Customer", backref="bookings")
-    branch = relationship("Branch", backref="bookings")
-    assigned_to_user = relationship(
-        "User", foreign_keys=[assigned_to], backref="assigned_bookings"
-    )
-    created_by_user = relationship(
-        "User", foreign_keys=[created_by], backref="created_bookings"
-    )
+    # Relationships removed — V2 model is authoritative for this table

@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 /**
- * Validates: Requirement 24 — Tipping Module — Task 33.10
+ * Validates: Requirements 15.1, 15.2, 15.3, 15.4, 15.5, 15.6
  */
 
 /* ------------------------------------------------------------------ */
@@ -13,13 +13,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/api/client', () => {
   const mockGet = vi.fn()
   const mockPost = vi.fn()
+  const mockPut = vi.fn()
   return {
-    default: { get: mockGet, post: mockPost },
+    default: { get: mockGet, post: mockPost, put: mockPut },
   }
 })
 
-import apiClient from '@/api/client'
-import TipPrompt from '../pages/pos/TipPrompt'
+vi.mock('@/contexts/TerminologyContext', () => ({
+  useTerm: (_key: string, fallback: string) => fallback,
+  useTerminology: () => ({ terms: {}, isLoading: false, error: null, refetch: vi.fn() }),
+}))
+
+vi.mock('@/contexts/FeatureFlagContext', () => ({
+  useFlag: () => true,
+  useFeatureFlags: () => ({ flags: {}, isLoading: false, error: null, refetch: vi.fn() }),
+  FeatureGate: ({ children }: { children: React.ReactNode }) => children,
+}))
+
+import TipPrompt, { TipTransactionSummary } from '../pages/pos/TipPrompt'
+import { distributeTips } from '../utils/tippingCalcs'
 
 /* ------------------------------------------------------------------ */
 /*  Setup                                                              */
@@ -59,11 +71,8 @@ describe('TipPrompt', () => {
 
   it('shows calculated tip amount for preset percentages', () => {
     render(<TipPrompt {...defaultProps} />)
-    // 10% of $100 = $10.00
     expect(screen.getByTestId('tip-preset-10')).toHaveTextContent('$10.00')
-    // 15% of $100 = $15.00
     expect(screen.getByTestId('tip-preset-15')).toHaveTextContent('$15.00')
-    // 20% of $100 = $20.00
     expect(screen.getByTestId('tip-preset-20')).toHaveTextContent('$20.00')
   })
 
@@ -121,5 +130,96 @@ describe('TipPrompt', () => {
     await user.click(screen.getByTestId('tip-preset-15'))
     // 15% of 47.83 = 7.1745 → rounded to 7.17
     expect(screen.getByTestId('tip-amount')).toHaveTextContent('$7.17')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  TipTransactionSummary tests (Req 15.5)                            */
+/* ------------------------------------------------------------------ */
+
+describe('TipTransactionSummary', () => {
+  it('renders tip info when tip amount is positive', () => {
+    render(
+      <TipTransactionSummary
+        tipInfo={{ tip_amount: 15, payment_method: 'card', staff_allocations: [] }}
+      />,
+    )
+    expect(screen.getByTestId('tip-transaction-summary')).toBeInTheDocument()
+    expect(screen.getByTestId('tip-summary-amount')).toHaveTextContent('$15.00')
+  })
+
+  it('renders nothing when tipInfo is null', () => {
+    const { container } = render(<TipTransactionSummary tipInfo={null} />)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('renders nothing when tip amount is zero', () => {
+    const { container } = render(
+      <TipTransactionSummary
+        tipInfo={{ tip_amount: 0, payment_method: 'card', staff_allocations: [] }}
+      />,
+    )
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('shows staff allocations when present', () => {
+    render(
+      <TipTransactionSummary
+        tipInfo={{
+          tip_amount: 20,
+          payment_method: 'cash',
+          staff_allocations: [
+            { name: 'Alice', amount: 10 },
+            { name: 'Bob', amount: 10 },
+          ],
+        }}
+      />,
+    )
+    expect(screen.getByText(/Alice: \$10\.00/)).toBeInTheDocument()
+    expect(screen.getByText(/Bob: \$10\.00/)).toBeInTheDocument()
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  distributeTips utility tests                                       */
+/* ------------------------------------------------------------------ */
+
+describe('distributeTips', () => {
+  it('distributes equally when shares are equal', () => {
+    const result = distributeTips(30, [
+      { id: 'a', share: 1 },
+      { id: 'b', share: 1 },
+      { id: 'c', share: 1 },
+    ])
+    expect(result).toHaveLength(3)
+    expect(result.every((r) => r.amount === 10)).toBe(true)
+    expect(result.reduce((s, r) => s + r.amount, 0)).toBe(30)
+  })
+
+  it('distributes proportionally by share', () => {
+    const result = distributeTips(100, [
+      { id: 'a', share: 60 },
+      { id: 'b', share: 40 },
+    ])
+    expect(result.find((r) => r.id === 'a')?.amount).toBe(60)
+    expect(result.find((r) => r.id === 'b')?.amount).toBe(40)
+  })
+
+  it('handles rounding correctly — total always equals input', () => {
+    const result = distributeTips(10, [
+      { id: 'a', share: 1 },
+      { id: 'b', share: 1 },
+      { id: 'c', share: 1 },
+    ])
+    const total = result.reduce((s, r) => s + r.amount, 0)
+    expect(Math.round(total * 100) / 100).toBe(10)
+  })
+
+  it('returns empty array for zero total', () => {
+    expect(distributeTips(0, [{ id: 'a', share: 1 }])).toEqual([])
+  })
+
+  it('returns empty array for empty staff', () => {
+    expect(distributeTips(100, [])).toEqual([])
   })
 })

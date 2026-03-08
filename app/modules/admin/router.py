@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.modules.admin.schemas import (
     AdminCarjamUsageResponse,
+    AdminSmsUsageResponse,
     CarjamConfigRequest,
     CarjamConfigResponse,
     CarjamCostReportResponse,
@@ -23,6 +24,7 @@ from app.modules.admin.schemas import (
     MrrMonthTrend,
     MrrReportResponse,
     OrgCarjamUsageRow,
+    OrgSmsUsageRow,
     OrgDeleteRequest,
     OrgDeleteRequestResponse,
     OrgDeleteResponse,
@@ -56,6 +58,7 @@ from app.modules.admin.service import (
     create_plan,
     delete_organisation,
     get_all_orgs_carjam_usage,
+    get_all_orgs_sms_usage,
     get_carjam_cost_report,
     get_churn_report,
     get_integration_config,
@@ -347,6 +350,39 @@ async def get_carjam_usage(
     )
 
 
+# ---------------------------------------------------------------------------
+# SMS usage reporting (Req 7.4)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/sms-usage",
+    response_model=AdminSmsUsageResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+    summary="SMS usage table for all organisations",
+    dependencies=[require_role("global_admin")],
+)
+async def get_sms_usage(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return real-time SMS usage per organisation.
+
+    Shows total SMS sent this month, included in plan, package credits,
+    effective quota, overage count, and overage charge accrued for every
+    non-deleted organisation.
+
+    Only Global_Admin users can access this endpoint.
+    Requirement 7.4.
+    """
+    usage_list, _cost = await get_all_orgs_sms_usage(db)
+
+    return AdminSmsUsageResponse(
+        organisations=[OrgSmsUsageRow(**row) for row in usage_list],
+    )
+
 
 # ---------------------------------------------------------------------------
 # SMTP / Email integration configuration (Req 33.1, 33.2, 33.3)
@@ -541,6 +577,50 @@ async def test_twilio_sms(
 
 
 # ---------------------------------------------------------------------------
+# Module Registry (admin view — no org context required)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/modules/registry",
+    summary="List all modules from the global registry",
+    dependencies=[require_role("global_admin")],
+)
+async def list_module_registry(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return every module in the global registry.
+
+    Unlike the org-scoped ``/modules`` endpoint this does NOT require
+    organisation context and returns the full catalogue so the admin
+    can assign modules to subscription plans.
+    """
+    from app.modules.module_management.models import ModuleRegistry
+    from sqlalchemy import select as sa_select
+
+    result = await db.execute(sa_select(ModuleRegistry).order_by(ModuleRegistry.category, ModuleRegistry.display_name))
+    rows = result.scalars().all()
+    modules = []
+    for r in rows:
+        deps = r.dependencies or []
+        if isinstance(deps, str):
+            import json as _json
+            try:
+                deps = _json.loads(deps)
+            except (ValueError, TypeError):
+                deps = []
+        modules.append({
+            "slug": r.slug,
+            "display_name": r.display_name,
+            "description": r.description,
+            "category": r.category,
+            "is_core": r.is_core,
+            "dependencies": deps if isinstance(deps, list) else [],
+        })
+    return {"modules": modules, "total": len(modules)}
+
+
+# ---------------------------------------------------------------------------
 # Subscription Plan Management (Req 40.1, 40.2, 40.3, 40.4)
 # ---------------------------------------------------------------------------
 
@@ -607,6 +687,12 @@ async def create_subscription_plan(
             enabled_modules=payload.enabled_modules,
             is_public=payload.is_public,
             storage_tier_pricing=[t.model_dump() for t in payload.storage_tier_pricing],
+            trial_duration=payload.trial_duration,
+            trial_duration_unit=payload.trial_duration_unit,
+            sms_included=payload.sms_included,
+            per_sms_cost_nzd=payload.per_sms_cost_nzd,
+            sms_included_quota=payload.sms_included_quota,
+            sms_package_pricing=[t.model_dump() for t in payload.sms_package_pricing] if payload.sms_package_pricing else [],
             created_by=uuid.UUID(user_id) if user_id else None,
             ip_address=ip_address,
         )
@@ -652,6 +738,11 @@ async def update_subscription_plan(
         updates["storage_tier_pricing"] = [
             t.model_dump() if hasattr(t, "model_dump") else t
             for t in updates["storage_tier_pricing"]
+        ]
+    if "sms_package_pricing" in updates:
+        updates["sms_package_pricing"] = [
+            t.model_dump() if hasattr(t, "model_dump") else t
+            for t in updates["sms_package_pricing"]
         ]
 
     try:
@@ -823,6 +914,51 @@ async def get_churn(
 
 
 @router.get(
+    "/reports/billing-issues",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+    summary="Billing issues report",
+    dependencies=[require_role("global_admin")],
+)
+async def get_billing_issues(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return organisations with billing issues (overdue, failed payments, etc.).
+
+    Used by the Global Admin dashboard.
+    """
+    from sqlalchemy import text as sa_text
+
+    try:
+        result = await db.execute(
+            sa_text(
+                """
+                SELECT o.id, o.name, o.status, o.updated_at
+                FROM organisations o
+                WHERE o.status IN ('grace_period', 'suspended')
+                ORDER BY o.updated_at DESC
+                LIMIT 50
+                """
+            )
+        )
+        rows = result.all()
+        issues = []
+        for row in rows:
+            issues.append({
+                "id": str(row[0]),
+                "org_name": row[1],
+                "issue_type": "grace_period" if row[2] == "grace_period" else "suspended",
+                "amount": 0,
+                "created_at": row[3].isoformat() if row[3] else None,
+            })
+        return issues
+    except Exception:
+        return []
+
+
+@router.get(
     "/vehicle-db/stats",
     response_model=VehicleDbStatsResponse,
     responses={
@@ -848,6 +984,34 @@ async def get_vehicle_db_statistics(
 # ---------------------------------------------------------------------------
 # Generic integration config GET endpoint (Req 48.1)
 # ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/integrations",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+    summary="List all integration statuses",
+    dependencies=[require_role("global_admin")],
+)
+async def list_integrations(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return health status for all known integrations.
+
+    Used by the Global Admin dashboard to show integration health at a glance.
+    """
+    integration_names = ("carjam", "stripe", "smtp", "twilio")
+    results = []
+    for name in integration_names:
+        config = await get_integration_config(db, name=name)
+        results.append({
+            "name": name,
+            "status": "healthy" if config and config.get("is_verified") else "down",
+            "last_checked": config.get("updated_at") if config else None,
+        })
+    return results
 
 
 @router.get(
@@ -1344,6 +1508,7 @@ async def update_settings(
         terms_and_conditions=payload.terms_and_conditions,
         announcement_banner=payload.announcement_banner,
         announcement_active=payload.announcement_active,
+        storage_pricing=payload.storage_pricing.model_dump() if payload.storage_pricing else None,
         actor_user_id=actor_user_id,
         ip_address=ip_address,
     )
@@ -1449,6 +1614,100 @@ async def delete_stale_vehicles_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# User Management — Global Admin (ISSUE-011)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/users",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+    summary="List all users across organisations",
+    dependencies=[require_role("global_admin")],
+)
+async def list_users(
+    search: str | None = None,
+    role: str | None = None,
+    org_id: str | None = None,
+    is_active: bool | None = None,
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
+    page: int = 1,
+    page_size: int = 25,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List all users across all organisations with filtering and pagination.
+
+    Only Global_Admin users can access this endpoint.
+    """
+    from app.modules.admin.service import list_all_users
+
+    org_uuid = None
+    if org_id:
+        try:
+            org_uuid = uuid.UUID(org_id)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
+
+    data = await list_all_users(
+        db,
+        search=search,
+        role=role,
+        org_id=org_uuid,
+        is_active=is_active,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        page=page,
+        page_size=page_size,
+    )
+    return data
+
+
+@router.put(
+    "/users/{user_id}/status",
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "User not found"},
+    },
+    summary="Activate or deactivate a user",
+    dependencies=[require_role("global_admin")],
+)
+async def update_user_status(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Toggle a user's is_active status. Only Global_Admin."""
+    from app.modules.admin.service import toggle_user_active
+
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid user_id format"})
+
+    actor_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    try:
+        result = await toggle_user_active(
+            db, uid,
+            toggled_by=uuid.UUID(actor_id) if actor_id else None,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "not found" in msg.lower():
+            return JSONResponse(status_code=404, content={"detail": msg})
+        return JSONResponse(status_code=400, content={"detail": msg})
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Audit log viewing — Global Admin (Req 51.1, 51.2, 51.4)
 # ---------------------------------------------------------------------------
 
@@ -1500,3 +1759,97 @@ async def get_global_audit_log(
         page=result["page"],
         page_size=result["page_size"],
     )
+
+# ---------------------------------------------------------------------------
+# User Management — Global Admin (ISSUE-011)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/users",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+    summary="List all users across organisations",
+    dependencies=[require_role("global_admin")],
+)
+async def list_users(
+    search: str | None = None,
+    role: str | None = None,
+    org_id: str | None = None,
+    is_active: bool | None = None,
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
+    page: int = 1,
+    page_size: int = 25,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List all users across all organisations with filtering and pagination.
+
+    Only Global_Admin users can access this endpoint.
+    """
+    from app.modules.admin.service import list_all_users
+
+    org_uuid = None
+    if org_id:
+        try:
+            org_uuid = uuid.UUID(org_id)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
+
+    data = await list_all_users(
+        db,
+        search=search,
+        role=role,
+        org_id=org_uuid,
+        is_active=is_active,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        page=page,
+        page_size=page_size,
+    )
+    return data
+
+
+@router.put(
+    "/users/{user_id}/status",
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "User not found"},
+    },
+    summary="Activate or deactivate a user",
+    dependencies=[require_role("global_admin")],
+)
+async def update_user_status(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Toggle a user's is_active status. Only Global_Admin."""
+    from app.modules.admin.service import toggle_user_active
+
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid user_id format"})
+
+    actor_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    try:
+        result = await toggle_user_active(
+            db, uid,
+            toggled_by=uuid.UUID(actor_id) if actor_id else None,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "not found" in msg.lower():
+            return JSONResponse(status_code=404, content={"detail": msg})
+        return JSONResponse(status_code=400, content={"detail": msg})
+
+    return result
+

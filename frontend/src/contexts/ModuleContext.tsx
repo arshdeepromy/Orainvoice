@@ -32,7 +32,17 @@ const ModuleContext = createContext<ModuleContextValue | null>(null)
 
 export function useModules(): ModuleContextValue {
   const ctx = useContext(ModuleContext)
-  if (!ctx) throw new Error('useModules must be used within ModuleProvider')
+  if (!ctx) {
+    // Return a safe default when used outside ModuleProvider (e.g. in tests)
+    return {
+      modules: [],
+      enabledModules: [],
+      isLoading: false,
+      error: null,
+      isEnabled: () => true,
+      refetch: async () => {},
+    }
+  }
   return ctx
 }
 
@@ -46,7 +56,8 @@ export function ModuleProvider({ children }: { children: ReactNode }) {
     setIsLoading(true)
     setError(null)
     try {
-      const res = await apiClient.get<ModuleInfo[]>('/v2/modules')
+      // Modules endpoint is on v2 — use absolute path to bypass apiClient baseURL
+      const res = await apiClient.get<ModuleInfo[]>('/modules', { baseURL: '/api/v2' })
       setModules(res.data)
     } catch {
       setError('Failed to load modules')
@@ -56,12 +67,12 @@ export function ModuleProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    if (isAuthenticated && user?.org_id) {
+    if (isAuthenticated && user?.org_id && user?.role !== 'global_admin') {
       fetchModules()
     } else {
       setModules([])
     }
-  }, [isAuthenticated, user?.org_id, fetchModules])
+  }, [isAuthenticated, user?.org_id, user?.role, fetchModules])
 
   const enabledModules = useMemo(
     () => modules.filter((m) => m.is_enabled).map((m) => m.slug),

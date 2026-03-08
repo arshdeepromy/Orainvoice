@@ -1,30 +1,23 @@
 """API version deprecation middleware.
 
-Adds ``Deprecation`` and ``Link`` headers to every ``/api/v1/`` response so
-that consumers are informed about the upcoming sunset and can discover the
-equivalent ``/api/v2/`` endpoint.
+Adds ``Deprecation`` and ``Link`` headers to /api/v1/ responses.
+After the sunset date, /api/v1/ requests receive HTTP 410 Gone.
 
-After the configured sunset date, ``/api/v1/`` requests receive an HTTP 410
-Gone response with a JSON body containing the replacement URL.
-
-Both API versions share the same authentication middleware and tenant
-resolution — this middleware only handles header injection and sunset
-enforcement.
+Implemented as pure ASGI middleware to avoid request body stream corruption.
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
-# Sunset date: 12 months after v2 GA.  Adjust when v2 goes live.
+# Sunset date: 12 months after v2 GA.
 V2_GA_DATE: date = date(2026, 7, 1)
 SUNSET_DATE: date = date(2027, 7, 1)
 
-# RFC 9110 date format for the Deprecation header (IMF-fixdate).
 _SUNSET_HTTP_DATE: str = datetime(
     SUNSET_DATE.year,
     SUNSET_DATE.month,
@@ -41,35 +34,49 @@ def _v2_equivalent(path: str) -> str:
     return _V2_PREFIX + path[len(_V1_PREFIX):]
 
 
-class APIVersionMiddleware(BaseHTTPMiddleware):
+class APIVersionMiddleware:
     """Inject deprecation headers on /api/v1/ responses.
 
-    After the sunset date, /api/v1/ requests are rejected with HTTP 410.
+    Pure ASGI implementation — does not wrap the receive channel.
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
         path = request.url.path
 
         if not path.startswith(_V1_PREFIX):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         v2_url = _v2_equivalent(path)
 
         # After sunset → HTTP 410 Gone
         if date.today() >= SUNSET_DATE:
-            return JSONResponse(
+            response = JSONResponse(
                 status_code=410,
                 content={
                     "detail": "This API version has been retired.",
                     "replacement": v2_url,
                 },
             )
+            await response(scope, receive, send)
+            return
 
         # Before sunset → pass through with deprecation headers
-        response: Response = await call_next(request)
+        async def inject_deprecation(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append((b"deprecation", _SUNSET_HTTP_DATE.encode()))
+                headers.append((b"sunset", _SUNSET_HTTP_DATE.encode()))
+                headers.append((b"link", f'<{v2_url}>; rel="successor-version"'.encode()))
+                message["headers"] = headers
+            await send(message)
 
-        response.headers["Deprecation"] = _SUNSET_HTTP_DATE
-        response.headers["Sunset"] = _SUNSET_HTTP_DATE
-        response.headers["Link"] = f'<{v2_url}>; rel="successor-version"'
-
-        return response
+        await self.app(scope, receive, inject_deprecation)

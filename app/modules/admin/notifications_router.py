@@ -32,7 +32,7 @@ from app.modules.auth.rbac import require_role
 # Admin router (Global Admin CRUD)
 # ---------------------------------------------------------------------------
 
-admin_router = APIRouter(dependencies=[Depends(require_role("global_admin"))])
+admin_router = APIRouter(dependencies=[require_role("global_admin")])
 
 
 def _get_service(db: AsyncSession = Depends(get_db_session)) -> PlatformNotificationService:

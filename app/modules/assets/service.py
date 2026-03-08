@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -18,6 +19,8 @@ from app.modules.assets.schemas import (
     ServiceHistoryEntry,
     is_automotive_trade,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AssetService:
@@ -253,6 +256,6 @@ class AssetService:
                 )
                 await self.db.execute(stmt)
                 return carjam_data
-        except Exception:
-            pass
+        except (ConnectionError, TimeoutError, OSError, ValueError, KeyError) as exc:
+            logger.error("Carjam lookup failed for asset %s: %s", asset_id, exc, exc_info=True)
         return None

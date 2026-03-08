@@ -189,7 +189,7 @@ export default function ExpenseList() {
             </div>
             <div>
               <label htmlFor="expense-amount">Amount</label>
-              <input id="expense-amount" type="number" step="0.01" required value={newExpense.amount}
+              <input id="expense-amount" type="number" step="0.01" inputMode="numeric" required value={newExpense.amount}
                 onChange={e => setNewExpense(p => ({ ...p, amount: e.target.value }))} />
             </div>
             <div>

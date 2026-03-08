@@ -27,6 +27,12 @@ export interface MrrData {
   trend: MrrTrend[]
 }
 
+export interface MrrApiResponse {
+  total_mrr_nzd: number
+  plan_breakdown: Array<{ plan_name: string; mrr_nzd: number; active_orgs: number }>
+  month_over_month: Array<{ month: string; mrr_nzd: number }>
+}
+
 export interface OrgOverviewRow {
   id: string
   name: string
@@ -90,10 +96,22 @@ function MrrTab() {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<MrrData>('/admin/reports/mrr', {
+      const res = await apiClient.get<MrrApiResponse>('/admin/reports/mrr', {
         params: { from: range.from, to: range.to },
       })
-      setData(res.data)
+      const raw = res.data
+      setData({
+        total_mrr: raw.total_mrr_nzd ?? 0,
+        plan_breakdown: (raw.plan_breakdown ?? []).map((p) => ({
+          plan: p.plan_name,
+          mrr: p.mrr_nzd,
+          org_count: p.active_orgs,
+        })),
+        trend: (raw.month_over_month ?? []).map((m) => ({
+          month: m.month,
+          mrr: m.mrr_nzd,
+        })),
+      })
     } catch {
       setError('Failed to load MRR report.')
     } finally {
@@ -171,10 +189,24 @@ function OrganisationsTab() {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<OrgOverviewRow[]>('/admin/reports/organisations', {
+      const res = await apiClient.get<{
+        organisations: Array<Record<string, any>>
+        total: number
+      }>('/admin/reports/organisations', {
         params: { from: range.from, to: range.to },
       })
-      setData(res.data)
+      setData((res.data.organisations ?? []).map((o) => ({
+        id: o.organisation_id,
+        name: o.organisation_name,
+        plan: o.plan_name,
+        signup_date: o.signup_date,
+        trial_status: o.trial_status,
+        billing_status: o.billing_status,
+        storage_used_gb: Math.round((o.storage_used_bytes ?? 0) / (1024 * 1024 * 1024) * 10) / 10,
+        storage_quota_gb: o.storage_quota_gb,
+        carjam_usage: o.carjam_lookups_this_month ?? 0,
+        last_login: o.last_login_at,
+      })))
     } catch {
       setError('Failed to load organisation overview.')
     } finally {
@@ -259,10 +291,22 @@ function CarjamCostTab() {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<CarjamCostData>('/admin/reports/carjam-cost', {
+      const res = await apiClient.get<{
+        total_lookups: number
+        total_cost_nzd: number
+        total_revenue_nzd: number
+        net_nzd: number
+        per_lookup_cost_nzd: number
+      }>('/admin/reports/carjam-cost', {
         params: { from: range.from, to: range.to },
       })
-      setData(res.data)
+      const raw = res.data
+      setData({
+        total_cost: raw.total_cost_nzd ?? 0,
+        total_revenue: raw.total_revenue_nzd ?? 0,
+        net: raw.net_nzd ?? 0,
+        monthly_breakdown: [],
+      })
     } catch {
       setError('Failed to load Carjam cost report.')
     } finally {
@@ -337,8 +381,16 @@ function VehicleDbTab() {
       setLoading(true)
       setError('')
       try {
-        const res = await apiClient.get<VehicleDbStatsData>('/admin/reports/vehicle-db')
-        setData(res.data)
+        const res = await apiClient.get<{
+          total_records: number
+          total_lookups_all_orgs: number
+          cache_hit_rate: number
+        }>('/admin/vehicle-db/stats')
+        setData({
+          total_records: res.data.total_records,
+          cache_hit_rate: Math.round((res.data.cache_hit_rate ?? 0) * 100),
+          total_lookups: res.data.total_lookups_all_orgs ?? 0,
+        })
       } catch {
         setError('Failed to load Vehicle DB stats.')
       } finally {
@@ -396,10 +448,20 @@ function ChurnTab() {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<ChurnRow[]>('/admin/reports/churn', {
+      const res = await apiClient.get<{
+        churned_organisations: Array<Record<string, any>>
+        total: number
+      }>('/admin/reports/churn', {
         params: { from: range.from, to: range.to },
       })
-      setData(res.data)
+      setData((res.data.churned_organisations ?? []).map((c) => ({
+        id: c.organisation_id,
+        name: c.organisation_name,
+        plan: c.plan_name,
+        status: c.status,
+        cancelled_at: c.churned_at,
+        subscription_duration_days: c.subscription_duration_days,
+      })))
     } catch {
       setError('Failed to load churn report.')
     } finally {

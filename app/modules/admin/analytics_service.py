@@ -114,7 +114,7 @@ class GlobalAnalyticsService:
         churn_q = await self.db.execute(
             text(
                 "SELECT COUNT(*) FROM organisations "
-                "WHERE status IN ('cancelled', 'suspended') "
+                "WHERE status IN ('deleted', 'suspended') "
                 "AND updated_at >= NOW() - INTERVAL '30 days'"
             )
         )
@@ -371,7 +371,7 @@ class GlobalAnalyticsService:
         paid_q = await self.db.execute(
             text(
                 "SELECT COUNT(*) FROM organisations "
-                "WHERE status = 'active' AND billing_status != 'trial'"
+                "WHERE status = 'active'"
             )
         )
         paid = paid_q.scalar() or 0
@@ -443,7 +443,7 @@ class GlobalAnalyticsService:
                 f"SELECT date_trunc(:period, updated_at) AS bucket, "
                 f"COUNT(*) AS value "
                 f"FROM organisations "
-                f"WHERE status IN ('cancelled', 'suspended') {churn_filter} "
+                f"WHERE status IN ('deleted', 'suspended') {churn_filter} "
                 f"GROUP BY bucket ORDER BY bucket"
             )
         else:

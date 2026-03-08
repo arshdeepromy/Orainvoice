@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
 from app.modules.auth.rbac import require_role
+from app.modules.admin.schemas import SmsPackagePurchaseRequest
 from app.modules.organisations.schemas import (
     AssignUserBranchesRequest,
     AssignUserBranchesResponse,
@@ -738,6 +739,137 @@ async def get_org_carjam_usage(
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     return OrgCarjamUsageResponse(**usage)
+
+# ---------------------------------------------------------------------------
+# SMS usage — Org Admin (Requirements 6.5, 6.6, 7.1)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/sms-usage",
+    summary="Organisation SMS usage for billing dashboard",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Organisation not found"},
+    },
+    dependencies=[require_role("org_admin")],
+)
+async def get_org_sms_usage(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the organisation's own SMS usage for the current month.
+
+    Shows total SMS sent, included in plan, package credits, effective
+    quota, overage count, and overage charge.
+
+    Requirements: 7.1.
+    """
+    from app.modules.admin.schemas import OrgSmsUsageResponse
+    from app.modules.admin.service import get_org_sms_usage as _get_usage
+
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
+
+    try:
+        usage = await _get_usage(db, org_uuid)
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return OrgSmsUsageResponse(**usage)
+
+
+@router.get(
+    "/sms-packages",
+    summary="Organisation active SMS package purchases",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    dependencies=[require_role("org_admin")],
+)
+async def get_org_sms_packages(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the organisation's active SMS package purchases.
+
+    Lists all purchased SMS packages with remaining credits, ordered
+    by purchase date ascending (oldest first).
+
+    Requirements: 6.5.
+    """
+    from app.modules.admin.schemas import SmsPackagePurchaseResponse
+    from app.modules.admin.service import get_org_sms_packages as _get_packages
+
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
+
+    packages = await _get_packages(db, org_uuid)
+    return [SmsPackagePurchaseResponse(**pkg) for pkg in packages]
+
+
+@router.post(
+    "/sms-packages/purchase",
+    summary="Purchase an SMS package",
+    responses={
+        401: {"description": "Authentication required"},
+        402: {"description": "Payment failed"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Tier not found on plan"},
+        502: {"description": "Payment service unavailable"},
+    },
+    dependencies=[require_role("org_admin")],
+)
+async def purchase_org_sms_package(
+    request: Request,
+    body: SmsPackagePurchaseRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Purchase a bulk SMS package for the organisation.
+
+    Validates the requested tier exists on the org's plan, creates a
+    Stripe one-time charge, and records the purchase with full credits.
+
+    Requirements: 6.6.
+    """
+    from app.modules.admin.schemas import SmsPackagePurchaseResponse
+    from app.modules.admin.service import purchase_sms_package as _purchase
+
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
+
+    try:
+        result = await _purchase(db, org_uuid, body.tier_name)
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except RuntimeError as exc:
+        error_msg = str(exc)
+        if "Payment failed" in error_msg:
+            return JSONResponse(status_code=402, content={"detail": error_msg})
+        return JSONResponse(status_code=502, content={"detail": "Payment service unavailable"})
+
+    return SmsPackagePurchaseResponse(**result)
+
 
 
 # ---------------------------------------------------------------------------

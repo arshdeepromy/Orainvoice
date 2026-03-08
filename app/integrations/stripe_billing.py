@@ -117,6 +117,47 @@ async def create_subscription_from_trial(
     }
 
 
+async def create_invoice_item(
+    *,
+    customer_id: str,
+    description: str,
+    quantity: int,
+    unit_amount_cents: int,
+    currency: str = "nzd",
+    metadata: dict | None = None,
+) -> dict:
+    """Create a one-off Stripe InvoiceItem attached to the customer.
+
+    The item will appear on the customer's next invoice (e.g. the upcoming
+    subscription renewal).  This is used for overage charges like SMS.
+
+    Returns a dict with ``invoice_item_id`` and ``amount``.
+
+    Requirements: 4.2
+    """
+    item = stripe.InvoiceItem.create(
+        customer=customer_id,
+        description=description,
+        quantity=quantity,
+        unit_amount=unit_amount_cents,
+        currency=currency,
+        metadata=metadata or {},
+    )
+    logger.info(
+        "Created InvoiceItem %s for customer %s: %s (qty=%d, unit=%d)",
+        item.id,
+        customer_id,
+        description,
+        quantity,
+        unit_amount_cents,
+    )
+    return {
+        "invoice_item_id": item.id,
+        "amount": item.get("amount", 0),
+        "description": description,
+    }
+
+
 async def report_metered_usage(
     *,
     subscription_id: str,
@@ -167,6 +208,47 @@ async def report_metered_usage(
         "usage_record_id": usage_record.get("id"),
         "quantity": quantity,
     }
+
+async def create_invoice_item(
+    *,
+    customer_id: str,
+    description: str,
+    quantity: int,
+    unit_amount_cents: int,
+    currency: str = "nzd",
+    metadata: dict | None = None,
+) -> dict:
+    """Create a one-off Stripe InvoiceItem attached to the customer.
+
+    The item will appear on the customer's next invoice (e.g. the upcoming
+    subscription renewal).  This is used for overage charges like SMS.
+
+    Returns a dict with ``invoice_item_id`` and ``amount``.
+
+    Requirements: 4.2
+    """
+    item = stripe.InvoiceItem.create(
+        customer=customer_id,
+        description=description,
+        quantity=quantity,
+        unit_amount=unit_amount_cents,
+        currency=currency,
+        metadata=metadata or {},
+    )
+    logger.info(
+        "Created InvoiceItem %s for customer %s: %s (qty=%d, unit=%d)",
+        item.id,
+        customer_id,
+        description,
+        quantity,
+        unit_amount_cents,
+    )
+    return {
+        "invoice_item_id": item.id,
+        "amount": item.get("amount", 0),
+        "description": description,
+    }
+
 
 
 async def get_subscription_details(

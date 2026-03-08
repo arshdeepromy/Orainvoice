@@ -81,7 +81,7 @@ async def write_audit_log(
                 before_value, after_value, ip_address, device_info, created_at
             ) VALUES (
                 :id, :org_id, :user_id, :action, :entity_type, :entity_id,
-                :before_value, :after_value, :ip_address::inet, :device_info, :created_at
+                :before_value, :after_value, CAST(:ip_address AS inet), :device_info, :created_at
             )
             """
         ),

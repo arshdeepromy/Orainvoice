@@ -1,3 +1,4 @@
+export { useModuleGuard } from './useModuleGuard'
 export { useKeyboardShortcuts } from './useKeyboardShortcuts'
 export type { ShortcutConfig, ShortcutEntry } from './useKeyboardShortcuts'
 export { SHORTCUT_LIST } from './useKeyboardShortcuts'

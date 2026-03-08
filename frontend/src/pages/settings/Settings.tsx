@@ -3,14 +3,42 @@ import { OrgSettings } from './OrgSettings'
 import { BranchManagement } from './BranchManagement'
 import { UserManagement } from './UserManagement'
 import { Billing } from './Billing'
+import { AccountingIntegrations } from './AccountingIntegrations'
+import CurrencySettings from './CurrencySettings'
+import { LanguageSwitcher } from './LanguageSwitcher'
+import PrinterSettings from './PrinterSettings'
+import { WebhookManagement } from './WebhookManagement'
+import { FeatureFlagSettings } from './FeatureFlagSettings'
+import { ModuleConfiguration } from './ModuleConfiguration'
+import NotificationsPage from '../notifications/NotificationsPage'
 
-type SettingsSection = 'organisation' | 'branches' | 'users' | 'billing'
+type SettingsSection =
+  | 'organisation'
+  | 'branches'
+  | 'users'
+  | 'billing'
+  | 'accounting'
+  | 'currency'
+  | 'language'
+  | 'printer'
+  | 'webhooks'
+  | 'feature-flags'
+  | 'modules'
+  | 'notifications'
 
 const NAV_ITEMS: { id: SettingsSection; label: string; icon: string }[] = [
   { id: 'organisation', label: 'Organisation', icon: '⚙' },
   { id: 'branches', label: 'Branches', icon: '🏢' },
   { id: 'users', label: 'Users', icon: '👥' },
   { id: 'billing', label: 'Billing', icon: '💳' },
+  { id: 'accounting', label: 'Accounting', icon: '📒' },
+  { id: 'currency', label: 'Currency', icon: '💱' },
+  { id: 'language', label: 'Language', icon: '🌐' },
+  { id: 'printer', label: 'Printer', icon: '🖨' },
+  { id: 'webhooks', label: 'Webhooks', icon: '🔗' },
+  { id: 'feature-flags', label: 'Feature Flags', icon: '🚩' },
+  { id: 'modules', label: 'Modules', icon: '🧩' },
+  { id: 'notifications', label: 'Notifications', icon: '🔔' },
 ]
 
 const SECTION_COMPONENTS: Record<SettingsSection, React.FC> = {
@@ -18,6 +46,14 @@ const SECTION_COMPONENTS: Record<SettingsSection, React.FC> = {
   branches: BranchManagement,
   users: UserManagement,
   billing: Billing,
+  accounting: AccountingIntegrations,
+  currency: CurrencySettings,
+  language: LanguageSwitcher,
+  printer: PrinterSettings,
+  webhooks: WebhookManagement,
+  'feature-flags': FeatureFlagSettings,
+  modules: ModuleConfiguration,
+  notifications: NotificationsPage,
 }
 
 export function Settings() {

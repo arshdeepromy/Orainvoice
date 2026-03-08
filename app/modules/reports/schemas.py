@@ -151,6 +151,21 @@ class CarjamUsageResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# SMS Usage  (GET /reports/sms-usage)
+# ---------------------------------------------------------------------------
+
+class SmsUsageResponse(BaseModel):
+    total_sent: int
+    included_in_plan: int
+    package_credits_remaining: int
+    effective_quota: int
+    overage_count: int
+    overage_charge_nzd: float
+    per_sms_cost_nzd: float
+    reset_at: datetime | None
+
+
+# ---------------------------------------------------------------------------
 # Storage Usage  (GET /reports/storage)
 # ---------------------------------------------------------------------------
 

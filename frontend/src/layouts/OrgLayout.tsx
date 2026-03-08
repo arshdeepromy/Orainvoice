@@ -1,7 +1,9 @@
 import { useState, useMemo } from 'react'
-import { Outlet, NavLink } from 'react-router-dom'
+import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useTenant } from '@/contexts/TenantContext'
 import { useModules } from '@/contexts/ModuleContext'
+import { useAuth } from '@/contexts/AuthContext'
+import { useFeatureFlags } from '@/contexts/FeatureFlagContext'
 import { GlobalSearchBar } from '@/components/search'
 
 interface NavItem {
@@ -10,6 +12,8 @@ interface NavItem {
   icon: React.ComponentType
   /** If set, this nav item is only shown when the module is enabled */
   module?: string
+  /** If set, this nav item is only shown when the feature flag is enabled */
+  flagKey?: string
 }
 
 const navItems: NavItem[] = [
@@ -17,10 +21,32 @@ const navItems: NavItem[] = [
   { to: '/customers', label: 'Customers', icon: CustomersIcon },
   { to: '/vehicles', label: 'Vehicles', icon: VehiclesIcon, module: 'vehicles' },
   { to: '/invoices', label: 'Invoices', icon: InvoicesIcon },
-  { to: '/quotes', label: 'Quotes', icon: QuotesIcon, module: 'quotes' },
-  { to: '/job-cards', label: 'Job Cards', icon: JobCardsIcon, module: 'jobs' },
-  { to: '/bookings', label: 'Bookings', icon: BookingsIcon, module: 'bookings' },
-  { to: '/inventory', label: 'Inventory', icon: InventoryIcon, module: 'inventory' },
+  { to: '/quotes', label: 'Quotes', icon: QuotesIcon, module: 'quotes', flagKey: 'quotes' },
+  { to: '/job-cards', label: 'Job Cards', icon: JobCardsIcon, module: 'jobs', flagKey: 'jobs' },
+  { to: '/jobs', label: 'Jobs', icon: JobCardsIcon, module: 'jobs', flagKey: 'jobs' },
+  { to: '/bookings', label: 'Bookings', icon: BookingsIcon, module: 'bookings', flagKey: 'bookings' },
+  { to: '/inventory', label: 'Inventory', icon: InventoryIcon, module: 'inventory', flagKey: 'inventory' },
+  { to: '/catalogue', label: 'Catalogue', icon: CatalogueIcon, module: 'catalogue' },
+  { to: '/staff', label: 'Staff', icon: StaffIcon, module: 'staff', flagKey: 'staff' },
+  { to: '/projects', label: 'Projects', icon: ProjectsIcon, module: 'projects', flagKey: 'projects' },
+  { to: '/expenses', label: 'Expenses', icon: ExpensesIcon, module: 'expenses', flagKey: 'expenses' },
+  { to: '/time-tracking', label: 'Time Tracking', icon: TimeTrackingIcon, module: 'time_tracking', flagKey: 'time_tracking' },
+  { to: '/schedule', label: 'Schedule', icon: ScheduleIcon, module: 'scheduling', flagKey: 'scheduling' },
+  { to: '/pos', label: 'POS', icon: POSIcon, module: 'pos', flagKey: 'pos' },
+  { to: '/recurring', label: 'Recurring', icon: RecurringIcon, module: 'recurring_invoices', flagKey: 'recurring' },
+  { to: '/purchase-orders', label: 'Purchase Orders', icon: PurchaseOrderIcon, module: 'purchase_orders', flagKey: 'purchase_orders' },
+  { to: '/progress-claims', label: 'Progress Claims', icon: ConstructionIcon, module: 'progress_claims', flagKey: 'progress_claims' },
+  { to: '/variations', label: 'Variations', icon: ConstructionIcon, module: 'variations', flagKey: 'variations' },
+  { to: '/retentions', label: 'Retentions', icon: ConstructionIcon, module: 'retentions', flagKey: 'retentions' },
+  { to: '/floor-plan', label: 'Floor Plan', icon: FloorPlanIcon, module: 'tables', flagKey: 'tables' },
+  { to: '/kitchen', label: 'Kitchen Display', icon: KitchenIcon, module: 'kitchen_display', flagKey: 'kitchen_display' },
+  { to: '/franchise', label: 'Franchise', icon: FranchiseIcon, module: 'franchise', flagKey: 'franchise' },
+  { to: '/assets', label: 'Assets', icon: AssetsIcon, module: 'assets', flagKey: 'assets' },
+  { to: '/compliance', label: 'Compliance', icon: ComplianceIcon, module: 'compliance_docs', flagKey: 'compliance_docs' },
+  { to: '/loyalty', label: 'Loyalty', icon: LoyaltyIcon, module: 'loyalty', flagKey: 'loyalty' },
+  { to: '/ecommerce', label: 'Ecommerce', icon: EcommerceIcon, module: 'ecommerce', flagKey: 'ecommerce' },
+  { to: '/notifications', label: 'Notifications', icon: NotificationsIcon },
+  { to: '/data', label: 'Data', icon: DataIcon },
   { to: '/reports', label: 'Reports', icon: ReportsIcon },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ]
@@ -29,11 +55,33 @@ export function OrgLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const { settings } = useTenant()
   const { isEnabled } = useModules()
+  const { isGlobalAdmin } = useAuth()
+  const { flags } = useFeatureFlags()
+  const navigate = useNavigate()
   const branding = settings?.branding
 
+  // "View as Org" mode for global admin
+  const viewAsOrg = useMemo(() => {
+    try {
+      const raw = sessionStorage.getItem('admin_view_as_org')
+      return raw ? JSON.parse(raw) as { id: string; name: string } : null
+    } catch { return null }
+  }, [])
+
+  const handleBackToAdmin = () => {
+    sessionStorage.removeItem('admin_view_as_org')
+    navigate('/admin/organisations')
+  }
+
   const visibleNavItems = useMemo(
-    () => navItems.filter((item) => !item.module || isEnabled(item.module)),
-    [isEnabled],
+    () => navItems.filter((item) => {
+      // Check module enablement
+      if (item.module && !isEnabled(item.module)) return false
+      // Check feature flag — if flagKey is set, the flag must be true
+      if (item.flagKey && !flags[item.flagKey]) return false
+      return true
+    }),
+    [isEnabled, flags],
   )
 
   return (
@@ -151,6 +199,17 @@ export function OrgLayout() {
         </header>
 
         {/* Page content */}
+        {isGlobalAdmin && viewAsOrg && (
+          <div className="bg-indigo-600 text-white px-4 py-2 flex items-center justify-between text-sm">
+            <span>Viewing as organisation: <span className="font-semibold">{viewAsOrg.name}</span></span>
+            <button
+              onClick={handleBackToAdmin}
+              className="rounded bg-white/20 px-3 py-1 text-sm font-medium hover:bg-white/30 transition-colors"
+            >
+              ← Back to Admin
+            </button>
+          </div>
+        )}
         <main className="flex-1 overflow-y-auto p-4 lg:p-6" role="main">
           <Outlet />
         </main>
@@ -265,6 +324,161 @@ function SettingsIcon() {
     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+  )
+}
+
+/* ── Additional nav icons ── */
+
+function StaffIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+    </svg>
+  )
+}
+
+function ProjectsIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+    </svg>
+  )
+}
+
+function ExpensesIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2z" />
+    </svg>
+  )
+}
+
+function TimeTrackingIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  )
+}
+
+function ScheduleIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+    </svg>
+  )
+}
+
+function POSIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 100 4 2 2 0 000-4z" />
+    </svg>
+  )
+}
+
+function RecurringIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+    </svg>
+  )
+}
+
+function PurchaseOrderIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+    </svg>
+  )
+}
+
+function ConstructionIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+    </svg>
+  )
+}
+
+function FloorPlanIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
+    </svg>
+  )
+}
+
+function KitchenIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+    </svg>
+  )
+}
+
+function FranchiseIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+  )
+}
+
+function AssetsIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z" />
+    </svg>
+  )
+}
+
+function ComplianceIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+    </svg>
+  )
+}
+
+function LoyaltyIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  )
+}
+
+function EcommerceIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+    </svg>
+  )
+}
+
+function NotificationsIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+    </svg>
+  )
+}
+
+function DataIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+    </svg>
+  )
+}
+
+function CatalogueIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
     </svg>
   )
 }

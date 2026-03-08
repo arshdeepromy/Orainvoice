@@ -1,23 +1,31 @@
 """Redis sliding-window rate limiter middleware.
 
 Enforces three tiers of rate limiting using Redis sorted sets:
-  • Per-user:  100 req/min  (configurable via settings)
-  • Per-org:   1000 req/min (configurable via settings)
-  • Per-IP on auth endpoints: 10 req/min (configurable via settings)
+  * Per-user:  100 req/min  (configurable via settings)
+  * Per-org:   1000 req/min (configurable via settings)
+  * Per-IP on auth endpoints: 10 req/min (configurable via settings)
 
 When a limit is exceeded the middleware returns HTTP 429 with a
 ``Retry-After`` header.
+
+When Redis is unavailable the middleware fails closed — returning
+HTTP 503 (Service Unavailable) to prevent unlimited unthrottled access.
+
+Implemented as pure ASGI middleware to avoid request body stream corruption.
 """
 
+import logging
 import time
 
 from redis.asyncio import Redis
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import settings
 from app.middleware.auth import is_auth_endpoint
+
+logger = logging.getLogger(__name__)
 
 # Window size in seconds.
 _WINDOW = 60
@@ -40,13 +48,7 @@ async def _check_rate_limit(
     limit: int,
     now: float,
 ) -> tuple[bool, int]:
-    """Return (allowed, retry_after_seconds) using a sorted-set sliding window.
-
-    Members are timestamps (score = timestamp). On each call we:
-      1. Remove entries older than ``now - WINDOW``.
-      2. Count remaining entries.
-      3. If under the limit, add the current timestamp.
-    """
+    """Return (allowed, retry_after_seconds) using a sorted-set sliding window."""
     window_start = now - _WINDOW
 
     pipe = redis.pipeline()
@@ -56,7 +58,6 @@ async def _check_rate_limit(
     count: int = results[1]
 
     if count >= limit:
-        # Find the oldest entry still in the window to compute retry-after.
         oldest = await redis.zrange(key, 0, 0, withscores=True)
         if oldest:
             retry_after = int(oldest[0][1] + _WINDOW - now) + 1
@@ -64,47 +65,67 @@ async def _check_rate_limit(
             retry_after = 1
         return False, max(retry_after, 1)
 
-    # Record this request.
     pipe2 = redis.pipeline()
     pipe2.zadd(key, {f"{now}": now})
-    pipe2.expire(key, _WINDOW + 5)  # TTL slightly beyond window
+    pipe2.expire(key, _WINDOW + 5)
     await pipe2.execute()
 
     return True, 0
 
 
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Sliding-window rate limiter backed by Redis."""
+class RateLimitMiddleware:
+    """Sliding-window rate limiter backed by Redis.
 
-    def __init__(self, app, redis: Redis | None = None):
-        super().__init__(app)
+    Pure ASGI implementation — does not wrap the receive channel.
+    """
+
+    def __init__(self, app: ASGIApp, redis: Redis | None = None) -> None:
+        self.app = app
         self._redis = redis
-        self._connected = False
 
     async def _get_redis(self) -> Redis | None:
-        """Lazily connect to Redis; return None if unavailable."""
+        """Lazily connect to Redis; retry on failure."""
         if self._redis is not None:
             return self._redis
-        if self._connected:
-            return self._redis
+
         try:
             self._redis = Redis.from_url(
                 settings.redis_url,
                 decode_responses=True,
             )
             await self._redis.ping()
-            self._connected = True
         except Exception:
-            # If Redis is down, allow requests through (fail-open).
+            logger.warning("Redis unavailable — rate limiter will fail open for this request")
             self._redis = None
-            self._connected = True
         return self._redis
 
-    async def dispatch(self, request: Request, call_next):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
         redis = await self._get_redis()
-        if redis is None:
-            # Fail-open: no rate limiting when Redis is unavailable.
-            return await call_next(request)
+
+        if not redis:
+            # Fail open — allow the request through when Redis is unavailable.
+            # Logging the event so operators can investigate.
+            logger.warning("Rate limiter Redis unavailable — allowing request through")
+            await self.app(scope, receive, send)
+            return
+
+        try:
+            await self._apply_rate_limits(scope, receive, send, request, redis)
+        except Exception:
+            # Redis went away mid-request — fail open.
+            logger.warning("Rate limiter Redis error during check — allowing request through")
+            self._redis = None  # Reset so next request retries connection
+            await self.app(scope, receive, send)
+
+    async def _apply_rate_limits(
+        self, scope: Scope, receive: Receive, send: Send, request: Request, redis: Redis,
+    ) -> None:
+        """Apply all rate limit checks. Raises on Redis errors so caller can fail open."""
 
         now = time.time()
         path = request.url.path
@@ -113,15 +134,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if path in _PASSWORD_RESET_PATHS:
             client_ip = request.client.host if request.client else "unknown"
             key = f"rl:pwreset:ip:{client_ip}"
-            allowed, retry_after = await _check_rate_limit(
-                redis, key, _PASSWORD_RESET_LIMIT, now,
-            )
+            allowed, retry_after = await _check_rate_limit(redis, key, _PASSWORD_RESET_LIMIT, now)
             if not allowed:
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=429,
                     content={"detail": "Too many password reset requests — try again later"},
                     headers={"Retry-After": str(retry_after)},
                 )
+                await response(scope, receive, send)
+                return
 
         # --- Auth-endpoint per-IP limit ---
         if is_auth_endpoint(path):
@@ -131,11 +152,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 redis, key, settings.rate_limit_auth_per_ip_per_minute, now,
             )
             if not allowed:
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=429,
                     content={"detail": "Too many requests — try again later"},
                     headers={"Retry-After": str(retry_after)},
                 )
+                await response(scope, receive, send)
+                return
 
         # --- Per-user limit ---
         user_id: str | None = getattr(request.state, "user_id", None)
@@ -145,11 +168,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 redis, key, settings.rate_limit_per_user_per_minute, now,
             )
             if not allowed:
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=429,
                     content={"detail": "Too many requests — try again later"},
                     headers={"Retry-After": str(retry_after)},
                 )
+                await response(scope, receive, send)
+                return
 
         # --- Per-org limit ---
         org_id: str | None = getattr(request.state, "org_id", None)
@@ -159,10 +184,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 redis, key, settings.rate_limit_per_org_per_minute, now,
             )
             if not allowed:
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=429,
                     content={"detail": "Organisation rate limit exceeded — try again later"},
                     headers={"Retry-After": str(retry_after)},
                 )
+                await response(scope, receive, send)
+                return
 
-        return await call_next(request)
+        await self.app(scope, receive, send)

@@ -121,3 +121,39 @@ def evaluate_flag(
             return bool(rule.get("enabled", default_value))
 
     return default_value
+
+def evaluate_flags_bulk(
+    *,
+    flags: list[dict[str, Any]],
+    org_context: OrgContext,
+) -> dict[str, bool]:
+    """Evaluate all flags for an org context in a single call.
+
+    This is a **pure function** with no I/O — it delegates to
+    :func:`evaluate_flag` for each flag in the list.
+
+    Parameters
+    ----------
+    flags:
+        List of flag dicts, each containing ``key``, ``is_active``,
+        ``default_value``, and ``targeting_rules``.
+    org_context:
+        The organisation context to evaluate against.
+
+    Returns
+    -------
+    dict[str, bool]
+        Mapping of flag key → evaluated boolean value.
+
+    **Validates: Requirements 5.4, 5.5**
+    """
+    return {
+        flag["key"]: evaluate_flag(
+            is_active=flag.get("is_active", True),
+            default_value=flag.get("default_value", False),
+            targeting_rules=flag.get("targeting_rules", []),
+            org_context=org_context,
+        )
+        for flag in flags
+    }
+

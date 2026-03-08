@@ -52,26 +52,26 @@ export function Modal({ open, onClose, title, children, className = '' }: ModalP
     <dialog
       ref={dialogRef}
       className={`rounded-lg bg-white p-0 shadow-xl backdrop:bg-black/50
-        max-w-lg w-full max-h-[85vh] overflow-auto ${className}`}
+        w-full max-h-[90vh] flex flex-col ${className || 'max-w-lg'}`}
       aria-labelledby="modal-title"
       onClick={(e) => {
         if (e.target === dialogRef.current) onClose()
       }}
     >
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 id="modal-title" className="text-lg font-semibold text-gray-900">
-            {title}
-          </h2>
-          <button
-            onClick={onClose}
-            className="rounded p-1 text-gray-400 hover:text-gray-600
-              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-            aria-label="Close dialog"
-          >
-            <span aria-hidden="true" className="text-xl leading-none">×</span>
-          </button>
-        </div>
+      <div className="flex items-center justify-between px-6 pt-6 pb-4 shrink-0">
+        <h2 id="modal-title" className="text-lg font-semibold text-gray-900">
+          {title}
+        </h2>
+        <button
+          onClick={onClose}
+          className="rounded p-1 text-gray-400 hover:text-gray-600
+            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          aria-label="Close dialog"
+        >
+          <span aria-hidden="true" className="text-xl leading-none">×</span>
+        </button>
+      </div>
+      <div className="px-6 pb-6 overflow-y-auto flex-1 min-h-0">
         {children}
       </div>
     </dialog>

@@ -579,3 +579,124 @@ class NotificationPreferenceUpdateRequest(BaseModel):
     channel: Optional[Literal["email", "sms", "both"]] = Field(
         None, description="Delivery channel: email, sms, or both"
     )
+
+
+    # ---------------------------------------------------------------------------
+    # Bounce webhook schemas (Req 2.20 — Brevo & SendGrid bounce handling)
+    # ---------------------------------------------------------------------------
+
+
+    class BrevoBounceEvent(BaseModel):
+        """Single event in a Brevo bounce webhook payload."""
+
+        event: str = Field(..., description="Event type, e.g. 'hard_bounce', 'soft_bounce', 'blocked'")
+        email: str = Field(..., description="Bounced email address")
+        message_id: Optional[str] = Field(None, alias="message-id", description="Brevo message ID")
+        ts_event: Optional[int] = Field(None, description="Unix timestamp of the event")
+
+
+    class BrevoBounceWebhookRequest(BaseModel):
+        """POST /notifications/webhooks/brevo-bounce request body.
+
+        Brevo sends an array of events or a single event object.
+        """
+
+        events: Optional[list[BrevoBounceEvent]] = Field(
+            None, description="Array of bounce events (batch mode)"
+        )
+        # Single-event fallback fields
+        event: Optional[str] = Field(None, description="Event type for single-event mode")
+        email: Optional[str] = Field(None, description="Bounced email for single-event mode")
+
+        model_config = {"populate_by_name": True}
+
+
+    class SendGridBounceEvent(BaseModel):
+        """Single event in a SendGrid Event Webhook payload."""
+
+        event: str = Field(..., description="Event type, e.g. 'bounce', 'dropped', 'deferred'")
+        email: str = Field(..., description="Bounced email address")
+        sg_message_id: Optional[str] = Field(None, description="SendGrid message ID")
+        timestamp: Optional[int] = Field(None, description="Unix timestamp of the event")
+        reason: Optional[str] = Field(None, description="Bounce reason")
+
+
+# ---------------------------------------------------------------------------
+# Bounce webhook schemas (Req 2.20 — Brevo & SendGrid bounce handling)
+# ---------------------------------------------------------------------------
+
+
+class BrevoBounceEvent(BaseModel):
+    """Single event in a Brevo bounce webhook payload."""
+
+    event: str = Field(..., description="Event type, e.g. 'hard_bounce', 'soft_bounce', 'blocked'")
+    email: str = Field(..., description="Bounced email address")
+    message_id: Optional[str] = Field(None, alias="message-id", description="Brevo message ID")
+    ts_event: Optional[int] = Field(None, description="Unix timestamp of the event")
+
+
+class BrevoBounceWebhookRequest(BaseModel):
+    """POST /notifications/webhooks/brevo-bounce request body.
+
+    Brevo sends an array of events or a single event object.
+    """
+
+    events: Optional[list[BrevoBounceEvent]] = Field(
+        None, description="Array of bounce events (batch mode)"
+    )
+    # Single-event fallback fields
+    event: Optional[str] = Field(None, description="Event type for single-event mode")
+    email: Optional[str] = Field(None, description="Bounced email for single-event mode")
+
+    model_config = {"populate_by_name": True}
+
+
+class SendGridBounceEvent(BaseModel):
+    """Single event in a SendGrid Event Webhook payload."""
+
+    event: str = Field(..., description="Event type, e.g. 'bounce', 'dropped', 'deferred'")
+    email: str = Field(..., description="Bounced email address")
+    sg_message_id: Optional[str] = Field(None, description="SendGrid message ID")
+    timestamp: Optional[int] = Field(None, description="Unix timestamp of the event")
+    reason: Optional[str] = Field(None, description="Bounce reason")
+
+
+
+# ---------------------------------------------------------------------------
+# Bounce webhook schemas (Req 2.20 — Brevo & SendGrid bounce handling)
+# ---------------------------------------------------------------------------
+
+
+class BrevoBounceEvent(BaseModel):
+    """Single event in a Brevo bounce webhook payload."""
+
+    event: str = Field(..., description="Event type, e.g. 'hard_bounce', 'soft_bounce', 'blocked'")
+    email: str = Field(..., description="Bounced email address")
+    message_id: Optional[str] = Field(None, alias="message-id", description="Brevo message ID")
+    ts_event: Optional[int] = Field(None, description="Unix timestamp of the event")
+
+
+class BrevoBounceWebhookRequest(BaseModel):
+    """POST /notifications/webhooks/brevo-bounce request body.
+
+    Brevo sends an array of events or a single event object.
+    """
+
+    events: Optional[list[BrevoBounceEvent]] = Field(
+        None, description="Array of bounce events (batch mode)"
+    )
+    # Single-event fallback fields
+    event: Optional[str] = Field(None, description="Event type for single-event mode")
+    email: Optional[str] = Field(None, description="Bounced email for single-event mode")
+
+    model_config = {"populate_by_name": True}
+
+
+class SendGridBounceEvent(BaseModel):
+    """Single event in a SendGrid Event Webhook payload."""
+
+    event: str = Field(..., description="Event type, e.g. 'bounce', 'dropped', 'deferred'")
+    email: str = Field(..., description="Bounced email address")
+    sg_message_id: Optional[str] = Field(None, description="SendGrid message ID")
+    timestamp: Optional[int] = Field(None, description="Unix timestamp of the event")
+    reason: Optional[str] = Field(None, description="Bounce reason")

@@ -6,15 +6,32 @@ import { Button, Input, Select, Spinner } from '../../components/ui'
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
+interface BackendOverdueRule {
+  id: string
+  org_id: string
+  days_after_due: number
+  send_email: boolean
+  send_sms: boolean
+  sort_order: number
+  is_enabled: boolean
+}
+
+interface OverdueRulesResponse {
+  rules: BackendOverdueRule[]
+  total: number
+  reminders_enabled: boolean
+}
+
+/** UI-facing rule with a derived `channel` for the dropdown. */
 interface OverdueRule {
   id: string
   days_after_due: number
   channel: 'email' | 'sms' | 'both'
-}
-
-interface OverdueRulesResponse {
-  enabled: boolean
-  rules: OverdueRule[]
+  send_email: boolean
+  send_sms: boolean
+  is_enabled: boolean
+  /** true when the rule hasn't been persisted yet */
+  _isNew?: boolean
 }
 
 const MAX_RULES = 3
@@ -24,6 +41,39 @@ const CHANNEL_OPTIONS = [
   { value: 'sms', label: 'SMS only' },
   { value: 'both', label: 'Email + SMS' },
 ]
+
+/* ------------------------------------------------------------------ */
+/*  Mapping helpers: channel ↔ send_email / send_sms                   */
+/* ------------------------------------------------------------------ */
+
+function channelFromBooleans(send_email: boolean, send_sms: boolean): 'email' | 'sms' | 'both' {
+  if (send_email && send_sms) return 'both'
+  if (send_sms) return 'sms'
+  return 'email'
+}
+
+function booleansFromChannel(channel: 'email' | 'sms' | 'both'): { send_email: boolean; send_sms: boolean } {
+  switch (channel) {
+    case 'both':
+      return { send_email: true, send_sms: true }
+    case 'sms':
+      return { send_email: false, send_sms: true }
+    case 'email':
+    default:
+      return { send_email: true, send_sms: false }
+  }
+}
+
+function backendToUiRule(rule: BackendOverdueRule): OverdueRule {
+  return {
+    id: rule.id,
+    days_after_due: rule.days_after_due,
+    channel: channelFromBooleans(rule.send_email, rule.send_sms),
+    send_email: rule.send_email,
+    send_sms: rule.send_sms,
+    is_enabled: rule.is_enabled,
+  }
+}
 
 /**
  * Overdue reminder rules configuration — up to 3 rules per org,
@@ -44,8 +94,8 @@ export default function OverdueRules() {
     setError('')
     try {
       const res = await apiClient.get<OverdueRulesResponse>('/notifications/overdue-rules')
-      setEnabled(res.data.enabled)
-      setRules(res.data.rules)
+      setEnabled(res.data.reminders_enabled)
+      setRules(res.data.rules.map(backendToUiRule))
     } catch {
       setError('Failed to load overdue reminder rules.')
     } finally {
@@ -59,7 +109,7 @@ export default function OverdueRules() {
     setSaving(true)
     setError('')
     try {
-      await apiClient.put('/notifications/overdue-rules', { enabled: !enabled, rules })
+      await apiClient.put(`/notifications/overdue-rules-toggle?enabled=${!enabled}`)
       setEnabled(!enabled)
     } catch {
       setError('Failed to update overdue reminders.')
@@ -72,15 +122,49 @@ export default function OverdueRules() {
     if (rules.length >= MAX_RULES) return
     setRules((prev) => [
       ...prev,
-      { id: `new-${Date.now()}`, days_after_due: 7, channel: 'email' },
+      {
+        id: `new-${Date.now()}`,
+        days_after_due: 7,
+        channel: 'email',
+        send_email: true,
+        send_sms: false,
+        is_enabled: true,
+        _isNew: true,
+      },
     ])
   }
 
   const updateRule = (index: number, updates: Partial<OverdueRule>) => {
-    setRules((prev) => prev.map((r, i) => (i === index ? { ...r, ...updates } : r)))
+    setRules((prev) =>
+      prev.map((r, i) => {
+        if (i !== index) return r
+        const merged = { ...r, ...updates }
+        // Keep send_email/send_sms in sync when channel changes
+        if (updates.channel) {
+          const bools = booleansFromChannel(updates.channel)
+          merged.send_email = bools.send_email
+          merged.send_sms = bools.send_sms
+        }
+        return merged
+      }),
+    )
   }
 
-  const removeRule = (index: number) => {
+  const removeRule = async (index: number) => {
+    const rule = rules[index]
+    if (!rule._isNew) {
+      setSaving(true)
+      setError('')
+      try {
+        await apiClient.delete(`/notifications/overdue-rules/${rule.id}`)
+      } catch {
+        setError('Failed to delete rule.')
+        setSaving(false)
+        return
+      } finally {
+        setSaving(false)
+      }
+    }
     setRules((prev) => prev.filter((_, i) => i !== index))
   }
 
@@ -88,7 +172,21 @@ export default function OverdueRules() {
     setSaving(true)
     setError('')
     try {
-      await apiClient.put('/notifications/overdue-rules', { enabled, rules })
+      for (const rule of rules) {
+        const payload = {
+          days_after_due: rule.days_after_due,
+          send_email: rule.send_email,
+          send_sms: rule.send_sms,
+          is_enabled: rule.is_enabled,
+        }
+        if (rule._isNew) {
+          await apiClient.post('/notifications/overdue-rules', payload)
+        } else {
+          await apiClient.put(`/notifications/overdue-rules/${rule.id}`, payload)
+        }
+      }
+      // Re-fetch to get server-assigned IDs and clear _isNew flags
+      await fetchRules()
     } catch {
       setError('Failed to save overdue reminder rules.')
     } finally {

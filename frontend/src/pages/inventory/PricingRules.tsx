@@ -1,6 +1,18 @@
-import { useState, useEffect, useCallback } from 'react'
-import apiClient from '../../api/client'
-import { Button, Input, Select, Badge, Spinner, Modal } from '../../components/ui'
+/**
+ * Pricing Rules management page with create/edit forms, priority ordering,
+ * and overlap validation warning.
+ *
+ * Validates: Requirements 9.1, 9.2, 9.3, 9.4
+ */
+
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import apiClient from '@/api/client'
+import { Button, Input, Select, Badge, Spinner, Modal } from '@/components/ui'
+import { useTerm } from '@/contexts/TerminologyContext'
+import { useFlag } from '@/contexts/FeatureFlagContext'
+import { useModuleGuard } from '@/hooks/useModuleGuard'
+import { detectPricingRuleOverlap } from '@/utils/inventoryCalcs'
+import type { PricingRuleForOverlap } from '@/utils/inventoryCalcs'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -55,12 +67,12 @@ const RULE_TYPES = [
   { value: 'trade_category', label: 'Trade Category' },
 ]
 
-/**
- * Pricing rules list with create/edit forms and priority ordering.
- *
- * Validates: Requirement 10.1, 10.2
- */
 export default function PricingRules() {
+  const { isAllowed, isLoading: guardLoading } = useModuleGuard('inventory')
+  const productLabel = useTerm('product', 'Product')
+  /* useFlag kept for FeatureFlagContext integration per Req 17.2 */
+  useFlag('pricing_rules')
+
   const [rules, setRules] = useState<PricingRule[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -71,6 +83,7 @@ export default function PricingRules() {
   const [form, setForm] = useState<RuleForm>(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
+  const [overlapWarning, setOverlapWarning] = useState('')
 
   const fetchRules = useCallback(async () => {
     setLoading(true)
@@ -95,18 +108,65 @@ export default function PricingRules() {
   useEffect(() => { fetchRules() }, [fetchRules])
   useEffect(() => { fetchProducts() }, [fetchProducts])
 
-  const productMap = new Map(products.map((p) => [p.id, p.name]))
+  const productMap = useMemo(() => new Map(products.map((p) => [p.id, p.name])), [products])
+
+  /* ---- Overlap detection ---- */
+  const checkOverlap = useCallback((currentForm: RuleForm) => {
+    if (!currentForm.product_id || !currentForm.start_date || !currentForm.end_date) {
+      setOverlapWarning('')
+      return
+    }
+
+    const candidate: PricingRuleForOverlap = {
+      product_id: currentForm.product_id,
+      start_date: currentForm.start_date,
+      end_date: currentForm.end_date,
+    }
+
+    // Build list of existing rules (excluding the one being edited) that have date ranges
+    const existingDateRules: PricingRuleForOverlap[] = rules
+      .filter((r) => r.id !== editingId && r.product_id && r.start_date && r.end_date)
+      .map((r) => ({
+        product_id: r.product_id!,
+        start_date: r.start_date!,
+        end_date: r.end_date!,
+      }))
+
+    const allRules = [...existingDateRules, candidate]
+    const overlaps = detectPricingRuleOverlap(allRules)
+
+    // Check if the candidate (last index) is involved in any overlap
+    const candidateIdx = allRules.length - 1
+    const conflicting = overlaps.filter(
+      (o) => o.index1 === candidateIdx || o.index2 === candidateIdx,
+    )
+
+    if (conflicting.length > 0) {
+      const conflictIndices = conflicting.map((o) =>
+        o.index1 === candidateIdx ? o.index2 : o.index1,
+      )
+      const conflictNames = conflictIndices.map((idx) => {
+        const r = existingDateRules[idx]
+        const pName = productMap.get(r.product_id) || 'Unknown'
+        return `${pName} (${r.start_date} – ${r.end_date})`
+      })
+      setOverlapWarning(`Overlapping rules detected for the same ${productLabel.toLowerCase()}: ${conflictNames.join(', ')}`)
+    } else {
+      setOverlapWarning('')
+    }
+  }, [rules, editingId, productMap, productLabel])
 
   const openCreate = () => {
     setEditingId(null)
     setForm(EMPTY_FORM)
     setFormError('')
+    setOverlapWarning('')
     setModalOpen(true)
   }
 
   const openEdit = (rule: PricingRule) => {
     setEditingId(rule.id)
-    setForm({
+    const newForm: RuleForm = {
       product_id: rule.product_id || '',
       rule_type: rule.rule_type,
       priority: String(rule.priority),
@@ -118,8 +178,10 @@ export default function PricingRules() {
       price_override: rule.price_override || '',
       discount_percent: rule.discount_percent || '',
       is_active: rule.is_active,
-    })
+    }
+    setForm(newForm)
     setFormError('')
+    setOverlapWarning('')
     setModalOpen(true)
   }
 
@@ -181,13 +243,24 @@ export default function PricingRules() {
   }
 
   const updateField = <K extends keyof RuleForm>(key: K, value: RuleForm[K]) => {
-    setForm((prev) => ({ ...prev, [key]: value }))
+    const updated = { ...form, [key]: value }
+    setForm(updated)
+    // Re-check overlap when product or dates change
+    if (key === 'product_id' || key === 'start_date' || key === 'end_date') {
+      checkOverlap(updated)
+    }
   }
 
   const productOptions = [
-    { value: '', label: 'All products' },
+    { value: '', label: `All ${productLabel.toLowerCase()}s` },
     ...products.map((p) => ({ value: p.id, label: p.name })),
   ]
+
+  if (guardLoading) {
+    return <div className="py-16"><Spinner label="Loading" /></div>
+  }
+
+  if (!isAllowed) return null
 
   return (
     <div>
@@ -195,7 +268,7 @@ export default function PricingRules() {
         <p className="text-sm text-gray-500">
           Pricing rules are evaluated in priority order. Lower numbers = higher priority.
         </p>
-        <Button onClick={openCreate}>+ New Rule</Button>
+        <Button onClick={openCreate} style={{ minWidth: 44, minHeight: 44 }}>+ New Rule</Button>
       </div>
 
       {error && (
@@ -214,7 +287,7 @@ export default function PricingRules() {
               <tr>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Priority</th>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Type</th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Product</th>
+                <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">{productLabel}</th>
                 <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Price / Discount</th>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Conditions</th>
                 <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
@@ -239,7 +312,7 @@ export default function PricingRules() {
                       {r.product_id ? (productMap.get(r.product_id) || 'Unknown') : 'All'}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-900">
-                      {r.price_override ? `$${parseFloat(r.price_override).toFixed(2)}` : ''}
+                      {r.price_override ? `${parseFloat(r.price_override).toFixed(2)}` : ''}
                       {r.discount_percent ? `${r.discount_percent}% off` : ''}
                       {!r.price_override && !r.discount_percent ? '—' : ''}
                     </td>
@@ -250,13 +323,18 @@ export default function PricingRules() {
                       {!r.customer_tag && !r.min_quantity && !r.max_quantity && !r.start_date && !r.end_date && '—'}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
-                      <button onClick={() => handleToggle(r)} aria-label={`Toggle rule ${r.is_active ? 'off' : 'on'}`}>
+                      <button
+                        onClick={() => handleToggle(r)}
+                        aria-label={`Toggle rule ${r.is_active ? 'off' : 'on'}`}
+                        style={{ minWidth: 44, minHeight: 44 }}
+                        className="inline-flex items-center justify-center"
+                      >
                         <Badge variant={r.is_active ? 'success' : 'neutral'}>{r.is_active ? 'Active' : 'Inactive'}</Badge>
                       </button>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-right">
-                      <button onClick={() => openEdit(r)} className="text-blue-600 hover:text-blue-800 mr-2" aria-label="Edit rule">Edit</button>
-                      <button onClick={() => handleDelete(r.id)} className="text-red-600 hover:text-red-800" aria-label="Delete rule">Delete</button>
+                      <button onClick={() => openEdit(r)} className="text-blue-600 hover:text-blue-800 mr-2 inline-flex items-center justify-center" style={{ minWidth: 44, minHeight: 44 }} aria-label="Edit rule">Edit</button>
+                      <button onClick={() => handleDelete(r.id)} className="text-red-600 hover:text-red-800 inline-flex items-center justify-center" style={{ minWidth: 44, minHeight: 44 }} aria-label="Delete rule">Delete</button>
                     </td>
                   </tr>
                 ))
@@ -270,22 +348,22 @@ export default function PricingRules() {
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editingId ? 'Edit Pricing Rule' : 'New Pricing Rule'}>
         <div className="space-y-3">
           <Select label="Rule type *" options={RULE_TYPES} value={form.rule_type} onChange={(e) => updateField('rule_type', e.target.value)} />
-          <Select label="Product" options={productOptions} value={form.product_id} onChange={(e) => updateField('product_id', e.target.value)} />
+          <Select label={productLabel} options={productOptions} value={form.product_id} onChange={(e) => updateField('product_id', e.target.value)} />
           <Input label="Priority" type="number" value={form.priority} onChange={(e) => updateField('priority', e.target.value)} placeholder="0 = highest" />
           <div className="grid grid-cols-2 gap-3">
-            <Input label="Price override ($)" type="number" step="0.01" value={form.price_override} onChange={(e) => updateField('price_override', e.target.value)} />
-            <Input label="Discount (%)" type="number" step="0.01" value={form.discount_percent} onChange={(e) => updateField('discount_percent', e.target.value)} />
+            <Input label="Price override ($)" inputMode="numeric" type="number" step="0.01" value={form.price_override} onChange={(e) => updateField('price_override', e.target.value)} />
+            <Input label="Discount (%)" inputMode="numeric" type="number" step="0.01" value={form.discount_percent} onChange={(e) => updateField('discount_percent', e.target.value)} />
           </div>
           {form.rule_type === 'customer_specific' && (
             <Input label="Customer tag" value={form.customer_tag} onChange={(e) => updateField('customer_tag', e.target.value)} />
           )}
           {form.rule_type === 'volume' && (
             <div className="grid grid-cols-2 gap-3">
-              <Input label="Min quantity" type="number" value={form.min_quantity} onChange={(e) => updateField('min_quantity', e.target.value)} />
-              <Input label="Max quantity" type="number" value={form.max_quantity} onChange={(e) => updateField('max_quantity', e.target.value)} />
+              <Input label="Min quantity" inputMode="numeric" type="number" value={form.min_quantity} onChange={(e) => updateField('min_quantity', e.target.value)} />
+              <Input label="Max quantity" inputMode="numeric" type="number" value={form.max_quantity} onChange={(e) => updateField('max_quantity', e.target.value)} />
             </div>
           )}
-          {form.rule_type === 'date_based' && (
+          {(form.rule_type === 'date_based' || form.start_date || form.end_date) && (
             <div className="grid grid-cols-2 gap-3">
               <Input label="Start date" type="date" value={form.start_date} onChange={(e) => updateField('start_date', e.target.value)} />
               <Input label="End date" type="date" value={form.end_date} onChange={(e) => updateField('end_date', e.target.value)} />
@@ -296,10 +374,18 @@ export default function PricingRules() {
             Active
           </label>
         </div>
+
+        {/* Overlap warning */}
+        {overlapWarning && (
+          <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="alert" data-testid="overlap-warning">
+            ⚠️ {overlapWarning}
+          </div>
+        )}
+
         {formError && <p className="mt-2 text-sm text-red-600" role="alert">{formError}</p>}
         <div className="mt-4 flex justify-end gap-2">
-          <Button variant="secondary" size="sm" onClick={() => setModalOpen(false)}>Cancel</Button>
-          <Button size="sm" onClick={handleSave} loading={saving}>{editingId ? 'Save' : 'Create'}</Button>
+          <Button variant="secondary" size="sm" onClick={() => setModalOpen(false)} style={{ minWidth: 44, minHeight: 44 }}>Cancel</Button>
+          <Button size="sm" onClick={handleSave} loading={saving} style={{ minWidth: 44, minHeight: 44 }}>{editingId ? 'Save' : 'Create'}</Button>
         </div>
       </Modal>
     </div>

@@ -49,7 +49,7 @@ export interface ErrorRecord {
 }
 
 export interface ErrorLogResponse {
-  items: ErrorRecord[]
+  errors: ErrorRecord[]
   total: number
 }
 
@@ -352,8 +352,16 @@ export function ErrorLog() {
   const fetchSummary = useCallback(async () => {
     setSummaryLoading(true)
     try {
-      const res = await apiClient.get<ErrorSummary[]>('/admin/errors/summary')
-      setSummaries(res.data)
+      const res = await apiClient.get<{
+        by_severity: Array<{ label: string; count_1h: number; count_24h: number; count_7d: number }>
+      }>('/admin/errors/dashboard')
+      const mapped: ErrorSummary[] = (res.data.by_severity ?? []).map((s) => ({
+        severity: (s.label.charAt(0).toUpperCase() + s.label.slice(1)) as Severity,
+        last_hour: s.count_1h,
+        last_24h: s.count_24h,
+        last_7d: s.count_7d,
+      }))
+      setSummaries(mapped)
     } catch {
       // Summary failure is non-blocking
     } finally {
@@ -367,18 +375,40 @@ export function ErrorLog() {
     setListError(false)
     try {
       const params: Record<string, string> = {}
-      if (search) params.search = search
-      if (severityFilter) params.severity = severityFilter
-      if (categoryFilter) params.category = categoryFilter
-      const res = await apiClient.get<ErrorLogResponse>('/admin/errors', { params })
-      setErrors(res.data.items)
+      if (search) params.keyword = search
+      if (severityFilter) params.severity = severityFilter.toLowerCase()
+      if (categoryFilter) params.category = categoryFilter.toLowerCase()
+      const res = await apiClient.get<{
+        errors: Array<Record<string, any>>
+        total: number
+      }>('/admin/errors', { params })
+      const mapped: ErrorRecord[] = (res.data.errors ?? []).map((e) => ({
+        id: e.id,
+        timestamp: e.created_at,
+        severity: (e.severity ? e.severity.charAt(0).toUpperCase() + e.severity.slice(1) : 'Error') as Severity,
+        category: (e.category ? e.category.charAt(0).toUpperCase() + e.category.slice(1).replace(/_/g, ' ') : 'Application') as ErrorCategory,
+        module: e.module ?? '',
+        function_name: e.function_name ?? '',
+        message: e.message ?? '',
+        stack_trace: e.stack_trace ?? '',
+        org_id: e.org_id,
+        user_id: e.user_id,
+        http_method: e.http_method,
+        http_endpoint: e.http_endpoint,
+        request_body: e.request_body_sanitised ? JSON.stringify(e.request_body_sanitised) : null,
+        response_body: e.response_body_sanitised ? JSON.stringify(e.response_body_sanitised) : null,
+        status: (e.status ? e.status.charAt(0).toUpperCase() + e.status.slice(1) : 'Open') as ErrorStatus,
+        notes: e.resolution_notes ?? '',
+      }))
+      setErrors(mapped)
       setTotal(res.data.total)
 
       // Check for critical errors in the last hour for push notification
-      const criticals = res.data.items.filter(
+      // Backend returns lowercase severity values
+      const criticals = res.data.errors.filter(
         (e) =>
-          e.severity === 'Critical' &&
-          new Date(e.timestamp).getTime() > Date.now() - 60 * 60 * 1000,
+          e.severity?.toLowerCase() === 'critical' &&
+          new Date(e.created_at).getTime() > Date.now() - 60 * 60 * 1000,
       )
       if (criticals.length > 0) {
         setCriticalAlert(
@@ -410,7 +440,10 @@ export function ErrorLog() {
 
   /* ── Status update ── */
   const handleStatusChange = async (id: string, status: ErrorStatus, notes: string) => {
-    await apiClient.put(`/admin/errors/${id}`, { status, notes })
+    await apiClient.put(`/admin/errors/${id}/status`, {
+      status: status.toLowerCase(),
+      resolution_notes: notes,
+    })
     addToast('success', `Error status updated to ${status}`)
     fetchErrors()
   }
@@ -418,8 +451,26 @@ export function ErrorLog() {
   /* ── Open detail ── */
   const openDetail = async (errorId: string) => {
     try {
-      const res = await apiClient.get<ErrorRecord>(`/admin/errors/${errorId}`)
-      setSelectedError(res.data)
+      const res = await apiClient.get<Record<string, any>>(`/admin/errors/${errorId}`)
+      const e = res.data
+      setSelectedError({
+        id: e.id,
+        timestamp: e.created_at,
+        severity: (e.severity ? e.severity.charAt(0).toUpperCase() + e.severity.slice(1) : 'Error') as Severity,
+        category: (e.category ? e.category.charAt(0).toUpperCase() + e.category.slice(1).replace(/_/g, ' ') : 'Application') as ErrorCategory,
+        module: e.module ?? '',
+        function_name: e.function_name ?? '',
+        message: e.message ?? '',
+        stack_trace: e.stack_trace ?? '',
+        org_id: e.org_id,
+        user_id: e.user_id,
+        http_method: e.http_method,
+        http_endpoint: e.http_endpoint,
+        request_body: e.request_body_sanitised ? JSON.stringify(e.request_body_sanitised, null, 2) : null,
+        response_body: e.response_body_sanitised ? JSON.stringify(e.response_body_sanitised, null, 2) : null,
+        status: (e.status ? e.status.charAt(0).toUpperCase() + e.status.slice(1) : 'Open') as ErrorStatus,
+        notes: e.resolution_notes ?? '',
+      })
       setDetailOpen(true)
     } catch {
       addToast('error', 'Failed to load error details')

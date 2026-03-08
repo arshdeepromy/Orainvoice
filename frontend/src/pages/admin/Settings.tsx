@@ -1,10 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Button } from '@/components/ui/Button'
-import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
 import { Input } from '@/components/ui/Input'
-import { Modal } from '@/components/ui/Modal'
 import { Tabs } from '@/components/ui/Tabs'
 import { DataTable, type Column } from '@/components/ui/DataTable'
 import { ToastContainer, useToast } from '@/components/ui/Toast'
@@ -61,21 +59,6 @@ export interface PlatformSettings {
   announcement_banner: string
 }
 
-/* ── Available modules for plans ── */
-
-const AVAILABLE_MODULES = [
-  'invoices',
-  'quotes',
-  'job_cards',
-  'payments',
-  'bookings',
-  'inventory',
-  'notifications',
-  'reports',
-  'customer_portal',
-  'fleet_accounts',
-]
-
 /* ── Helpers ── */
 
 function formatDate(iso: string | null): string {
@@ -89,310 +72,7 @@ function formatDate(iso: string | null): string {
   })
 }
 
-function formatCurrency(amount: number): string {
-  return `$${amount.toFixed(2)}`
-}
 
-/* ── Plan Edit Modal ── */
-
-function PlanModal({
-  plan,
-  open,
-  onClose,
-  onSave,
-}: {
-  plan: SubscriptionPlan | null
-  open: boolean
-  onClose: () => void
-  onSave: (data: Partial<SubscriptionPlan>) => Promise<void>
-}) {
-  const [name, setName] = useState('')
-  const [price, setPrice] = useState('')
-  const [seats, setSeats] = useState('')
-  const [storage, setStorage] = useState('')
-  const [carjam, setCarjam] = useState('')
-  const [modules, setModules] = useState<string[]>([])
-  const [isPublic, setIsPublic] = useState(true)
-  const [saving, setSaving] = useState(false)
-
-  useEffect(() => {
-    if (plan) {
-      setName(plan.name)
-      setPrice(String(plan.monthly_price_nzd))
-      setSeats(String(plan.user_seats))
-      setStorage(String(plan.storage_quota_gb))
-      setCarjam(String(plan.carjam_lookups_included))
-      setModules(plan.enabled_modules)
-      setIsPublic(plan.is_public)
-    } else {
-      setName('')
-      setPrice('')
-      setSeats('')
-      setStorage('')
-      setCarjam('')
-      setModules([])
-      setIsPublic(true)
-    }
-  }, [plan, open])
-
-  const toggleModule = (mod: string) => {
-    setModules((prev) =>
-      prev.includes(mod) ? prev.filter((m) => m !== mod) : [...prev, mod],
-    )
-  }
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setSaving(true)
-    try {
-      await onSave({
-        name,
-        monthly_price_nzd: parseFloat(price),
-        user_seats: parseInt(seats, 10),
-        storage_quota_gb: parseInt(storage, 10),
-        carjam_lookups_included: parseInt(carjam, 10),
-        enabled_modules: modules,
-        is_public: isPublic,
-      })
-      onClose()
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Modal open={open} onClose={onClose} title={plan ? 'Edit Plan' : 'Create Plan'} className="max-w-lg">
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <Input label="Plan name" value={name} onChange={(e) => setName(e.target.value)} required />
-        <div className="grid grid-cols-2 gap-4">
-          <Input label="Monthly price (NZD)" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} required />
-          <Input label="User seats" type="number" value={seats} onChange={(e) => setSeats(e.target.value)} required />
-        </div>
-        <div className="grid grid-cols-2 gap-4">
-          <Input label="Storage (GB)" type="number" value={storage} onChange={(e) => setStorage(e.target.value)} required />
-          <Input label="Carjam lookups" type="number" value={carjam} onChange={(e) => setCarjam(e.target.value)} required />
-        </div>
-
-        <fieldset>
-          <legend className="text-sm font-medium text-gray-700 mb-2">Enabled modules</legend>
-          <div className="flex flex-wrap gap-2">
-            {AVAILABLE_MODULES.map((mod) => (
-              <label key={mod} className="flex items-center gap-1.5 text-sm text-gray-700">
-                <input
-                  type="checkbox"
-                  checked={modules.includes(mod)}
-                  onChange={() => toggleModule(mod)}
-                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                {mod.replace(/_/g, ' ')}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        <label className="flex items-center gap-2 text-sm text-gray-700">
-          <input
-            type="checkbox"
-            checked={isPublic}
-            onChange={(e) => setIsPublic(e.target.checked)}
-            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-          />
-          Publicly visible
-        </label>
-
-        <div className="flex gap-3 pt-2">
-          <Button type="submit" loading={saving}>
-            {plan ? 'Save changes' : 'Create plan'}
-          </Button>
-          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
-        </div>
-      </form>
-    </Modal>
-  )
-}
-
-/* ── Plans Tab ── */
-
-function PlansTab({ onToast }: { onToast: (v: 'success' | 'error', msg: string) => void }) {
-  const [plans, setPlans] = useState<SubscriptionPlan[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(false)
-  const [editPlan, setEditPlan] = useState<SubscriptionPlan | null>(null)
-  const [modalOpen, setModalOpen] = useState(false)
-
-  const fetchPlans = useCallback(async () => {
-    setLoading(true)
-    setError(false)
-    try {
-      const res = await apiClient.get<SubscriptionPlan[]>('/admin/plans')
-      setPlans(res.data)
-    } catch {
-      setError(true)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { fetchPlans() }, [fetchPlans])
-
-  const handleSave = async (data: Partial<SubscriptionPlan>) => {
-    if (editPlan) {
-      await apiClient.put(`/admin/plans/${editPlan.id}`, data)
-      onToast('success', 'Plan updated')
-    } else {
-      await apiClient.post('/admin/plans', data)
-      onToast('success', 'Plan created')
-    }
-    fetchPlans()
-  }
-
-  const handleArchive = async (plan: SubscriptionPlan) => {
-    try {
-      await apiClient.put(`/admin/plans/${plan.id}`, { is_archived: !plan.is_archived })
-      onToast('success', plan.is_archived ? 'Plan restored' : 'Plan archived')
-      fetchPlans()
-    } catch {
-      onToast('error', 'Failed to update plan')
-    }
-  }
-
-  const columns: Column<SubscriptionPlan>[] = [
-    { key: 'name', header: 'Name', sortable: true },
-    { key: 'monthly_price_nzd', header: 'Price/mo', sortable: true, render: (r) => formatCurrency(r.monthly_price_nzd) },
-    { key: 'user_seats', header: 'Seats', sortable: true },
-    { key: 'storage_quota_gb', header: 'Storage (GB)', sortable: true },
-    { key: 'carjam_lookups_included', header: 'Carjam lookups', sortable: true },
-    {
-      key: 'enabled_modules',
-      header: 'Modules',
-      render: (r) => (
-        <div className="flex flex-wrap gap-1 max-w-xs">
-          {r.enabled_modules.slice(0, 3).map((m) => (
-            <Badge key={m} variant="neutral">{m.replace(/_/g, ' ')}</Badge>
-          ))}
-          {r.enabled_modules.length > 3 && (
-            <Badge variant="neutral">+{r.enabled_modules.length - 3}</Badge>
-          )}
-        </div>
-      ),
-    },
-    {
-      key: 'status',
-      header: 'Status',
-      render: (r) => (
-        <div className="flex gap-1">
-          {r.is_archived && <Badge variant="warning">Archived</Badge>}
-          {!r.is_archived && r.is_public && <Badge variant="success">Public</Badge>}
-          {!r.is_archived && !r.is_public && <Badge variant="neutral">Hidden</Badge>}
-        </div>
-      ),
-    },
-    {
-      key: 'actions',
-      header: '',
-      render: (r) => (
-        <div className="flex gap-2">
-          <Button variant="secondary" size="sm" onClick={() => { setEditPlan(r); setModalOpen(true) }}>
-            Edit
-          </Button>
-          <Button variant="secondary" size="sm" onClick={() => handleArchive(r)}>
-            {r.is_archived ? 'Restore' : 'Archive'}
-          </Button>
-        </div>
-      ),
-    },
-  ]
-
-  if (loading) return <div className="flex justify-center py-12"><Spinner label="Loading plans" /></div>
-  if (error) return <AlertBanner variant="error" title="Failed to load plans">Could not load subscription plans.</AlertBanner>
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <p className="text-sm text-gray-500">{plans.length} plan{plans.length !== 1 ? 's' : ''}</p>
-        <Button onClick={() => { setEditPlan(null); setModalOpen(true) }}>Create plan</Button>
-      </div>
-      <DataTable columns={columns} data={plans} keyField="id" caption="Subscription plans" />
-      <PlanModal
-        plan={editPlan}
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        onSave={handleSave}
-      />
-    </div>
-  )
-}
-
-/* ── Storage Tab ── */
-
-function StorageTab({ onToast }: { onToast: (v: 'success' | 'error', msg: string) => void }) {
-  const [incrementGb, setIncrementGb] = useState('')
-  const [pricePerGb, setPricePerGb] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState(false)
-
-  const fetchPricing = useCallback(async () => {
-    setLoading(true)
-    setError(false)
-    try {
-      const res = await apiClient.get<PlatformSettings>('/admin/settings')
-      setIncrementGb(String(res.data.storage_pricing.increment_gb))
-      setPricePerGb(String(res.data.storage_pricing.price_per_gb_nzd))
-    } catch {
-      setError(true)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { fetchPricing() }, [fetchPricing])
-
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setSaving(true)
-    try {
-      await apiClient.put('/admin/settings', {
-        storage_pricing: {
-          increment_gb: parseInt(incrementGb, 10),
-          price_per_gb_nzd: parseFloat(pricePerGb),
-        },
-      })
-      onToast('success', 'Storage pricing updated')
-    } catch {
-      onToast('error', 'Failed to update storage pricing')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  if (loading) return <div className="flex justify-center py-12"><Spinner label="Loading storage pricing" /></div>
-  if (error) return <AlertBanner variant="error" title="Failed to load storage pricing">Could not load storage pricing configuration.</AlertBanner>
-
-  return (
-    <form onSubmit={handleSave} className="max-w-md space-y-4">
-      <h2 className="text-lg font-semibold text-gray-900">Storage Tier Pricing</h2>
-      <Input
-        label="Storage increment (GB)"
-        type="number"
-        value={incrementGb}
-        onChange={(e) => setIncrementGb(e.target.value)}
-        helperText="Size of each storage add-on block organisations can purchase"
-        required
-      />
-      <Input
-        label="Price per GB (NZD)"
-        type="number"
-        step="0.01"
-        value={pricePerGb}
-        onChange={(e) => setPricePerGb(e.target.value)}
-        helperText="Monthly cost per GB of additional storage"
-        required
-      />
-      <Button type="submit" loading={saving}>Save pricing</Button>
-    </form>
-  )
-}
 
 /* ── Vehicle DB Tab ── */
 
@@ -409,7 +89,7 @@ function VehicleDbTab({ onToast }: { onToast: (v: 'success' | 'error', msg: stri
     setLoading(true)
     setError(false)
     try {
-      const res = await apiClient.get<VehicleDbStats>('/admin/vehicle-db')
+      const res = await apiClient.get<VehicleDbStats>('/admin/vehicle-db/stats')
       setStats(res.data)
     } catch {
       setError(true)
@@ -425,7 +105,7 @@ function VehicleDbTab({ onToast }: { onToast: (v: 'success' | 'error', msg: stri
     if (!searchRego.trim()) return
     setSearching(true)
     try {
-      const res = await apiClient.get<VehicleRecord[]>(`/admin/vehicle-db/${encodeURIComponent(searchRego.trim())}`)
+      const res = await apiClient.get<VehicleRecord[]>(`/admin/vehicle-db/search/${encodeURIComponent(searchRego.trim())}`)
       setSearchResults(Array.isArray(res.data) ? res.data : [res.data])
     } catch {
       onToast('error', 'Vehicle not found')
@@ -448,14 +128,14 @@ function VehicleDbTab({ onToast }: { onToast: (v: 'success' | 'error', msg: stri
     }
   }
 
-  const handleDelete = async (rego: string) => {
+  const handleDelete = async (_rego: string) => {
     try {
-      await apiClient.delete(`/admin/vehicle-db/${encodeURIComponent(rego)}`)
-      onToast('success', `Vehicle ${rego} deleted`)
-      setSearchResults((prev) => prev.filter((v) => v.rego !== rego))
+      await apiClient.delete('/admin/vehicle-db/stale', { params: { stale_days: 0 } })
+      onToast('success', 'Stale vehicle records purged')
+      setSearchResults([])
       fetchStats()
     } catch {
-      onToast('error', `Failed to delete ${rego}`)
+      onToast('error', 'Failed to purge stale records')
     }
   }
 
@@ -472,9 +152,6 @@ function VehicleDbTab({ onToast }: { onToast: (v: 'success' | 'error', msg: stri
         <div className="flex gap-2">
           <Button variant="secondary" size="sm" onClick={() => handleRefresh(r.rego)} loading={refreshing === r.rego}>
             Refresh
-          </Button>
-          <Button variant="secondary" size="sm" onClick={() => handleDelete(r.rego)}>
-            Delete
           </Button>
         </div>
       ),
@@ -502,17 +179,20 @@ function VehicleDbTab({ onToast }: { onToast: (v: 'success' | 'error', msg: stri
         )}
       </div>
 
-      <form onSubmit={handleSearch} className="flex gap-3 items-end max-w-md" role="search" aria-label="Vehicle search">
-        <div className="flex-1">
-          <Input
-            label="Search by registration"
-            placeholder="e.g. ABC123"
-            value={searchRego}
-            onChange={(e) => setSearchRego(e.target.value)}
-          />
-        </div>
-        <Button type="submit" loading={searching}>Search</Button>
-      </form>
+      <div className="flex gap-3 items-end">
+        <form onSubmit={handleSearch} className="flex gap-3 items-end max-w-md flex-1" role="search" aria-label="Vehicle search">
+          <div className="flex-1">
+            <Input
+              label="Search by registration"
+              placeholder="e.g. ABC123"
+              value={searchRego}
+              onChange={(e) => setSearchRego(e.target.value)}
+            />
+          </div>
+          <Button type="submit" loading={searching}>Search</Button>
+        </form>
+        <Button variant="secondary" onClick={() => handleDelete('')}>Purge stale records</Button>
+      </div>
 
       {searchResults.length > 0 && (
         <DataTable
@@ -541,10 +221,20 @@ function TermsTab({ onToast }: { onToast: (v: 'success' | 'error', msg: string) 
     setLoading(true)
     setError(false)
     try {
-      const res = await apiClient.get<PlatformSettings>('/admin/settings')
-      setContent(res.data.terms_and_conditions)
-      setCurrentVersion(res.data.terms_version)
-      setHistory(res.data.terms_history ?? [])
+      const res = await apiClient.get<Record<string, any>>('/admin/settings')
+      const tc = res.data.terms_and_conditions
+      if (tc && typeof tc === 'object') {
+        setContent(tc.content ?? '')
+        setCurrentVersion(tc.version ?? 0)
+      } else {
+        setContent('')
+        setCurrentVersion(0)
+      }
+      setHistory((res.data.terms_history ?? []).map((h: any) => ({
+        version: h.version,
+        content: h.content,
+        updated_at: h.updated_at,
+      })))
     } catch {
       setError(true)
     } finally {
@@ -639,8 +329,8 @@ function AnnouncementsTab({ onToast }: { onToast: (v: 'success' | 'error', msg: 
     setLoading(true)
     setError(false)
     try {
-      const res = await apiClient.get<PlatformSettings>('/admin/settings')
-      setBanner(res.data.announcement_banner)
+      const res = await apiClient.get<Record<string, any>>('/admin/settings')
+      setBanner(res.data.announcement_banner ?? '')
     } catch {
       setError(true)
     } finally {
@@ -717,8 +407,6 @@ export function Settings() {
   const { toasts, addToast, dismissToast } = useToast()
 
   const tabs = [
-    { id: 'plans', label: 'Plans', content: <PlansTab onToast={addToast} /> },
-    { id: 'storage', label: 'Storage', content: <StorageTab onToast={addToast} /> },
     { id: 'vehicle-db', label: 'Vehicle DB', content: <VehicleDbTab onToast={addToast} /> },
     { id: 'terms', label: 'T&C', content: <TermsTab onToast={addToast} /> },
     { id: 'announcements', label: 'Announcements', content: <AnnouncementsTab onToast={addToast} /> },
@@ -728,7 +416,7 @@ export function Settings() {
     <div>
       <h1 className="text-2xl font-semibold text-gray-900 mb-6">Platform Settings</h1>
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
-      <Tabs tabs={tabs} defaultTab="plans" />
+      <Tabs tabs={tabs} defaultTab="vehicle-db" />
     </div>
   )
 }

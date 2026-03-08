@@ -59,6 +59,12 @@ class SubscriptionPlan(Base):
     is_public: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     storage_tier_pricing: Mapped[dict | None] = mapped_column(JSONB, nullable=True, server_default="'{}'")
+    trial_duration: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
+    trial_duration_unit: Mapped[str | None] = mapped_column(String(10), nullable=True, server_default="'days'")
+    sms_included: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    per_sms_cost_nzd: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, server_default="0")
+    sms_included_quota: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    sms_package_pricing: Mapped[dict | None] = mapped_column(JSONB, nullable=True, server_default="'[]'")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -100,7 +106,12 @@ class Organisation(Base):
     storage_used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     carjam_lookups_this_month: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     carjam_lookups_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sms_sent_this_month: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    sms_sent_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     settings: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="'{}'")
+    locale: Mapped[str] = mapped_column(
+        String(10), nullable=False, server_default="'en'"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -118,6 +129,37 @@ class Organisation(Base):
     # Relationships
     plan: Mapped[SubscriptionPlan] = relationship(back_populates="organisations")
     users: Mapped[list] = relationship("User", back_populates="organisation")
+    sms_package_purchases: Mapped[list[SmsPackagePurchase]] = relationship(back_populates="organisation")
+
+
+# ---------------------------------------------------------------------------
+# SMS Package Purchases
+# ---------------------------------------------------------------------------
+
+class SmsPackagePurchase(Base):
+    """SMS package purchase record for FIFO credit tracking."""
+
+    __tablename__ = "sms_package_purchases"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False
+    )
+    tier_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    sms_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    price_nzd: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
+    credits_remaining: Mapped[int] = mapped_column(Integer, nullable=False)
+    purchased_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    # Relationships
+    organisation: Mapped[Organisation] = relationship(back_populates="sms_package_purchases")
 
 
 # ---------------------------------------------------------------------------
@@ -286,4 +328,65 @@ class ErrorLog(Base):
             "status IN ('open','investigating','resolved')",
             name="ck_error_log_status",
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# SMS Verification Providers
+# ---------------------------------------------------------------------------
+
+class SmsVerificationProvider(Base):
+    """SMS verification provider configuration for phone number verification."""
+
+    __tablename__ = "sms_verification_providers"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
+    )
+    provider_key: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    icon: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    credentials_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    credentials_set: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    config: Mapped[dict | None] = mapped_column(JSONB, nullable=True, server_default="'{}'::jsonb")
+    setup_guide: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+# ---------------------------------------------------------------------------
+# Email Providers
+# ---------------------------------------------------------------------------
+
+class EmailProvider(Base):
+    """Email/SMTP provider configuration for transactional email delivery."""
+
+    __tablename__ = "email_providers"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
+    )
+    provider_key: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    smtp_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    smtp_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    credentials_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    credentials_set: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    config: Mapped[dict | None] = mapped_column(JSONB, nullable=True, server_default="'{}'::jsonb")
+    setup_guide: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )

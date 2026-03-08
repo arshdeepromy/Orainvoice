@@ -13,6 +13,7 @@ Business rules:
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
@@ -27,6 +28,8 @@ from app.modules.multi_currency.schemas import (
     ExchangeGainLoss,
     ExchangeRateCreate,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class CurrencyService:
@@ -354,5 +357,6 @@ def _get_oxr_app_id() -> str | None:
     try:
         from app.config import settings
         return getattr(settings, "oxr_app_id", None)
-    except Exception:
+    except (ImportError, AttributeError) as exc:
+        logger.warning("Failed to retrieve OXR app ID: %s", exc)
         return None

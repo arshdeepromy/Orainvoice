@@ -96,9 +96,6 @@ class JobCard(Base):
         cascade="all, delete-orphan",
         order_by="JobCardItem.sort_order",
     )
-    time_entries: Mapped[list[TimeEntry]] = relationship(
-        back_populates="job_card"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +158,7 @@ class TimeEntry(Base):
     """Time tracking entry linked to a job card."""
 
     __tablename__ = "time_entries"
+    __table_args__ = ({"extend_existing": True},)
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -197,10 +195,4 @@ class TimeEntry(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    # Relationships
-    organisation = relationship("Organisation", backref="time_entries")
-    user = relationship("User", backref="time_entries")
-    job_card: Mapped[JobCard | None] = relationship(
-        back_populates="time_entries"
-    )
-    invoice = relationship("Invoice", backref="time_entries")
+    # Relationships removed — V2 model is authoritative for this table

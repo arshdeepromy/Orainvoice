@@ -19,7 +19,7 @@ from app.core.redis import get_redis
 from app.modules.admin.analytics_service import GlobalAnalyticsService, Period
 from app.modules.auth.rbac import require_role
 
-router = APIRouter(dependencies=[Depends(require_role("global_admin"))])
+router = APIRouter(dependencies=[require_role("global_admin")])
 
 
 def _get_service(

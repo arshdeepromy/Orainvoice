@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.modules.catalogue.models import PartsCatalogue
-from app.modules.inventory.models import StockMovement
+from app.modules.stock.models import StockMovement
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +276,8 @@ async def get_stock_report(
 # Supplier management — Requirements: 63.1, 63.2, 63.3
 # ---------------------------------------------------------------------------
 
-from app.modules.inventory.models import Supplier, PartSupplier
+from app.modules.suppliers.models import Supplier
+from app.modules.inventory.models import PartSupplier
 
 
 def _supplier_to_dict(supplier: Supplier) -> dict:

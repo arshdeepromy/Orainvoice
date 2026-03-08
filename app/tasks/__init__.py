@@ -113,6 +113,16 @@ BEAT_SCHEDULE = {
         "task": "app.tasks.subscriptions.report_carjam_overage_task",
         "schedule": crontab(hour=4, minute=0),
     },
+    # -- SMS overage billing (daily at 4:15am NZST) --
+    "report-sms-overage": {
+        "task": "app.tasks.subscriptions.report_sms_overage_task",
+        "schedule": crontab(hour=4, minute=15),
+    },
+    # -- Monthly SMS counter reset (1st of each month at 00:05 NZST) --
+    "reset-sms-counters": {
+        "task": "app.tasks.scheduled.reset_sms_counters_task",
+        "schedule": crontab(day_of_month=1, hour=0, minute=5),
+    },
     # -- Recurring invoice generation (daily at 6am NZST) --
     "generate-recurring-invoices": {
         "task": "app.tasks.scheduled.generate_recurring_invoices_task",

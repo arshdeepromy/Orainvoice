@@ -67,6 +67,68 @@ class OrgCarjamUsageResponse(BaseModel):
     per_lookup_cost_nzd: float
 
 
+# ---------------------------------------------------------------------------
+# SMS usage monitoring & package schemas (Req 5.2, 5.4, 2.6, 2.7)
+# ---------------------------------------------------------------------------
+
+
+class SmsPackageTierPricing(BaseModel):
+    """A single SMS package tier pricing entry (mirrors StorageTierPricing)."""
+
+    tier_name: str = Field(..., min_length=1, max_length=100, description="Tier label (e.g. '500 SMS')")
+    sms_quantity: int = Field(..., gt=0, description="Number of SMS credits in this package")
+    price_nzd: float = Field(..., ge=0, description="One-time price in NZD for this package")
+
+
+class OrgSmsUsageRow(BaseModel):
+    """Single organisation's SMS usage for the current billing month."""
+
+    organisation_id: str
+    organisation_name: str
+    total_sent: int = Field(..., description="Total business SMS sent this month")
+    included_in_plan: int = Field(..., description="SMS included in subscription plan")
+    package_credits_remaining: int = Field(..., description="Remaining credits from purchased packages")
+    effective_quota: int = Field(..., description="Plan quota + package credits")
+    overage_count: int = Field(..., description="SMS exceeding effective quota")
+    overage_charge_nzd: float = Field(..., description="Overage charge accrued (NZD)")
+
+
+class AdminSmsUsageResponse(BaseModel):
+    """GET /api/v1/admin/sms-usage — all orgs' SMS usage table."""
+
+    organisations: list[OrgSmsUsageRow]
+
+
+class OrgSmsUsageResponse(BaseModel):
+    """GET /api/v1/org/sms-usage — single org's own SMS usage."""
+
+    organisation_id: str
+    organisation_name: str
+    total_sent: int
+    included_in_plan: int
+    package_credits_remaining: int
+    effective_quota: int
+    overage_count: int
+    overage_charge_nzd: float
+    per_sms_cost_nzd: float
+
+
+class SmsPackagePurchaseResponse(BaseModel):
+    """Single SMS package purchase record."""
+
+    id: str
+    tier_name: str
+    sms_quantity: int
+    price_nzd: float
+    credits_remaining: int
+    purchased_at: datetime
+
+
+class SmsPackagePurchaseRequest(BaseModel):
+    """POST /api/v1/org/sms-packages/purchase request body."""
+
+    tier_name: str = Field(..., min_length=1, description="Name of the SMS package tier to purchase")
+
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +305,7 @@ class IntegrationConfigGetResponse(BaseModel):
     name: str
     is_verified: bool
     updated_at: datetime | None = None
-    config: dict = Field(
+    fields: dict = Field(
         default_factory=dict,
         description="Non-secret configuration fields",
     )
@@ -276,6 +338,15 @@ class PlanCreateRequest(BaseModel):
         default_factory=list,
         description="Storage add-on pricing tiers",
     )
+    trial_duration: int = Field(default=0, ge=0, description="Trial period length (0 = no trial)")
+    trial_duration_unit: str = Field(default="days", description="Trial period unit: days, weeks, or months")
+    sms_included: bool = Field(default=False, description="Whether SMS services are enabled for this plan")
+    per_sms_cost_nzd: float = Field(default=0, ge=0, description="Cost per SMS message in NZD beyond included quota")
+    sms_included_quota: int = Field(default=0, ge=0, description="Number of SMS messages included per billing month")
+    sms_package_pricing: list[SmsPackageTierPricing] = Field(
+        default_factory=list,
+        description="SMS package add-on pricing tiers",
+    )
 
 
 class PlanUpdateRequest(BaseModel):
@@ -292,6 +363,15 @@ class PlanUpdateRequest(BaseModel):
         None,
         description="Storage add-on pricing tiers",
     )
+    trial_duration: int | None = Field(None, ge=0, description="Trial period length (0 = no trial)")
+    trial_duration_unit: str | None = Field(None, description="Trial period unit: days, weeks, or months")
+    sms_included: bool | None = Field(None, description="Whether SMS services are enabled for this plan")
+    per_sms_cost_nzd: float | None = Field(None, ge=0, description="Cost per SMS message in NZD beyond included quota")
+    sms_included_quota: int | None = Field(None, ge=0, description="Number of SMS messages included per billing month")
+    sms_package_pricing: list[SmsPackageTierPricing] | None = Field(
+        None,
+        description="SMS package add-on pricing tiers",
+    )
 
 
 class PlanResponse(BaseModel):
@@ -307,6 +387,12 @@ class PlanResponse(BaseModel):
     is_public: bool
     is_archived: bool
     storage_tier_pricing: list[StorageTierPricing]
+    trial_duration: int = 0
+    trial_duration_unit: str = "days"
+    sms_included: bool = False
+    per_sms_cost_nzd: float = 0
+    sms_included_quota: int = 0
+    sms_package_pricing: list[SmsPackageTierPricing] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -642,6 +728,13 @@ class TermsAndConditionsEntry(BaseModel):
     updated_at: str
 
 
+class StoragePricingConfig(BaseModel):
+    """Storage pricing configuration."""
+
+    increment_gb: int = 1
+    price_per_gb_nzd: float = 0.50
+
+
 class PlatformSettingsResponse(BaseModel):
     """GET /api/v1/admin/settings response."""
 
@@ -649,6 +742,7 @@ class PlatformSettingsResponse(BaseModel):
     terms_history: list[TermsAndConditionsEntry] = Field(default_factory=list)
     announcement_banner: str | None = None
     announcement_active: bool = False
+    storage_pricing: StoragePricingConfig = Field(default_factory=StoragePricingConfig)
 
 
 class PlatformSettingsUpdateRequest(BaseModel):
@@ -666,6 +760,9 @@ class PlatformSettingsUpdateRequest(BaseModel):
     announcement_active: bool | None = Field(
         None, description="Whether the announcement banner is visible"
     )
+    storage_pricing: StoragePricingConfig | None = Field(
+        None, description="Storage pricing configuration"
+    )
 
 
 class PlatformSettingsUpdateResponse(BaseModel):
@@ -675,6 +772,7 @@ class PlatformSettingsUpdateResponse(BaseModel):
     terms_version: int | None = None
     announcement_banner: str | None = None
     announcement_active: bool | None = None
+    storage_pricing: StoragePricingConfig | None = None
 
 
 class GlobalVehicleSearchResult(BaseModel):

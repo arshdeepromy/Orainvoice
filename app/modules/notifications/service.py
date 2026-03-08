@@ -1,13 +1,15 @@
 """Service layer for email template customisation and delivery tracking.
 
 Provides CRUD operations for notification templates per organisation,
-email delivery logging, log querying, and bounce flagging on customers.
+email delivery logging, log querying, bounce flagging on customers,
+and locale-aware template rendering.
 
 Requirements: 34.1, 34.2, 34.3, 35.1, 35.2, 35.3
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
@@ -23,6 +25,9 @@ from app.modules.notifications.schemas import (
     TEMPLATE_VARIABLES,
     get_default_body_blocks,
 )
+from app.modules.admin.service import increment_sms_usage
+
+logger = logging.getLogger(__name__)
 
 
 def _template_to_dict(tpl: NotificationTemplate) -> dict[str, Any]:
@@ -36,6 +41,89 @@ def _template_to_dict(tpl: NotificationTemplate) -> dict[str, Any]:
         "is_enabled": tpl.is_enabled,
         "updated_at": tpl.updated_at.isoformat() if tpl.updated_at else "",
     }
+
+
+async def _get_org_locale(db: AsyncSession, *, org_id: uuid.UUID) -> str:
+    """Return the organisation's configured locale, defaulting to ``'en'``.
+
+    The locale column stores values like ``'en'``, ``'fr'``, ``'en-NZ'``, etc.
+    We extract the language code (the part before any hyphen) for template
+    variant lookup.
+    """
+    from app.modules.admin.models import Organisation
+
+    stmt = select(Organisation.locale).where(Organisation.id == org_id)
+    result = await db.execute(stmt)
+    locale_value = result.scalar_one_or_none()
+
+    if not locale_value:
+        return "en"
+
+    # Extract language code: "en-NZ" -> "en", "fr" -> "fr"
+    lang = locale_value.split("-")[0].lower()
+    return lang if lang else "en"
+
+
+async def get_template_for_locale(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    template_type: str,
+    channel: str = "email",
+) -> dict[str, Any] | None:
+    """Get a template with locale-aware selection and English fallback.
+
+    Checks the organisation's configured locale and looks for a
+    locale-specific template variant (e.g., ``invoice_issued_fr``).
+    Falls back to the default English template if no translation exists.
+
+    Requirements: 2.21
+    """
+    locale = await _get_org_locale(db, org_id=org_id)
+
+    # For English or unset locale, use the default template directly
+    if locale == "en":
+        if channel == "sms":
+            return await get_sms_template(db, org_id=org_id, template_type=template_type)
+        return await get_template(db, org_id=org_id, template_type=template_type)
+
+    # Look for a locale-specific variant (e.g., "invoice_issued_fr")
+    locale_template_type = f"{template_type}_{locale}"
+
+    if channel == "sms":
+        await _seed_sms_templates(db, org_id=org_id)
+    else:
+        await _seed_email_templates(db, org_id=org_id)
+
+    stmt = select(NotificationTemplate).where(
+        NotificationTemplate.org_id == org_id,
+        NotificationTemplate.template_type == locale_template_type,
+        NotificationTemplate.channel == channel,
+    )
+    result = await db.execute(stmt)
+    tpl = result.scalar_one_or_none()
+
+    if tpl is not None:
+        logger.info(
+            "Using locale-specific template %s for org %s (locale=%s)",
+            locale_template_type,
+            org_id,
+            locale,
+        )
+        if channel == "sms":
+            return _sms_template_to_dict(tpl)
+        return _template_to_dict(tpl)
+
+    # Fall back to the default English template
+    logger.debug(
+        "No locale-specific template %s found for org %s, falling back to %s",
+        locale_template_type,
+        org_id,
+        template_type,
+    )
+    if channel == "sms":
+        return await get_sms_template(db, org_id=org_id, template_type=template_type)
+    return await get_template(db, org_id=org_id, template_type=template_type)
 
 
 async def _seed_email_templates(
@@ -918,8 +1006,25 @@ async def process_overdue_reminders(db: AsyncSession) -> dict[str, Any]:
                     )
                     stats["reminders_sent"] += 1
 
-                # Send SMS if configured
+                # Send SMS if configured (and plan includes SMS)
                 if rule.send_sms and customer.phone:
+                    # Check if org's plan includes SMS notifications
+                    from app.modules.admin.models import Organisation as _Org, SubscriptionPlan as _Plan
+                    _org_result = await db.execute(
+                        select(_Org).where(_Org.id == org_id)
+                    )
+                    _org_row = _org_result.scalar_one_or_none()
+                    _sms_allowed = False
+                    if _org_row and _org_row.plan_id:
+                        _plan_result = await db.execute(
+                            select(_Plan).where(_Plan.id == _org_row.plan_id)
+                        )
+                        _plan_row = _plan_result.scalar_one_or_none()
+                        _sms_allowed = _plan_row.sms_included if _plan_row else False
+
+                    if not _sms_allowed:
+                        continue
+
                     sms_log = await log_sms_sent(
                         db,
                         org_id=org_id,
@@ -938,6 +1043,16 @@ async def process_overdue_reminders(db: AsyncSession) -> dict[str, Any]:
                         "payment_overdue_reminder",
                     )
                     stats["reminders_sent"] += 1
+
+                    # Best-effort SMS usage tracking (Req 2.3, 8.4)
+                    try:
+                        await increment_sms_usage(db, org_id)
+                    except Exception:
+                        logger.error(
+                            "Failed to increment SMS usage for org %s",
+                            org_id,
+                            exc_info=True,
+                        )
 
     return stats
 
@@ -1103,6 +1218,23 @@ async def process_wof_rego_reminders(db: AsyncSession) -> dict[str, Any]:
         org_phone = org_settings.get("phone", "")
         org_email = org_settings.get("email", "")
 
+        # Check if org's plan includes SMS notifications
+        _org_sms_allowed = False
+        if org.plan_id:
+            from app.modules.admin.models import SubscriptionPlan as _SPlan
+            _sp_result = await db.execute(
+                select(_SPlan).where(_SPlan.id == org.plan_id)
+            )
+            _sp_row = _sp_result.scalar_one_or_none()
+            _org_sms_allowed = _sp_row.sms_included if _sp_row else False
+
+        # Downgrade channel if plan doesn't include SMS
+        effective_channel = channel
+        if not _org_sms_allowed and channel in ("sms", "both"):
+            effective_channel = "email" if channel == "both" else None
+        if effective_channel is None:
+            continue
+
         # Process WOF expiry reminders from global_vehicles
         for expiry_type, expiry_field, template_type in [
             ("WOF", "wof_expiry", "wof_expiry_reminder"),
@@ -1145,7 +1277,7 @@ async def process_wof_rego_reminders(db: AsyncSession) -> dict[str, Any]:
                     continue
 
                 # Send email if channel is email or both
-                if channel in ("email", "both") and customer.email:
+                if effective_channel in ("email", "both") and customer.email:
                     log_entry = await log_email_sent(
                         db,
                         org_id=org_id,
@@ -1171,8 +1303,8 @@ async def process_wof_rego_reminders(db: AsyncSession) -> dict[str, Any]:
                     )
                     stats["reminders_sent"] += 1
 
-                # Send SMS if channel is sms or both
-                if channel in ("sms", "both") and customer.phone:
+                # Send SMS if channel is sms or both (plan SMS check already done above)
+                if effective_channel in ("sms", "both") and customer.phone:
                     sms_body = (
                         f"Hi {customer.first_name}, {expiry_type} for "
                         f"{rego} expires {expiry_date_str}. "
@@ -1198,6 +1330,16 @@ async def process_wof_rego_reminders(db: AsyncSession) -> dict[str, Any]:
                         template_type,
                     )
                     stats["reminders_sent"] += 1
+
+                    # Best-effort SMS usage tracking (Req 2.3, 8.4)
+                    try:
+                        await increment_sms_usage(db, org_id)
+                    except Exception:
+                        logger.error(
+                            "Failed to increment SMS usage for org %s",
+                            org_id,
+                            exc_info=True,
+                        )
 
     return stats
 

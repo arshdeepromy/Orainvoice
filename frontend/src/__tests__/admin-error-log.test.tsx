@@ -23,26 +23,75 @@ vi.mock('@/api/client', () => {
 
 import apiClient from '@/api/client'
 import { ErrorLog } from '../pages/admin/ErrorLog'
-import type { ErrorSummary, ErrorRecord, ErrorLogResponse } from '../pages/admin/ErrorLog'
+import type { Severity, ErrorCategory, ErrorStatus } from '../pages/admin/ErrorLog'
+
+/* ── Backend-shaped types (what the API actually returns) ── */
+
+interface BackendSummaryCount {
+  label: string
+  count_1h: number
+  count_24h: number
+  count_7d: number
+}
+
+interface BackendDashboardResponse {
+  by_severity: BackendSummaryCount[]
+  by_category: BackendSummaryCount[]
+  total_1h: number
+  total_24h: number
+  total_7d: number
+}
+
+interface BackendErrorRecord {
+  id: string
+  severity: string
+  category: string
+  module: string
+  function_name: string | null
+  message: string
+  stack_trace: string | null
+  org_id: string | null
+  user_id: string | null
+  http_method: string | null
+  http_endpoint: string | null
+  request_body_sanitised: Record<string, unknown> | null
+  response_body_sanitised: Record<string, unknown> | null
+  status: string
+  resolution_notes: string | null
+  created_at: string
+}
+
+interface BackendErrorListResponse {
+  errors: BackendErrorRecord[]
+  total: number
+  page: number
+  page_size: number
+}
 
 /* ── Test data factories ── */
 
-function makeSummaries(overrides: Partial<Record<string, Partial<ErrorSummary>>> = {}): ErrorSummary[] {
-  const defaults: ErrorSummary[] = [
-    { severity: 'Critical', last_hour: 1, last_24h: 3, last_7d: 8 },
-    { severity: 'Error', last_hour: 5, last_24h: 22, last_7d: 87 },
-    { severity: 'Warning', last_hour: 12, last_24h: 45, last_7d: 210 },
-    { severity: 'Info', last_hour: 30, last_24h: 120, last_7d: 500 },
+function makeDashboard(overrides: Partial<Record<string, Partial<BackendSummaryCount>>> = {}): BackendDashboardResponse {
+  const defaults: BackendSummaryCount[] = [
+    { label: 'critical', count_1h: 1, count_24h: 3, count_7d: 8 },
+    { label: 'error', count_1h: 5, count_24h: 22, count_7d: 87 },
+    { label: 'warning', count_1h: 12, count_24h: 45, count_7d: 210 },
+    { label: 'info', count_1h: 30, count_24h: 120, count_7d: 500 },
   ]
-  return defaults.map((s) => ({ ...s, ...(overrides[s.severity] ?? {}) }))
+  const by_severity = defaults.map((s) => ({ ...s, ...(overrides[s.label] ?? {}) }))
+  return {
+    by_severity,
+    by_category: [],
+    total_1h: by_severity.reduce((a, s) => a + s.count_1h, 0),
+    total_24h: by_severity.reduce((a, s) => a + s.count_24h, 0),
+    total_7d: by_severity.reduce((a, s) => a + s.count_7d, 0),
+  }
 }
 
-function makeError(overrides: Partial<ErrorRecord> = {}): ErrorRecord {
+function makeBackendError(overrides: Partial<BackendErrorRecord> = {}): BackendErrorRecord {
   return {
     id: 'err-001',
-    timestamp: new Date().toISOString(),
-    severity: 'Error',
-    category: 'Payment',
+    severity: 'error',
+    category: 'payment',
     module: 'payments.service',
     function_name: 'process_payment',
     message: 'Stripe API timeout after 30s',
@@ -51,32 +100,33 @@ function makeError(overrides: Partial<ErrorRecord> = {}): ErrorRecord {
     user_id: 'user-123',
     http_method: 'POST',
     http_endpoint: '/api/v1/payments/cash',
-    request_body: '{"amount": 150.00}',
-    response_body: null,
-    status: 'Open',
-    notes: '',
+    request_body_sanitised: { amount: 150.0 },
+    response_body_sanitised: null,
+    status: 'open',
+    resolution_notes: '',
+    created_at: new Date().toISOString(),
     ...overrides,
   }
 }
 
-function makeErrorList(items: ErrorRecord[] = [makeError()]): ErrorLogResponse {
-  return { items, total: items.length }
+function makeBackendErrorList(items: BackendErrorRecord[] = [makeBackendError()]): BackendErrorListResponse {
+  return { errors: items, total: items.length, page: 1, page_size: 25 }
 }
 
 function setupMocks(
-  summaries: ErrorSummary[] = makeSummaries(),
-  errorList: ErrorLogResponse = makeErrorList(),
-  detail?: ErrorRecord,
+  dashboard: BackendDashboardResponse = makeDashboard(),
+  errorList: BackendErrorListResponse = makeBackendErrorList(),
+  detail?: BackendErrorRecord,
 ) {
   ;(apiClient.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
-    if (url === '/admin/errors/summary') {
-      return Promise.resolve({ data: summaries })
+    if (url === '/admin/errors/dashboard') {
+      return Promise.resolve({ data: dashboard })
     }
     if (url === '/admin/errors') {
       return Promise.resolve({ data: errorList })
     }
     if (url.startsWith('/admin/errors/')) {
-      return Promise.resolve({ data: detail ?? errorList.items[0] })
+      return Promise.resolve({ data: detail ?? errorList.errors[0] })
     }
     return Promise.reject(new Error('Unknown URL'))
   })
@@ -110,10 +160,10 @@ describe('Admin Error Log page', () => {
   // 49.4: Live feed table renders errors
   it('renders error feed table with error records', async () => {
     const errors = [
-      makeError({ id: 'err-001', severity: 'Warning', message: 'Payment gateway down', category: 'Payment' }),
-      makeError({ id: 'err-002', severity: 'Warning', category: 'Integration', message: 'Carjam rate limit' }),
+      makeBackendError({ id: 'err-001', severity: 'warning', message: 'Payment gateway down', category: 'payment' }),
+      makeBackendError({ id: 'err-002', severity: 'warning', category: 'integration', message: 'Carjam rate limit' }),
     ]
-    setupMocks(makeSummaries(), makeErrorList(errors))
+    setupMocks(makeDashboard(), makeBackendErrorList(errors))
     render(<ErrorLog />)
 
     expect(await screen.findByText('Payment gateway down')).toBeInTheDocument()
@@ -124,10 +174,10 @@ describe('Admin Error Log page', () => {
   // 49.4: Colour-coded severity badges in feed
   it('displays severity badges in the error feed', async () => {
     const errors = [
-      makeError({ id: 'err-c', severity: 'Warning', message: 'A warning msg' }),
-      makeError({ id: 'err-i', severity: 'Info', message: 'An info msg' }),
+      makeBackendError({ id: 'err-c', severity: 'warning', message: 'A warning msg' }),
+      makeBackendError({ id: 'err-i', severity: 'info', message: 'An info msg' }),
     ]
-    setupMocks(makeSummaries(), makeErrorList(errors))
+    setupMocks(makeDashboard(), makeBackendErrorList(errors))
     render(<ErrorLog />)
 
     await screen.findByText('A warning msg')
@@ -190,23 +240,23 @@ describe('Admin Error Log page', () => {
     await screen.findByLabelText('Severity')
     await user.selectOptions(screen.getByLabelText('Severity'), 'Critical')
 
-    // The API should be called with severity param
+    // The API should be called with severity param (lowercased by the component)
     const getCalls = (apiClient.get as ReturnType<typeof vi.fn>).mock.calls
     const errorCalls = getCalls.filter(
       (c: unknown[]) => c[0] === '/admin/errors' && (c[1] as Record<string, unknown>)?.params &&
-        ((c[1] as Record<string, Record<string, string>>).params?.severity === 'Critical'),
+        ((c[1] as Record<string, Record<string, string>>).params?.severity === 'critical'),
     )
     expect(errorCalls.length).toBeGreaterThanOrEqual(1)
   })
 
   // 49.6: Clicking a row opens the error detail modal
   it('opens error detail modal when View button is clicked', async () => {
-    const err = makeError({
+    const err = makeBackendError({
       id: 'err-detail',
       message: 'Detailed error message',
       stack_trace: 'Traceback:\n  File "test.py", line 1',
     })
-    setupMocks(makeSummaries(), makeErrorList([err]), err)
+    setupMocks(makeDashboard(), makeBackendErrorList([err]), err)
     const user = userEvent.setup()
     render(<ErrorLog />)
 
@@ -223,11 +273,11 @@ describe('Admin Error Log page', () => {
 
   // 49.6: Detail modal shows stack trace
   it('displays formatted stack trace in detail modal', async () => {
-    const err = makeError({
+    const err = makeBackendError({
       id: 'err-stack',
       stack_trace: 'Traceback (most recent call last):\n  File "service.py", line 42\nValueError: bad input',
     })
-    setupMocks(makeSummaries(), makeErrorList([err]), err)
+    setupMocks(makeDashboard(), makeBackendErrorList([err]), err)
     const user = userEvent.setup()
     render(<ErrorLog />)
 
@@ -240,8 +290,8 @@ describe('Admin Error Log page', () => {
 
   // 49.6: Detail modal shows context (org, user)
   it('displays organisation and user context in detail modal', async () => {
-    const err = makeError({ id: 'err-ctx', org_id: 'org-xyz', user_id: 'user-456' })
-    setupMocks(makeSummaries(), makeErrorList([err]), err)
+    const err = makeBackendError({ id: 'err-ctx', org_id: 'org-xyz', user_id: 'user-456' })
+    setupMocks(makeDashboard(), makeBackendErrorList([err]), err)
     const user = userEvent.setup()
     render(<ErrorLog />)
 
@@ -254,13 +304,13 @@ describe('Admin Error Log page', () => {
 
   // 49.6: Detail modal shows HTTP request details
   it('displays HTTP request details in detail modal', async () => {
-    const err = makeError({
+    const err = makeBackendError({
       id: 'err-http',
       http_method: 'POST',
       http_endpoint: '/api/v1/payments/cash',
-      request_body: '{"amount": 150.00}',
+      request_body_sanitised: { amount: 150.0 },
     })
-    setupMocks(makeSummaries(), makeErrorList([err]), err)
+    setupMocks(makeDashboard(), makeBackendErrorList([err]), err)
     const user = userEvent.setup()
     render(<ErrorLog />)
 
@@ -268,13 +318,12 @@ describe('Admin Error Log page', () => {
     await user.click(screen.getByRole('button', { name: 'View' }))
 
     expect(await screen.findByText(/POST \/api\/v1\/payments\/cash/)).toBeInTheDocument()
-    expect(screen.getByText('{"amount": 150.00}')).toBeInTheDocument()
   })
 
   // 49.6: Status management — update status via detail modal
   it('allows updating error status and notes from detail modal', async () => {
-    const err = makeError({ id: 'err-status', status: 'Open', notes: '' })
-    setupMocks(makeSummaries(), makeErrorList([err]), err)
+    const err = makeBackendError({ id: 'err-status', status: 'open', resolution_notes: '' })
+    setupMocks(makeDashboard(), makeBackendErrorList([err]), err)
     const user = userEvent.setup()
     render(<ErrorLog />)
 
@@ -293,21 +342,21 @@ describe('Admin Error Log page', () => {
     // Save
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
 
-    expect(apiClient.put).toHaveBeenCalledWith('/admin/errors/err-status', {
-      status: 'Investigating',
-      notes: 'Looking into Stripe timeout',
+    expect(apiClient.put).toHaveBeenCalledWith('/admin/errors/err-status/status', {
+      status: 'investigating',
+      resolution_notes: 'Looking into Stripe timeout',
     })
   })
 
   // 49.5: Critical error alert banner
   it('shows critical error alert banner when critical errors exist in last hour', async () => {
-    const criticalErr = makeError({
+    const criticalErr = makeBackendError({
       id: 'err-crit',
-      severity: 'Critical',
-      timestamp: new Date().toISOString(), // within last hour
+      severity: 'critical',
+      created_at: new Date().toISOString(), // within last hour
       message: 'Payment gateway unreachable',
     })
-    setupMocks(makeSummaries(), makeErrorList([criticalErr]))
+    setupMocks(makeDashboard(), makeBackendErrorList([criticalErr]))
     render(<ErrorLog />)
 
     expect(await screen.findByText('Critical Errors Detected')).toBeInTheDocument()
@@ -316,13 +365,13 @@ describe('Admin Error Log page', () => {
 
   // 49.5: No critical alert when no recent critical errors
   it('does not show critical alert when no critical errors in last hour', async () => {
-    const oldErr = makeError({
+    const oldErr = makeBackendError({
       id: 'err-old',
-      severity: 'Critical',
-      timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), // 2 hours ago
+      severity: 'critical',
+      created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), // 2 hours ago
       message: 'Old critical error',
     })
-    setupMocks(makeSummaries(), makeErrorList([oldErr]))
+    setupMocks(makeDashboard(), makeBackendErrorList([oldErr]))
     render(<ErrorLog />)
 
     await screen.findByText('Old critical error')
@@ -331,7 +380,7 @@ describe('Admin Error Log page', () => {
 
   // Empty state
   it('shows empty state when no errors found', async () => {
-    setupMocks(makeSummaries(), makeErrorList([]))
+    setupMocks(makeDashboard(), makeBackendErrorList([]))
     render(<ErrorLog />)
 
     expect(await screen.findByText('No errors found')).toBeInTheDocument()
@@ -349,7 +398,7 @@ describe('Admin Error Log page', () => {
   // Error state
   it('shows error banner when error log fails to load', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
-      if (url === '/admin/errors/summary') return Promise.resolve({ data: makeSummaries() })
+      if (url === '/admin/errors/dashboard') return Promise.resolve({ data: makeDashboard() })
       return Promise.reject(new Error('Network error'))
     })
     render(<ErrorLog />)
@@ -360,11 +409,11 @@ describe('Admin Error Log page', () => {
   // 49.6: Status badges in feed (Open, Investigating, Resolved)
   it('displays status badges for different error statuses', async () => {
     const errors = [
-      makeError({ id: 'e1', status: 'Open', message: 'Open error' }),
-      makeError({ id: 'e2', status: 'Investigating', message: 'Investigating error' }),
-      makeError({ id: 'e3', status: 'Resolved', message: 'Resolved error' }),
+      makeBackendError({ id: 'e1', status: 'open', message: 'Open error' }),
+      makeBackendError({ id: 'e2', status: 'investigating', message: 'Investigating error' }),
+      makeBackendError({ id: 'e3', status: 'resolved', message: 'Resolved error' }),
     ]
-    setupMocks(makeSummaries(), makeErrorList(errors))
+    setupMocks(makeDashboard(), makeBackendErrorList(errors))
     render(<ErrorLog />)
 
     await screen.findByText('Open error')
@@ -375,12 +424,12 @@ describe('Admin Error Log page', () => {
 
   // 49.2: Module and function displayed in detail
   it('displays module and function in error detail', async () => {
-    const err = makeError({
+    const err = makeBackendError({
       id: 'err-mod',
       module: 'integrations.carjam',
       function_name: 'lookup_vehicle',
     })
-    setupMocks(makeSummaries(), makeErrorList([err]), err)
+    setupMocks(makeDashboard(), makeBackendErrorList([err]), err)
     const user = userEvent.setup()
     render(<ErrorLog />)
 

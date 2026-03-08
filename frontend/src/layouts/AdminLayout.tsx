@@ -1,19 +1,72 @@
 import { useState } from 'react'
-import { Outlet, NavLink } from 'react-router-dom'
+import { Outlet, NavLink, useNavigate } from 'react-router-dom'
+import { useAuth } from '@/contexts/AuthContext'
+import { useFeatureFlags } from '@/contexts/FeatureFlagContext'
 import { GlobalSearchBar } from '@/components/search'
 
-const adminNavItems = [
+interface AdminNavItem {
+  type?: 'section'
+  to?: string
+  label: string
+  /** If set, this nav item is only shown when the feature flag is enabled */
+  flagKey?: string
+}
+
+const adminNavItems: AdminNavItem[] = [
+  { type: 'section', label: 'Core' },
   { to: '/admin/dashboard', label: 'Dashboard' },
   { to: '/admin/organisations', label: 'Organisations' },
+  { to: '/admin/users', label: 'Users' },
+  { type: 'section', label: 'Configuration' },
+  { to: '/admin/plans', label: 'Subscription Management' },
+  { to: '/admin/feature-flags', label: 'Feature Flags' },
+  { to: '/admin/branding', label: 'Branding', flagKey: 'branding' },
   { to: '/admin/integrations', label: 'Integrations' },
-  { to: '/admin/errors', label: 'Error Log' },
   { to: '/admin/settings', label: 'Settings' },
-  { to: '/admin/reports', label: 'Reports' },
+  { type: 'section', label: 'Monitoring' },
+  { to: '/admin/analytics', label: 'Analytics', flagKey: 'analytics' },
+  { to: '/admin/reports', label: 'Reports', flagKey: 'reports' },
   { to: '/admin/audit-log', label: 'Audit Log' },
+  { to: '/admin/errors', label: 'Error Log' },
+  { to: '/admin/notifications', label: 'Notifications' },
+  { type: 'section', label: 'Tools' },
+  { to: '/admin/migration', label: 'Migration Tool', flagKey: 'migration_tool' },
 ]
 
 export function AdminLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const { user, logout } = useAuth()
+  const { flags } = useFeatureFlags()
+  const navigate = useNavigate()
+
+  const handleLogout = async () => {
+    await logout()
+    navigate('/login')
+  }
+
+  /**
+   * Filter nav items based on feature flags.
+   * Section headers are kept only if they have at least one visible child item after them.
+   */
+  const visibleNavItems = (() => {
+    // First pass: mark which link items are visible
+    const filtered = adminNavItems.filter((item) => {
+      if (item.type === 'section') return true // keep sections for now
+      if (item.flagKey && !flags[item.flagKey]) return false
+      return true
+    })
+
+    // Second pass: remove section headers that have no visible children after them
+    return filtered.filter((item, idx) => {
+      if (item.type !== 'section') return true
+      // Check if there's at least one non-section item before the next section (or end)
+      for (let i = idx + 1; i < filtered.length; i++) {
+        if (filtered[i].type === 'section') return false
+        return true // found a visible child
+      }
+      return false // section at end with no children
+    })
+  })()
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
@@ -56,25 +109,49 @@ export function AdminLayout() {
         {/* Nav links */}
         <nav className="flex-1 overflow-y-auto py-4 px-3">
           <ul className="space-y-1">
-            {adminNavItems.map((item) => (
-              <li key={item.to}>
-                <NavLink
-                  to={item.to}
-                  onClick={() => setSidebarOpen(false)}
-                  className={({ isActive }) =>
-                    `flex items-center rounded-lg px-3 min-h-[44px] text-sm font-medium transition-colors ${
-                      isActive
-                        ? 'bg-gray-800 text-white'
-                        : 'text-gray-300 hover:bg-gray-800 hover:text-white'
-                    }`
-                  }
-                >
-                  {item.label}
-                </NavLink>
-              </li>
-            ))}
+            {visibleNavItems.map((item, idx) => {
+              if (item.type === 'section') {
+                return (
+                  <li key={item.label} className={idx > 0 ? 'pt-4' : ''}>
+                    <span className="px-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                      {item.label}
+                    </span>
+                  </li>
+                )
+              }
+              return (
+                <li key={item.to}>
+                  <NavLink
+                    to={item.to!}
+                    onClick={() => setSidebarOpen(false)}
+                    className={({ isActive }) =>
+                      `flex items-center rounded-lg px-3 min-h-[44px] text-sm font-medium transition-colors ${
+                        isActive
+                          ? 'bg-gray-800 text-white'
+                          : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                      }`
+                    }
+                  >
+                    {item.label}
+                  </NavLink>
+                </li>
+              )
+            })}
           </ul>
         </nav>
+
+        {/* Logout */}
+        <div className="border-t border-gray-700 p-3">
+          <div className="mb-2 px-3 text-xs text-gray-400 truncate">
+            {user?.email ?? 'admin'}
+          </div>
+          <button
+            onClick={handleLogout}
+            className="flex w-full items-center rounded-lg px-3 min-h-[44px] text-sm font-medium text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
+          >
+            Sign out
+          </button>
+        </div>
       </aside>
 
       {/* Main content area */}
@@ -100,11 +177,16 @@ export function AdminLayout() {
 
           <div className="flex-1" />
 
+          <span className="text-sm text-gray-600 hidden sm:inline">
+            {user?.email ?? 'Admin'}
+          </span>
           <button
             className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full bg-indigo-100 text-sm font-medium text-indigo-700 hover:bg-indigo-200"
             aria-label="Admin user menu"
+            onClick={handleLogout}
+            title="Sign out"
           >
-            A
+            {(user?.name ?? 'A').charAt(0).toUpperCase()}
           </button>
         </header>
 

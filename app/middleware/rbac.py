@@ -15,9 +15,9 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy import select
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.modules.auth.rbac import (
     check_role_path_access,
@@ -32,7 +32,7 @@ from app.core.database import async_session_factory
 logger = logging.getLogger(__name__)
 
 
-class RBACMiddleware(BaseHTTPMiddleware):
+class RBACMiddleware:
     """Enforce role-based access control on every authenticated request.
 
     After path-based checks, loads any user permission overrides from the
@@ -40,7 +40,15 @@ class RBACMiddleware(BaseHTTPMiddleware):
     ``request.state.permission_overrides`` for downstream handlers.
     """
 
-    async def dispatch(self, request: Request, call_next):
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
         user_id = getattr(request.state, "user_id", None)
         role = getattr(request.state, "role", None)
         org_id = getattr(request.state, "org_id", None)
@@ -50,24 +58,29 @@ class RBACMiddleware(BaseHTTPMiddleware):
 
         # Skip for unauthenticated requests (public paths already handled)
         if not user_id or not role:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         path = request.url.path
 
         # Org-scoped roles must have org membership
         if role in (ORG_ADMIN, SALESPERSON, LOCATION_MANAGER, STAFF_MEMBER) and not org_id:
-            return JSONResponse(
+            response = JSONResponse(
                 status_code=403,
                 content={"detail": "Organisation membership required"},
             )
+            await response(scope, receive, send)
+            return
 
         # Check path-based role access
         denial_reason = check_role_path_access(role, path, method=request.method)
         if denial_reason:
-            return JSONResponse(
+            response = JSONResponse(
                 status_code=403,
                 content={"detail": denial_reason},
             )
+            await response(scope, receive, send)
+            return
 
         # Load permission overrides for the user
         try:
@@ -78,7 +91,7 @@ class RBACMiddleware(BaseHTTPMiddleware):
             # Fail open — use base role permissions only
             request.state.permission_overrides = []
 
-        return await call_next(request)
+        await self.app(scope, receive, send)
 
     @staticmethod
     async def _load_permission_overrides(user_id: str) -> list[dict]:

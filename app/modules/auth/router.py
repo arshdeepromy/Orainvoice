@@ -35,6 +35,8 @@ from app.modules.auth.schemas import (
     PasswordResetCompleteSchema,
     PasswordResetRequestSchema,
     PasswordResetResponse,
+    PublicPlanListResponse,
+    PublicPlanResponse,
     RefreshTokenRequest,
     ResendInviteRequest,
     ResendInviteResponse,
@@ -75,6 +77,12 @@ from app.modules.organisations.schemas import (
 from app.modules.organisations.service import public_signup
 
 router = APIRouter()
+
+
+def _cookie_secure() -> bool:
+    """Return False in development so cookies work over plain HTTP."""
+    import os
+    return os.getenv("ENVIRONMENT", "production") != "development"
 
 
 def _parse_user_agent(ua: str | None) -> tuple[str | None, str | None]:
@@ -143,7 +151,27 @@ async def login(
             content={"detail": "Invalid credentials"},
         )
 
-    return result
+    # If MFA is required, return the MFA challenge without setting a cookie
+    if hasattr(result, 'mfa_required') and result.mfa_required:
+        return result
+
+    # Set the refresh token as httpOnly cookie
+    response = JSONResponse(
+        content={
+            "access_token": result.access_token,
+            "refresh_token": result.refresh_token,
+            "token_type": result.token_type,
+        }
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=result.refresh_token,
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="strict",
+        path="/",
+    )
+    return response
 
 
 @router.post(
@@ -153,16 +181,24 @@ async def login(
     summary="Refresh access token",
 )
 async def refresh_token(
-    payload: RefreshTokenRequest,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """Exchange a valid refresh token for a new access/refresh token pair.
 
+    The refresh token is read from the httpOnly cookie (not the request body).
     Implements refresh-token rotation: the old token is invalidated and a
     new pair is returned.  If a previously-rotated token is reused, the
     entire session family is revoked and the user is alerted.
     """
+    # Read refresh token from httpOnly cookie
+    refresh_token_value = request.cookies.get("refresh_token")
+    if not refresh_token_value:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Missing refresh token"},
+        )
+
     ip_address = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
     device_type, browser = _parse_user_agent(user_agent)
@@ -170,18 +206,60 @@ async def refresh_token(
     try:
         result = await rotate_refresh_token(
             db=db,
-            refresh_token=payload.refresh_token,
+            refresh_token=refresh_token_value,
             ip_address=ip_address,
             device_type=device_type,
             browser=browser,
         )
     except ValueError as exc:
-        return JSONResponse(
+        response = JSONResponse(
             status_code=401,
             content={"detail": str(exc)},
         )
+        # Clear the invalid cookie
+        response.delete_cookie(
+            "refresh_token",
+            path="/",
+            httponly=True,
+            secure=_cookie_secure(),
+            samesite="strict",
+        )
+        return response
 
-    return result
+    # Set the new refresh token as httpOnly cookie
+    response = JSONResponse(
+        content={
+            "access_token": result.access_token,
+            "refresh_token": result.refresh_token,
+            "token_type": result.token_type,
+        }
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=result.refresh_token,
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@router.post(
+    "/logout",
+    summary="Logout and clear refresh token cookie",
+)
+async def logout(request: Request):
+    """Clear the httpOnly refresh token cookie to end the session."""
+    response = JSONResponse(content={"detail": "Logged out"})
+    response.delete_cookie(
+        "refresh_token",
+        path="/",
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="strict",
+    )
+    return response
 
 
 @router.post(
@@ -237,7 +315,27 @@ async def login_google(
             content={"detail": str(exc)},
         )
 
-    return result
+    # If MFA is required, return the MFA challenge without setting a cookie
+    if hasattr(result, 'mfa_required') and result.mfa_required:
+        return result
+
+    # Set the refresh token as httpOnly cookie
+    response = JSONResponse(
+        content={
+            "access_token": result.access_token,
+            "refresh_token": result.refresh_token,
+            "token_type": result.token_type,
+        }
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=result.refresh_token,
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="strict",
+        path="/",
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +506,23 @@ async def passkey_login_verify(
             content={"detail": str(exc)},
         )
 
-    return result
+    # Set the refresh token as httpOnly cookie
+    response = JSONResponse(
+        content={
+            "access_token": result.access_token,
+            "refresh_token": result.refresh_token,
+            "token_type": result.token_type,
+        }
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=result.refresh_token,
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="strict",
+        path="/",
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +624,23 @@ async def mfa_verify(
             content={"detail": error_msg},
         )
 
-    return result
+    # Set the refresh token as httpOnly cookie
+    response = JSONResponse(
+        content={
+            "access_token": result.access_token,
+            "refresh_token": result.refresh_token,
+            "token_type": result.token_type,
+        }
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=result.refresh_token,
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="strict",
+        path="/",
+    )
+    return response
 
 
 @router.post(
@@ -1048,11 +1178,23 @@ async def verify_email(
             content={"detail": str(exc)},
         )
 
-    return VerifyEmailResponse(
-        message="Email verified and password set successfully",
-        access_token=result["access_token"],
-        refresh_token=result["refresh_token"],
+    # Set the refresh token as httpOnly cookie
+    response = JSONResponse(
+        content={
+            "message": "Email verified and password set successfully",
+            "access_token": result["access_token"],
+            "refresh_token": result["refresh_token"],
+        }
     )
+    response.set_cookie(
+        key="refresh_token",
+        value=result["refresh_token"],
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="strict",
+        path="/",
+    )
+    return response
 
 
 @router.post(
@@ -1115,6 +1257,55 @@ async def resend_invite(
     return ResendInviteResponse(
         message="Invitation resent successfully",
         invitation_expires_at=result["invitation_expires_at"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public plans endpoint (Requirement 6.1, 6.2) — no auth required
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/plans",
+    response_model=PublicPlanListResponse,
+    summary="List public subscription plans",
+)
+async def list_public_plans(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return all public, non-archived subscription plans.
+
+    No authentication required. Used by the public signup page to
+    populate the plan selector.
+
+    Requirements 6.1, 6.2.
+    """
+    from sqlalchemy import select
+
+    from app.modules.admin.models import SubscriptionPlan
+
+    result = await db.execute(
+        select(SubscriptionPlan).where(
+            SubscriptionPlan.is_public.is_(True),
+            SubscriptionPlan.is_archived.is_(False),
+        )
+    )
+    plans = result.scalars().all()
+
+    return PublicPlanListResponse(
+        plans=[
+            PublicPlanResponse(
+                id=str(plan.id),
+                name=plan.name,
+                monthly_price_nzd=plan.monthly_price_nzd,
+                trial_duration=plan.trial_duration or 0,
+                trial_duration_unit=plan.trial_duration_unit or "days",
+                sms_included=plan.sms_included,
+                sms_included_quota=plan.sms_included_quota or 0,
+                per_sms_cost_nzd=float(plan.per_sms_cost_nzd or 0),
+            )
+            for plan in plans
+        ]
     )
 
 

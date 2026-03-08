@@ -8,6 +8,8 @@ the middleware checks the ``idempotency_keys`` table:
 * Otherwise the request proceeds normally and the response is stored with a
   24-hour expiry so subsequent retries receive the same result.
 
+Implemented as pure ASGI middleware to avoid request body stream corruption.
+
 **Validates: Requirement 10.3**
 """
 
@@ -17,11 +19,11 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.database import async_session_factory
@@ -35,79 +37,87 @@ _IDEMPOTENT_METHODS = {"POST", "PUT", "PATCH"}
 _EXPIRY_HOURS = 24
 
 
-class IdempotencyMiddleware(BaseHTTPMiddleware):
-    """Return cached responses for duplicate idempotent requests."""
+class IdempotencyMiddleware:
+    """Return cached responses for duplicate idempotent requests.
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    Pure ASGI implementation — does not wrap the receive channel.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
+
         # Only intercept state-changing methods
         if request.method not in _IDEMPOTENT_METHODS:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         idem_key: str | None = request.headers.get("Idempotency-Key")
         if not idem_key:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         org_id = getattr(request.state, "org_id", None)
         if not org_id:
-            # No org context — skip idempotency (e.g. unauthenticated)
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         # --- Check for existing cached response ---
         try:
             cached = await self._get_cached(idem_key, str(org_id))
             if cached is not None:
                 logger.debug("Idempotency cache hit for key=%s", idem_key)
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=cached["response_status"],
                     content=cached["response_body"],
                 )
+                await response(scope, receive, send)
+                return
         except Exception:
             logger.exception("Idempotency lookup failed for key=%s", idem_key)
-            # Fail open — proceed with the request
 
-        # --- Execute the actual request ---
-        response: Response = await call_next(request)
+        # --- Execute the actual request, capturing the response ---
+        response_started = False
+        response_status = 200
+        response_headers: list[tuple[bytes, bytes]] = []
+        response_body = b""
+
+        async def capture_send(message):
+            nonlocal response_started, response_status, response_headers, response_body
+            if message["type"] == "http.response.start":
+                response_started = True
+                response_status = message["status"]
+                response_headers = list(message.get("headers", []))
+            elif message["type"] == "http.response.body":
+                response_body += message.get("body", b"")
+            await send(message)
+
+        await self.app(scope, receive, capture_send)
 
         # --- Store the response for future lookups ---
-        try:
-            body = b""
-            async for chunk in response.body_iterator:  # type: ignore[attr-defined]
-                if isinstance(chunk, str):
-                    body += chunk.encode("utf-8")
-                else:
-                    body += chunk
-
-            # Try to parse body as JSON; fall back to wrapping as string
+        if response_started:
             try:
-                body_json = json.loads(body)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                body_json = {"raw": body.decode("utf-8", errors="replace")}
+                try:
+                    body_json = json.loads(response_body)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    body_json = {"raw": response_body.decode("utf-8", errors="replace")}
 
-            await self._store(
-                idem_key,
-                str(org_id),
-                request.method,
-                str(request.url.path),
-                response.status_code,
-                body_json,
-            )
-
-            # Rebuild the response since we consumed the body iterator
-            return Response(
-                content=body,
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                media_type=response.media_type,
-            )
-        except Exception:
-            logger.exception("Failed to store idempotency key=%s", idem_key)
-            # Return original-ish response even if storage fails
-            return Response(
-                content=body if "body" in dir() else b"",
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                media_type=response.media_type,
-            )
+                await self._store(
+                    idem_key,
+                    str(org_id),
+                    request.method,
+                    str(request.url.path),
+                    response_status,
+                    body_json,
+                )
+            except Exception:
+                logger.exception("Failed to store idempotency key=%s", idem_key)
 
     # ------------------------------------------------------------------
     # DB helpers

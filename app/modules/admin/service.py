@@ -9,12 +9,12 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.config import settings
-from app.modules.admin.models import Organisation, SubscriptionPlan
+from app.modules.admin.models import Organisation, SmsPackagePurchase, SubscriptionPlan
 from app.modules.auth.models import User
 
 logger = logging.getLogger(__name__)
@@ -212,14 +212,384 @@ async def get_carjam_per_lookup_cost(db: AsyncSession) -> float:
         decrypted = envelope_decrypt_str(config.config_encrypted)
         data = json.loads(decrypted)
         return float(data.get("per_lookup_cost_nzd", _DEFAULT_CARJAM_PER_LOOKUP_COST_NZD))
-    except Exception:
-        logger.warning("Failed to read Carjam per-lookup cost from integration_configs; using default")
+    except (json.JSONDecodeError, ValueError, KeyError) as exc:
+        logger.warning("Failed to read Carjam per-lookup cost from integration_configs; using default: %s", exc)
         return _DEFAULT_CARJAM_PER_LOOKUP_COST_NZD
 
 
 def compute_carjam_overage(total_lookups: int, included: int) -> int:
     """Return the number of overage lookups (clamped to >= 0)."""
     return max(0, total_lookups - included)
+
+def compute_sms_overage(total_sent: int, included_quota: int) -> int:
+    """Return the number of SMS overage messages (clamped to >= 0)."""
+    return max(0, total_sent - included_quota)
+
+
+async def get_effective_sms_quota(db: AsyncSession, org_id: uuid.UUID) -> int:
+    """Return the effective SMS quota for an organisation.
+
+    If the plan has ``sms_included`` set to False, the effective quota is 0
+    regardless of stored quota or purchased package credits.
+
+    Otherwise the effective quota is ``sms_included_quota`` from the plan plus
+    the sum of ``credits_remaining`` across all SMS package purchases.
+
+    Requirements: 3.3, 3.4, 1.7.
+    """
+    from sqlalchemy import func as sa_func
+
+    # Fetch the org's plan
+    stmt = (
+        select(SubscriptionPlan)
+        .join(Organisation, Organisation.plan_id == SubscriptionPlan.id)
+        .where(Organisation.id == org_id)
+    )
+    result = await db.execute(stmt)
+    plan = result.scalar_one_or_none()
+
+    if plan is None:
+        return 0
+
+    if not plan.sms_included:
+        return 0
+
+    # Sum credits_remaining from all SMS package purchases for this org
+    pkg_stmt = select(sa_func.coalesce(sa_func.sum(SmsPackagePurchase.credits_remaining), 0)).where(
+        SmsPackagePurchase.org_id == org_id
+    )
+    pkg_result = await db.execute(pkg_stmt)
+    total_package_credits = int(pkg_result.scalar())
+
+    return plan.sms_included_quota + total_package_credits
+
+async def get_all_orgs_sms_usage(db: AsyncSession) -> tuple[list[dict], float]:
+    """Return SMS usage data for every non-deleted organisation.
+
+    Each dict contains: organisation_id, organisation_name, total_sent,
+    included_in_plan, package_credits_remaining, effective_quota,
+    overage_count, overage_charge_nzd.
+
+    Returns a tuple of (usage_list, 0.0) to mirror the carjam usage signature.
+
+    Requirements: 2.6, 2.7.
+    """
+    from sqlalchemy import func as sa_func
+
+    stmt = (
+        select(Organisation, SubscriptionPlan)
+        .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
+        .where(Organisation.status != "deleted")
+        .order_by(Organisation.name)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    usage_list: list[dict] = []
+    for org, plan in rows:
+        total_sent = org.sms_sent_this_month
+        included_in_plan = plan.sms_included_quota if plan.sms_included else 0
+        per_sms_cost = float(plan.per_sms_cost_nzd)
+
+        # Sum credits_remaining from all SMS package purchases for this org
+        pkg_stmt = select(
+            sa_func.coalesce(sa_func.sum(SmsPackagePurchase.credits_remaining), 0)
+        ).where(SmsPackagePurchase.org_id == org.id)
+        pkg_result = await db.execute(pkg_stmt)
+        package_credits = int(pkg_result.scalar())
+
+        effective_quota = (included_in_plan + package_credits) if plan.sms_included else 0
+        overage = compute_sms_overage(total_sent, effective_quota)
+
+        usage_list.append({
+            "organisation_id": str(org.id),
+            "organisation_name": org.name,
+            "total_sent": total_sent,
+            "included_in_plan": included_in_plan,
+            "package_credits_remaining": package_credits,
+            "effective_quota": effective_quota,
+            "overage_count": overage,
+            "overage_charge_nzd": round(overage * per_sms_cost, 2),
+        })
+
+    return usage_list, 0.0
+
+
+async def get_org_sms_usage(db: AsyncSession, org_id: uuid.UUID) -> dict:
+    """Return SMS usage data for a single organisation.
+
+    Requirements: 2.6.
+    """
+    from sqlalchemy import func as sa_func
+
+    stmt = (
+        select(Organisation, SubscriptionPlan)
+        .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
+        .where(Organisation.id == org_id)
+    )
+    result = await db.execute(stmt)
+    row = result.one_or_none()
+    if row is None:
+        raise ValueError("Organisation not found")
+
+    org, plan = row
+    total_sent = org.sms_sent_this_month
+    included_in_plan = plan.sms_included_quota if plan.sms_included else 0
+    per_sms_cost = float(plan.per_sms_cost_nzd)
+
+    # Sum credits_remaining from all SMS package purchases for this org
+    pkg_stmt = select(
+        sa_func.coalesce(sa_func.sum(SmsPackagePurchase.credits_remaining), 0)
+    ).where(SmsPackagePurchase.org_id == org_id)
+    pkg_result = await db.execute(pkg_stmt)
+    package_credits = int(pkg_result.scalar())
+
+    effective_quota = (included_in_plan + package_credits) if plan.sms_included else 0
+    overage = compute_sms_overage(total_sent, effective_quota)
+
+    return {
+        "organisation_id": str(org.id),
+        "organisation_name": org.name,
+        "total_sent": total_sent,
+        "included_in_plan": included_in_plan,
+        "package_credits_remaining": package_credits,
+        "effective_quota": effective_quota,
+        "overage_count": overage,
+        "overage_charge_nzd": round(overage * per_sms_cost, 2),
+        "per_sms_cost_nzd": per_sms_cost,
+    }
+
+
+async def increment_sms_usage(db: AsyncSession, org_id: uuid.UUID) -> None:
+    """Atomically increment sms_sent_this_month by 1 for the given org.
+
+    Uses a SQL-level expression so the increment is safe under concurrent
+    dispatches (no read-modify-write race).
+
+    Requirements: 2.3.
+    """
+    stmt = (
+        update(Organisation)
+        .where(Organisation.id == org_id)
+        .values(sms_sent_this_month=Organisation.sms_sent_this_month + 1)
+    )
+    await db.execute(stmt)
+    await db.flush()
+
+async def purchase_sms_package(
+    db: AsyncSession, org_id: uuid.UUID, tier_name: str
+) -> dict:
+    """Purchase an SMS package for an organisation.
+
+    1. Query the org's plan to get ``sms_package_pricing``.
+    2. Find the tier matching *tier_name* in the pricing array.
+    3. If not found, raise ``ValueError``.
+    4. Create a Stripe one-time charge via ``PaymentIntent``.
+    5. On success, create an ``SmsPackagePurchase`` record.
+    6. On Stripe failure, raise ``RuntimeError`` without creating a record.
+
+    Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.7.
+    """
+    import stripe as stripe_lib
+
+    stripe_lib.api_key = settings.stripe_secret_key
+
+    # 1. Fetch the org and its plan
+    stmt = (
+        select(Organisation, SubscriptionPlan)
+        .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
+        .where(Organisation.id == org_id)
+    )
+    result = await db.execute(stmt)
+    row = result.one_or_none()
+    if row is None:
+        raise ValueError("Organisation not found")
+
+    org, plan = row
+
+    # 2. Find the matching tier in sms_package_pricing
+    tiers = plan.sms_package_pricing or []
+    matched_tier = None
+    for tier in tiers:
+        if tier.get("tier_name") == tier_name:
+            matched_tier = tier
+            break
+
+    if matched_tier is None:
+        raise ValueError("SMS package tier not found on plan")
+
+    sms_quantity = matched_tier["sms_quantity"]
+    price_nzd = float(matched_tier["price_nzd"])
+
+    # 3. Validate org has a Stripe customer ID
+    if not org.stripe_customer_id:
+        raise ValueError(
+            "No payment method on file. Please add a payment method before purchasing SMS packages."
+        )
+
+    # 4. Create Stripe one-time charge
+    charge_amount_cents = int(price_nzd * 100)
+    try:
+        payment_intent = stripe_lib.PaymentIntent.create(
+            amount=charge_amount_cents,
+            currency="nzd",
+            customer=org.stripe_customer_id,
+            confirm=True,
+            automatic_payment_methods={"enabled": True, "allow_redirects": "never"},
+            description=f"SMS package: {tier_name} ({sms_quantity} SMS) for {org.name}",
+            metadata={
+                "platform": "workshoppro_nz",
+                "org_id": str(org_id),
+                "type": "sms_package",
+                "tier_name": tier_name,
+                "sms_quantity": str(sms_quantity),
+            },
+        )
+    except stripe_lib.error.CardError as exc:
+        raise RuntimeError(f"Payment failed: {exc.user_message}") from exc
+    except stripe_lib.error.StripeError as exc:
+        raise RuntimeError(f"Stripe error: {str(exc)}") from exc
+
+    # 5. Create SmsPackagePurchase record
+    now = datetime.now(timezone.utc)
+    purchase = SmsPackagePurchase(
+        org_id=org_id,
+        tier_name=tier_name,
+        sms_quantity=sms_quantity,
+        price_nzd=price_nzd,
+        credits_remaining=sms_quantity,
+        purchased_at=now,
+    )
+    db.add(purchase)
+    await db.flush()
+
+    return {
+        "id": str(purchase.id),
+        "tier_name": purchase.tier_name,
+        "sms_quantity": purchase.sms_quantity,
+        "price_nzd": float(purchase.price_nzd),
+        "credits_remaining": purchase.credits_remaining,
+        "purchased_at": purchase.purchased_at.isoformat(),
+        "stripe_payment_intent_id": payment_intent.id,
+    }
+
+
+async def get_org_sms_packages(
+    db: AsyncSession, org_id: uuid.UUID
+) -> list[dict]:
+    """Return active SMS package purchases for an organisation.
+
+    Packages are ordered by ``purchased_at ASC`` (oldest first) to support
+    FIFO credit deduction.
+
+    Requirements: 6.5.
+    """
+    stmt = (
+        select(SmsPackagePurchase)
+        .where(SmsPackagePurchase.org_id == org_id)
+        .where(SmsPackagePurchase.credits_remaining > 0)
+        .order_by(SmsPackagePurchase.purchased_at.asc())
+    )
+    result = await db.execute(stmt)
+    packages = result.scalars().all()
+
+    return [
+        {
+            "id": str(pkg.id),
+            "tier_name": pkg.tier_name,
+            "sms_quantity": pkg.sms_quantity,
+            "price_nzd": float(pkg.price_nzd),
+            "credits_remaining": pkg.credits_remaining,
+            "purchased_at": pkg.purchased_at.isoformat(),
+        }
+        for pkg in packages
+    ]
+
+async def compute_sms_overage_for_billing(
+    db: AsyncSession, org_id: uuid.UUID
+) -> dict:
+    """Calculate SMS overage for a billing renewal, applying FIFO credit deduction.
+
+    Steps:
+    1. Query the org's plan for ``sms_included``, ``sms_included_quota``,
+       ``per_sms_cost_nzd``.
+    2. If ``sms_included`` is False, return zeros (no SMS billing).
+    3. Get the org's ``sms_sent_this_month``.
+    4. Compute ``raw_overage = max(0, sms_sent_this_month - sms_included_quota)``.
+    5. Query all ``sms_package_purchases`` for the org ordered by
+       ``purchased_at ASC`` (FIFO).
+    6. Iterate packages oldest-first, deducting
+       ``min(raw_overage, credits_remaining)`` from both ``raw_overage`` and
+       the package's ``credits_remaining`` (persisted to DB).
+    7. Return dict with ``overage_count``, ``per_sms_cost_nzd``,
+       ``total_charge_nzd``.
+
+    Requirements: 4.1, 4.2, 4.3.
+    """
+    # 1. Fetch the org and its plan
+    stmt = (
+        select(Organisation, SubscriptionPlan)
+        .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
+        .where(Organisation.id == org_id)
+    )
+    result = await db.execute(stmt)
+    row = result.one_or_none()
+
+    if row is None:
+        return {
+            "overage_count": 0,
+            "per_sms_cost_nzd": 0.0,
+            "total_charge_nzd": 0.0,
+        }
+
+    org, plan = row
+
+    # 2. If sms_included is False, no SMS billing applies
+    if not plan.sms_included:
+        return {
+            "overage_count": 0,
+            "per_sms_cost_nzd": 0.0,
+            "total_charge_nzd": 0.0,
+        }
+
+    per_sms_cost = float(plan.per_sms_cost_nzd)
+    sms_included_quota = plan.sms_included_quota
+
+    # 3. Get the org's sms_sent_this_month
+    total_sent = org.sms_sent_this_month
+
+    # 4. Compute raw overage against plan quota only
+    raw_overage = max(0, total_sent - sms_included_quota)
+
+    # 5. Query all SMS package purchases for FIFO deduction (oldest first)
+    pkg_stmt = (
+        select(SmsPackagePurchase)
+        .where(SmsPackagePurchase.org_id == org_id)
+        .where(SmsPackagePurchase.credits_remaining > 0)
+        .order_by(SmsPackagePurchase.purchased_at.asc())
+    )
+    pkg_result = await db.execute(pkg_stmt)
+    packages = pkg_result.scalars().all()
+
+    # 6. FIFO deduction: consume credits from oldest package first
+    for pkg in packages:
+        if raw_overage <= 0:
+            break
+        deduction = min(raw_overage, pkg.credits_remaining)
+        pkg.credits_remaining -= deduction
+        raw_overage -= deduction
+
+    await db.flush()
+
+    # 7. Return billing summary
+    overage_count = raw_overage
+    return {
+        "overage_count": overage_count,
+        "per_sms_cost_nzd": per_sms_cost,
+        "total_charge_nzd": round(overage_count * per_sms_cost, 2),
+    }
+
+
 
 
 async def get_all_orgs_carjam_usage(db: AsyncSession) -> list[dict]:
@@ -703,7 +1073,8 @@ async def test_carjam_connection(
 
     try:
         config = json.loads(envelope_decrypt_str(config_row.config_encrypted))
-    except Exception:
+    except (json.JSONDecodeError, ValueError, KeyError) as exc:
+        logger.error("Failed to decrypt Carjam configuration: %s", exc, exc_info=True)
         return {
             "success": False,
             "message": "Failed to decrypt Carjam configuration.",
@@ -767,7 +1138,7 @@ async def test_carjam_connection(
             "message": "Carjam API connection timed out.",
             "error": "Timeout",
         }
-    except Exception as exc:
+    except (ConnectionError, OSError, ValueError) as exc:
         return {
             "success": False,
             "message": f"Carjam connection test failed: {exc}",
@@ -872,7 +1243,8 @@ async def test_stripe_connection(
 
     try:
         config = json.loads(envelope_decrypt_str(config_row.config_encrypted))
-    except Exception:
+    except (json.JSONDecodeError, ValueError, KeyError) as exc:
+        logger.error("Failed to decrypt Stripe configuration: %s", exc, exc_info=True)
         return {
             "success": False,
             "message": "Failed to decrypt Stripe configuration.",
@@ -919,7 +1291,7 @@ async def test_stripe_connection(
                 "message": "Stripe account not found.",
                 "error": "Account not found",
             }
-    except Exception as exc:
+    except (ConnectionError, OSError, ValueError) as exc:
         return {
             "success": False,
             "message": f"Stripe connection test failed: {exc}",
@@ -944,7 +1316,7 @@ _MASKED_FIELDS: dict[str, list[str]] = {
     "carjam": ["api_key"],
     "stripe": ["platform_account_id", "signing_secret"],
     "smtp": ["api_key"],
-    "twilio": ["account_sid"],
+    "twilio": ["account_sid", "auth_token"],
 }
 
 
@@ -976,17 +1348,18 @@ async def get_integration_config(
             "name": name,
             "is_verified": False,
             "updated_at": None,
-            "config": {},
+            "fields": {},
         }
 
     try:
         config = json.loads(envelope_decrypt_str(config_row.config_encrypted))
-    except Exception:
+    except (json.JSONDecodeError, ValueError, KeyError) as exc:
+        logger.error("Failed to decrypt integration config '%s': %s", name, exc, exc_info=True)
         return {
             "name": name,
             "is_verified": config_row.is_verified,
             "updated_at": config_row.updated_at.isoformat() if config_row.updated_at else None,
-            "config": {},
+            "fields": {},
         }
 
     safe_config: dict = {}
@@ -1006,7 +1379,7 @@ async def get_integration_config(
         "name": name,
         "is_verified": config_row.is_verified,
         "updated_at": config_row.updated_at.isoformat() if config_row.updated_at else None,
-        "config": safe_config,
+        "fields": safe_config,
     }
 
 
@@ -1026,6 +1399,12 @@ async def create_plan(
     enabled_modules: list[str],
     is_public: bool = True,
     storage_tier_pricing: list[dict] | None = None,
+    trial_duration: int = 0,
+    trial_duration_unit: str = "days",
+    sms_included: bool = False,
+    per_sms_cost_nzd: float = 0,
+    sms_included_quota: int = 0,
+    sms_package_pricing: list[dict] | None = None,
     created_by: uuid.UUID | None = None,
     ip_address: str | None = None,
 ) -> dict:
@@ -1035,6 +1414,7 @@ async def create_plan(
     storage quota, Carjam lookups, enabled modules.
     Requirement 40.2: public/private plans.
     Requirement 40.4: storage tier pricing.
+    Requirement 1.3, 1.4, 5.3: SMS pricing fields.
     """
     # Check for duplicate plan name
     existing = await db.execute(
@@ -1053,18 +1433,24 @@ async def create_plan(
         is_public=is_public,
         is_archived=False,
         storage_tier_pricing=storage_tier_pricing or [],
+        trial_duration=trial_duration,
+        trial_duration_unit=trial_duration_unit,
+        sms_included=sms_included,
+        per_sms_cost_nzd=per_sms_cost_nzd,
+        sms_included_quota=sms_included_quota,
+        sms_package_pricing=sms_package_pricing or [],
     )
     db.add(plan)
     await db.flush()
 
     await write_audit_log(
         db,
-        event="plan_created",
-        actor_id=created_by,
+        action="plan.created",
+        user_id=created_by,
         ip_address=ip_address,
-        resource_type="subscription_plan",
-        resource_id=str(plan.id),
-        details={"plan_name": name, "monthly_price_nzd": monthly_price_nzd},
+        entity_type="subscription_plan",
+        entity_id=plan.id,
+        after_value={"plan_name": name, "monthly_price_nzd": monthly_price_nzd},
     )
 
     logger.info("Created subscription plan %s (%s)", plan.id, name)
@@ -1080,6 +1466,12 @@ async def create_plan(
         "is_public": plan.is_public,
         "is_archived": plan.is_archived,
         "storage_tier_pricing": plan.storage_tier_pricing or [],
+        "trial_duration": plan.trial_duration or 0,
+        "trial_duration_unit": plan.trial_duration_unit or "days",
+        "sms_included": plan.sms_included,
+        "per_sms_cost_nzd": float(plan.per_sms_cost_nzd),
+        "sms_included_quota": plan.sms_included_quota,
+        "sms_package_pricing": plan.sms_package_pricing or [],
         "created_at": plan.created_at,
         "updated_at": plan.updated_at,
     }
@@ -1114,6 +1506,9 @@ async def list_plans(
             "is_public": p.is_public,
             "is_archived": p.is_archived,
             "storage_tier_pricing": p.storage_tier_pricing or [],
+            "trial_duration": p.trial_duration or 0,
+            "trial_duration_unit": p.trial_duration_unit or "days",
+            "sms_included": p.sms_included,
             "created_at": p.created_at,
             "updated_at": p.updated_at,
         }
@@ -1144,6 +1539,9 @@ async def get_plan(
         "is_public": p.is_public,
         "is_archived": p.is_archived,
         "storage_tier_pricing": p.storage_tier_pricing or [],
+        "trial_duration": p.trial_duration or 0,
+        "trial_duration_unit": p.trial_duration_unit or "days",
+        "sms_included": p.sms_included,
         "created_at": p.created_at,
         "updated_at": p.updated_at,
     }
@@ -1178,7 +1576,9 @@ async def update_plan(
     allowed_fields = {
         "name", "monthly_price_nzd", "user_seats", "storage_quota_gb",
         "carjam_lookups_included", "enabled_modules", "is_public",
-        "storage_tier_pricing",
+        "storage_tier_pricing", "trial_duration", "trial_duration_unit",
+        "sms_included", "per_sms_cost_nzd", "sms_included_quota",
+        "sms_package_pricing",
     }
 
     # If renaming, check for duplicate
@@ -1205,12 +1605,13 @@ async def update_plan(
 
     await write_audit_log(
         db,
-        event="plan_updated",
-        actor_id=updated_by,
+        action="plan.updated",
+        user_id=updated_by,
         ip_address=ip_address,
-        resource_type="subscription_plan",
-        resource_id=str(plan.id),
-        details={"before": _serialise_audit(before), "after": _serialise_audit(after)},
+        entity_type="subscription_plan",
+        entity_id=plan.id,
+        before_value=_serialise_audit(before),
+        after_value=_serialise_audit(after),
     )
 
     logger.info("Updated subscription plan %s", plan.id)
@@ -1226,6 +1627,12 @@ async def update_plan(
         "is_public": plan.is_public,
         "is_archived": plan.is_archived,
         "storage_tier_pricing": plan.storage_tier_pricing or [],
+        "trial_duration": plan.trial_duration or 0,
+        "trial_duration_unit": plan.trial_duration_unit or "days",
+        "sms_included": plan.sms_included,
+        "per_sms_cost_nzd": float(plan.per_sms_cost_nzd),
+        "sms_included_quota": plan.sms_included_quota,
+        "sms_package_pricing": plan.sms_package_pricing or [],
         "created_at": plan.created_at,
         "updated_at": plan.updated_at,
     }
@@ -1270,12 +1677,12 @@ async def archive_plan(
 
     await write_audit_log(
         db,
-        event="plan_archived",
-        actor_id=archived_by,
+        action="plan.archived",
+        user_id=archived_by,
         ip_address=ip_address,
-        resource_type="subscription_plan",
-        resource_id=str(plan.id),
-        details={"plan_name": plan.name},
+        entity_type="subscription_plan",
+        entity_id=plan.id,
+        after_value={"plan_name": plan.name},
     )
 
     logger.info("Archived subscription plan %s (%s)", plan.id, plan.name)
@@ -1291,6 +1698,9 @@ async def archive_plan(
         "is_public": plan.is_public,
         "is_archived": plan.is_archived,
         "storage_tier_pricing": plan.storage_tier_pricing or [],
+        "trial_duration": plan.trial_duration or 0,
+        "trial_duration_unit": plan.trial_duration_unit or "days",
+        "sms_included": plan.sms_included,
         "created_at": plan.created_at,
         "updated_at": plan.updated_at,
     }
@@ -2288,11 +2698,26 @@ async def get_platform_settings(db: AsyncSession) -> dict:
         announcement_banner = ann_val.get("text", None)
         announcement_active = ann_val.get("active", False)
 
+    # Fetch storage pricing setting
+    row_sp = await db.execute(
+        sa_text("SELECT key, value FROM platform_settings WHERE key = :k"),
+        {"k": "storage_pricing"},
+    )
+    sp_row = row_sp.first()
+    storage_pricing = {"increment_gb": 1, "price_per_gb_nzd": 0.50}
+    if sp_row:
+        sp_val = sp_row[1] if isinstance(sp_row[1], dict) else json.loads(sp_row[1])
+        storage_pricing = {
+            "increment_gb": sp_val.get("increment_gb", 1),
+            "price_per_gb_nzd": sp_val.get("price_per_gb_nzd", 0.50),
+        }
+
     return {
         "terms_and_conditions": terms_entry,
         "terms_history": terms_history,
         "announcement_banner": announcement_banner,
         "announcement_active": announcement_active,
+        "storage_pricing": storage_pricing,
     }
 
 
@@ -2302,6 +2727,7 @@ async def update_platform_settings(
     terms_and_conditions: str | None = None,
     announcement_banner: str | None = None,
     announcement_active: bool | None = None,
+    storage_pricing: dict | None = None,
     actor_user_id: uuid.UUID | None = None,
     ip_address: str | None = None,
 ) -> dict:
@@ -2425,6 +2851,37 @@ async def update_platform_settings(
             ip_address=ip_address,
             after_value=new_val,
         )
+
+    # --- Storage Pricing ---------------------------------------------------
+    if storage_pricing is not None:
+        row = await db.execute(
+            sa_text("SELECT value FROM platform_settings WHERE key = :k FOR UPDATE"),
+            {"k": "storage_pricing"},
+        )
+        existing = row.scalar_one_or_none()
+
+        new_val = {
+            "increment_gb": storage_pricing.get("increment_gb", 1),
+            "price_per_gb_nzd": storage_pricing.get("price_per_gb_nzd", 0.50),
+        }
+
+        if existing:
+            await db.execute(
+                sa_text(
+                    "UPDATE platform_settings SET value = :v, updated_at = now() WHERE key = :k"
+                ),
+                {"k": "storage_pricing", "v": json.dumps(new_val)},
+            )
+        else:
+            await db.execute(
+                sa_text(
+                    "INSERT INTO platform_settings (key, value, version, updated_at) "
+                    "VALUES (:k, :v, 1, now())"
+                ),
+                {"k": "storage_pricing", "v": json.dumps(new_val)},
+            )
+
+        result["storage_pricing"] = new_val
 
     return result
 
@@ -2636,8 +3093,8 @@ async def refresh_global_vehicle(
             return {"message": f"Vehicle '{rego}' refreshed from Carjam", "vehicle": vehicle}
         else:
             return {"message": f"Carjam returned no data for rego '{rego}'", "vehicle": None}
-    except Exception as exc:
-        logger.warning("Carjam refresh failed for rego %s: %s", rego, exc)
+    except (ConnectionError, TimeoutError, OSError, ValueError) as exc:
+        logger.warning("Carjam refresh failed for rego %s: %s", rego, exc, exc_info=True)
         # Return existing record without refresh
         vehicle = {
             "id": str(existing[0]),
@@ -2774,4 +3231,133 @@ async def list_audit_logs(
         "total": total,
         "page": page,
         "page_size": page_size,
+    }
+
+
+# ---------------------------------------------------------------------------
+# User Management — Global Admin (ISSUE-011)
+# ---------------------------------------------------------------------------
+
+
+async def list_all_users(
+    db: AsyncSession,
+    *,
+    search: str | None = None,
+    role: str | None = None,
+    org_id: uuid.UUID | None = None,
+    is_active: bool | None = None,
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
+    page: int = 1,
+    page_size: int = 25,
+) -> dict:
+    """List all users across all organisations with filtering and pagination."""
+    from sqlalchemy import func as sa_func, text as sa_text
+
+    conditions = []
+    params: dict = {}
+
+    if search:
+        conditions.append("u.email ILIKE :search")
+        params["search"] = f"%{search}%"
+    if role:
+        conditions.append("u.role = :role")
+        params["role"] = role
+    if org_id:
+        conditions.append("u.org_id = :org_id")
+        params["org_id"] = str(org_id)
+    if is_active is not None:
+        conditions.append("u.is_active = :is_active")
+        params["is_active"] = is_active
+
+    where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+    allowed_sorts = {"created_at", "email", "role", "last_login_at", "is_active"}
+    if sort_by not in allowed_sorts:
+        sort_by = "created_at"
+    order_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
+
+    count_sql = sa_text(f"SELECT COUNT(*) FROM users u WHERE {where_clause}")
+    count_result = await db.execute(count_sql, params)
+    total = count_result.scalar() or 0
+
+    offset = (page - 1) * page_size
+    data_sql = sa_text(
+        f"""
+        SELECT u.id, u.email, u.role, u.is_active, u.is_email_verified,
+               u.last_login_at, u.created_at, u.org_id,
+               o.name as org_name
+        FROM users u
+        LEFT JOIN organisations o ON u.org_id = o.id
+        WHERE {where_clause}
+        ORDER BY u.{sort_by} {order_dir}
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    params["limit"] = page_size
+    params["offset"] = offset
+
+    result = await db.execute(data_sql, params)
+    rows = result.all()
+
+    users = []
+    for r in rows:
+        users.append({
+            "id": str(r[0]),
+            "email": r[1],
+            "role": r[2],
+            "is_active": r[3],
+            "is_email_verified": r[4],
+            "last_login_at": r[5].isoformat() if r[5] else None,
+            "created_at": r[6].isoformat() if r[6] else None,
+            "org_id": str(r[7]) if r[7] else None,
+            "org_name": r[8],
+        })
+
+    return {
+        "users": users,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+async def toggle_user_active(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    toggled_by: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Toggle a user's is_active status."""
+    result = await db.execute(
+        select(User).where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise ValueError("User not found")
+
+    user.is_active = not user.is_active
+    await db.flush()
+
+    await write_audit_log(
+        session=db,
+        org_id=user.org_id,
+        user_id=toggled_by,
+        action="admin.user_status_toggled",
+        entity_type="user",
+        entity_id=user.id,
+        after_value={
+            "email": user.email,
+            "is_active": user.is_active,
+            "ip_address": ip_address,
+        },
+        ip_address=ip_address,
+    )
+
+    return {
+        "message": f"User {'activated' if user.is_active else 'deactivated'}",
+        "user_id": str(user.id),
+        "email": user.email,
+        "is_active": user.is_active,
     }

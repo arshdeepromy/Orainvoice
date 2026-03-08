@@ -98,17 +98,10 @@ class Quote(Base):
             "status IN ('draft','sent','accepted','declined','expired')",
             name="ck_quotes_status",
         ),
+        {"extend_existing": True},
     )
 
-    # Relationships
-    organisation = relationship("Organisation", backref="quotes")
-    customer = relationship("Customer", backref="quotes")
-    created_by_user = relationship("User", backref="created_quotes")
-    line_items: Mapped[list[QuoteLineItem]] = relationship(
-        back_populates="quote",
-        cascade="all, delete-orphan",
-        order_by="QuoteLineItem.sort_order",
-    )
+    # Relationships removed — V2 model is authoritative for this table
 
 
 # ---------------------------------------------------------------------------
@@ -165,11 +158,10 @@ class QuoteLineItem(Base):
             "item_type IN ('service','part','labour')",
             name="ck_quote_line_items_item_type",
         ),
+        {"extend_existing": True},
     )
 
-    # Relationships
-    quote: Mapped[Quote] = relationship(back_populates="line_items")
-    organisation = relationship("Organisation", backref="quote_line_items")
+    # Relationships removed — V2 model is authoritative for this table
 
 
 # ---------------------------------------------------------------------------
@@ -229,9 +221,7 @@ class RecurringSchedule(Base):
             "frequency IN ('weekly','fortnightly','monthly','quarterly','annually')",
             name="ck_recurring_schedules_frequency",
         ),
+        {"extend_existing": True},
     )
 
-    # Relationships
-    organisation = relationship("Organisation", backref="recurring_schedules")
-    customer = relationship("Customer", backref="recurring_schedules")
-    created_by_user = relationship("User", backref="created_recurring_schedules")
+    # Relationships removed — V2 model is authoritative for this table

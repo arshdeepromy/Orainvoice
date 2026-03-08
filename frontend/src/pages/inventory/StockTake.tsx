@@ -1,6 +1,17 @@
+/**
+ * Stock take page: enter counted quantities, see variance vs system,
+ * commit adjustments. Integrates barcode scanning for product lookup.
+ *
+ * Validates: Requirements 9.5, 9.8
+ */
+
 import { useState, useEffect, useCallback } from 'react'
-import apiClient from '../../api/client'
-import { Button, Spinner, Badge } from '../../components/ui'
+import apiClient from '@/api/client'
+import { Button, Spinner, Badge } from '@/components/ui'
+import { useTerm } from '@/contexts/TerminologyContext'
+import { useFlag } from '@/contexts/FeatureFlagContext'
+import { useModuleGuard } from '@/hooks/useModuleGuard'
+import { scanBarcodeFromCamera } from '@/utils/barcodeScanner'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -10,6 +21,7 @@ interface Product {
   id: string
   name: string
   sku: string | null
+  barcode: string | null
   stock_quantity: string
   unit_of_measure: string
 }
@@ -18,6 +30,7 @@ interface StocktakeLine {
   product_id: string
   product_name: string
   sku: string | null
+  barcode: string | null
   system_quantity: number
   counted_quantity: string
   unit_of_measure: string
@@ -38,19 +51,21 @@ interface StocktakeResponse {
   adjustments_applied: number
 }
 
-/**
- * Stock take page: enter counted quantities, see variance vs system, commit adjustments.
- *
- * Validates: Requirement 9.8
- */
 export default function StockTake() {
-  const [products, setProducts] = useState<Product[]>([])
+  const { isAllowed, isLoading: guardLoading } = useModuleGuard('inventory')
+  const productLabel = useTerm('product', 'Product')
+  /* useFlag kept for FeatureFlagContext integration per Req 17.2 */
+  useFlag('inventory')
+
+  const [, setProducts] = useState<Product[]>([])
   const [lines, setLines] = useState<StocktakeLine[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [committing, setCommitting] = useState(false)
   const [result, setResult] = useState<StocktakeResponse | null>(null)
+  const [scanning, setScanning] = useState(false)
+  const [scanFeedback, setScanFeedback] = useState('')
 
   const fetchProducts = useCallback(async () => {
     setLoading(true)
@@ -63,22 +78,23 @@ export default function StockTake() {
         product_id: p.id,
         product_name: p.name,
         sku: p.sku,
+        barcode: p.barcode,
         system_quantity: parseFloat(p.stock_quantity),
         counted_quantity: '',
         unit_of_measure: p.unit_of_measure,
       })))
     } catch {
-      setError('Failed to load products.')
+      setError(`Failed to load ${productLabel.toLowerCase()}s.`)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [productLabel])
 
   useEffect(() => { fetchProducts() }, [fetchProducts])
 
   const updateCounted = (productId: string, value: string) => {
     setLines((prev) => prev.map((l) =>
-      l.product_id === productId ? { ...l, counted_quantity: value } : l
+      l.product_id === productId ? { ...l, counted_quantity: value } : l,
     ))
   }
 
@@ -99,9 +115,42 @@ export default function StockTake() {
     return variance > 0 ? 'text-green-700' : 'text-red-700'
   }
 
+  /* ---- Barcode scanning ---- */
+  const handleScanBarcode = async () => {
+    setScanning(true)
+    setScanFeedback('')
+    try {
+      const result = await scanBarcodeFromCamera()
+      if (result) {
+        const matchedLine = lines.find(
+          (l) => l.barcode === result.rawValue || l.sku === result.rawValue,
+        )
+        if (matchedLine) {
+          setScanFeedback(`Found: ${matchedLine.product_name}`)
+          // Focus the counted quantity input for the matched product
+          const el = document.querySelector<HTMLInputElement>(
+            `[data-product-id="${matchedLine.product_id}"]`,
+          )
+          if (el) {
+            el.focus()
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          }
+        } else {
+          setScanFeedback(`Barcode "${result.rawValue}" not found in ${productLabel.toLowerCase()} list.`)
+        }
+      } else {
+        setScanFeedback('No barcode detected. Try again.')
+      }
+    } catch {
+      setScanFeedback('Camera access failed.')
+    } finally {
+      setScanning(false)
+    }
+  }
+
   const handlePreview = async () => {
     const filledLines = lines.filter((l) => l.counted_quantity !== '' && !isNaN(parseFloat(l.counted_quantity)))
-    if (filledLines.length === 0) { setError('Enter counted quantities for at least one product.'); return }
+    if (filledLines.length === 0) { setError(`Enter counted quantities for at least one ${productLabel.toLowerCase()}.`); return }
 
     setSaving(true)
     setError('')
@@ -134,8 +183,14 @@ export default function StockTake() {
     }
   }
 
+  if (guardLoading) {
+    return <div className="py-16"><Spinner label="Loading" /></div>
+  }
+
+  if (!isAllowed) return null
+
   if (loading) {
-    return <div className="py-16"><Spinner label="Loading products for stocktake" /></div>
+    return <div className="py-16"><Spinner label={`Loading ${productLabel.toLowerCase()}s for stocktake`} /></div>
   }
 
   /* ---- Results view ---- */
@@ -148,14 +203,14 @@ export default function StockTake() {
           </h2>
           {result.status !== 'committed' && (
             <div className="flex gap-2">
-              <Button variant="secondary" onClick={() => setResult(null)}>Back to Entry</Button>
-              <Button onClick={handleCommit} loading={committing}>Commit Adjustments</Button>
+              <Button variant="secondary" onClick={() => setResult(null)} style={{ minWidth: 44, minHeight: 44 }}>Back to Entry</Button>
+              <Button onClick={handleCommit} loading={committing} style={{ minWidth: 44, minHeight: 44 }}>Commit Adjustments</Button>
             </div>
           )}
           {result.status === 'committed' && (
             <div className="flex gap-2 items-center">
               <Badge variant="success">{result.adjustments_applied} adjustments applied</Badge>
-              <Button variant="secondary" onClick={() => { setResult(null); fetchProducts() }}>New Stocktake</Button>
+              <Button variant="secondary" onClick={() => { setResult(null); fetchProducts() }} style={{ minWidth: 44, minHeight: 44 }}>New Stocktake</Button>
             </div>
           )}
         </div>
@@ -165,7 +220,7 @@ export default function StockTake() {
             <caption className="sr-only">Stocktake variance report</caption>
             <thead className="bg-gray-50">
               <tr>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Product</th>
+                <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">{productLabel}</th>
                 <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">System Qty</th>
                 <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Counted Qty</th>
                 <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Variance</th>
@@ -195,26 +250,37 @@ export default function StockTake() {
   /* ---- Entry view ---- */
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
         <p className="text-sm text-gray-500">
-          Enter the counted quantity for each product. Leave blank to skip. Variances are highlighted.
+          Enter the counted quantity for each {productLabel.toLowerCase()}. Leave blank to skip. Variances are highlighted.
         </p>
-        <Button onClick={handlePreview} loading={saving}>Preview Variance</Button>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={handleScanBarcode} loading={scanning} style={{ minWidth: 44, minHeight: 44 }}>
+            📷 Scan Barcode
+          </Button>
+          <Button onClick={handlePreview} loading={saving} style={{ minWidth: 44, minHeight: 44 }}>Preview Variance</Button>
+        </div>
       </div>
+
+      {scanFeedback && (
+        <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700" role="status">
+          {scanFeedback}
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{error}</div>
       )}
 
       {lines.length === 0 ? (
-        <p className="text-sm text-gray-500 py-8 text-center">No products to count.</p>
+        <p className="text-sm text-gray-500 py-8 text-center">No {productLabel.toLowerCase()}s to count.</p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-gray-200">
           <table className="min-w-full divide-y divide-gray-200" role="grid">
             <caption className="sr-only">Stocktake entry</caption>
             <thead className="bg-gray-50">
               <tr>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Product</th>
+                <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">{productLabel}</th>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">SKU</th>
                 <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">System Qty</th>
                 <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Counted Qty</th>
@@ -232,11 +298,14 @@ export default function StockTake() {
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
                       <input
                         type="number"
+                        inputMode="numeric"
                         step="any"
                         className="w-24 rounded-md border border-gray-300 px-2 py-1 text-sm text-right tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                        style={{ minHeight: 44 }}
                         value={l.counted_quantity}
                         onChange={(e) => updateCounted(l.product_id, e.target.value)}
                         aria-label={`Counted quantity for ${l.product_name}`}
+                        data-product-id={l.product_id}
                       />
                     </td>
                     <td className={`whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums font-semibold ${varianceTextClass(variance)}`}>

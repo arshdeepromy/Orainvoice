@@ -6,6 +6,7 @@ import TopServices from './TopServices'
 import GstReturnSummary from './GstReturnSummary'
 import CustomerStatement from './CustomerStatement'
 import CarjamUsage from './CarjamUsage'
+import SmsUsage from './SmsUsage'
 import StorageUsage from './StorageUsage'
 import FleetReport from './FleetReport'
 
@@ -24,6 +25,7 @@ export default function ReportsPage() {
     { id: 'gst-return', label: 'GST Return', content: <GstReturnSummary /> },
     { id: 'customer-statement', label: 'Customer Statement', content: <CustomerStatement /> },
     { id: 'carjam-usage', label: 'Carjam Usage', content: <CarjamUsage /> },
+    { id: 'sms-usage', label: 'SMS Usage', content: <SmsUsage /> },
     { id: 'storage', label: 'Storage', content: <StorageUsage /> },
     { id: 'fleet', label: 'Fleet', content: <FleetReport /> },
   ]
