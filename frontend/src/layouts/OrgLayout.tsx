@@ -6,6 +6,14 @@ import { useAuth } from '@/contexts/AuthContext'
 import { useFeatureFlags } from '@/contexts/FeatureFlagContext'
 import { GlobalSearchBar } from '@/components/search'
 
+interface QuickAction {
+  label: string
+  path: string
+  icon: string
+  module?: string
+  flagKey?: string
+}
+
 interface NavItem {
   to: string
   label: string
@@ -51,8 +59,18 @@ const navItems: NavItem[] = [
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ]
 
+// Quick actions for the header dropdown
+const quickActions: QuickAction[] = [
+  { label: 'New Booking', path: '/bookings/new', icon: '📅', module: 'bookings', flagKey: 'bookings' },
+  { label: 'New Job Card', path: '/job-cards/new', icon: '🔧', module: 'jobs', flagKey: 'jobs' },
+  { label: 'New Quote', path: '/quotes/new', icon: '📝', module: 'quotes', flagKey: 'quotes' },
+  { label: 'New Invoice', path: '/invoices/new', icon: '🧾' },
+  { label: 'New Customer', path: '/customers/new', icon: '👤' },
+]
+
 export function OrgLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [quickActionsOpen, setQuickActionsOpen] = useState(false)
   const { settings } = useTenant()
   const { isEnabled } = useModules()
   const { isGlobalAdmin } = useAuth()
@@ -83,6 +101,22 @@ export function OrgLayout() {
     }),
     [isEnabled, flags],
   )
+
+  const visibleQuickActions = useMemo(
+    () => quickActions.filter((action) => {
+      // Check module enablement
+      if (action.module && !isEnabled(action.module)) return false
+      // Check feature flag
+      if (action.flagKey && !flags[action.flagKey]) return false
+      return true
+    }),
+    [isEnabled, flags],
+  )
+
+  const handleQuickAction = (path: string) => {
+    setQuickActionsOpen(false)
+    navigate(path)
+  }
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
@@ -188,6 +222,65 @@ export function OrgLayout() {
           </button>
 
           <div className="flex-1" />
+
+          {/* Quick Actions Dropdown */}
+          {visibleQuickActions.length > 0 && (
+            <div className="relative">
+              <button
+                onClick={() => setQuickActionsOpen(!quickActionsOpen)}
+                className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors min-h-[44px]"
+                aria-label="Quick actions"
+                aria-expanded={quickActionsOpen}
+                aria-haspopup="true"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                <span className="hidden sm:inline">New</span>
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+
+              {/* Dropdown menu */}
+              {quickActionsOpen && (
+                <>
+                  {/* Backdrop */}
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={() => setQuickActionsOpen(false)}
+                    aria-hidden="true"
+                  />
+                  {/* Menu */}
+                  <div className="absolute right-0 z-20 mt-2 w-56 rounded-lg border border-gray-200 bg-white shadow-lg">
+                    <div className="py-1">
+                      {visibleQuickActions.map((action) => (
+                        <button
+                          key={action.path}
+                          onClick={() => handleQuickAction(action.path)}
+                          className="flex w-full items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors min-h-[44px]"
+                        >
+                          <span className="text-lg" aria-hidden="true">{action.icon}</span>
+                          <span>{action.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Notifications */}
+          <button
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+            aria-label="Notifications"
+            onClick={() => navigate('/notifications')}
+          >
+            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+            </svg>
+          </button>
 
           {/* User menu */}
           <button

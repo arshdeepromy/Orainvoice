@@ -90,10 +90,10 @@ export function OrgAdminDashboard() {
         {settings?.branding.name ?? 'Organisation'} Dashboard
       </h1>
 
-      {/* Storage alert */}
-      {data.storage && data.storage.alert_level !== 'normal' && (
-        <AlertBanner variant={data.storage.alert_level === 'blocked' ? 'error' : 'warning'}>
-          {data.storage.alert_level === 'blocked' 
+      {/* Storage alert - only show when usage is 80% or higher */}
+      {data.storage && storagePercent >= 80 && (
+        <AlertBanner variant={storagePercent >= 100 ? 'error' : 'warning'}>
+          {storagePercent >= 100
             ? 'Storage quota exceeded. Please upgrade your plan or delete files.'
             : `Storage usage at ${Math.round(storagePercent)}%. Consider upgrading your plan.`}
         </AlertBanner>
