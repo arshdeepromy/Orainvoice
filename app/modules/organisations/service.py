@@ -857,6 +857,7 @@ async def public_signup(
     admin_email: str,
     admin_first_name: str,
     admin_last_name: str,
+    password: str,
     plan_id: uuid.UUID,
     ip_address: str | None = None,
 ) -> dict:
@@ -865,22 +866,17 @@ async def public_signup(
     Steps:
     1. Validate the subscription plan exists, is public, and not archived.
     2. Check the admin email is not already registered.
-    3. Create the organisation with ``trial`` status and 14-day trial end.
-    4. Create an Org_Admin user (unverified, no password).
-    5. Create a Stripe customer and SetupIntent for card collection.
-    6. Generate a signup token (for onboarding wizard access).
-    7. Write audit log entries.
+    3. Create the organisation with ``trial`` status and trial period from plan.
+    4. Create an Org_Admin user with hashed password (verified, active).
+    5. Generate a signup token (for onboarding wizard access).
+    6. Write audit log entries.
 
-    Returns a dict with org details, Stripe SetupIntent client_secret,
-    and a signup token for the frontend to drive the onboarding wizard.
+    Returns a dict with org details and a signup token for the frontend 
+    to drive the onboarding wizard. No payment collection during trial.
 
     Raises ``ValueError`` on validation failures.
     """
     from app.core.redis import redis_pool
-    from app.integrations.stripe_billing import (
-        create_setup_intent,
-        create_stripe_customer,
-    )
 
     # 1. Validate plan
     plan_result = await db.execute(
@@ -915,37 +911,24 @@ async def public_signup(
     db.add(org)
     await db.flush()
 
-    # 4. Create Org_Admin user
+    # 4. Create Org_Admin user with hashed password
+    from app.modules.auth.password import hash_password
+    
+    password_hash = hash_password(password)
     admin_user = User(
         org_id=org.id,
         email=admin_email,
         role="org_admin",
         is_active=True,
-        is_email_verified=False,
-        password_hash=None,
+        is_email_verified=True,  # Email verified since they set password during signup
+        password_hash=password_hash,
     )
     db.add(admin_user)
     await db.flush()
 
-    # 5. Stripe customer + SetupIntent
-    stripe_customer_id = await create_stripe_customer(
-        email=admin_email,
-        name=org_name,
-        metadata={
-            "org_id": str(org.id),
-            "admin_user_id": str(admin_user.id),
-        },
-    )
-    org.stripe_customer_id = stripe_customer_id
-    await db.flush()
-
-    setup_intent = await create_setup_intent(
-        customer_id=stripe_customer_id,
-        metadata={
-            "org_id": str(org.id),
-            "signup": "true",
-        },
-    )
+    # 5. Skip Stripe during trial signup
+    # Stripe customer and payment method will be created when trial ends
+    # or when user manually adds payment method
 
     # 6. Generate signup token (stored in Redis, 48h TTL)
     signup_token = secrets.token_urlsafe(48)
@@ -979,7 +962,7 @@ async def public_signup(
             "trial_ends_at": trial_ends_at.isoformat(),
             "admin_email": admin_email,
             "admin_user_id": str(admin_user.id),
-            "stripe_customer_id": stripe_customer_id,
+            "stripe_customer_id": None,  # Created later when payment needed
             "ip_address": ip_address,
         },
         ip_address=ip_address,
@@ -992,6 +975,6 @@ async def public_signup(
         "admin_user_id": str(admin_user.id),
         "admin_email": admin_email,
         "trial_ends_at": trial_ends_at,
-        "stripe_setup_intent_client_secret": setup_intent["client_secret"],
+        "stripe_setup_intent_client_secret": None,  # No payment during trial
         "signup_token": signup_token,
     }

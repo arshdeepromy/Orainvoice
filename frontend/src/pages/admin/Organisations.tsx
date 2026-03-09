@@ -228,11 +228,11 @@ function DeleteModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Delete organisation">
+    <Modal open={open} onClose={onClose} title="Soft delete organisation">
       {step === 1 ? (
         <form onSubmit={handleStep1} className="space-y-4">
-          <AlertBanner variant="error" title="This action is permanent">
-            Deleting <span className="font-semibold">{orgName}</span> will permanently remove all data including customers, invoices, and settings. This cannot be undone.
+          <AlertBanner variant="warning" title="Soft delete (data retained)">
+            Soft deleting <span className="font-semibold">{orgName}</span> will mark it as deleted but keep all data in the database. The organisation can potentially be recovered.
           </AlertBanner>
           <Input
             label="Reason for deletion"
@@ -248,7 +248,7 @@ function DeleteModal({
       ) : (
         <form onSubmit={handleStep2} className="space-y-4">
           <p className="text-sm text-gray-600">
-            To confirm deletion, type the organisation name: <span className="font-semibold">{orgName}</span>
+            To confirm soft deletion, type the organisation name: <span className="font-semibold">{orgName}</span>
           </p>
           <Input
             label="Confirm organisation name"
@@ -258,7 +258,94 @@ function DeleteModal({
           />
           <div className="flex justify-end gap-3 pt-2">
             <Button type="button" variant="secondary" onClick={() => setStep(1)}>Back</Button>
-            <Button type="submit" variant="danger" loading={saving}>Delete permanently</Button>
+            <Button type="submit" variant="danger" loading={saving}>Soft delete</Button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  )
+}
+
+/* ── Hard Delete Modal (permanent deletion with extra confirmation) ── */
+
+function HardDeleteModal({
+  open,
+  onClose,
+  onConfirm,
+  saving,
+  orgName,
+}: {
+  open: boolean
+  onClose: () => void
+  onConfirm: (reason: string) => void
+  saving: boolean
+  orgName: string
+}) {
+  const [step, setStep] = useState<1 | 2>(1)
+  const [reason, setReason] = useState('')
+  const [confirmText, setConfirmText] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (open) { setStep(1); setReason(''); setConfirmText(''); setError('') }
+  }, [open])
+
+  const handleStep1 = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!reason.trim()) { setError('A reason is required for permanent deletion'); return }
+    setError('')
+    setStep(2)
+  }
+
+  const handleStep2 = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (confirmText !== 'PERMANENTLY DELETE') { 
+      setError('You must type "PERMANENTLY DELETE" exactly to confirm'); 
+      return 
+    }
+    onConfirm(reason.trim())
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="⚠️ PERMANENT DELETION">
+      {step === 1 ? (
+        <form onSubmit={handleStep1} className="space-y-4">
+          <AlertBanner variant="error" title="THIS ACTION CANNOT BE UNDONE">
+            Permanently deleting <span className="font-semibold">{orgName}</span> will:
+            <ul className="list-disc list-inside mt-2 space-y-1">
+              <li>Remove ALL data from the database</li>
+              <li>Delete all users, vehicles, customers, invoices</li>
+              <li>Delete all quotes, bookings, and settings</li>
+              <li>This is IRREVERSIBLE - data cannot be recovered</li>
+            </ul>
+          </AlertBanner>
+          <Input
+            label="Reason for permanent deletion"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            error={error}
+            helperText="This will be logged for compliance"
+          />
+          <div className="flex justify-end gap-3 pt-2">
+            <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button type="submit" variant="danger">Continue</Button>
+          </div>
+        </form>
+      ) : (
+        <form onSubmit={handleStep2} className="space-y-4">
+          <p className="text-sm text-gray-600 font-semibold">
+            To confirm PERMANENT deletion, type exactly: <span className="font-mono bg-red-100 px-2 py-1 rounded">PERMANENTLY DELETE</span>
+          </p>
+          <Input
+            label="Type to confirm"
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            error={error}
+            placeholder="PERMANENTLY DELETE"
+          />
+          <div className="flex justify-end gap-3 pt-2">
+            <Button type="button" variant="secondary" onClick={() => setStep(1)}>Back</Button>
+            <Button type="submit" variant="danger" loading={saving}>⚠️ DELETE PERMANENTLY</Button>
           </div>
         </form>
       )}
@@ -338,6 +425,7 @@ export function Organisations() {
   const [provisionOpen, setProvisionOpen] = useState(false)
   const [suspendOrg, setSuspendOrg] = useState<Organisation | null>(null)
   const [deleteOrg, setDeleteOrg] = useState<Organisation | null>(null)
+  const [hardDeleteOrg, setHardDeleteOrg] = useState<Organisation | null>(null)
   const [movePlanOrg, setMovePlanOrg] = useState<Organisation | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -445,11 +533,41 @@ export function Organisations() {
       await apiClient.delete(`/admin/organisations/${deleteOrg.id}`, {
         data: { reason, confirmation_token: token },
       })
-      addToast('success', `Organisation "${deleteOrg.name}" deleted`)
+      addToast('success', `Organisation "${deleteOrg.name}" soft deleted`)
       setDeleteOrg(null)
       fetchData()
     } catch {
       addToast('error', 'Failed to delete organisation')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleHardDelete = async (reason: string) => {
+    if (!hardDeleteOrg) return
+    setSaving(true)
+    try {
+      // Step 1: Request hard deletion (get confirmation token)
+      const res = await apiClient.put(`/admin/organisations/${hardDeleteOrg.id}`, {
+        action: 'hard_delete_request',
+        reason,
+      })
+      const token = res.data.confirmation_token
+      // Step 2: Confirm hard deletion
+      await apiClient.delete(`/admin/organisations/${hardDeleteOrg.id}/hard`, {
+        data: { 
+          reason, 
+          confirmation_token: token,
+          confirm_text: 'PERMANENTLY DELETE',
+        },
+      })
+      addToast('success', `Organisation "${hardDeleteOrg.name}" permanently deleted`)
+      // Immediately remove from UI without refetching
+      setOrgs((prev) => prev.filter((o) => o.id !== hardDeleteOrg.id))
+      setHardDeleteOrg(null)
+    } catch (err: any) {
+      const errorMsg = err?.response?.data?.detail || 'Failed to permanently delete organisation'
+      addToast('error', errorMsg)
     } finally {
       setSaving(false)
     }
@@ -543,9 +661,14 @@ export function Organisations() {
             </Button>
           )}
           {row.status !== 'deleted' && (
-            <Button size="sm" variant="danger" onClick={() => setDeleteOrg(row)}>
-              Delete
-            </Button>
+            <>
+              <Button size="sm" variant="danger" onClick={() => setDeleteOrg(row)}>
+                Soft Delete
+              </Button>
+              <Button size="sm" variant="danger" onClick={() => setHardDeleteOrg(row)}>
+                Hard Delete
+              </Button>
+            </>
           )}
         </div>
       ),
@@ -629,6 +752,13 @@ export function Organisations() {
         onConfirm={handleDelete}
         saving={saving}
         orgName={deleteOrg?.name ?? ''}
+      />
+      <HardDeleteModal
+        open={!!hardDeleteOrg}
+        onClose={() => setHardDeleteOrg(null)}
+        onConfirm={handleHardDelete}
+        saving={saving}
+        orgName={hardDeleteOrg?.name ?? ''}
       />
       <MovePlanModal
         open={!!movePlanOrg}

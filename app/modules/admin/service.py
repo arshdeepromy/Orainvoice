@@ -9,12 +9,12 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.config import settings
-from app.modules.admin.models import Organisation, SmsPackagePurchase, SubscriptionPlan
+from app.modules.admin.models import AuditLog, Organisation, SmsPackagePurchase, SubscriptionPlan
 from app.modules.auth.models import User
 
 logger = logging.getLogger(__name__)
@@ -978,34 +978,53 @@ async def send_test_sms(
 async def save_carjam_config(
     db: AsyncSession,
     *,
-    api_key: str,
-    endpoint_url: str,
-    per_lookup_cost_nzd: float,
-    global_rate_limit_per_minute: int,
+    api_key: str | None = None,
+    endpoint_url: str | None = None,
+    per_lookup_cost_nzd: float | None = None,
+    global_rate_limit_per_minute: int | None = None,
     updated_by: uuid.UUID,
     ip_address: str | None = None,
 ) -> dict:
     """Save or update the platform-wide Carjam configuration.
 
     Stores encrypted in ``integration_configs`` with name='carjam'.
+    Only updates fields that are provided (not None).
     Returns non-secret config fields.
     Requirement 48.3.
     """
     from app.modules.admin.models import IntegrationConfig
-    from app.core.encryption import envelope_encrypt
+    from app.core.encryption import envelope_encrypt, envelope_decrypt
 
-    config_data = json.dumps({
-        "api_key": api_key,
-        "endpoint_url": endpoint_url,
-        "per_lookup_cost_nzd": per_lookup_cost_nzd,
-        "global_rate_limit_per_minute": global_rate_limit_per_minute,
-    })
-    encrypted = envelope_encrypt(config_data)
-
+    # Load existing config
     result = await db.execute(
         select(IntegrationConfig).where(IntegrationConfig.name == "carjam")
     )
     existing = result.scalar_one_or_none()
+
+    # Get current values or defaults
+    if existing:
+        current_data = json.loads(envelope_decrypt(existing.config_encrypted))
+    else:
+        current_data = {
+            "api_key": "",
+            "endpoint_url": "https://www.carjam.co.nz",
+            "per_lookup_cost_nzd": 0.50,
+            "global_rate_limit_per_minute": 60,
+        }
+
+    # Update only provided fields
+    if api_key is not None:
+        current_data["api_key"] = api_key
+    if endpoint_url is not None:
+        current_data["endpoint_url"] = endpoint_url
+    if per_lookup_cost_nzd is not None:
+        current_data["per_lookup_cost_nzd"] = per_lookup_cost_nzd
+    if global_rate_limit_per_minute is not None:
+        current_data["global_rate_limit_per_minute"] = global_rate_limit_per_minute
+
+    # Encrypt and save
+    config_data = json.dumps(current_data)
+    encrypted = envelope_encrypt(config_data)
 
     if existing is not None:
         existing.config_encrypted = encrypted
@@ -1020,6 +1039,19 @@ async def save_carjam_config(
 
     await db.flush()
 
+    # Audit log with updated values
+    audit_data = {
+        "ip_address": ip_address,
+    }
+    if api_key is not None:
+        audit_data["api_key_last4"] = api_key[-4:] if len(api_key) >= 4 else api_key
+    if endpoint_url is not None:
+        audit_data["endpoint_url"] = endpoint_url
+    if per_lookup_cost_nzd is not None:
+        audit_data["per_lookup_cost_nzd"] = per_lookup_cost_nzd
+    if global_rate_limit_per_minute is not None:
+        audit_data["global_rate_limit_per_minute"] = global_rate_limit_per_minute
+
     await write_audit_log(
         session=db,
         org_id=None,
@@ -1027,21 +1059,15 @@ async def save_carjam_config(
         action="admin.carjam_config_updated",
         entity_type="integration_config",
         entity_id=None,
-        after_value={
-            "endpoint_url": endpoint_url,
-            "per_lookup_cost_nzd": per_lookup_cost_nzd,
-            "global_rate_limit_per_minute": global_rate_limit_per_minute,
-            "api_key_last4": api_key[-4:] if len(api_key) >= 4 else api_key,
-            "ip_address": ip_address,
-        },
+        after_value=audit_data,
         ip_address=ip_address,
     )
 
     return {
-        "endpoint_url": endpoint_url,
-        "per_lookup_cost_nzd": per_lookup_cost_nzd,
-        "global_rate_limit_per_minute": global_rate_limit_per_minute,
-        "api_key_last4": api_key[-4:] if len(api_key) >= 4 else api_key,
+        "endpoint_url": current_data["endpoint_url"],
+        "per_lookup_cost_nzd": current_data["per_lookup_cost_nzd"],
+        "global_rate_limit_per_minute": current_data["global_rate_limit_per_minute"],
+        "api_key_last4": current_data["api_key"][-4:] if len(current_data["api_key"]) >= 4 else current_data["api_key"],
         "is_verified": False,
     }
 
@@ -2068,9 +2094,9 @@ async def update_organisation(
     updated_by: uuid.UUID,
     ip_address: str | None = None,
 ) -> dict:
-    """Update an organisation: suspend, reinstate, delete_request, or move_plan.
+    """Update an organisation: suspend, reinstate, activate, deactivate, delete_request, hard_delete_request, or move_plan.
 
-    For ``delete_request``, generates a confirmation token (step 1 of multi-step delete).
+    For ``delete_request`` and ``hard_delete_request``, generates a confirmation token (step 1 of multi-step delete).
     Requirements 47.2, 47.3.
     """
     from app.core.redis import redis_pool
@@ -2083,7 +2109,7 @@ async def update_organisation(
     if org is None:
         raise ValueError("Organisation not found")
 
-    valid_actions = ("suspend", "reinstate", "delete_request", "move_plan")
+    valid_actions = ("suspend", "reinstate", "activate", "deactivate", "delete_request", "hard_delete_request", "move_plan")
     if action not in valid_actions:
         raise ValueError(f"Invalid action. Must be one of: {', '.join(valid_actions)}")
 
@@ -2151,6 +2177,70 @@ async def update_organisation(
             "previous_status": "suspended",
         }
 
+    elif action == "activate":
+        if org.status == "active":
+            raise ValueError("Organisation is already active")
+        if org.status == "deleted":
+            raise ValueError("Cannot activate a deleted organisation. Create a new organisation instead.")
+
+        org.status = "active"
+        await db.flush()
+
+        await write_audit_log(
+            session=db,
+            user_id=updated_by,
+            action="org.activated",
+            entity_type="organisation",
+            entity_id=org.id,
+            before_value={"status": previous_status},
+            after_value={"status": "active"},
+            ip_address=ip_address,
+        )
+
+        if notify_org_admin:
+            await _notify_org_admin_status_change(db, org, "activated", None)
+
+        return {
+            "message": "Organisation activated",
+            "organisation_id": str(org.id),
+            "organisation_name": org.name,
+            "status": org.status,
+            "previous_status": previous_status,
+        }
+
+    elif action == "deactivate":
+        if not reason:
+            raise ValueError("Reason is required when deactivating an organisation")
+        if org.status == "suspended":
+            raise ValueError("Organisation is already suspended (use suspend/reinstate for temporary suspension)")
+        if org.status == "deleted":
+            raise ValueError("Organisation is already deleted")
+
+        org.status = "suspended"
+        await db.flush()
+
+        await write_audit_log(
+            session=db,
+            user_id=updated_by,
+            action="org.deactivated",
+            entity_type="organisation",
+            entity_id=org.id,
+            before_value={"status": previous_status},
+            after_value={"status": "suspended", "reason": reason},
+            ip_address=ip_address,
+        )
+
+        if notify_org_admin:
+            await _notify_org_admin_status_change(db, org, "deactivated", reason)
+
+        return {
+            "message": "Organisation deactivated",
+            "organisation_id": str(org.id),
+            "organisation_name": org.name,
+            "status": org.status,
+            "previous_status": previous_status,
+        }
+
     elif action == "delete_request":
         if not reason:
             raise ValueError("Reason is required when requesting deletion")
@@ -2164,6 +2254,7 @@ async def update_organisation(
             "reason": reason,
             "requested_by": str(updated_by),
             "requested_at": datetime.now(timezone.utc).isoformat(),
+            "delete_type": "soft",
         })
         await redis_pool.setex(
             f"org_delete_confirm:{token}",
@@ -2172,7 +2263,35 @@ async def update_organisation(
         )
 
         return {
-            "message": "Deletion confirmation required. Use the confirmation_token with DELETE to proceed.",
+            "message": "Soft deletion confirmation required. Use the confirmation_token with DELETE to proceed.",
+            "organisation_id": str(org.id),
+            "organisation_name": org.name,
+            "status": org.status,
+            "confirmation_token": token,
+            "expires_in_seconds": _DELETE_CONFIRMATION_TTL,
+        }
+
+    elif action == "hard_delete_request":
+        if not reason:
+            raise ValueError("Reason is required when requesting permanent deletion")
+
+        # Generate confirmation token for multi-step hard delete
+        token = secrets.token_urlsafe(32)
+        token_data = json.dumps({
+            "org_id": str(org.id),
+            "reason": reason,
+            "requested_by": str(updated_by),
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+            "delete_type": "hard",
+        })
+        await redis_pool.setex(
+            f"org_hard_delete_confirm:{token}",
+            _DELETE_CONFIRMATION_TTL,
+            token_data,
+        )
+
+        return {
+            "message": "PERMANENT deletion confirmation required. This will remove ALL data. Use the confirmation_token with DELETE /organisations/{id}/hard to proceed.",
             "organisation_id": str(org.id),
             "organisation_name": org.name,
             "status": org.status,
@@ -2289,6 +2408,114 @@ async def delete_organisation(
         "message": "Organisation permanently deleted",
         "organisation_id": str(org.id),
         "organisation_name": org.name,
+    }
+
+
+async def hard_delete_organisation(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    reason: str,
+    confirmation_token: str,
+    confirm_text: str,
+    deleted_by: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """PERMANENTLY delete an organisation and ALL related data from the database.
+
+    This is irreversible and removes:
+    - Organisation record
+    - All users in the organisation
+    - All vehicles, customers, invoices, quotes, etc.
+    - All audit logs for the organisation
+    
+    Requires:
+    1. Confirmation token from hard_delete_request
+    2. User must type "PERMANENTLY DELETE" to confirm
+    
+    Requirements 47.2, 47.3.
+    """
+    from app.core.redis import redis_pool
+
+    # Validate confirm text
+    if confirm_text != "PERMANENTLY DELETE":
+        raise ValueError("You must type 'PERMANENTLY DELETE' exactly to confirm permanent deletion")
+
+    # Validate confirmation token
+    token_key = f"org_hard_delete_confirm:{confirmation_token}"
+    token_data_raw = await redis_pool.get(token_key)
+    if not token_data_raw:
+        raise ValueError("Invalid or expired confirmation token. Please initiate hard deletion again.")
+
+    token_data = json.loads(token_data_raw)
+    if token_data.get("org_id") != str(org_id):
+        raise ValueError("Confirmation token does not match the organisation")
+    if token_data.get("delete_type") != "hard":
+        raise ValueError("This token is not valid for hard deletion")
+
+    # Consume the token
+    await redis_pool.delete(token_key)
+
+    # Fetch org
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        raise ValueError("Organisation not found")
+
+    org_name = org.name
+    records_deleted = {}
+
+    # Write final audit log BEFORE deletion
+    await write_audit_log(
+        session=db,
+        org_id=org.id,
+        user_id=deleted_by,
+        action="org.hard_deleted",
+        entity_type="organisation",
+        entity_id=org.id,
+        before_value={"status": org.status, "name": org_name},
+        after_value={"reason": reason, "deleted_by": str(deleted_by)},
+        ip_address=ip_address,
+    )
+    await db.flush()
+
+    # Delete related records (cascade will handle most, but we'll track counts)
+    # Note: The database foreign keys should have ON DELETE CASCADE set up
+    
+    # Count users
+    user_count_result = await db.execute(
+        select(func.count()).select_from(User).where(User.org_id == org_id)
+    )
+    records_deleted["users"] = user_count_result.scalar()
+
+    # Delete users
+    await db.execute(
+        delete(User).where(User.org_id == org_id)
+    )
+
+    # Count and delete audit logs (optional - you may want to keep these)
+    # For now, we'll keep audit logs for compliance
+    audit_count_result = await db.execute(
+        select(func.count()).select_from(AuditLog).where(AuditLog.org_id == org_id)
+    )
+    records_deleted["audit_logs_kept"] = audit_count_result.scalar()
+
+    # Delete the organisation (this will cascade to other tables if FK constraints are set up)
+    await db.execute(
+        delete(Organisation).where(Organisation.id == org_id)
+    )
+    
+    records_deleted["organisations"] = 1
+
+    await db.flush()
+
+    return {
+        "message": f"Organisation '{org_name}' and all related data permanently deleted from database",
+        "organisation_id": str(org_id),
+        "organisation_name": org_name,
+        "records_deleted": records_deleted,
     }
 
 
@@ -2894,13 +3121,20 @@ async def search_global_vehicles(
 
     Requirement 50.1: view, search the Global Vehicle DB.
     """
+    import logging
     from sqlalchemy import text as sa_text
+    
+    logger = logging.getLogger(__name__)
 
     rows = await db.execute(
         sa_text(
             "SELECT id, rego, make, model, year, colour, body_type, fuel_type, "
             "engine_size, num_seats, wof_expiry, registration_expiry, "
-            "odometer_last_recorded, last_pulled_at, created_at "
+            "odometer_last_recorded, last_pulled_at, created_at, "
+            "vin, chassis, engine_no, transmission, country_of_origin, "
+            "number_of_owners, vehicle_type, reported_stolen, power_kw, "
+            "tare_weight, gross_vehicle_mass, date_first_registered_nz, "
+            "plate_type, submodel, second_colour, lookup_type "
             "FROM global_vehicles WHERE rego ILIKE :rego ORDER BY rego LIMIT 50"
         ),
         {"rego": f"%{rego}%"},
@@ -2924,8 +3158,26 @@ async def search_global_vehicles(
             "odometer_last_recorded": r[12],
             "last_pulled_at": r[13].isoformat() if r[13] else None,
             "created_at": r[14].isoformat() if r[14] else None,
+            # Extended fields
+            "vin": r[15],
+            "chassis": r[16],
+            "engine_no": r[17],
+            "transmission": r[18],
+            "country_of_origin": r[19],
+            "number_of_owners": r[20],
+            "vehicle_type": r[21],
+            "reported_stolen": r[22],
+            "power_kw": r[23],
+            "tare_weight": r[24],
+            "gross_vehicle_mass": r[25],
+            "date_first_registered_nz": r[26].isoformat() if r[26] else None,
+            "plate_type": r[27],
+            "submodel": r[28],
+            "second_colour": r[29],
+            "lookup_type": r[30],
         })
 
+    logger.info(f"Vehicle DB search for '{rego}': found {len(results)} results")
     return {"results": results, "total": len(results)}
 
 
@@ -2970,9 +3222,9 @@ async def _carjam_refresh_lookup(rego: str) -> dict | None:
     Separated for testability. Returns a dict of vehicle fields or None.
     """
     from app.integrations.carjam import CarjamClient, CarjamNotFoundError
-    from app.core.redis import get_redis_pool
+    from app.core.redis import get_redis
 
-    redis = await get_redis_pool()
+    redis = await get_redis()
     client = CarjamClient(redis=redis)
     try:
         vehicle = await client.lookup_vehicle(rego)

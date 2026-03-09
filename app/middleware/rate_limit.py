@@ -38,6 +38,16 @@ _PASSWORD_RESET_PATHS: set[str] = {
     "/api/v2/auth/password/reset",
 }
 
+# Public read-only auth endpoints that should not be rate limited strictly
+_PUBLIC_READ_ONLY_PATHS: set[str] = {
+    "/api/v1/auth/plans",
+    "/api/v1/auth/captcha",
+    "/api/v1/auth/verify-captcha",
+    "/api/v2/auth/plans",
+    "/api/v2/auth/captcha",
+    "/api/v2/auth/verify-captcha",
+}
+
 # Default password reset limit per IP per minute.
 _PASSWORD_RESET_LIMIT = 5
 
@@ -48,7 +58,14 @@ async def _check_rate_limit(
     limit: int,
     now: float,
 ) -> tuple[bool, int]:
-    """Return (allowed, retry_after_seconds) using a sorted-set sliding window."""
+    """Return (allowed, retry_after_seconds) using a sorted-set sliding window.
+    
+    If limit is 0, rate limiting is disabled and always returns allowed=True.
+    """
+    # If limit is 0, rate limiting is disabled
+    if limit <= 0:
+        return True, 0
+    
     window_start = now - _WINDOW
 
     pipe = redis.pipeline()
@@ -144,8 +161,8 @@ class RateLimitMiddleware:
                 await response(scope, receive, send)
                 return
 
-        # --- Auth-endpoint per-IP limit ---
-        if is_auth_endpoint(path):
+        # --- Auth-endpoint per-IP limit (skip public read-only endpoints) ---
+        if is_auth_endpoint(path) and path not in _PUBLIC_READ_ONLY_PATHS:
             client_ip = request.client.host if request.client else "unknown"
             key = f"rl:auth:ip:{client_ip}"
             allowed, retry_after = await _check_rate_limit(

@@ -21,6 +21,14 @@ export function validateSignupForm(data: SignupFormData): Record<string, string>
     errors.admin_last_name = 'Last name must be between 1 and 100 characters'
   }
 
+  if (!data.password || data.password.length < 8 || data.password.length > 128) {
+    errors.password = 'Password must be between 8 and 128 characters'
+  }
+
+  if (!data.captcha_code || data.captcha_code.length !== 6) {
+    errors.captcha_code = 'Please enter the 6-character CAPTCHA code'
+  }
+
   if (!data.plan_id) {
     errors.plan_id = 'Please select a plan'
   }

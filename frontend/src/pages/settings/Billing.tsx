@@ -20,26 +20,26 @@ interface PlanInfo {
 }
 
 interface BillingData {
-  plan: PlanInfo
+  plan?: PlanInfo
   status: 'trial' | 'active' | 'grace_period' | 'suspended'
   trial_ends_at: string | null
   next_billing_date: string | null
-  estimated_next_invoice: {
+  estimated_next_invoice?: {
     plan_fee: number
     storage_addons: number
     carjam_overage: number
     total: number
   }
-  storage: {
+  storage?: {
     used_bytes: number
     quota_gb: number
     avg_invoice_bytes: number
   }
-  carjam: {
+  carjam?: {
     lookups_this_month: number
     included: number
   }
-  storage_addon_price_per_gb: number
+  storage_addon_price_per_gb?: number
 }
 
 interface PastInvoice {
@@ -107,7 +107,16 @@ function TrialCountdown({ trialEndsAt }: { trialEndsAt: string }) {
 
 /* ── Current Plan Card ── */
 
-function CurrentPlanCard({ plan, status }: { plan: PlanInfo; status: string }) {
+function CurrentPlanCard({ plan, status }: { plan: PlanInfo | undefined; status: string }) {
+  if (!plan) {
+    return (
+      <div className="rounded-lg border border-gray-200 p-5">
+        <h3 className="text-lg font-semibold text-gray-900 mb-3">Your plan</h3>
+        <p className="text-sm text-gray-500">Plan information not available</p>
+      </div>
+    )
+  }
+
   const statusBadge: Record<string, { variant: 'success' | 'warning' | 'error' | 'info'; label: string }> = {
     trial: { variant: 'info', label: 'Trial' },
     active: { variant: 'success', label: 'Active' },
@@ -142,6 +151,15 @@ function NextBillEstimate({
   nextBillingDate: string | null
   estimate: BillingData['estimated_next_invoice']
 }) {
+  if (!estimate) {
+    return (
+      <div className="rounded-lg border border-gray-200 p-5">
+        <h3 className="text-lg font-semibold text-gray-900 mb-3">Your next bill</h3>
+        <p className="text-sm text-gray-500">Billing estimate not available</p>
+      </div>
+    )
+  }
+
   return (
     <div className="rounded-lg border border-gray-200 p-5">
       <h3 className="text-lg font-semibold text-gray-900 mb-3">Your next bill</h3>
@@ -319,17 +337,18 @@ function StorageAddonModal({
 }: {
   open: boolean
   onClose: () => void
-  pricePerGb: number
+  pricePerGb: number | undefined
   onConfirm: (gb: number) => void
   purchasing: boolean
 }) {
   const [gb, setGb] = useState(1)
+  const price = pricePerGb || 0
 
   return (
     <Modal open={open} onClose={onClose} title="Buy more storage">
       <div className="space-y-4">
         <p className="text-sm text-gray-600">
-          Extra storage costs {formatNZD(pricePerGb)} per GB per month, added to your next bill.
+          Extra storage costs {formatNZD(price)} per GB per month, added to your next bill.
         </p>
         <div className="flex items-center gap-3">
           <label htmlFor="storage-gb" className="text-sm font-medium text-gray-700">
@@ -350,8 +369,8 @@ function StorageAddonModal({
         </div>
         <div className="rounded-md bg-gray-50 p-3 text-sm">
           <div className="flex justify-between">
-            <span className="text-gray-600">{gb} GB × {formatNZD(pricePerGb)}</span>
-            <span className="font-medium text-gray-900">{formatNZD(gb * pricePerGb)} / month</span>
+            <span className="text-gray-600">{gb} GB × {formatNZD(price)}</span>
+            <span className="font-medium text-gray-900">{formatNZD(gb * price)} / month</span>
           </div>
           <p className="text-xs text-gray-500 mt-1">
             Your card will be charged immediately and the add-on will appear on future bills.
@@ -382,13 +401,16 @@ export function Billing() {
     setLoading(true)
     try {
       const [billingRes, invoicesRes] = await Promise.all([
-        apiClient.get<BillingData>('/billing'),
-        apiClient.get<PastInvoice[]>('/billing/invoices'),
+        apiClient.get('/billing'),
+        apiClient.get('/billing/invoices'),
       ])
       setBilling(billingRes.data)
-      setInvoices(invoicesRes.data)
+      // Handle both array and wrapped response formats
+      const invoiceData = Array.isArray(invoicesRes.data) ? invoicesRes.data : (invoicesRes.data?.invoices || [])
+      setInvoices(invoiceData)
     } catch {
       addToast('error', 'Failed to load billing information')
+      setInvoices([])
     } finally {
       setLoading(false)
     }
@@ -484,16 +506,20 @@ export function Billing() {
 
         {/* Usage cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <StorageUsage
-            usedBytes={billing.storage.used_bytes}
-            quotaGb={billing.storage.quota_gb}
-            avgInvoiceBytes={billing.storage.avg_invoice_bytes}
-            onPurchaseAddon={() => setAddonOpen(true)}
-          />
-          <CarjamUsage
-            lookups={billing.carjam.lookups_this_month}
-            included={billing.carjam.included}
-          />
+          {billing.storage && (
+            <StorageUsage
+              usedBytes={billing.storage.used_bytes}
+              quotaGb={billing.storage.quota_gb}
+              avgInvoiceBytes={billing.storage.avg_invoice_bytes}
+              onPurchaseAddon={() => setAddonOpen(true)}
+            />
+          )}
+          {billing.carjam && (
+            <CarjamUsage
+              lookups={billing.carjam.lookups_this_month}
+              included={billing.carjam.included}
+            />
+          )}
         </div>
 
         {/* Actions */}

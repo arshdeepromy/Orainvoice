@@ -22,7 +22,7 @@ function defaultRange(): DateRange {
   return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
 }
 
-const fmt = (v: number) => `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`
+const fmt = (v: number | undefined) => v != null ? `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}` : '$0.00'
 
 /**
  * Top services report — ranked by revenue with count.
@@ -86,7 +86,7 @@ export default function TopServices() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {data.services.length === 0 ? (
+                {!data.services || data.services.length === 0 ? (
                   <tr>
                     <td colSpan={4} className="px-4 py-12 text-center text-sm text-gray-500">
                       No service data for this period.
@@ -109,11 +109,15 @@ export default function TopServices() {
           {/* Chart */}
           <div className="rounded-lg border border-gray-200 bg-white p-4">
             <h3 className="text-sm font-medium text-gray-700 mb-3">Revenue by Service</h3>
-            <SimpleBarChart
-              title="Revenue by service"
-              items={data.services.map((s) => ({ label: s.service_name, value: s.revenue }))}
-              formatValue={fmt}
-            />
+            {data.services && data.services.length > 0 ? (
+              <SimpleBarChart
+                title="Revenue by service"
+                items={data.services.map((s) => ({ label: s.service_name, value: s.revenue }))}
+                formatValue={fmt}
+              />
+            ) : (
+              <p className="text-sm text-gray-500 py-8 text-center">No service data available for this period.</p>
+            )}
           </div>
         </>
       )}

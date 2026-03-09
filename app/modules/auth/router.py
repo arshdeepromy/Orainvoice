@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Union
 
 from fastapi import APIRouter, Depends, Request
@@ -77,6 +78,7 @@ from app.modules.organisations.schemas import (
 from app.modules.organisations.service import public_signup
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _cookie_secure() -> bool:
@@ -114,6 +116,87 @@ def _parse_user_agent(ua: str | None) -> tuple[str | None, str | None]:
 
     return device_type, browser
 
+
+# ---------------------------------------------------------------------------
+# CAPTCHA endpoint
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/captcha",
+    summary="Generate a CAPTCHA challenge",
+    responses={
+        200: {"description": "CAPTCHA image generated", "content": {"image/png": {}}},
+    },
+)
+async def get_captcha():
+    """Generate a CAPTCHA challenge for signup protection.
+    
+    Returns a PNG image with a random code and a captcha_id cookie.
+    The captcha_id is used to verify the user's response during signup.
+    """
+    from fastapi.responses import Response
+    from app.core.captcha import create_captcha
+    
+    captcha_id, image_bytes = await create_captcha()
+    
+    response = Response(content=image_bytes, media_type="image/png")
+    response.set_cookie(
+        key="captcha_id",
+        value=captcha_id,
+        max_age=300,  # 5 minutes
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="lax",
+    )
+    
+    return response
+
+
+@router.post(
+    "/verify-captcha",
+    summary="Verify CAPTCHA code",
+    responses={
+        200: {"description": "CAPTCHA verified successfully"},
+        400: {"description": "Invalid CAPTCHA code"},
+    },
+)
+async def verify_captcha_endpoint(
+    request: Request,
+    payload: dict,
+):
+    """Verify a CAPTCHA code without creating an account.
+    
+    This allows the frontend to verify CAPTCHA before form submission.
+    The code is NOT deleted so it can be used for actual signup.
+    """
+    from app.core.captcha import verify_captcha
+    
+    captcha_id = request.cookies.get("captcha_id")
+    if not captcha_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "CAPTCHA verification required. Please refresh and try again."},
+        )
+    
+    captcha_code = payload.get("captcha_code", "")
+    # Don't delete the code - allow it to be used for signup
+    is_valid = await verify_captcha(captcha_id, captcha_code, delete_after=False)
+    
+    if not is_valid:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid CAPTCHA code. Please try again."},
+        )
+    
+    return JSONResponse(
+        status_code=200,
+        content={"message": "CAPTCHA verified successfully"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Login endpoints
+# ---------------------------------------------------------------------------
 
 @router.post(
     "/login",
@@ -1329,16 +1412,32 @@ async def signup(
 ):
     """Public signup endpoint for new workshops.
 
-    Creates the organisation with a 14-day free trial, creates an
-    Org_Admin user, generates a Stripe SetupIntent for card collection
-    (without charging), and returns a signup token for the onboarding
-    wizard.
+    Creates the organisation with trial status, creates an
+    Org_Admin user with password, and returns a signup token.
+    
+    Requires CAPTCHA verification to prevent automated bot signups.
 
     Requirement 8.6.
     """
     import uuid as _uuid
+    from app.core.captcha import verify_captcha
 
     ip_address = request.client.host if request.client else None
+
+    # Verify CAPTCHA first
+    captcha_id = request.cookies.get("captcha_id")
+    if not captcha_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "CAPTCHA verification required. Please refresh and try again."},
+        )
+    
+    is_valid_captcha = await verify_captcha(captcha_id, payload.captcha_code)
+    if not is_valid_captcha:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid CAPTCHA code. Please try again."},
+        )
 
     try:
         plan_uuid = _uuid.UUID(payload.plan_id)
@@ -1355,13 +1454,24 @@ async def signup(
             admin_email=payload.admin_email,
             admin_first_name=payload.admin_first_name,
             admin_last_name=payload.admin_last_name,
+            password=payload.password,
             plan_id=plan_uuid,
             ip_address=ip_address,
         )
+        # Commit the transaction after successful signup
+        await db.commit()
     except ValueError as exc:
+        await db.rollback()
         return JSONResponse(
             status_code=400,
             content={"detail": str(exc)},
+        )
+    except Exception as exc:
+        await db.rollback()
+        logger.exception("Unexpected error during signup")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "An error occurred during signup. Please try again."},
         )
 
     return PublicSignupResponse(

@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/Input'
 import { Tabs } from '@/components/ui/Tabs'
 import { DataTable, type Column } from '@/components/ui/DataTable'
 import { ToastContainer, useToast } from '@/components/ui/Toast'
+import { Modal } from '@/components/ui/Modal'
 import apiClient from '@/api/client'
 
 /* ── Types ── */
@@ -41,8 +42,33 @@ export interface VehicleRecord {
   make: string | null
   model: string | null
   year: number | null
+  colour: string | null
+  body_type: string | null
+  fuel_type: string | null
+  engine_size: string | null
+  num_seats: number | null
+  wof_expiry: string | null
+  registration_expiry: string | null
+  odometer_last_recorded: number | null
   last_pulled_at: string
-  [key: string]: unknown
+  created_at: string
+  lookup_type: string | null
+  // Extended Carjam fields
+  vin: string | null
+  chassis: string | null
+  engine_no: string | null
+  transmission: string | null
+  country_of_origin: string | null
+  number_of_owners: number | null
+  vehicle_type: string | null
+  reported_stolen: string | null
+  power_kw: number | null
+  tare_weight: number | null
+  gross_vehicle_mass: number | null
+  date_first_registered_nz: string | null
+  plate_type: string | null
+  submodel: string | null
+  second_colour: string | null
 }
 
 export interface TermsVersion {
@@ -80,6 +106,7 @@ function VehicleDbTab({ onToast }: { onToast: (v: 'success' | 'error', msg: stri
   const [stats, setStats] = useState<VehicleDbStats | null>(null)
   const [searchRego, setSearchRego] = useState('')
   const [searchResults, setSearchResults] = useState<VehicleRecord[]>([])
+  const [selectedVehicle, setSelectedVehicle] = useState<VehicleRecord | null>(null)
   const [loading, setLoading] = useState(true)
   const [searching, setSearching] = useState(false)
   const [refreshing, setRefreshing] = useState<string | null>(null)
@@ -105,8 +132,8 @@ function VehicleDbTab({ onToast }: { onToast: (v: 'success' | 'error', msg: stri
     if (!searchRego.trim()) return
     setSearching(true)
     try {
-      const res = await apiClient.get<VehicleRecord[]>(`/admin/vehicle-db/search/${encodeURIComponent(searchRego.trim())}`)
-      setSearchResults(Array.isArray(res.data) ? res.data : [res.data])
+      const res = await apiClient.get<{ results: VehicleRecord[], total: number }>(`/admin/vehicle-db/search/${encodeURIComponent(searchRego.trim())}`)
+      setSearchResults(res.data.results || [])
     } catch {
       onToast('error', 'Vehicle not found')
       setSearchResults([])
@@ -150,8 +177,11 @@ function VehicleDbTab({ onToast }: { onToast: (v: 'success' | 'error', msg: stri
       header: '',
       render: (r) => (
         <div className="flex gap-2">
-          <Button variant="secondary" size="sm" onClick={() => handleRefresh(r.rego)} loading={refreshing === r.rego}>
+          <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); handleRefresh(r.rego); }} loading={refreshing === r.rego}>
             Refresh
+          </Button>
+          <Button variant="primary" size="sm" onClick={(e) => { e.stopPropagation(); setSelectedVehicle(r); }}>
+            View Details
           </Button>
         </div>
       ),
@@ -201,6 +231,189 @@ function VehicleDbTab({ onToast }: { onToast: (v: 'success' | 'error', msg: stri
           keyField="id"
           caption="Vehicle search results"
         />
+      )}
+
+      {/* Vehicle Details Modal */}
+      {selectedVehicle && (
+        <Modal
+          open={true}
+          onClose={() => setSelectedVehicle(null)}
+          title={`Vehicle Details - ${selectedVehicle.rego}`}
+          className="max-w-4xl"
+        >
+          <div className="space-y-6">
+            {/* Basic Information */}
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900 mb-3">Basic Information</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-gray-500">Registration</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.rego || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Make</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.make || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Model</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.model || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Submodel</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.submodel || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Year</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.year || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Body Type</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.body_type || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Colour</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.colour || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Second Colour</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.second_colour || '—'}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Technical Specifications */}
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900 mb-3">Technical Specifications</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-gray-500">VIN</p>
+                  <p className="text-sm font-medium text-gray-900 font-mono">{selectedVehicle.vin || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Chassis</p>
+                  <p className="text-sm font-medium text-gray-900 font-mono">{selectedVehicle.chassis || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Engine Number</p>
+                  <p className="text-sm font-medium text-gray-900 font-mono">{selectedVehicle.engine_no || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Engine Size</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.engine_size ? `${selectedVehicle.engine_size} cc` : '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Fuel Type</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.fuel_type || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Transmission</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.transmission || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Power</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.power_kw ? `${selectedVehicle.power_kw} kW` : '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Seats</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.num_seats || '—'}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Weight & Dimensions */}
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900 mb-3">Weight & Dimensions</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-gray-500">Tare Weight</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.tare_weight ? `${selectedVehicle.tare_weight} kg` : '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Gross Vehicle Mass</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.gross_vehicle_mass ? `${selectedVehicle.gross_vehicle_mass} kg` : '—'}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Registration & Compliance */}
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900 mb-3">Registration & Compliance</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-gray-500">Plate Type</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.plate_type || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Vehicle Type</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.vehicle_type || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Country of Origin</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.country_of_origin || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">First Registered NZ</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.date_first_registered_nz ? formatDate(selectedVehicle.date_first_registered_nz) : '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Number of Owners</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.number_of_owners || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Reported Stolen</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.reported_stolen === 'Y' ? '⚠️ Yes' : selectedVehicle.reported_stolen === 'N' ? '✓ No' : '—'}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Inspection & Odometer */}
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900 mb-3">Inspection & Odometer</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-gray-500">WOF Expiry</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.wof_expiry ? formatDate(selectedVehicle.wof_expiry) : '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Registration Expiry</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.registration_expiry ? formatDate(selectedVehicle.registration_expiry) : '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Odometer</p>
+                  <p className="text-sm font-medium text-gray-900">{selectedVehicle.odometer_last_recorded ? `${selectedVehicle.odometer_last_recorded.toLocaleString()} km` : '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Last Pulled</p>
+                  <p className="text-sm font-medium text-gray-900">{formatDate(selectedVehicle.last_pulled_at)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Lookup Type</p>
+                  <p className="text-sm font-medium text-gray-900">
+                    <span className={selectedVehicle.lookup_type === 'abcd' ? 'text-blue-600' : 'text-green-600'}>
+                      {selectedVehicle.lookup_type === 'abcd' ? 'ABCD (Lower Cost)' : 'Basic (Full Data)'}
+                    </span>
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 flex justify-end gap-3">
+            <Button variant="secondary" onClick={() => setSelectedVehicle(null)}>
+              Close
+            </Button>
+            <Button 
+              variant="primary" 
+              onClick={() => {
+                handleRefresh(selectedVehicle.rego);
+                setSelectedVehicle(null);
+              }}
+              loading={refreshing === selectedVehicle.rego}
+            >
+              Refresh from Carjam
+            </Button>
+          </div>
+        </Modal>
       )}
     </div>
   )

@@ -6,7 +6,7 @@ import ExportButtons from './ExportButtons'
 
 type SubReport = 'daily_sales_summary' | 'session_reconciliation' | 'hourly_sales_heatmap'
 
-const fmt = (v: number) => v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })
+const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-NZ', { minimumFractionDigits: 2 }) : '0.00'
 
 function defaultRange(): DateRange {
   const now = new Date()

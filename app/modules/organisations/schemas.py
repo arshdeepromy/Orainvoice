@@ -447,7 +447,13 @@ class PublicSignupRequest(BaseModel):
     admin_last_name: str = Field(
         ..., min_length=1, max_length=100, description="Admin last name"
     )
+    password: str = Field(
+        ..., min_length=8, max_length=128, description="Password for the admin account"
+    )
     plan_id: str = Field(..., description="UUID of the subscription plan to sign up for")
+    captcha_code: str = Field(
+        ..., min_length=6, max_length=6, description="CAPTCHA verification code"
+    )
 
 
 class OrgCarjamUsageResponse(BaseModel):
@@ -472,5 +478,5 @@ class PublicSignupResponse(BaseModel):
     admin_user_id: str
     admin_email: str
     trial_ends_at: datetime
-    stripe_setup_intent_client_secret: str
+    stripe_setup_intent_client_secret: str | None  # None during trial period
     signup_token: str

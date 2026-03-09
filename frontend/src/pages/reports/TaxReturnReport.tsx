@@ -6,7 +6,7 @@ import ExportButtons from './ExportButtons'
 
 type TaxType = 'gst_return' | 'bas_return' | 'vat_return'
 
-const fmt = (v: number) => v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })
+const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-NZ', { minimumFractionDigits: 2 }) : '0.00'
 
 function defaultRange(): DateRange {
   const now = new Date()

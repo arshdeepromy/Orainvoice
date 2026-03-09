@@ -503,16 +503,24 @@ export function WebhookManagement() {
   const fetchWebhooks = useCallback(async () => {
     try {
       const res = await apiClient.get('/api/v2/outbound-webhooks')
-      setWebhooks(res.data)
-    } catch {
+      console.log('Webhooks response:', res.data)
+      // Handle both array and wrapped response formats
+      const webhookData = Array.isArray(res.data) ? res.data : (res.data?.webhooks || [])
+      setWebhooks(webhookData)
+      setError(null)
+    } catch (err) {
+      console.error('Webhooks fetch error:', err)
       setError("Couldn't load your webhook settings. Please try again.")
+      setWebhooks([])
     }
   }, [])
 
   const fetchDeliveries = useCallback(async (webhookId: string) => {
     try {
       const res = await apiClient.get(`/api/v2/outbound-webhooks/${webhookId}/deliveries`)
-      setDeliveries(res.data)
+      // Handle both array and wrapped response formats
+      const deliveryData = Array.isArray(res.data) ? res.data : (res.data?.deliveries || [])
+      setDeliveries(deliveryData)
     } catch {
       setDeliveries([])
     }

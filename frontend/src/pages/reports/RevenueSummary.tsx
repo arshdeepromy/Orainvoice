@@ -90,11 +90,15 @@ export default function RevenueSummary() {
           {/* Monthly chart */}
           <div className="rounded-lg border border-gray-200 bg-white p-4">
             <h3 className="text-sm font-medium text-gray-700 mb-3">Monthly Revenue</h3>
-            <SimpleBarChart
-              title="Monthly revenue breakdown"
-              items={data.monthly_breakdown.map((m) => ({ label: m.month, value: m.revenue }))}
-              formatValue={fmt}
-            />
+            {data.monthly_breakdown && data.monthly_breakdown.length > 0 ? (
+              <SimpleBarChart
+                title="Monthly revenue breakdown"
+                items={data.monthly_breakdown.map((m) => ({ label: m.month, value: m.revenue }))}
+                formatValue={fmt}
+              />
+            ) : (
+              <p className="text-sm text-gray-500 py-8 text-center">No monthly data available for this period.</p>
+            )}
           </div>
         </>
       )}

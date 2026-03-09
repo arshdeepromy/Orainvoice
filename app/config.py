@@ -1,6 +1,6 @@
 """Application settings loaded from environment variables."""
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -87,7 +87,10 @@ class Settings(BaseSettings):
     # --- Rate Limiting ---
     rate_limit_per_user_per_minute: int = 100
     rate_limit_per_org_per_minute: int = 1000
-    rate_limit_auth_per_ip_per_minute: int = 10
+    rate_limit_auth_per_ip_per_minute: int = Field(
+        default=10,
+        description="Rate limit for auth endpoints per IP per minute (increase for development)"
+    )
 
     # --- CORS ---
     cors_origins: list[str] = ["http://localhost:5173"]

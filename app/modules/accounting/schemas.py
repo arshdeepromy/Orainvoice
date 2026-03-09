@@ -72,3 +72,41 @@ class SyncStatusResponse(BaseModel):
     synced: int = Field(0, description="Number of entities successfully synced")
     failed: int = Field(0, description="Number of entities that failed to sync")
     message: str = Field("", description="Summary message")
+
+
+# ---------------------------------------------------------------------------
+# Dashboard view (consolidated response for frontend)
+# ---------------------------------------------------------------------------
+
+
+class AccountingConnectionDetail(BaseModel):
+    """Detailed connection info for dashboard view."""
+
+    provider: str = Field(..., description="Provider: xero or myob")
+    connected: bool = Field(False, description="Whether connected")
+    account_name: Optional[str] = Field(None, description="Connected account name")
+    connected_at: Optional[str] = Field(None, description="ISO 8601 connection timestamp")
+    last_sync_at: Optional[str] = Field(None, description="ISO 8601 last sync timestamp")
+    sync_status: str = Field("idle", description="Sync status: idle, syncing, success, failed")
+    error_message: Optional[str] = Field(None, description="Last error message if any")
+
+
+class SyncLogEntryDashboard(BaseModel):
+    """Sync log entry for dashboard view."""
+
+    id: str
+    provider: str
+    entity_type: str
+    entity_id: str
+    entity_ref: str = Field(..., description="Human-readable reference (invoice number, etc)")
+    status: str = Field(..., description="success or failed")
+    error_message: Optional[str] = None
+    synced_at: str = Field(..., description="ISO 8601 timestamp")
+
+
+class AccountingDashboardResponse(BaseModel):
+    """GET / response - consolidated view for frontend dashboard."""
+
+    xero: AccountingConnectionDetail
+    myob: AccountingConnectionDetail
+    sync_log: list[SyncLogEntryDashboard] = Field(default_factory=list)

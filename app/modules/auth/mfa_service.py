@@ -357,9 +357,11 @@ async def verify_mfa(
     await _mark_method_verified(user, method)
 
     # Issue JWT pair
+    # Global admins should not have org_id in their JWT (they access all orgs)
+    token_org_id = None if user.role == "global_admin" else user.org_id
     access_token = create_access_token(
         user_id=user.id,
-        org_id=user.org_id,
+        org_id=token_org_id,
         role=user.role,
         email=user.email,
     )

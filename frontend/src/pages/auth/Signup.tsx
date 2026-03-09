@@ -1,85 +1,10 @@
 import { useState, useEffect, FormEvent } from 'react'
-import { loadStripe } from '@stripe/stripe-js'
-import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js'
 import apiClient from '@/api/client'
 import { Button, Input, AlertBanner, Spinner } from '@/components/ui'
 import { validateSignupForm } from './signup-validation'
 import type { SignupFormData, SignupResponse, PublicPlan, PublicPlanListResponse } from './signup-types'
 
-type Step = 'form' | 'stripe' | 'done'
-
-const stripePromise = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY
-  ? loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY)
-  : null
-
-function StripeCardForm({
-  clientSecret,
-  onSuccess,
-  onError,
-}: {
-  clientSecret: string
-  onSuccess: () => void
-  onError: (msg: string) => void
-}) {
-  const stripe = useStripe()
-  const elements = useElements()
-  const [confirming, setConfirming] = useState(false)
-  const [stripeError, setStripeError] = useState<string | null>(null)
-
-  async function handleConfirm(e: FormEvent) {
-    e.preventDefault()
-    if (!stripe || !elements) return
-
-    setStripeError(null)
-    setConfirming(true)
-
-    const cardElement = elements.getElement(CardElement)
-    if (!cardElement) {
-      setConfirming(false)
-      return
-    }
-
-    const { error } = await stripe.confirmCardSetup(clientSecret, {
-      payment_method: { card: cardElement },
-    })
-
-    setConfirming(false)
-
-    if (error) {
-      const msg = error.message ?? 'Card setup failed. Please try again.'
-      setStripeError(msg)
-      onError(msg)
-    } else {
-      onSuccess()
-    }
-  }
-
-  return (
-    <form onSubmit={handleConfirm} className="space-y-4">
-      {stripeError && (
-        <AlertBanner variant="error" onDismiss={() => setStripeError(null)}>
-          {stripeError}
-        </AlertBanner>
-      )}
-      <div>
-        <label className="text-sm font-medium text-gray-700">Card details</label>
-        <div className="mt-1 rounded-md border border-gray-300 p-3">
-          <CardElement
-            options={{
-              style: {
-                base: { fontSize: '16px', color: '#1f2937' },
-                invalid: { color: '#dc2626' },
-              },
-            }}
-          />
-        </div>
-      </div>
-      <Button type="submit" loading={confirming} disabled={!stripe} className="w-full">
-        Confirm card
-      </Button>
-    </form>
-  )
-}
+type Step = 'form' | 'done'
 
 export function Signup() {
   const [step, setStep] = useState<Step>('form')
@@ -92,19 +17,96 @@ export function Signup() {
     admin_email: '',
     admin_first_name: '',
     admin_last_name: '',
+    password: '',
     plan_id: '',
+    captcha_code: '',
   })
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [apiError, setApiError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
-  const [stripeClientSecret, setStripeClientSecret] = useState<string | null>(null)
   // signup_token stored for potential future use (e.g. resuming signup)
   const [_signupToken, setSignupToken] = useState<string | null>(null)
 
+  // Get selected plan for trial display
+  const selectedPlan = plans.find(p => p.id === formData.plan_id)
+
+  // CAPTCHA state
+  const [captchaUrl, setCaptchaUrl] = useState<string>('')
+  const [captchaLoading, setCaptchaLoading] = useState(false)
+  const [captchaVerified, setCaptchaVerified] = useState(false)
+  const [captchaVerifying, setCaptchaVerifying] = useState(false)
+  const [captchaError, setCaptchaError] = useState<string | null>(null)
+
   useEffect(() => {
     fetchPlans()
+    loadCaptcha()
   }, [])
+
+  async function loadCaptcha() {
+    setCaptchaLoading(true)
+    try {
+      // Add timestamp to prevent caching
+      const timestamp = new Date().getTime()
+      setCaptchaUrl(`/api/v1/auth/captcha?t=${timestamp}`)
+    } catch (error) {
+      console.error('Failed to load CAPTCHA:', error)
+    } finally {
+      setCaptchaLoading(false)
+    }
+  }
+
+  function refreshCaptcha() {
+    setFormData(prev => ({ ...prev, captcha_code: '' }))
+    setCaptchaVerified(false)
+    setCaptchaError(null)
+    if (errors.captcha_code) {
+      setErrors(prev => {
+        const next = { ...prev }
+        delete next.captcha_code
+        return next
+      })
+    }
+    loadCaptcha()
+  }
+
+  async function verifyCaptcha() {
+    if (formData.captcha_code.length !== 6) {
+      setCaptchaError('Please enter the 6-character code')
+      return
+    }
+
+    setCaptchaVerifying(true)
+    setCaptchaError(null)
+
+    try {
+      // Make a test request to verify CAPTCHA
+      await apiClient.post('/auth/verify-captcha', {
+        captcha_code: formData.captcha_code
+      })
+      
+      // Success!
+      setCaptchaVerified(true)
+      setCaptchaError(null)
+    } catch (err: unknown) {
+      setCaptchaVerified(false)
+      if (
+        err &&
+        typeof err === 'object' &&
+        'response' in err &&
+        (err as { response?: { status?: number; data?: { detail?: string } } }).response?.status === 400
+      ) {
+        const detail = (err as { response: { data: { detail?: string } } }).response.data.detail
+        setCaptchaError(detail ?? 'Invalid CAPTCHA code')
+      } else {
+        setCaptchaError('Failed to verify CAPTCHA. Please try again.')
+      }
+      // Auto-refresh CAPTCHA on error
+      setTimeout(() => refreshCaptcha(), 2000)
+    } finally {
+      setCaptchaVerifying(false)
+    }
+  }
 
   async function fetchPlans() {
     setPlansLoading(true)
@@ -112,8 +114,18 @@ export function Signup() {
     try {
       const res = await apiClient.get<PublicPlanListResponse>('/auth/plans')
       setPlans(res.data.plans)
-    } catch {
-      setPlansError('Unable to load plans. Please try again later.')
+    } catch (err: unknown) {
+      console.error('Failed to fetch plans:', err)
+      if (
+        err &&
+        typeof err === 'object' &&
+        'response' in err &&
+        (err as { response?: { status?: number } }).response?.status === 429
+      ) {
+        setPlansError('Too many requests. Please wait a moment and try again.')
+      } else {
+        setPlansError('Unable to load plans. Please try again later.')
+      }
     } finally {
       setPlansLoading(false)
     }
@@ -131,8 +143,8 @@ export function Signup() {
     try {
       const res = await apiClient.post<SignupResponse>('/auth/signup', formData)
       setSignupToken(res.data.signup_token)
-      setStripeClientSecret(res.data.stripe_setup_intent_client_secret)
-      setStep('stripe')
+      // Signup complete - user can now login
+      setStep('done')
     } catch (err: unknown) {
       if (
         err &&
@@ -141,7 +153,15 @@ export function Signup() {
         (err as { response?: { status?: number; data?: { detail?: string } } }).response?.status === 400
       ) {
         const detail = (err as { response: { data: { detail?: string } } }).response.data.detail
-        setApiError(detail ?? 'Signup failed. Please check your details.')
+        
+        // Check if it's a CAPTCHA error
+        if (detail && detail.toLowerCase().includes('captcha')) {
+          setApiError(detail)
+          // Refresh CAPTCHA on error
+          refreshCaptcha()
+        } else {
+          setApiError(detail ?? 'Signup failed. Please check your details.')
+        }
       } else {
         setApiError('Something went wrong. Please try again.')
       }
@@ -152,6 +172,13 @@ export function Signup() {
 
   function handleFieldChange(field: keyof SignupFormData, value: string) {
     setFormData((prev) => ({ ...prev, [field]: value }))
+    
+    // Reset CAPTCHA verification when code changes
+    if (field === 'captcha_code') {
+      setCaptchaVerified(false)
+      setCaptchaError(null)
+    }
+    
     if (errors[field]) {
       setErrors((prev) => {
         const next = { ...prev }
@@ -168,33 +195,16 @@ export function Signup() {
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
             <span className="text-2xl" aria-hidden="true">✓</span>
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">You're almost there!</h1>
+          <h1 className="text-2xl font-bold text-gray-900">Account created successfully!</h1>
           <p className="text-gray-600">
-            We've sent a verification email to your inbox. Please check your email and click the
-            verification link to set your password and get started.
+            Your trial has started. You can now log in with your email and password.
           </p>
-        </div>
-      </div>
-    )
-  }
-
-  if (step === 'stripe' && stripeClientSecret) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
-        <div className="w-full max-w-md space-y-6 rounded-xl bg-white p-8 shadow-lg">
-          <div className="text-center">
-            <h1 className="text-2xl font-bold text-gray-900">Payment details</h1>
-            <p className="mt-1 text-sm text-gray-500">
-              Add your card to start your 14-day free trial
-            </p>
-          </div>
-          <Elements stripe={stripePromise} options={{ clientSecret: stripeClientSecret }}>
-            <StripeCardForm
-              clientSecret={stripeClientSecret}
-              onSuccess={() => setStep('done')}
-              onError={() => {}}
-            />
-          </Elements>
+          <Button
+            onClick={() => window.location.href = '/login'}
+            className="w-full"
+          >
+            Go to login
+          </Button>
         </div>
       </div>
     )
@@ -206,7 +216,9 @@ export function Signup() {
         <div className="text-center">
           <h1 className="text-2xl font-bold text-gray-900">Create your account</h1>
           <p className="mt-1 text-sm text-gray-500">
-            Start your 14-day free trial
+            {selectedPlan && selectedPlan.trial_duration > 0
+              ? `Start your ${selectedPlan.trial_duration}-${selectedPlan.trial_duration_unit} free trial`
+              : 'Start your free trial'}
           </p>
         </div>
 
@@ -282,6 +294,17 @@ export function Signup() {
                 />
               </div>
 
+              <Input
+                label="Password"
+                type="password"
+                autoComplete="new-password"
+                required
+                value={formData.password}
+                onChange={(e) => handleFieldChange('password', e.target.value)}
+                error={errors.password}
+                placeholder="At least 8 characters"
+              />
+
               <div className="flex flex-col gap-1">
                 <label htmlFor="plan-selector" className="text-sm font-medium text-gray-700">
                   Plan
@@ -310,7 +333,88 @@ export function Signup() {
                 )}
               </div>
 
-              <Button type="submit" loading={submitting} className="w-full">
+              {/* CAPTCHA */}
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-medium text-gray-700">
+                  Verification code
+                </label>
+                <div className="flex items-start gap-3">
+                  <div className="flex-shrink-0">
+                    {captchaLoading ? (
+                      <div className="flex h-20 w-48 items-center justify-center bg-gray-100 rounded border border-gray-300">
+                        <Spinner size="sm" />
+                      </div>
+                    ) : captchaUrl ? (
+                      <img
+                        src={captchaUrl}
+                        alt="CAPTCHA verification code"
+                        className="h-20 w-48 rounded border border-gray-300 object-cover"
+                        onError={() => {
+                          console.error('Failed to load CAPTCHA image')
+                          refreshCaptcha()
+                        }}
+                      />
+                    ) : (
+                      <div className="flex h-20 w-48 items-center justify-center bg-gray-100 rounded border border-gray-300 text-sm text-gray-500">
+                        Loading...
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={refreshCaptcha}
+                    className="text-sm text-blue-600 hover:text-blue-700 underline mt-1"
+                    disabled={captchaLoading}
+                  >
+                    Refresh
+                  </button>
+                </div>
+                
+                {captchaVerified ? (
+                  <div className="flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-md animate-fadeIn">
+                    <svg className="w-5 h-5 text-green-600 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    <span className="text-sm font-medium text-green-800">CAPTCHA verified successfully!</span>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex gap-2">
+                      <Input
+                        label=""
+                        type="text"
+                        required
+                        value={formData.captcha_code}
+                        onChange={(e) => handleFieldChange('captcha_code', e.target.value.toUpperCase())}
+                        error={errors.captcha_code || captchaError || undefined}
+                        placeholder="Enter 6-character code"
+                        maxLength={6}
+                        className="flex-1"
+                      />
+                      <Button
+                        type="button"
+                        onClick={verifyCaptcha}
+                        loading={captchaVerifying}
+                        disabled={formData.captcha_code.length !== 6 || captchaVerifying}
+                        variant="secondary"
+                        className="mt-0"
+                      >
+                        Verify
+                      </Button>
+                    </div>
+                    {captchaError && (
+                      <p className="text-sm text-red-600">{captchaError}</p>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <Button 
+                type="submit" 
+                loading={submitting} 
+                disabled={!captchaVerified}
+                className="w-full"
+              >
                 Sign up
               </Button>
             </form>

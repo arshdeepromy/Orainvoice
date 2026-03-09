@@ -63,7 +63,6 @@ FLAG_ENDPOINT_MAP: dict[str, str] = {
     "/api/v2/ecommerce": "ecommerce",
     "/api/v2/admin/branding": "branding",
     "/api/v2/assets": "assets",
-    "/api/v2/outbound-webhooks": "webhooks",
     "/api/v2/reports": "reports",
     "/api/v2/portal": "portal",
     "/api/v2/admin/analytics": "analytics",

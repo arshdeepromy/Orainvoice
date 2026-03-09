@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { TenantProvider } from '@/contexts/TenantContext'
 import { ModuleProvider } from '@/contexts/ModuleContext'
 import { FeatureFlagProvider } from '@/contexts/FeatureFlagContext'
+import { LocaleProvider } from '@/contexts/LocaleContext'
 import { Spinner } from '@/components/ui'
 import { Login, MfaVerify, PasswordResetRequest, PasswordResetComplete, Signup, VerifyEmail } from '@/pages/auth'
 import { AdminLayout } from '@/layouts/AdminLayout'
@@ -397,15 +398,17 @@ function App() {
   return (
     <ErrorBoundary>
       <BrowserRouter>
-        <AuthProvider>
-          <TenantProvider>
-            <ModuleProvider>
-              <FeatureFlagProvider>
-                <AppRoutes />
-              </FeatureFlagProvider>
-            </ModuleProvider>
-          </TenantProvider>
-        </AuthProvider>
+        <LocaleProvider>
+          <AuthProvider>
+            <TenantProvider>
+              <ModuleProvider>
+                <FeatureFlagProvider>
+                  <AppRoutes />
+                </FeatureFlagProvider>
+              </ModuleProvider>
+            </TenantProvider>
+          </AuthProvider>
+        </LocaleProvider>
       </BrowserRouter>
     </ErrorBoundary>
   )

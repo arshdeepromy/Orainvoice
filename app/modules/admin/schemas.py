@@ -225,13 +225,13 @@ class TwilioTestSmsResponse(BaseModel):
 class CarjamConfigRequest(BaseModel):
     """PUT /api/v1/admin/integrations/carjam request body."""
 
-    api_key: str = Field(..., min_length=1, description="Carjam API key")
-    endpoint_url: str = Field(..., min_length=1, description="Carjam API endpoint URL")
-    per_lookup_cost_nzd: float = Field(
-        ..., ge=0, description="Cost per Carjam lookup in NZD"
+    api_key: str | None = Field(None, min_length=1, description="Carjam API key (only send if changing)")
+    endpoint_url: str | None = Field(None, min_length=1, description="Carjam API endpoint URL")
+    per_lookup_cost_nzd: float | None = Field(
+        None, ge=0, description="Cost per Carjam lookup in NZD"
     )
-    global_rate_limit_per_minute: int = Field(
-        ..., gt=0, description="Maximum Carjam API calls per minute (platform-wide)"
+    global_rate_limit_per_minute: int | None = Field(
+        None, gt=0, description="Maximum Carjam API calls per minute (platform-wide)"
     )
 
 
@@ -539,13 +539,13 @@ class OrgUpdateRequest(BaseModel):
 
     action: str = Field(
         ...,
-        description="Action: suspend, reinstate, delete_request, move_plan",
+        description="Action: suspend, reinstate, activate, deactivate, delete_request, hard_delete_request, move_plan",
     )
     reason: str | None = Field(
         None,
         min_length=1,
         max_length=1000,
-        description="Reason for suspend/delete (required for those actions)",
+        description="Reason for suspend/delete/deactivate (required for those actions)",
     )
     new_plan_id: str | None = Field(
         None,
@@ -604,6 +604,34 @@ class OrgDeleteRequestResponse(BaseModel):
     organisation_name: str
     confirmation_token: str
     expires_in_seconds: int = Field(default=300, description="Token validity in seconds")
+
+
+class OrgHardDeleteRequest(BaseModel):
+    """DELETE /api/v1/admin/organisations/{id}/hard request body."""
+
+    reason: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="Reason for permanent deletion (required, stored in audit log)",
+    )
+    confirmation_token: str = Field(
+        ...,
+        description="Confirmation token from the hard_delete_request step",
+    )
+    confirm_text: str = Field(
+        ...,
+        description="User must type 'PERMANENTLY DELETE' to confirm",
+    )
+
+
+class OrgHardDeleteResponse(BaseModel):
+    """Response after permanently deleting an organisation from database."""
+
+    message: str
+    organisation_id: str
+    organisation_name: str
+    records_deleted: dict  # Count of related records deleted
 
 
 # ---------------------------------------------------------------------------
@@ -793,6 +821,23 @@ class GlobalVehicleSearchResult(BaseModel):
     odometer_last_recorded: int | None = None
     last_pulled_at: str | None = None
     created_at: str | None = None
+    lookup_type: str | None = None
+    # Extended Carjam fields
+    vin: str | None = None
+    chassis: str | None = None
+    engine_no: str | None = None
+    transmission: str | None = None
+    country_of_origin: str | None = None
+    number_of_owners: int | None = None
+    vehicle_type: str | None = None
+    reported_stolen: str | None = None
+    power_kw: int | None = None
+    tare_weight: int | None = None
+    gross_vehicle_mass: int | None = None
+    date_first_registered_nz: str | None = None
+    plate_type: str | None = None
+    submodel: str | None = None
+    second_colour: str | None = None
 
 
 class GlobalVehicleSearchResponse(BaseModel):

@@ -42,16 +42,19 @@ export function UserManagement() {
     setLoading(true)
     try {
       const [userRes, settingsRes] = await Promise.all([
-        apiClient.get<OrgUser[]>('/org/users'),
+        apiClient.get('/org/users'),
         apiClient.get('/org/settings'),
       ])
-      setUsers(userRes.data)
+      // Handle both array and wrapped response formats
+      const userData = Array.isArray(userRes.data) ? userRes.data : (userRes.data?.users || [])
+      setUsers(userData)
       setMfaPolicy(settingsRes.data.mfa_policy || 'optional')
       if (settingsRes.data.plan) {
         setPlan({ user_seats: settingsRes.data.plan.user_seats })
       }
     } catch {
       addToast('error', 'Failed to load users')
+      setUsers([])
     } finally {
       setLoading(false)
     }

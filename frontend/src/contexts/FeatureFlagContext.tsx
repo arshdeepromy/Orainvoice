@@ -54,14 +54,16 @@ export function FeatureFlagProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const fetchFlags = useCallback(async () => {
+  const fetchFlags = useCallback(async (signal?: AbortSignal) => {
     setIsLoading(true)
     setError(null)
     try {
-      const res = await apiClient.get<FlagMap>('/api/v2/flags')
+      const res = await apiClient.get<FlagMap>('/api/v2/flags', { signal })
       setFlags(res.data)
-    } catch {
-      setError('Failed to load feature flags')
+    } catch (err: any) {
+      if (err.name !== 'CanceledError') {
+        setError('Failed to load feature flags')
+      }
     } finally {
       setIsLoading(false)
     }
@@ -69,7 +71,9 @@ export function FeatureFlagProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (isAuthenticated && user?.org_id) {
-      fetchFlags()
+      const controller = new AbortController()
+      fetchFlags(controller.signal)
+      return () => controller.abort()
     } else {
       setFlags({})
     }

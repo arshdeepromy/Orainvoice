@@ -5,6 +5,7 @@ Requirements: 14.1, 14.2, 14.3, 14.4, 14.5, 14.6, 14.7
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import date, datetime, timezone
@@ -14,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
-from app.integrations.carjam import CarjamClient, CarjamVehicleData
+from app.integrations.carjam import CarjamClient, CarjamVehicleData, CarjamError
 from app.modules.admin.models import GlobalVehicle, Organisation
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,23 @@ def _global_vehicle_to_dict(gv: GlobalVehicle, source: str) -> dict:
         "odometer": gv.odometer_last_recorded,
         "last_pulled_at": gv.last_pulled_at.isoformat() if gv.last_pulled_at else None,
         "source": source,
+        "lookup_type": gv.lookup_type,
+        # Extended fields
+        "vin": gv.vin,
+        "chassis": gv.chassis,
+        "engine_no": gv.engine_no,
+        "transmission": gv.transmission,
+        "country_of_origin": gv.country_of_origin,
+        "number_of_owners": gv.number_of_owners,
+        "vehicle_type": gv.vehicle_type,
+        "reported_stolen": gv.reported_stolen,
+        "power_kw": gv.power_kw,
+        "tare_weight": gv.tare_weight,
+        "gross_vehicle_mass": gv.gross_vehicle_mass,
+        "date_first_registered_nz": gv.date_first_registered_nz.isoformat() if gv.date_first_registered_nz else None,
+        "plate_type": gv.plate_type,
+        "submodel": gv.submodel,
+        "second_colour": gv.second_colour,
     }
 
 
@@ -68,6 +86,23 @@ def _carjam_data_to_global_vehicle(data: CarjamVehicleData) -> GlobalVehicle:
         registration_expiry=_parse_date(data.rego_expiry),
         odometer_last_recorded=data.odometer,
         last_pulled_at=now,
+        lookup_type=data.lookup_type,
+        # Extended fields
+        vin=data.vin,
+        chassis=data.chassis,
+        engine_no=data.engine_no,
+        transmission=data.transmission,
+        country_of_origin=data.country_of_origin,
+        number_of_owners=data.number_of_owners,
+        vehicle_type=data.vehicle_type,
+        reported_stolen=data.reported_stolen,
+        power_kw=data.power_kw,
+        tare_weight=data.tare_weight,
+        gross_vehicle_mass=data.gross_vehicle_mass,
+        date_first_registered_nz=_parse_date(data.date_first_registered_nz),
+        plate_type=data.plate_type,
+        submodel=data.submodel,
+        second_colour=data.second_colour,
     )
 
 
@@ -89,9 +124,11 @@ async def lookup_vehicle(
 
     Requirements: 14.1, 14.2, 14.3, 14.4
     """
+    logger.info(f"=== lookup_vehicle called: rego={rego}, org_id={org_id}, user_id={user_id}")
     rego = rego.upper().strip()
 
     # --- Step 1: Check cache (Global_Vehicle_DB) ---
+    logger.info(f"Checking Global_Vehicle_DB for rego={rego}")
     result = await db.execute(
         select(GlobalVehicle).where(GlobalVehicle.rego == rego)
     )
@@ -105,15 +142,52 @@ async def lookup_vehicle(
     # --- Step 2: Cache miss — call Carjam API (Req 14.3) ---
     logger.info("Vehicle cache miss for rego=%s — calling Carjam", rego)
 
-    client = CarjamClient(redis=redis)
-    carjam_data = await client.lookup_vehicle(rego)
+    # Load Carjam config from database
+    from app.modules.admin.service import get_integration_config
+    from app.core.encryption import envelope_decrypt_str
+    from app.modules.admin.models import IntegrationConfig
+    
+    config_result = await db.execute(
+        select(IntegrationConfig).where(IntegrationConfig.name == "carjam")
+    )
+    config_row = config_result.scalar_one_or_none()
+    
+    if not config_row:
+        raise CarjamError("Carjam integration not configured")
+    
+    try:
+        config_data = json.loads(envelope_decrypt_str(config_row.config_encrypted))
+        api_key = config_data.get("api_key", "")
+        base_url = config_data.get("endpoint_url", "https://www.carjam.co.nz")
+        rate_limit = config_data.get("global_rate_limit_per_minute", 60)
+        
+        logger.info(f"Loaded Carjam config: base_url={base_url}, has_api_key={bool(api_key)}, rate_limit={rate_limit}")
+    except Exception as e:
+        logger.error(f"Failed to load Carjam config: {e}")
+        raise CarjamError("Failed to load Carjam configuration")
+
+    try:
+        client = CarjamClient(
+            redis=redis,
+            api_key=api_key,
+            base_url=base_url,
+            rate_limit=rate_limit,
+        )
+        logger.info(f"CarjamClient created, calling lookup_vehicle for {rego}")
+        carjam_data = await client.lookup_vehicle(rego)
+        logger.info(f"Carjam API returned data: {carjam_data}")
+    except Exception as e:
+        logger.error(f"Carjam API call failed: {e}", exc_info=True)
+        raise
 
     # Store in Global_Vehicle_DB
+    logger.info(f"Storing vehicle in Global_Vehicle_DB")
     new_vehicle = _carjam_data_to_global_vehicle(carjam_data)
     db.add(new_vehicle)
     await db.flush()
 
     # Increment org's Carjam usage counter (Req 14.3)
+    logger.info(f"Incrementing Carjam counter for org {org_id}")
     org_result = await db.execute(
         select(Organisation).where(Organisation.id == org_id)
     )
@@ -135,6 +209,7 @@ async def lookup_vehicle(
         ip_address=ip_address,
     )
 
+    logger.info(f"Vehicle lookup complete, returning data")
     return _global_vehicle_to_dict(new_vehicle, source="carjam")
 
 
@@ -184,6 +259,23 @@ async def refresh_vehicle(
     existing.registration_expiry = _parse_date(carjam_data.rego_expiry)
     existing.odometer_last_recorded = carjam_data.odometer
     existing.last_pulled_at = now
+    existing.lookup_type = carjam_data.lookup_type
+    # Extended fields
+    existing.vin = carjam_data.vin
+    existing.chassis = carjam_data.chassis
+    existing.engine_no = carjam_data.engine_no
+    existing.transmission = carjam_data.transmission
+    existing.country_of_origin = carjam_data.country_of_origin
+    existing.number_of_owners = carjam_data.number_of_owners
+    existing.vehicle_type = carjam_data.vehicle_type
+    existing.reported_stolen = carjam_data.reported_stolen
+    existing.power_kw = carjam_data.power_kw
+    existing.tare_weight = carjam_data.tare_weight
+    existing.gross_vehicle_mass = carjam_data.gross_vehicle_mass
+    existing.date_first_registered_nz = _parse_date(carjam_data.date_first_registered_nz)
+    existing.plate_type = carjam_data.plate_type
+    existing.submodel = carjam_data.submodel
+    existing.second_colour = carjam_data.second_colour
     await db.flush()
 
     # Increment org's Carjam usage counter (charge the org)

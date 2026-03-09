@@ -1,38 +1,36 @@
 import { useState, useEffect } from 'react'
 import apiClient from '@/api/client'
 import { useTenant } from '@/contexts/TenantContext'
-import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
 
 interface OrgAdminData {
-  revenue_summary: {
-    current_period: number
-    previous_period: number
-    change_percent: number
+  revenue_summary?: {
+    total_revenue: number
+    total_gst: number
+    total_inclusive: number
+    invoice_count: number
+    average_invoice: number
+    period_start: string
+    period_end: string
   }
-  outstanding_total: number
-  overdue_count: number
-  storage: {
-    used_bytes: number
-    quota_gb: number
+  outstanding?: {
+    total_outstanding: number
+    count: number
+    invoices: Array<{
+      invoice_id: string
+      invoice_number: string | null
+      customer_name: string
+      days_overdue: number
+      balance_due: number
+    }>
   }
-  activity_feed: ActivityItem[]
-  system_alerts: SystemAlert[]
-}
-
-interface ActivityItem {
-  id: string
-  message: string
-  timestamp: string
-  user_name: string
-}
-
-interface SystemAlert {
-  id: string
-  type: 'storage_warning' | 'billing_issue' | 'general'
-  severity: 'info' | 'warning' | 'error'
-  message: string
+  storage?: {
+    storage_used_bytes: number
+    storage_quota_bytes: number
+    usage_percentage: number
+    alert_level: string
+  }
 }
 
 export function OrgAdminDashboard() {
@@ -45,32 +43,24 @@ export function OrgAdminDashboard() {
     let cancelled = false
     async function fetchDashboard() {
       try {
-        const [revenueRes, outstandingRes, storageRes, activityRes] =
+        const [revenueRes, outstandingRes, storageRes] =
           await Promise.all([
             apiClient.get<OrgAdminData['revenue_summary']>('/reports/revenue'),
-            apiClient.get<{ total: number; overdue_count: number }>(
-              '/reports/outstanding',
-            ),
-            apiClient.get<{ used_bytes: number; quota_gb: number }>(
-              '/reports/storage',
-            ),
-            apiClient.get<{
-              activity: ActivityItem[]
-              alerts: SystemAlert[]
-            }>('/reports/activity'),
+            apiClient.get<OrgAdminData['outstanding']>('/reports/outstanding'),
+            apiClient.get<OrgAdminData['storage']>('/reports/storage'),
           ])
         if (!cancelled) {
           setData({
             revenue_summary: revenueRes.data,
-            outstanding_total: outstandingRes.data.total,
-            overdue_count: outstandingRes.data.overdue_count,
+            outstanding: outstandingRes.data,
             storage: storageRes.data,
-            activity_feed: activityRes.data.activity,
-            system_alerts: activityRes.data.alerts,
           })
         }
-      } catch {
-        if (!cancelled) setError('Failed to load dashboard data')
+      } catch (err) {
+        if (!cancelled) {
+          console.error('Dashboard error:', err)
+          setError('Failed to load dashboard data')
+        }
       } finally {
         if (!cancelled) setIsLoading(false)
       }
@@ -85,12 +75,14 @@ export function OrgAdminDashboard() {
   if (error) return <AlertBanner variant="error">{error}</AlertBanner>
   if (!data) return null
 
-  const storageUsedGb = data.storage.used_bytes / (1024 * 1024 * 1024)
-  const storagePercent = data.storage.quota_gb > 0
-    ? Math.min((storageUsedGb / data.storage.quota_gb) * 100, 100)
-    : 0
+  const storageUsedGb = data.storage ? data.storage.storage_used_bytes / (1024 * 1024 * 1024) : 0
+  const storageQuotaGb = data.storage ? data.storage.storage_quota_bytes / (1024 * 1024 * 1024) : 0
+  const storagePercent = data.storage?.usage_percentage || 0
   const storageBarColor =
     storagePercent >= 90 ? 'bg-red-500' : storagePercent >= 80 ? 'bg-amber-500' : 'bg-blue-500'
+
+  // Count overdue invoices from outstanding data
+  const overdueCount = data.outstanding?.invoices?.filter(inv => inv.days_overdue > 0).length || 0
 
   return (
     <div className="space-y-6">
@@ -98,75 +90,106 @@ export function OrgAdminDashboard() {
         {settings?.branding.name ?? 'Organisation'} Dashboard
       </h1>
 
-      {/* System alerts */}
-      {data.system_alerts.map((alert) => (
-        <AlertBanner key={alert.id} variant={alert.severity === 'error' ? 'error' : 'warning'}>
-          {alert.message}
+      {/* Storage alert */}
+      {data.storage && data.storage.alert_level !== 'normal' && (
+        <AlertBanner variant={data.storage.alert_level === 'blocked' ? 'error' : 'warning'}>
+          {data.storage.alert_level === 'blocked' 
+            ? 'Storage quota exceeded. Please upgrade your plan or delete files.'
+            : `Storage usage at ${Math.round(storagePercent)}%. Consider upgrading your plan.`}
         </AlertBanner>
-      ))}
+      )}
 
       {/* KPI cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard
-          label="Revenue (This Period)"
-          value={`$${data.revenue_summary.current_period.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`}
-          change={data.revenue_summary.change_percent}
-        />
-        <KpiCard
-          label="Outstanding Total"
-          value={`$${data.outstanding_total.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`}
-        />
+        {data.revenue_summary && (
+          <KpiCard
+            label="Revenue (This Period)"
+            value={`$${Number(data.revenue_summary.total_inclusive).toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`}
+            subtitle={`${data.revenue_summary.invoice_count} invoices`}
+          />
+        )}
+        {data.outstanding && (
+          <KpiCard
+            label="Outstanding Total"
+            value={`$${Number(data.outstanding.total_outstanding).toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`}
+            subtitle={`${data.outstanding.count} invoices`}
+          />
+        )}
         <KpiCard
           label="Overdue Invoices"
-          value={data.overdue_count}
-          variant={data.overdue_count > 0 ? 'error' : undefined}
+          value={overdueCount}
+          variant={overdueCount > 0 ? 'error' : undefined}
         />
-        <div className="rounded-lg border border-gray-200 bg-white p-5">
-          <p className="text-sm font-medium text-gray-500">Storage Usage</p>
-          <p className="mt-1 text-2xl font-semibold text-gray-900">
-            {storageUsedGb.toFixed(1)} / {data.storage.quota_gb} GB
-          </p>
-          <div
-            className="mt-2 h-2 w-full overflow-hidden rounded-full bg-gray-200"
-            role="progressbar"
-            aria-valuenow={Math.round(storagePercent)}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label={`Storage usage: ${Math.round(storagePercent)}%`}
-          >
+        {data.storage && (
+          <div className="rounded-lg border border-gray-200 bg-white p-5">
+            <p className="text-sm font-medium text-gray-500">Storage Usage</p>
+            <p className="mt-1 text-2xl font-semibold text-gray-900">
+              {storageUsedGb.toFixed(1)} / {storageQuotaGb.toFixed(1)} GB
+            </p>
             <div
-              className={`h-full rounded-full transition-all ${storageBarColor}`}
-              style={{ width: `${storagePercent}%` }}
-            />
-          </div>
-          <p className="mt-1 text-xs text-gray-500">{Math.round(storagePercent)}% used</p>
-        </div>
-      </div>
-
-      {/* Activity feed */}
-      <section>
-        <h2 className="mb-3 text-lg font-medium text-gray-900">Recent Activity</h2>
-        {data.activity_feed.length === 0 ? (
-          <p className="text-sm text-gray-500">No recent activity</p>
-        ) : (
-          <div className="space-y-2">
-            {data.activity_feed.map((item) => (
+              className="mt-2 h-2 w-full overflow-hidden rounded-full bg-gray-200"
+              role="progressbar"
+              aria-valuenow={Math.round(storagePercent)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label={`Storage usage: ${Math.round(storagePercent)}%`}
+            >
               <div
-                key={item.id}
-                className="flex items-start justify-between rounded-lg border border-gray-200 bg-white p-4"
-              >
-                <div>
-                  <p className="text-sm text-gray-900">{item.message}</p>
-                  <p className="text-xs text-gray-500">{item.user_name}</p>
-                </div>
-                <time className="shrink-0 text-xs text-gray-400">
-                  {new Date(item.timestamp).toLocaleString('en-NZ')}
-                </time>
-              </div>
-            ))}
+                className={`h-full rounded-full transition-all ${storageBarColor}`}
+                style={{ width: `${Math.min(storagePercent, 100)}%` }}
+              />
+            </div>
+            <p className="mt-1 text-xs text-gray-500">{Math.round(storagePercent)}% used</p>
           </div>
         )}
-      </section>
+      </div>
+
+      {/* Recent overdue invoices */}
+      {data.outstanding && data.outstanding.invoices && data.outstanding.invoices.length > 0 && (
+        <section>
+          <h2 className="mb-3 text-lg font-medium text-gray-900">Outstanding Invoices</h2>
+          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                    Invoice
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                    Customer
+                  </th>
+                  <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
+                    Amount Due
+                  </th>
+                  <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
+                    Days Overdue
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 bg-white">
+                {data.outstanding.invoices.slice(0, 10).map((inv) => (
+                  <tr key={inv.invoice_id} className={inv.days_overdue > 0 ? 'bg-red-50' : ''}>
+                    <td className="px-4 py-3 text-sm text-gray-900">
+                      {inv.invoice_number || inv.invoice_id}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-900">{inv.customer_name}</td>
+                    <td className="px-4 py-3 text-sm text-gray-900 text-right">
+                      ${Number(inv.balance_due).toLocaleString('en-NZ', { minimumFractionDigits: 2 })}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-right">
+                      {inv.days_overdue > 0 ? (
+                        <span className="text-red-600 font-medium">{inv.days_overdue} days</span>
+                      ) : (
+                        <span className="text-gray-500">-</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   )
 }
@@ -174,12 +197,12 @@ export function OrgAdminDashboard() {
 function KpiCard({
   label,
   value,
-  change,
+  subtitle,
   variant,
 }: {
   label: string
   value: number | string
-  change?: number
+  subtitle?: string
   variant?: 'error'
 }) {
   return (
@@ -192,11 +215,8 @@ function KpiCard({
       >
         {value}
       </p>
-      {change !== undefined && (
-        <Badge variant={change >= 0 ? 'success' : 'error'} className="mt-2">
-          {change >= 0 ? '+' : ''}
-          {change.toFixed(1)}% vs last period
-        </Badge>
+      {subtitle && (
+        <p className="mt-1 text-xs text-gray-500">{subtitle}</p>
       )}
     </div>
   )

@@ -39,14 +39,16 @@ export function TerminologyProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const fetchTerminology = useCallback(async () => {
+  const fetchTerminology = useCallback(async (signal?: AbortSignal) => {
     setIsLoading(true)
     setError(null)
     try {
-      const res = await apiClient.get<TerminologyMap>('/v2/terminology')
+      const res = await apiClient.get<TerminologyMap>('/v2/terminology', { signal })
       setTerms(res.data)
-    } catch {
-      setError('Failed to load terminology')
+    } catch (err: any) {
+      if (err.name !== 'CanceledError') {
+        setError('Failed to load terminology')
+      }
     } finally {
       setIsLoading(false)
     }
@@ -54,7 +56,9 @@ export function TerminologyProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (isAuthenticated && user?.org_id) {
-      fetchTerminology()
+      const controller = new AbortController()
+      fetchTerminology(controller.signal)
+      return () => controller.abort()
     } else {
       setTerms({})
     }

@@ -186,6 +186,27 @@ class GlobalVehicle(Base):
     wof_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
     registration_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
     odometer_last_recorded: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    
+    # Extended fields
+    vin: Mapped[str | None] = mapped_column(String(17), nullable=True)
+    chassis: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    engine_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    transmission: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    country_of_origin: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    number_of_owners: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    vehicle_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    reported_stolen: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    power_kw: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tare_weight: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gross_vehicle_mass: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    date_first_registered_nz: Mapped[date | None] = mapped_column(Date, nullable=True)
+    plate_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    submodel: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    second_colour: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    
+    # Lookup metadata
+    lookup_type: Mapped[str | None] = mapped_column(String(10), nullable=True, server_default='basic')
+    
     last_pulled_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -195,6 +216,7 @@ class GlobalVehicle(Base):
 
     __table_args__ = (
         Index("idx_global_vehicles_rego", "rego"),
+        Index("idx_global_vehicles_vin", "vin"),
     )
 
 

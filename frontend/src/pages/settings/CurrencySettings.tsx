@@ -7,7 +7,6 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import apiClient from '@/api/client'
-import { useModuleGuard } from '@/hooks/useModuleGuard'
 import { useFlag } from '@/contexts/FeatureFlagContext'
 import { useTerm } from '@/contexts/TerminologyContext'
 import { Badge } from '@/components/ui/Badge'
@@ -590,7 +589,6 @@ function ExchangeRateRow({
 
 export default function CurrencySettings() {
   // Context integration (Req 13)
-  const { isAllowed, isLoading: guardLoading, toasts: guardToasts, dismissToast: dismissGuardToast } = useModuleGuard('multi_currency')
   void useFlag('multi_currency')
   const currencyLabel = useTerm('currency', 'Currency')
 
@@ -638,8 +636,8 @@ export default function CurrencySettings() {
   }, [])
 
   useEffect(() => {
-    if (isAllowed) fetchData()
-  }, [fetchData, isAllowed])
+    fetchData()
+  }, [fetchData])
 
   const handleEnableCurrency = async (code: string) => {
     try {
@@ -666,17 +664,6 @@ export default function CurrencySettings() {
   }
 
   // Loading states
-  if (guardLoading) {
-    return (
-      <div className="flex items-center justify-center py-20" data-testid="currency-guard-loading">
-        <Spinner label="Loading currency settings" />
-        <ToastContainer toasts={guardToasts} onDismiss={dismissGuardToast} />
-      </div>
-    )
-  }
-
-  if (!isAllowed) return <ToastContainer toasts={guardToasts} onDismiss={dismissGuardToast} />
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20" data-testid="currency-settings-loading">
@@ -898,7 +885,7 @@ export default function CurrencySettings() {
 
       <Tabs tabs={tabs} />
 
-      <ToastContainer toasts={[...toasts, ...guardToasts]} onDismiss={(id) => { dismissToast(id); dismissGuardToast(id) }} />
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   )
 }

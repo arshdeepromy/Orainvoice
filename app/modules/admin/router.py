@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import uuid
+import logging
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.core.database import get_db_session
 from app.modules.admin.schemas import (
@@ -28,6 +30,8 @@ from app.modules.admin.schemas import (
     OrgDeleteRequest,
     OrgDeleteRequestResponse,
     OrgDeleteResponse,
+    OrgHardDeleteRequest,
+    OrgHardDeleteResponse,
     OrgListItem,
     OrgListResponse,
     OrgOverviewResponse,
@@ -57,6 +61,7 @@ from app.modules.admin.service import (
     archive_plan,
     create_plan,
     delete_organisation,
+    hard_delete_organisation,
     get_all_orgs_carjam_usage,
     get_all_orgs_sms_usage,
     get_carjam_cost_report,
@@ -83,6 +88,7 @@ from app.modules.admin.service import (
 from app.modules.auth.rbac import require_role
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.post(
@@ -211,9 +217,18 @@ async def update_org(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Update an organisation: suspend, reinstate, initiate deletion, or move between plans.
+    """Update an organisation: suspend, reinstate, activate, deactivate, initiate deletion, or move between plans.
 
-    For suspend/delete_request, a reason is required (stored in audit log).
+    Actions:
+    - suspend: Temporarily suspend organisation (requires reason)
+    - reinstate: Reactivate from suspended state
+    - activate: Activate organisation from any non-deleted state
+    - deactivate: Deactivate organisation (requires reason)
+    - delete_request: Initiate soft deletion (step 1 of 2, returns confirmation token)
+    - hard_delete_request: Initiate permanent deletion (step 1 of 2, returns confirmation token)
+    - move_plan: Move organisation to a different subscription plan
+
+    For suspend/delete_request/deactivate, a reason is required (stored in audit log).
     Optionally sends email to Org_Admin.
 
     Only Global_Admin users can access this endpoint.
@@ -251,8 +266,8 @@ async def update_org(
             return JSONResponse(status_code=404, content={"detail": msg})
         return JSONResponse(status_code=400, content={"detail": msg})
 
-    # delete_request returns a confirmation token
-    if payload.action == "delete_request":
+    # delete_request or hard_delete_request returns a confirmation token
+    if payload.action in ("delete_request", "hard_delete_request"):
         from app.modules.admin.schemas import OrgDeleteRequestResponse
         return OrgDeleteRequestResponse(
             message=result["message"],
@@ -319,6 +334,75 @@ async def delete_org(
         return JSONResponse(status_code=400, content={"detail": msg})
 
     return OrgDeleteResponse(**result)
+
+
+@router.delete(
+    "/organisations/{org_id}/hard",
+    response_model=OrgHardDeleteResponse,
+    responses={
+        400: {"description": "Validation error, invalid token, or incorrect confirmation text"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "Organisation not found"},
+    },
+    summary="PERMANENTLY delete organisation and ALL data (multi-step confirmation)",
+    dependencies=[require_role("global_admin")],
+)
+async def hard_delete_org(
+    org_id: str,
+    payload: OrgHardDeleteRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """PERMANENTLY delete an organisation and ALL related data from the database.
+
+    This is IRREVERSIBLE and removes:
+    - Organisation record
+    - All users in the organisation
+    - All vehicles, customers, invoices, quotes, etc.
+    - Audit logs are kept for compliance
+    
+    Requires:
+    1. A confirmation_token obtained from the hard_delete_request action on PUT /organisations/{id}
+    2. User must type "PERMANENTLY DELETE" exactly in the confirm_text field
+    
+    This implements multi-step confirmation for safety.
+    A reason is required and stored in the audit log before deletion.
+
+    Only Global_Admin users can access this endpoint.
+    Requirements 47.2, 47.3.
+    """
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
+
+    try:
+        result = await hard_delete_organisation(
+            db,
+            org_id=org_uuid,
+            reason=payload.reason,
+            confirmation_token=payload.confirmation_token,
+            confirm_text=payload.confirm_text,
+            deleted_by=uuid.UUID(user_id) if user_id else uuid.uuid4(),
+            ip_address=ip_address,
+        )
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        msg = str(exc)
+        if "not found" in msg.lower():
+            return JSONResponse(status_code=404, content={"detail": msg})
+        return JSONResponse(status_code=400, content={"detail": msg})
+    except Exception as exc:
+        await db.rollback()
+        logger.exception("Unexpected error during hard delete")
+        return JSONResponse(status_code=500, content={"detail": "An error occurred during deletion"})
+
+    return OrgHardDeleteResponse(**result)
 
 
 @router.get(
@@ -1068,6 +1152,7 @@ async def configure_carjam(
     """Configure the platform-wide Carjam API credentials.
 
     Stores API key, endpoint URL, per-lookup cost, and global rate limit.
+    Only updates fields that are provided in the request.
     Only Global_Admin users can access this endpoint.
     Requirement 48.3.
     """
@@ -1122,6 +1207,419 @@ async def test_carjam(
     )
 
     return CarjamTestResponse(**test_result)
+
+
+@router.post(
+    "/integrations/carjam/lookup-test",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "Vehicle not found"},
+        429: {"description": "Rate limit exceeded"},
+        500: {"description": "Internal server error"},
+        504: {"description": "Request timeout"},
+    },
+    summary="Test vehicle lookup (admin only)",
+    dependencies=[require_role("global_admin")],
+)
+async def test_vehicle_lookup(
+    payload: dict,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Test vehicle lookup by registration for admin testing purposes.
+    
+    Uses the existing vehicle lookup service with cache-first strategy.
+    Does NOT increment any org's usage counter (uses a test context).
+    
+    Only Global_Admin users can access this endpoint.
+    """
+    import asyncio
+    from app.modules.vehicles.service import lookup_vehicle as lookup_vehicle_service
+    from app.integrations.carjam import CarjamNotFoundError, CarjamRateLimitError, CarjamError
+    from app.core.redis import redis_pool
+    
+    logger.info("=== VEHICLE LOOKUP TEST START ===")
+    logger.info(f"Payload received: {payload}")
+    
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+    rego = payload.get("rego", "").upper().strip()
+    
+    logger.info(f"User ID: {user_id}, IP: {ip_address}, Rego: {rego}")
+    
+    if not rego:
+        logger.warning("No rego provided in payload")
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "message": "Registration number is required"},
+        )
+    
+    # Get first org for testing context (or create a dummy UUID)
+    try:
+        org_result = await db.execute(
+            text("SELECT id FROM organisations LIMIT 1")
+        )
+        org_row = org_result.first()
+        test_org_id = uuid.UUID(org_row[0]) if org_row else uuid.uuid4()
+        logger.info(f"Using test org_id: {test_org_id}")
+    except Exception as e:
+        logger.error(f"Failed to get org_id: {e}")
+        test_org_id = uuid.uuid4()
+    
+    # Use redis_pool directly instead of get_redis()
+    logger.info(f"Using redis_pool: {redis_pool}")
+    
+    try:
+        logger.info(f"Calling lookup_vehicle_service for rego: {rego}")
+        
+        # Add timeout to prevent hanging
+        result = await asyncio.wait_for(
+            lookup_vehicle_service(
+                db,
+                redis_pool,
+                rego=rego,
+                org_id=test_org_id,
+                user_id=uuid.UUID(user_id) if user_id else uuid.uuid4(),
+                ip_address=ip_address,
+            ),
+            timeout=30.0  # 30 second timeout
+        )
+        
+        logger.info(f"Lookup successful! Result: {result}")
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "message": f"Vehicle found: {result.get('make', '')} {result.get('model', '')}",
+                "data": result,
+                "source": result.get("source", "unknown"),
+            },
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"Vehicle lookup timed out after 30 seconds")
+        return JSONResponse(
+            status_code=504,
+            content={
+                "success": False,
+                "message": "Request timed out. Please try again.",
+            },
+        )
+    except CarjamNotFoundError as exc:
+        logger.warning(f"Vehicle not found: {exc}")
+        return JSONResponse(
+            status_code=404,
+            content={
+                "success": False,
+                "message": f"No vehicle found for registration '{rego}'",
+                "rego": rego,
+            },
+        )
+    except CarjamRateLimitError as exc:
+        logger.warning(f"Rate limit exceeded: {exc}")
+        return JSONResponse(
+            status_code=429,
+            content={
+                "success": False,
+                "message": "Rate limit exceeded. Please try again shortly.",
+                "retry_after": exc.retry_after,
+            },
+            headers={"Retry-After": str(exc.retry_after)},
+        )
+    except CarjamError as exc:
+        logger.error(f"Carjam service error: {exc}")
+        return JSONResponse(
+            status_code=502,
+            content={
+                "success": False,
+                "message": f"Carjam service error: {str(exc)}",
+            },
+        )
+    except Exception as exc:
+        logger.error(f"Unexpected error in test vehicle lookup: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"Unexpected error: {str(exc)}",
+            },
+        )
+
+
+@router.post(
+    "/integrations/carjam/lookup-test-abcd",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "Vehicle not found"},
+        429: {"description": "Rate limit exceeded"},
+        500: {"description": "Internal server error"},
+        504: {"description": "Request timeout"},
+    },
+    summary="Test ABCD vehicle lookup (admin only)",
+    dependencies=[require_role("global_admin")],
+)
+async def test_vehicle_lookup_abcd(
+    payload: dict,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Test ABCD (Absolute Basic Car Details) vehicle lookup for admin testing.
+    
+    ABCD is a lower-cost API option that provides basic vehicle information.
+    Stores results in global_vehicles database but does NOT increment org usage counters.
+    
+    Only Global_Admin users can access this endpoint.
+    """
+    import asyncio
+    from app.integrations.carjam import CarjamClient, CarjamNotFoundError, CarjamRateLimitError, CarjamError
+    from app.core.redis import redis_pool
+    from app.modules.admin.service import get_integration_config
+    from app.core.encryption import envelope_decrypt_str
+    from app.modules.vehicles.service import _carjam_data_to_global_vehicle, _global_vehicle_to_dict
+    from app.modules.admin.models import GlobalVehicle
+    from sqlalchemy import select
+    import json
+    
+    logger.info("=== ABCD VEHICLE LOOKUP TEST START ===")
+    logger.info(f"Payload received: {payload}")
+    
+    rego = payload.get("rego", "").upper().strip()
+    use_mvr = payload.get("use_mvr", True)  # Default to True
+    
+    logger.info(f"Rego: {rego}, Use MVR: {use_mvr}")
+    
+    if not rego:
+        logger.warning("No rego provided in payload")
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "message": "Registration number is required"},
+        )
+    
+    # Load Carjam config
+    try:
+        from app.modules.admin.models import IntegrationConfig
+        from sqlalchemy import select
+        
+        config_result = await db.execute(
+            select(IntegrationConfig).where(IntegrationConfig.name == "carjam")
+        )
+        config_row = config_result.scalar_one_or_none()
+        
+        if not config_row:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "Carjam integration not configured"},
+            )
+        
+        config_data = json.loads(envelope_decrypt_str(config_row.config_encrypted))
+        api_key = config_data.get("api_key", "")
+        base_url = config_data.get("endpoint_url", "https://www.carjam.co.nz")
+        rate_limit = config_data.get("global_rate_limit_per_minute", 60)
+        
+        logger.info(f"Loaded Carjam config: base_url={base_url}, has_api_key={bool(api_key)}")
+    except Exception as e:
+        logger.error(f"Failed to load Carjam config: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": "Failed to load Carjam configuration"},
+        )
+    
+    try:
+        logger.info(f"Calling CarjamClient.lookup_vehicle_abcd for rego: {rego}")
+        
+        client = CarjamClient(
+            redis=redis_pool,
+            api_key=api_key,
+            base_url=base_url,
+            rate_limit=rate_limit,
+        )
+        
+        # ABCD API may return null initially while fetching data
+        # Implement retry logic with up to 3 attempts
+        max_retries = 3
+        retry_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                # Add timeout to prevent hanging
+                result = await asyncio.wait_for(
+                    client.lookup_vehicle_abcd(rego, use_mvr=use_mvr),
+                    timeout=30.0  # 30 second timeout
+                )
+                
+                logger.info(f"ABCD Lookup successful on attempt {attempt + 1}! Result: {result}")
+                
+                # Check if vehicle already exists in database
+                existing_result = await db.execute(
+                    select(GlobalVehicle).where(GlobalVehicle.rego == rego)
+                )
+                existing_vehicle = existing_result.scalar_one_or_none()
+                
+                if existing_vehicle:
+                    # Update existing record
+                    logger.info(f"Updating existing vehicle record for {rego}")
+                    from datetime import datetime, timezone
+                    from app.modules.vehicles.service import _parse_date
+                    
+                    now = datetime.now(timezone.utc)
+                    existing_vehicle.make = result.make
+                    existing_vehicle.model = result.model
+                    existing_vehicle.year = result.year
+                    existing_vehicle.colour = result.colour
+                    existing_vehicle.body_type = result.body_type
+                    existing_vehicle.fuel_type = result.fuel_type
+                    existing_vehicle.engine_size = result.engine_size
+                    existing_vehicle.num_seats = result.seats
+                    existing_vehicle.wof_expiry = _parse_date(result.wof_expiry)
+                    existing_vehicle.registration_expiry = _parse_date(result.rego_expiry)
+                    existing_vehicle.odometer_last_recorded = result.odometer
+                    existing_vehicle.last_pulled_at = now
+                    existing_vehicle.lookup_type = result.lookup_type
+                    # Extended fields
+                    existing_vehicle.vin = result.vin
+                    existing_vehicle.chassis = result.chassis
+                    existing_vehicle.engine_no = result.engine_no
+                    existing_vehicle.transmission = result.transmission
+                    existing_vehicle.country_of_origin = result.country_of_origin
+                    existing_vehicle.number_of_owners = result.number_of_owners
+                    existing_vehicle.vehicle_type = result.vehicle_type
+                    existing_vehicle.reported_stolen = result.reported_stolen
+                    existing_vehicle.power_kw = result.power_kw
+                    existing_vehicle.tare_weight = result.tare_weight
+                    existing_vehicle.gross_vehicle_mass = result.gross_vehicle_mass
+                    existing_vehicle.date_first_registered_nz = _parse_date(result.date_first_registered_nz)
+                    existing_vehicle.plate_type = result.plate_type
+                    existing_vehicle.submodel = result.submodel
+                    existing_vehicle.second_colour = result.second_colour
+                    await db.flush()
+                    await db.commit()
+                    
+                    stored_data = _global_vehicle_to_dict(existing_vehicle, source="carjam_abcd")
+                else:
+                    # Create new record
+                    logger.info(f"Creating new vehicle record for {rego}")
+                    new_vehicle = _carjam_data_to_global_vehicle(result)
+                    db.add(new_vehicle)
+                    await db.flush()
+                    await db.commit()
+                    
+                    stored_data = _global_vehicle_to_dict(new_vehicle, source="carjam_abcd")
+                
+                # Convert dataclass to dict for response
+                result_dict = {
+                    "rego": result.rego,
+                    "make": result.make,
+                    "model": result.model,
+                    "submodel": result.submodel,
+                    "year": result.year,
+                    "colour": result.colour,
+                    "second_colour": result.second_colour,
+                    "body_type": result.body_type,
+                    "fuel_type": result.fuel_type,
+                    "engine_size": result.engine_size,
+                    "seats": result.seats,
+                    "wof_expiry": result.wof_expiry,
+                    "rego_expiry": result.rego_expiry,
+                    "odometer": result.odometer,
+                    "vin": result.vin,
+                    "chassis": result.chassis,
+                    "engine_no": result.engine_no,
+                    "transmission": result.transmission,
+                    "country_of_origin": result.country_of_origin,
+                    "number_of_owners": result.number_of_owners,
+                    "vehicle_type": result.vehicle_type,
+                    "reported_stolen": result.reported_stolen,
+                    "power_kw": result.power_kw,
+                    "tare_weight": result.tare_weight,
+                    "gross_vehicle_mass": result.gross_vehicle_mass,
+                    "date_first_registered_nz": result.date_first_registered_nz,
+                    "plate_type": result.plate_type,
+                    "lookup_type": result.lookup_type,
+                }
+                
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "success": True,
+                        "message": f"Vehicle found and stored: {result.make} {result.model}",
+                        "data": result_dict,
+                        "source": "carjam_abcd",
+                        "mvr_used": use_mvr,
+                        "attempts": attempt + 1,
+                        "stored": True,
+                    },
+                )
+            except CarjamError as exc:
+                # Check if it's the "data being fetched" case
+                if str(exc) == "ABCD_FETCHING":
+                    if attempt < max_retries - 1:
+                        logger.info(f"ABCD data not ready, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.warning(f"ABCD data still not ready after {max_retries} attempts")
+                        return JSONResponse(
+                            status_code=202,  # Accepted but not ready
+                            content={
+                                "success": False,
+                                "message": f"Carjam is still fetching data for '{rego}'. Please try again in a few seconds.",
+                                "rego": rego,
+                                "retry_suggested": True,
+                            },
+                        )
+                else:
+                    # Other CarjamError, re-raise
+                    raise
+    except asyncio.TimeoutError:
+        logger.error(f"ABCD lookup timed out after 30 seconds")
+        return JSONResponse(
+            status_code=504,
+            content={
+                "success": False,
+                "message": "Request timed out. Please try again.",
+            },
+        )
+    except CarjamNotFoundError as exc:
+        logger.warning(f"Vehicle not found: {exc}")
+        return JSONResponse(
+            status_code=404,
+            content={
+                "success": False,
+                "message": f"No vehicle found for registration '{rego}'",
+                "rego": rego,
+            },
+        )
+    except CarjamRateLimitError as exc:
+        logger.warning(f"Rate limit exceeded: {exc}")
+        return JSONResponse(
+            status_code=429,
+            content={
+                "success": False,
+                "message": "Rate limit exceeded. Please try again shortly.",
+                "retry_after": exc.retry_after,
+            },
+            headers={"Retry-After": str(exc.retry_after)},
+        )
+    except CarjamError as exc:
+        logger.error(f"Carjam ABCD service error: {exc}")
+        return JSONResponse(
+            status_code=502,
+            content={
+                "success": False,
+                "message": f"Carjam ABCD service error: {str(exc)}",
+            },
+        )
+    except Exception as exc:
+        logger.error(f"Unexpected error in ABCD test lookup: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"Unexpected error: {str(exc)}",
+            },
+        )
 
 
 # ---------------------------------------------------------------------------

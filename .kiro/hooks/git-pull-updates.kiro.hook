@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Pull Git Updates",
+  "description": "Pulls the latest changes from the remote repository",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "git pull --rebase"
+  }
+}

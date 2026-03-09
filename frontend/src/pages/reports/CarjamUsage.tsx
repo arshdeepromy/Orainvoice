@@ -19,7 +19,7 @@ function defaultRange(): DateRange {
   return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
 }
 
-const fmt = (v: number) => `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`
+const fmt = (v: number | undefined) => v != null ? `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}` : '$0.00'
 
 /**
  * Carjam API usage report — lookups, included, overage, and daily breakdown.
@@ -91,13 +91,17 @@ export default function CarjamUsage() {
 
           <div className="rounded-lg border border-gray-200 bg-white p-4">
             <h3 className="text-sm font-medium text-gray-700 mb-3">Daily Lookups</h3>
-            <SimpleBarChart
-              title="Daily Carjam lookups"
-              items={data.daily_breakdown.map((d) => ({
-                label: new Date(d.date).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' }),
-                value: d.lookups,
-              }))}
-            />
+            {data.daily_breakdown && data.daily_breakdown.length > 0 ? (
+              <SimpleBarChart
+                title="Daily Carjam lookups"
+                items={data.daily_breakdown.map((d) => ({
+                  label: new Date(d.date).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' }),
+                  value: d.lookups,
+                }))}
+              />
+            ) : (
+              <p className="text-sm text-gray-500 py-8 text-center">No daily data available for this period.</p>
+            )}
           </div>
         </>
       )}

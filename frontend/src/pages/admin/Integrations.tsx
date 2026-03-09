@@ -38,7 +38,7 @@ interface FieldDef {
 const INTEGRATION_FIELDS: Record<IntegrationName, FieldDef[]> = {
   carjam: [
     { key: 'api_key', label: 'API key', type: 'password', placeholder: '••••••••', backendKey: 'api_key_last4' },
-    { key: 'endpoint_url', label: 'Endpoint URL', type: 'text', placeholder: 'https://api.carjam.co.nz/v2' },
+    { key: 'endpoint_url', label: 'Endpoint URL', type: 'text', placeholder: 'https://www.carjam.co.nz' },
     { key: 'per_lookup_cost_nzd', label: 'Per-lookup cost (NZD)', type: 'number', placeholder: '0.50' },
     { key: 'global_rate_limit_per_minute', label: 'Global rate limit (calls/min)', type: 'number', placeholder: '60' },
   ],
@@ -74,6 +74,29 @@ function IntegrationPanel({
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const [error, setError] = useState(false)
+  
+  // Vehicle lookup test state (Carjam only)
+  const [lookupRego, setLookupRego] = useState('')
+  const [lookupTesting, setLookupTesting] = useState(false)
+  const [lookupResult, setLookupResult] = useState<{
+    success: boolean
+    message: string
+    data?: any
+    source?: string
+  } | null>(null)
+  
+  // ABCD lookup test state (Carjam only)
+  const [abcdRego, setAbcdRego] = useState('')
+  const [abcdUseMvr, setAbcdUseMvr] = useState(true)
+  const [abcdTesting, setAbcdTesting] = useState(false)
+  const [abcdResult, setAbcdResult] = useState<{
+    success: boolean
+    message: string
+    data?: any
+    source?: string
+    mvr_used?: boolean
+    retry_suggested?: boolean
+  } | null>(null)
 
   const fetchConfig = useCallback(async () => {
     setLoading(true)
@@ -126,7 +149,7 @@ function IntegrationPanel({
     setSaving(true)
     try {
       // Only send fields that have been changed (non-masked values) and are currently visible
-      const payload: Record<string, string> = {}
+      const payload: Record<string, string | number> = {}
       for (const f of fields) {
         // Skip fields hidden by visibleWhen condition
         if (f.visibleWhen) {
@@ -135,7 +158,13 @@ function IntegrationPanel({
         }
         const val = values[f.key]
         if (f.type === 'password' && val === MASKED_VALUE) continue // unchanged
-        payload[f.key] = val
+        
+        // Convert number fields to actual numbers
+        if (f.type === 'number' && val) {
+          payload[f.key] = parseFloat(val)
+        } else {
+          payload[f.key] = val
+        }
       }
       await apiClient.put(`/admin/integrations/${name}`, payload)
       onToast('success', `${INTEGRATION_LABELS[name]} configuration saved`)
@@ -165,6 +194,79 @@ function IntegrationPanel({
       onToast('error', `${INTEGRATION_LABELS[name]} connection test failed`)
     } finally {
       setTesting(false)
+    }
+  }
+  
+  const handleVehicleLookup = async () => {
+    if (!lookupRego.trim()) {
+      onToast('error', 'Please enter a registration number')
+      return
+    }
+    
+    setLookupTesting(true)
+    setLookupResult(null)
+    try {
+      const res = await apiClient.post<{
+        success: boolean
+        message: string
+        data?: any
+        source?: string
+      }>(`/admin/integrations/carjam/lookup-test`, { rego: lookupRego.trim() })
+      
+      setLookupResult(res.data)
+      if (res.data.success) {
+        onToast('success', `Vehicle found: ${res.data.message}`)
+      } else {
+        onToast('error', res.data.message)
+      }
+    } catch (err: any) {
+      const errorMsg = err.response?.data?.message || 'Vehicle lookup failed'
+      setLookupResult({ success: false, message: errorMsg })
+      onToast('error', errorMsg)
+    } finally {
+      setLookupTesting(false)
+    }
+  }
+  
+  const handleAbcdLookup = async () => {
+    if (!abcdRego.trim()) {
+      onToast('error', 'Please enter a registration number')
+      return
+    }
+    
+    setAbcdTesting(true)
+    setAbcdResult(null)
+    try {
+      const res = await apiClient.post<{
+        success: boolean
+        message: string
+        data?: any
+        source?: string
+        mvr_used?: boolean
+        attempts?: number
+        retry_suggested?: boolean
+      }>(`/admin/integrations/carjam/lookup-test-abcd`, { 
+        rego: abcdRego.trim(),
+        use_mvr: abcdUseMvr
+      })
+      
+      setAbcdResult(res.data)
+      if (res.data.success) {
+        const attemptsMsg = res.data.attempts && res.data.attempts > 1 
+          ? ` (${res.data.attempts} attempts)` 
+          : ''
+        onToast('success', `ABCD lookup successful${attemptsMsg}: ${res.data.message}`)
+      } else if (res.data.retry_suggested) {
+        onToast('info', 'Carjam is fetching data. Please try again in a few seconds.')
+      } else {
+        onToast('error', res.data.message)
+      }
+    } catch (err: any) {
+      const errorMsg = err.response?.data?.message || 'ABCD lookup failed'
+      setAbcdResult({ success: false, message: errorMsg })
+      onToast('error', errorMsg)
+    } finally {
+      setAbcdTesting(false)
     }
   }
 
@@ -271,6 +373,165 @@ function IntegrationPanel({
           Test connection
         </Button>
       </div>
+      
+      {/* Vehicle Lookup Test (Carjam only) */}
+      {name === 'carjam' && (
+        <div className="mt-8 pt-6 border-t border-gray-200">
+          <h3 className="text-md font-semibold text-gray-900 mb-4">Test Vehicle Lookup</h3>
+          <p className="text-sm text-gray-600 mb-4">
+            Enter a registration number to test the Carjam API and caching. 
+            First lookup will fetch from Carjam API and cache the result. 
+            Subsequent lookups will use the cached data.
+          </p>
+          
+          <div className="flex gap-3 items-end">
+            <div className="flex-1">
+              <Input
+                label="Registration Number"
+                value={lookupRego}
+                onChange={(e) => setLookupRego(e.target.value.toUpperCase())}
+                placeholder="ABC123"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleVehicleLookup()
+                  }
+                }}
+              />
+            </div>
+            <Button
+              type="button"
+              onClick={handleVehicleLookup}
+              loading={lookupTesting}
+              disabled={!lookupRego.trim()}
+            >
+              Lookup Vehicle
+            </Button>
+          </div>
+          
+          {lookupResult && (
+            <div className="mt-4">
+              <AlertBanner
+                variant={lookupResult.success ? 'success' : 'error'}
+                title={lookupResult.success ? 'Vehicle Found' : 'Lookup Failed'}
+              >
+                <div className="space-y-2">
+                  <p>{lookupResult.message}</p>
+                  {lookupResult.success && lookupResult.data && (
+                    <div className="mt-3 p-3 bg-white rounded border border-gray-200">
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div><span className="font-medium">Registration:</span> {lookupResult.data.rego}</div>
+                        <div><span className="font-medium">Source:</span> <span className={lookupResult.source === 'cache' ? 'text-green-600' : 'text-blue-600'}>{lookupResult.source === 'cache' ? 'Cached' : 'Carjam API'}</span></div>
+                        {lookupResult.data.make && <div><span className="font-medium">Make:</span> {lookupResult.data.make}</div>}
+                        {lookupResult.data.model && <div><span className="font-medium">Model:</span> {lookupResult.data.model}</div>}
+                        {lookupResult.data.year && <div><span className="font-medium">Year:</span> {lookupResult.data.year}</div>}
+                        {lookupResult.data.colour && <div><span className="font-medium">Colour:</span> {lookupResult.data.colour}</div>}
+                        {lookupResult.data.body_type && <div><span className="font-medium">Body Type:</span> {lookupResult.data.body_type}</div>}
+                        {lookupResult.data.fuel_type && <div><span className="font-medium">Fuel:</span> {lookupResult.data.fuel_type}</div>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </AlertBanner>
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* ABCD Lookup Test (Carjam only) */}
+      {name === 'carjam' && (
+        <div className="mt-8 pt-6 border-t border-gray-200">
+          <h3 className="text-md font-semibold text-gray-900 mb-4">Test ABCD Lookup (Lower Cost)</h3>
+          <p className="text-sm text-gray-600 mb-4">
+            ABCD (Absolute Basic Car Details) is a lower-cost API option that provides basic vehicle information.
+            This does NOT cache results or increment usage counters - it's for testing only.
+          </p>
+          
+          <div className="mb-4">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={abcdUseMvr}
+                onChange={(e) => setAbcdUseMvr(e.target.checked)}
+                className="rounded border-gray-300"
+              />
+              <span>Use Motor Vehicle Register (MVR) - adds 17c NZD per lookup</span>
+            </label>
+            <p className="text-xs text-gray-500 mt-1 ml-6">
+              If unchecked, only uses CarJam's internal data. If checked, fetches from MVR if data is missing.
+            </p>
+          </div>
+          
+          <div className="flex gap-3 items-end">
+            <div className="flex-1">
+              <Input
+                label="Registration Number"
+                value={abcdRego}
+                onChange={(e) => setAbcdRego(e.target.value.toUpperCase())}
+                placeholder="ABC123"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleAbcdLookup()
+                  }
+                }}
+              />
+            </div>
+            <Button
+              type="button"
+              onClick={handleAbcdLookup}
+              loading={abcdTesting}
+              disabled={!abcdRego.trim()}
+            >
+              ABCD Lookup
+            </Button>
+          </div>
+          
+          {abcdResult && (
+            <div className="mt-4">
+              <AlertBanner
+                variant={abcdResult.success ? 'success' : abcdResult.retry_suggested ? 'info' : 'error'}
+                title={abcdResult.success ? 'ABCD Lookup Successful' : abcdResult.retry_suggested ? 'Data Being Fetched' : 'ABCD Lookup Failed'}
+              >
+                <div className="space-y-2">
+                  <p>{abcdResult.message}</p>
+                  {abcdResult.retry_suggested && (
+                    <p className="text-sm mt-2">
+                      ℹ️ The ABCD API is asynchronously fetching data from Carjam. 
+                      This is normal for first-time lookups. Please wait a few seconds and try again.
+                    </p>
+                  )}
+                  {abcdResult.success && abcdResult.data && (
+                    <div className="mt-3 p-3 bg-white rounded border border-gray-200">
+                      <div className="mb-2 text-xs text-gray-500">
+                        Source: <span className="font-medium text-blue-600">Carjam ABCD API</span>
+                        {abcdResult.mvr_used !== undefined && (
+                          <span className="ml-2">
+                            | MVR: <span className={abcdResult.mvr_used ? 'text-orange-600' : 'text-green-600'}>
+                              {abcdResult.mvr_used ? 'Enabled (+17c)' : 'Disabled'}
+                            </span>
+                          </span>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div><span className="font-medium">Registration:</span> {abcdResult.data.rego}</div>
+                        {abcdResult.data.vin && <div><span className="font-medium">VIN:</span> {abcdResult.data.vin}</div>}
+                        {abcdResult.data.make && <div><span className="font-medium">Make:</span> {abcdResult.data.make}</div>}
+                        {abcdResult.data.model && <div><span className="font-medium">Model:</span> {abcdResult.data.model}</div>}
+                        {abcdResult.data.submodel && <div><span className="font-medium">Submodel:</span> {abcdResult.data.submodel}</div>}
+                        {abcdResult.data.year && <div><span className="font-medium">Year:</span> {abcdResult.data.year}</div>}
+                        {abcdResult.data.colour && <div><span className="font-medium">Colour:</span> {abcdResult.data.colour}</div>}
+                        {abcdResult.data.body_type && <div><span className="font-medium">Body Type:</span> {abcdResult.data.body_type}</div>}
+                        {abcdResult.data.reported_stolen && <div><span className="font-medium">Stolen:</span> {abcdResult.data.reported_stolen === 'Y' ? '⚠️ Yes' : '✓ No'}</div>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </AlertBanner>
+            </div>
+          )}
+        </div>
+      )}
     </form>
   )
 }

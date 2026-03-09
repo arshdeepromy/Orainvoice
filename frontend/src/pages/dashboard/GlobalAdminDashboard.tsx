@@ -7,13 +7,13 @@ import { AlertBanner } from '@/components/ui/AlertBanner'
 import { DataTable, type Column } from '@/components/ui/DataTable'
 
 interface GlobalAdminData {
-  platform_mrr: number
-  active_orgs: number
-  total_orgs: number
-  churn_rate: number
-  error_counts: ErrorCounts
-  integration_health: IntegrationStatus[]
-  billing_issues: BillingIssue[]
+  platform_mrr?: number
+  active_orgs?: number
+  total_orgs?: number
+  churn_rate?: number
+  error_counts?: ErrorCounts
+  integration_health?: IntegrationStatus[]
+  billing_issues?: BillingIssue[]
 }
 
 interface ErrorCounts {
@@ -132,35 +132,40 @@ export function GlobalAdminDashboard() {
   if (isLoading) return <Spinner size="lg" label="Loading admin dashboard" className="py-20" />
   if (!data) return null
 
-  const totalErrors = data.error_counts.info + data.error_counts.warning + data.error_counts.error + data.error_counts.critical
+  const errorCounts = data.error_counts || { info: 0, warning: 0, error: 0, critical: 0 }
+  const totalErrors = errorCounts.info + errorCounts.warning + errorCounts.error + errorCounts.critical
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold text-gray-900">Platform Dashboard</h1>
 
-      {data.error_counts.critical > 0 && (
+      {errorCounts.critical > 0 && (
         <AlertBanner variant="error" title="Critical Errors">
-          {data.error_counts.critical} critical error
-          {data.error_counts.critical !== 1 ? 's' : ''} detected. Review the error log immediately.
+          {errorCounts.critical} critical error
+          {errorCounts.critical !== 1 ? 's' : ''} detected. Review the error log immediately.
         </AlertBanner>
       )}
 
       {/* KPI cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard
-          label="Platform MRR"
-          value={`$${data.platform_mrr.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`}
-        />
-        <KpiCard
-          label="Active Organisations"
-          value={data.active_orgs}
-          subtitle={data.total_orgs > data.active_orgs ? `${data.total_orgs} total` : undefined}
-        />
+        {data.platform_mrr != null && (
+          <KpiCard
+            label="Platform MRR"
+            value={`$${data.platform_mrr.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`}
+          />
+        )}
+        {data.active_orgs != null && (
+          <KpiCard
+            label="Active Organisations"
+            value={data.active_orgs}
+            subtitle={data.total_orgs && data.total_orgs > data.active_orgs ? `${data.total_orgs} total` : undefined}
+          />
+        )}
         <KpiCard label="Total Errors (24h)" value={totalErrors} variant={totalErrors > 0 ? 'warning' : undefined} />
-        <KpiCard label="Billing Issues" value={data.billing_issues.length} variant={data.billing_issues.length > 0 ? 'error' : undefined} />
+        <KpiCard label="Billing Issues" value={data.billing_issues?.length || 0} variant={(data.billing_issues?.length || 0) > 0 ? 'error' : undefined} />
       </div>
 
-      {data.churn_rate > 0 && (
+      {data.churn_rate != null && data.churn_rate > 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           30-day churn rate: <span className="font-semibold">{data.churn_rate}%</span>
         </div>
@@ -173,10 +178,10 @@ export function GlobalAdminDashboard() {
           <Link to="/admin/errors" className="text-sm text-blue-600 hover:underline">View error log →</Link>
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <SeverityCard label="Critical" count={data.error_counts.critical} variant="error" />
-          <SeverityCard label="Error" count={data.error_counts.error} variant="error" />
-          <SeverityCard label="Warning" count={data.error_counts.warning} variant="warning" />
-          <SeverityCard label="Info" count={data.error_counts.info} variant="info" />
+          <SeverityCard label="Critical" count={errorCounts.critical} variant="error" />
+          <SeverityCard label="Error" count={errorCounts.error} variant="error" />
+          <SeverityCard label="Warning" count={errorCounts.warning} variant="warning" />
+          <SeverityCard label="Info" count={errorCounts.info} variant="info" />
         </div>
       </section>
 
@@ -186,7 +191,7 @@ export function GlobalAdminDashboard() {
           <h2 className="text-lg font-medium text-gray-900">Integration Health</h2>
           <Link to="/admin/integrations" className="text-sm text-blue-600 hover:underline">Manage integrations →</Link>
         </div>
-        {data.integration_health.length === 0 ? (
+        {!data.integration_health || data.integration_health.length === 0 ? (
           <p className="text-sm text-gray-500">No integrations configured</p>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">

@@ -27,7 +27,7 @@ function defaultRange(): DateRange {
   return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
 }
 
-const fmt = (v: number) => `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`
+const fmt = (v: number | undefined) => v != null ? `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}` : '$0.00'
 
 /**
  * Outstanding invoices report with one-click payment reminder.
@@ -113,7 +113,7 @@ export default function OutstandingInvoices() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {data.invoices.length === 0 ? (
+                {!data.invoices || data.invoices.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="px-4 py-12 text-center text-sm text-gray-500">
                       No outstanding invoices for this period.

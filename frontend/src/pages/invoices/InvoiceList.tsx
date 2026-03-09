@@ -120,10 +120,18 @@ export default function InvoiceList() {
         params,
         signal: controller.signal,
       })
-      setData(res.data)
+      // Ensure we have a valid response structure
+      if (res.data && res.data.items) {
+        setData(res.data)
+      } else {
+        // Fallback to empty data structure
+        setData({ items: [], total: 0, page: pg, page_size: PAGE_SIZE, total_pages: 0 })
+      }
     } catch (err: unknown) {
       if ((err as { name?: string })?.name === 'CanceledError') return
       setError('Failed to load invoices. Please try again.')
+      // Set empty data on error
+      setData({ items: [], total: 0, page: pg, page_size: PAGE_SIZE, total_pages: 0 })
     } finally {
       setLoading(false)
     }
@@ -156,7 +164,7 @@ export default function InvoiceList() {
   }
 
   const toggleSelectAll = () => {
-    if (!data) return
+    if (!data || !data.items) return
     if (selectedIds.size === data.items.length) {
       setSelectedIds(new Set())
     } else {
@@ -167,7 +175,7 @@ export default function InvoiceList() {
   const clearSelection = () => setSelectedIds(new Set())
 
   const hasSelection = selectedIds.size > 0
-  const allSelected = data ? selectedIds.size === data.items.length && data.items.length > 0 : false
+  const allSelected = data && data.items ? selectedIds.size === data.items.length && data.items.length > 0 : false
 
   /* --- Batch actions --- */
   const handleBatchMarkPaid = async () => {
@@ -399,7 +407,7 @@ export default function InvoiceList() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {data.items.length === 0 ? (
+                {!data || !data.items || data.items.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-4 py-12 text-center text-sm text-gray-500">
                       {hasFilters ? 'No invoices match your filters.' : 'No invoices yet. Create your first invoice to get started.'}

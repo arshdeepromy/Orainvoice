@@ -102,12 +102,20 @@ export default function StorageUsage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {data.breakdown.map((b) => (
-                  <tr key={b.category} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-sm text-gray-900">{b.category}</td>
-                    <td className="px-4 py-3 text-sm text-gray-700 text-right">{formatBytes(b.bytes)}</td>
+                {!data.breakdown || data.breakdown.length === 0 ? (
+                  <tr>
+                    <td colSpan={2} className="px-4 py-12 text-center text-sm text-gray-500">
+                      No storage data available.
+                    </td>
                   </tr>
-                ))}
+                ) : (
+                  data.breakdown.map((b) => (
+                    <tr key={b.category} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 text-sm text-gray-900">{b.category}</td>
+                      <td className="px-4 py-3 text-sm text-gray-700 text-right">{formatBytes(b.bytes)}</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

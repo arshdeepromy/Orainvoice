@@ -156,9 +156,11 @@ async def authenticate_user(
         )
 
     # 5. Issue JWT pair
+    # Global admins should not have org_id in their JWT (they access all orgs)
+    token_org_id = None if user.role == "global_admin" else user.org_id
     access_token = create_access_token(
         user_id=user.id,
-        org_id=user.org_id,
+        org_id=token_org_id,
         role=user.role,
         email=user.email,
     )
@@ -583,9 +585,11 @@ async def _do_rotation(
     user = user_result.scalar_one()
 
     # Issue new tokens
+    # Global admins should not have org_id in their JWT (they access all orgs)
+    token_org_id = None if user.role == "global_admin" else user.org_id
     access_token = create_access_token(
         user_id=user.id,
-        org_id=user.org_id,
+        org_id=token_org_id,
         role=user.role,
         email=user.email,
     )
@@ -712,9 +716,11 @@ async def authenticate_google(
         )
 
     # Issue JWT pair
+    # Global admins should not have org_id in their JWT (they access all orgs)
+    token_org_id = None if user.role == "global_admin" else user.org_id
     access_token = create_access_token(
         user_id=user.id,
-        org_id=user.org_id,
+        org_id=token_org_id,
         role=user.role,
         email=user.email,
     )
@@ -1087,9 +1093,11 @@ async def verify_passkey_login(
     user.passkey_credentials = updated_creds
 
     # Passkey satisfies MFA — issue tokens directly (Requirement 2.9)
+    # Global admins should not have org_id in their JWT (they access all orgs)
+    token_org_id = None if user.role == "global_admin" else user.org_id
     access_token = create_access_token(
         user_id=user.id,
-        org_id=user.org_id,
+        org_id=token_org_id,
         role=user.role,
         email=user.email,
     )
@@ -1667,9 +1675,11 @@ async def verify_email_and_set_password(
     await redis_pool.delete(redis_key)
 
     # 6. Issue JWT pair (user is now logged in)
+    # Global admins should not have org_id in their JWT (they access all orgs)
+    token_org_id = None if user.role == "global_admin" else user.org_id
     access_token = create_access_token(
         user_id=user.id,
-        org_id=user.org_id,
+        org_id=token_org_id,
         role=user.role,
         email=user.email,
     )

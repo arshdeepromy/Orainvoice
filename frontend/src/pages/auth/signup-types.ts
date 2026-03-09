@@ -4,7 +4,9 @@ export interface SignupFormData {
   admin_email: string
   admin_first_name: string
   admin_last_name: string
+  password: string
   plan_id: string
+  captcha_code: string
 }
 
 // Response from POST /api/v1/auth/signup matching PublicSignupResponse
@@ -25,6 +27,8 @@ export interface PublicPlan {
   id: string
   name: string
   monthly_price_nzd: number
+  trial_duration: number
+  trial_duration_unit: string
 }
 
 // Response from GET /api/v1/auth/plans

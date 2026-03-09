@@ -51,14 +51,14 @@ export function Modal({ open, onClose, title, children, className = '' }: ModalP
   return (
     <dialog
       ref={dialogRef}
-      className={`rounded-lg bg-white p-0 shadow-xl backdrop:bg-black/50
-        w-full max-h-[90vh] flex flex-col ${className || 'max-w-lg'}`}
+      className={`fixed top-[5vh] left-1/2 -translate-x-1/2 rounded-lg bg-white p-0 shadow-2xl backdrop:bg-black/50
+        w-full max-h-[90vh] overflow-hidden ${className || 'max-w-lg'}`}
       aria-labelledby="modal-title"
       onClick={(e) => {
         if (e.target === dialogRef.current) onClose()
       }}
     >
-      <div className="flex items-center justify-between px-6 pt-6 pb-4 shrink-0">
+      <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-white">
         <h2 id="modal-title" className="text-lg font-semibold text-gray-900">
           {title}
         </h2>
@@ -71,7 +71,7 @@ export function Modal({ open, onClose, title, children, className = '' }: ModalP
           <span aria-hidden="true" className="text-xl leading-none">×</span>
         </button>
       </div>
-      <div className="px-6 pb-6 overflow-y-auto flex-1 min-h-0">
+      <div className="px-6 py-4 overflow-y-auto max-h-[calc(90vh-72px)] bg-white">
         {children}
       </div>
     </dialog>

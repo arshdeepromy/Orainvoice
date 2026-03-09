@@ -6,7 +6,7 @@ import ExportButtons from './ExportButtons'
 
 type SubReport = 'job_profitability' | 'jobs_by_status' | 'avg_completion_time' | 'staff_utilisation'
 
-const fmt = (v: number) => v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })
+const fmt = (v: number | undefined) => v != null ? v.toLocaleString('en-NZ', { minimumFractionDigits: 2 }) : '0.00'
 
 function defaultRange(): DateRange {
   const now = new Date()

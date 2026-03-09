@@ -30,6 +30,7 @@ export interface Plan {
   user_seats: number
   storage_quota_gb: number
   carjam_lookups_included: number
+  per_carjam_lookup_cost_nzd: number
   enabled_modules: string[]
   is_public: boolean
   is_archived: boolean
@@ -237,6 +238,7 @@ interface PlanFormData {
   user_seats: number
   storage_quota_gb: number
   carjam_lookups_included: number
+  per_carjam_lookup_cost_nzd: number
   enabled_modules: string[]
   is_public: boolean
   storage_tier_pricing: StorageTier[]
@@ -254,6 +256,7 @@ const EMPTY_FORM: PlanFormData = {
   user_seats: 1,
   storage_quota_gb: 5,
   carjam_lookups_included: 0,
+  per_carjam_lookup_cost_nzd: 0,
   enabled_modules: [],
   is_public: true,
   storage_tier_pricing: [],
@@ -286,6 +289,7 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
           user_seats: editPlan.user_seats,
           storage_quota_gb: editPlan.storage_quota_gb,
           carjam_lookups_included: editPlan.carjam_lookups_included,
+          per_carjam_lookup_cost_nzd: editPlan.per_carjam_lookup_cost_nzd ?? 0,
           enabled_modules: editPlan.enabled_modules,
           is_public: editPlan.is_public,
           storage_tier_pricing: editPlan.storage_tier_pricing ?? [],
@@ -364,7 +368,7 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
     <Modal open={open} onClose={onClose} title={editPlan ? 'Edit plan' : 'Create plan'} className="max-w-2xl">
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Tabs */}
-        <div className="flex border-b border-gray-200" role="tablist" aria-label="Plan form tabs">
+        <div className="flex border-b border-gray-200 -mx-6 px-6" role="tablist" aria-label="Plan form tabs">
           {tabs.map(t => (
             <button
               key={t.key}
@@ -386,8 +390,8 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
         {/* General tab */}
         {activeTab === 'general' && (
           <div className="space-y-4" role="tabpanel" aria-label="General settings">
-            <Input label="Plan name" value={form.name} onChange={e => set('name', e.target.value)} error={errors.name} />
-            <div className="grid grid-cols-2 gap-3">
+              <Input label="Plan name" value={form.name} onChange={e => set('name', e.target.value)} error={errors.name} />
+              <div className="grid grid-cols-2 gap-3">
               <Input label="Monthly price (NZD)" type="number" step="0.01" value={String(form.monthly_price_nzd)} onChange={e => set('monthly_price_nzd', Number(e.target.value))} error={errors.monthly_price_nzd} />
               <Input label="User seats" type="number" value={String(form.user_seats)} onChange={e => set('user_seats', Number(e.target.value))} error={errors.user_seats} />
               <Input label="Included storage (GB)" type="number" value={String(form.storage_quota_gb)} onChange={e => set('storage_quota_gb', Number(e.target.value))} error={errors.storage_quota_gb} helperText="Default storage included with this plan" />
@@ -409,16 +413,26 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
                 </span>
               </label>
               {form.carjam_lookups_included > 0 && (
-                <div className="ml-6">
-                  <Input
-                    label="Monthly lookup limit"
-                    type="number"
-                    min="1"
-                    value={String(form.carjam_lookups_included)}
-                    onChange={e => set('carjam_lookups_included', Math.max(1, Number(e.target.value)))}
-                    className="w-40"
-                    helperText="Number of Carjam API lookups included per month"
-                  />
+                <div className="ml-6 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      label="Included lookup quota"
+                      type="number"
+                      min="0"
+                      value={String(form.carjam_lookups_included)}
+                      onChange={e => set('carjam_lookups_included', Math.max(0, Number(e.target.value)))}
+                      helperText="Carjam API lookups included per month"
+                    />
+                    <Input
+                      label="Per-lookup cost (NZD)"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={String(form.per_carjam_lookup_cost_nzd)}
+                      onChange={e => set('per_carjam_lookup_cost_nzd', Math.max(0, Number(e.target.value)))}
+                      helperText="Overage cost per lookup beyond quota"
+                    />
+                  </div>
                 </div>
               )}
             </fieldset>
@@ -580,7 +594,7 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
         )}
 
         {/* Actions */}
-        <div className="flex justify-end gap-3 pt-2 border-t border-gray-200">
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={saving}>{editPlan ? 'Update plan' : 'Create plan'}</Button>
         </div>

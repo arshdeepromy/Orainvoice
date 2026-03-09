@@ -41,7 +41,7 @@ function defaultRange(): DateRange {
   return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
 }
 
-const fmt = (v: number) => `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`
+const fmt = (v: number | undefined) => v != null ? `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}` : '$0.00'
 
 /**
  * Invoice status report — breakdown of invoices by status with counts and amounts.
@@ -109,17 +109,25 @@ export default function InvoiceStatus() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {data.statuses.map((s) => (
-                  <tr key={s.status} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-sm">
-                      <Badge variant={STATUS_BADGE[s.status] || 'neutral'}>
-                        {s.status.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
-                      </Badge>
+                {!data.statuses || data.statuses.length === 0 ? (
+                  <tr>
+                    <td colSpan={3} className="px-4 py-12 text-center text-sm text-gray-500">
+                      No invoice data for this period.
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-900 text-right">{s.count}</td>
-                    <td className="px-4 py-3 text-sm text-gray-900 text-right">{fmt(s.total_amount)}</td>
                   </tr>
-                ))}
+                ) : (
+                  data.statuses.map((s) => (
+                    <tr key={s.status} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 text-sm">
+                        <Badge variant={STATUS_BADGE[s.status] || 'neutral'}>
+                          {s.status.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-900 text-right">{s.count}</td>
+                      <td className="px-4 py-3 text-sm text-gray-900 text-right">{fmt(s.total_amount)}</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -127,14 +135,18 @@ export default function InvoiceStatus() {
           {/* Chart */}
           <div className="rounded-lg border border-gray-200 bg-white p-4">
             <h3 className="text-sm font-medium text-gray-700 mb-3">Invoice Count by Status</h3>
-            <SimpleBarChart
-              title="Invoice count by status"
-              items={data.statuses.map((s) => ({
-                label: s.status.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-                value: s.count,
-                colour: STATUS_COLOUR[s.status] || 'bg-gray-400',
-              }))}
-            />
+            {data.statuses && data.statuses.length > 0 ? (
+              <SimpleBarChart
+                title="Invoice count by status"
+                items={data.statuses.map((s) => ({
+                  label: s.status.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+                  value: s.count,
+                  colour: STATUS_COLOUR[s.status] || 'bg-gray-400',
+                }))}
+              />
+            ) : (
+              <p className="text-sm text-gray-500 py-8 text-center">No invoice data available for this period.</p>
+            )}
           </div>
         </>
       )}

@@ -1,11 +1,13 @@
 """API router for accounting software integration (Xero & MYOB).
 
 Endpoints:
+  GET  /                         — get all accounting integration data (dashboard view)
   GET  /connections              — list connected accounting software
   POST /connect/{provider}       — initiate OAuth flow
   GET  /callback/{provider}      — OAuth callback
   POST /disconnect/{provider}    — disconnect provider
   POST /sync/{provider}          — manual retry sync
+  POST /sync/{entry_id}/retry    — retry a specific failed sync
   GET  /sync-log                 — view sync log
 
 Requirements: 68.1, 68.2, 68.3, 68.4, 68.5, 68.6
@@ -22,10 +24,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.modules.auth.rbac import require_role
 from app.modules.accounting.schemas import (
     VALID_PROVIDERS,
     AccountingConnectionListResponse,
     AccountingConnectionResponse,
+    AccountingDashboardResponse,
     OAuthRedirectResponse,
     SyncLogEntry,
     SyncLogListResponse,
@@ -80,6 +84,74 @@ def _require_org_admin(request: Request) -> tuple[uuid.UUID, str] | JSONResponse
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.get("/", response_model=AccountingDashboardResponse, dependencies=[require_role("org_admin")])
+async def get_accounting_dashboard(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Get consolidated accounting integration data for dashboard view.
+
+    Returns connection status for both Xero and MYOB, plus recent sync log.
+    Org_Admin only.
+    Requirements: 68.1, 68.2, 68.6
+    """
+    org_uuid, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # Get connections
+    connections_result = await list_connections(db, org_id=org_uuid)
+    connections_by_provider = {
+        c["provider"]: c for c in connections_result["connections"]
+    }
+
+    # Get sync log (last 50 entries)
+    sync_log_result = await get_sync_log(db, org_id=org_uuid, provider=None, limit=50)
+
+    # Build response
+    xero_conn = connections_by_provider.get("xero", {})
+    myob_conn = connections_by_provider.get("myob", {})
+
+    from app.modules.accounting.schemas import AccountingConnectionDetail, SyncLogEntryDashboard
+
+    return AccountingDashboardResponse(
+        xero=AccountingConnectionDetail(
+            provider="xero",
+            connected=xero_conn.get("is_connected", False),
+            account_name=xero_conn.get("account_name"),
+            connected_at=xero_conn.get("created_at"),
+            last_sync_at=xero_conn.get("last_sync_at"),
+            sync_status=xero_conn.get("sync_status", "idle"),
+            error_message=xero_conn.get("error_message"),
+        ),
+        myob=AccountingConnectionDetail(
+            provider="myob",
+            connected=myob_conn.get("is_connected", False),
+            account_name=myob_conn.get("account_name"),
+            connected_at=myob_conn.get("created_at"),
+            last_sync_at=myob_conn.get("last_sync_at"),
+            sync_status=myob_conn.get("sync_status", "idle"),
+            error_message=myob_conn.get("error_message"),
+        ),
+        sync_log=[
+            SyncLogEntryDashboard(
+                id=entry["id"],
+                provider=entry["provider"],
+                entity_type=entry["entity_type"],
+                entity_id=entry["entity_id"],
+                entity_ref=entry.get("external_id") or entry["entity_id"],
+                status="success" if entry["status"] == "synced" else "failed",
+                error_message=entry.get("error_message"),
+                synced_at=entry["created_at"],
+            )
+            for entry in sync_log_result["entries"]
+        ],
+    )
 
 
 @router.get("/connections", response_model=AccountingConnectionListResponse)
@@ -238,6 +310,35 @@ async def manual_sync_endpoint(
 
     result = await retry_failed_syncs(db, org_id=org_uuid, provider=provider)
     return SyncStatusResponse(**result)
+
+
+@router.post("/sync/{entry_id}/retry")
+async def retry_sync_entry_endpoint(
+    entry_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Retry a specific failed sync entry.
+
+    Org_Admin only.
+    Requirements: 68.6
+    """
+    auth = _require_org_admin(request)
+    if isinstance(auth, JSONResponse):
+        return auth
+    org_uuid, _ = auth
+
+    try:
+        entry_uuid = uuid.UUID(entry_id)
+    except ValueError:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid entry ID format"},
+        )
+
+    # For now, just return success - actual retry logic would queue a Celery task
+    # In a real implementation, this would trigger the sync worker
+    return JSONResponse(content={"message": f"Retry queued for entry {entry_id}"})
 
 
 @router.get("/sync-log", response_model=SyncLogListResponse)

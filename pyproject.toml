@@ -23,6 +23,7 @@ dependencies = [
     "webauthn>=2.0.0",
     "pyotp>=2.9.0",
     "stripe>=7.0.0",
+    "pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]

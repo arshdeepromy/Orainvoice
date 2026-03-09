@@ -1,3 +1,4 @@
+# Multi-platform support: works on both ARM64 (Apple Silicon) and AMD64 (x86_64)
 FROM node:20-alpine
 
 WORKDIR /app

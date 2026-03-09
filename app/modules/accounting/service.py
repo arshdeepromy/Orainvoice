@@ -39,8 +39,11 @@ def _connection_to_dict(conn: AccountingIntegration) -> dict[str, Any]:
         "org_id": str(conn.org_id),
         "provider": conn.provider,
         "is_connected": conn.is_connected,
+        "account_name": None,  # TODO: Store account name from OAuth response
         "last_sync_at": conn.last_sync_at.isoformat() if conn.last_sync_at else None,
         "created_at": conn.created_at.isoformat() if conn.created_at else "",
+        "sync_status": "idle",  # TODO: Track sync status in real-time
+        "error_message": None,  # TODO: Store last sync error
     }
 
 

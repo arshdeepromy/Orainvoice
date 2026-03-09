@@ -212,9 +212,11 @@ export function AccountingIntegrations() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      const res = await apiClient.get<AccountingData>('/org/integrations/accounting')
+      const res = await apiClient.get<AccountingData>('/org/accounting/')
+      console.log('Accounting data response:', res.data)
       setData(res.data)
-    } catch {
+    } catch (err) {
+      console.error('Accounting fetch error:', err)
       addToast('error', 'Failed to load accounting integration settings')
     } finally {
       setLoading(false)
@@ -226,10 +228,10 @@ export function AccountingIntegrations() {
   const handleConnect = async (provider: Provider) => {
     setConnecting(provider)
     try {
-      const { data: oauthData } = await apiClient.post<{ redirect_url: string }>(
-        `/org/integrations/accounting/${provider}/connect`,
+      const { data: oauthData } = await apiClient.post<{ authorization_url: string }>(
+        `/org/accounting/connect/${provider}`,
       )
-      window.location.href = oauthData.redirect_url
+      window.location.href = oauthData.authorization_url
     } catch {
       addToast('error', `Failed to start ${providerLabel(provider)} connection`)
       setConnecting(null)
@@ -238,7 +240,7 @@ export function AccountingIntegrations() {
 
   const handleDisconnect = async (provider: Provider) => {
     try {
-      await apiClient.post(`/org/integrations/accounting/${provider}/disconnect`)
+      await apiClient.post(`/org/accounting/disconnect/${provider}`)
       addToast('success', `${providerLabel(provider)} disconnected`)
       fetchData()
     } catch {
@@ -249,7 +251,7 @@ export function AccountingIntegrations() {
   const handleRetry = async (entry: SyncLogEntry) => {
     setRetrying(entry.id)
     try {
-      await apiClient.post(`/org/integrations/accounting/sync/${entry.id}/retry`)
+      await apiClient.post(`/org/accounting/sync/${entry.id}/retry`)
       addToast('success', `Retry queued for ${entry.entity_ref}`)
       fetchData()
     } catch {

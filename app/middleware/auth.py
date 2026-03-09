@@ -28,6 +28,8 @@ PUBLIC_PATHS: set[str] = {
     "/api/v1/auth/password/reset",
     "/api/v1/auth/signup",
     "/api/v1/auth/plans",
+    "/api/v1/auth/captcha",
+    "/api/v1/auth/verify-captcha",
     "/api/v1/auth/verify-email",
     "/api/v1/payments/stripe/webhook",
     "/api/v2/auth/login",
@@ -38,6 +40,8 @@ PUBLIC_PATHS: set[str] = {
     "/api/v2/auth/password/reset",
     "/api/v2/auth/signup",
     "/api/v2/auth/plans",
+    "/api/v2/auth/captcha",
+    "/api/v2/auth/verify-captcha",
     "/api/v2/auth/verify-email",
     "/api/v2/payments/stripe/webhook",
 }

@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.modules.auth.rbac import require_role
 from app.modules.webhooks_v2.schemas import (
     DeliveryLogResponse,
     WebhookCreate,
@@ -43,7 +44,7 @@ def _get_org_id(request: Request) -> UUID:
 # List & Create
 # ------------------------------------------------------------------
 
-@router.get("", response_model=list[WebhookResponse], summary="List outbound webhooks")
+@router.get("", response_model=list[WebhookResponse], summary="List outbound webhooks", dependencies=[require_role("org_admin")])
 async def list_webhooks(request: Request, db: AsyncSession = Depends(get_db_session)):
     org_id = _get_org_id(request)
     svc = WebhookService(db)

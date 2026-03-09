@@ -50,13 +50,18 @@ export function BranchManagement() {
     setLoading(true)
     try {
       const [branchRes, userRes] = await Promise.all([
-        apiClient.get<Branch[]>('/org/branches'),
-        apiClient.get<OrgUser[]>('/org/users'),
+        apiClient.get('/org/branches'),
+        apiClient.get('/org/users'),
       ])
-      setBranches(branchRes.data)
-      setUsers(userRes.data)
+      // Handle both array and wrapped response formats
+      const branchData = Array.isArray(branchRes.data) ? branchRes.data : (branchRes.data?.branches || [])
+      const userData = Array.isArray(userRes.data) ? userRes.data : (userRes.data?.users || [])
+      setBranches(branchData)
+      setUsers(userData)
     } catch {
       addToast('error', 'Failed to load branches')
+      setBranches([])
+      setUsers([])
     } finally {
       setLoading(false)
     }
@@ -126,7 +131,7 @@ export function BranchManagement() {
     },
   ]
 
-  const assignedBranch = branches.find((b) => b.id === assignBranchId)
+  const assignedBranch = assignBranchId ? branches.find((b) => b.id === assignBranchId) : null
 
   return (
     <div>

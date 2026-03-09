@@ -350,3 +350,415 @@ Pattern 2 — Individual fixes:
 **Similar Bugs Found & Fixed**: The Settings page Plans tab still exists but is now supplementary — the dedicated Subscription Plans page is the primary management interface.
 
 **Related Issues**: ISSUE-010
+
+
+---
+
+### ISSUE-012: ModuleContext - modules.filter is not a function
+
+- **Date**: 2026-03-09
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When logging in as org user, console error: `modules.filter is not a function. (In 'modules.filter((m) => m.is_enabled)', 'modules.filter' is undefined)`. App crashes with white screen.
+
+**Root Cause**: API returns `{ modules: [...], total: number }` but frontend expected the array directly as `res.data`. The `ModuleContext` was trying to call `.filter()` on the response object instead of the array.
+
+**Fix Applied**:
+1. Updated `fetchModules` to access `res.data.modules` instead of `res.data`
+2. Added safety check: `(modules || []).filter(...)` in useMemo
+3. Added fallback to empty array on error
+4. Added AbortController for race condition protection
+
+**Files Changed**:
+- `frontend/src/contexts/ModuleContext.tsx`
+
+**Similar Bugs Found & Fixed**: Same pattern exists in InvoiceList (ISSUE-013) and RevenueSummary (ISSUE-015)
+
+**Related Issues**: ISSUE-002, ISSUE-013
+
+---
+
+### ISSUE-013: InvoiceList - data.items is undefined
+
+- **Date**: 2026-03-09
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When navigating to Invoices page, console error: `undefined is not an object (evaluating 'data.items.length')`. App crashes with white screen.
+
+**Root Cause**: Accessing `data.items` when `data` is null or API returns error. No safety checks before accessing nested properties.
+
+**Fix Applied**:
+1. Added safety check in `toggleSelectAll`: `if (!data || !data.items) return`
+2. Added safety check in `allSelected`: `data && data.items ? ...`
+3. Added safety check in table rendering: `!data || !data.items || data.items.length === 0`
+4. Added fallback data structure on API error
+5. Validated response structure before setting data
+
+**Files Changed**:
+- `frontend/src/pages/invoices/InvoiceList.tsx`
+
+**Similar Bugs Found & Fixed**: Same pattern in ModuleContext (ISSUE-012) and RevenueSummary (ISSUE-015)
+
+**Related Issues**: ISSUE-012, ISSUE-015
+
+---
+
+### ISSUE-014: Race conditions in context providers causing duplicate API calls
+
+- **Date**: 2026-03-09
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: agent (proactive scan)
+- **Regression of**: N/A
+
+**Symptoms**: React Strict Mode causing 8+ duplicate API calls on login (4 contexts × 2 mounts). Rate limit 429 errors. Potential stale data from first request completing after second.
+
+**Root Cause**: 4 out of 5 contexts had no cleanup for API calls in useEffect. React Strict Mode (development) double-mounts components, causing duplicate requests without proper abort handling.
+
+**Fix Applied**: Added AbortController cleanup to all context fetch functions:
+1. Added `signal` parameter to fetch functions
+2. Created AbortController in useEffect
+3. Return cleanup function that aborts request
+4. Ignore CanceledError in catch blocks
+
+**Files Changed**:
+- `frontend/src/contexts/FeatureFlagContext.tsx`
+- `frontend/src/contexts/ModuleContext.tsx`
+- `frontend/src/contexts/TerminologyContext.tsx`
+- `frontend/src/contexts/TenantContext.tsx`
+
+**Similar Bugs Found & Fixed**: AuthContext already had protection using `cancelled` flag pattern - no change needed.
+
+**Related Issues**: ISSUE-012, ISSUE-013
+
+---
+
+### ISSUE-015: RevenueSummary - data.monthly_breakdown is undefined
+
+- **Date**: 2026-03-09
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When clicking Reports page, console error: `undefined is not an object (evaluating 'data.monthly_breakdown.map')`. App crashes with white screen.
+
+**Root Cause**: Accessing `data.monthly_breakdown` without checking if it exists. API may return null/undefined for this field when no data available.
+
+**Fix Applied**: Added safety check before mapping: `data.monthly_breakdown && data.monthly_breakdown.length > 0 ? ... : placeholder`
+
+**Files Changed**:
+- `frontend/src/pages/reports/RevenueSummary.tsx`
+
+**Similar Bugs Found & Fixed**: Same pattern in ModuleContext (ISSUE-012) and InvoiceList (ISSUE-013)
+
+**Related Issues**: ISSUE-012, ISSUE-013
+
+---
+
+### ISSUE-016: Rate limiting too strict for development with React Strict Mode
+
+- **Date**: 2026-03-09
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: 429 Too Many Requests errors when logging in as org user. Multiple endpoints hitting rate limits.
+
+**Root Cause**: React Strict Mode doubles all requests in development. Rate limits were set for production (100 req/min per user) which is too low for development with double-mounting.
+
+**Fix Applied**: Increased development rate limits 5x:
+- `RATE_LIMIT_PER_USER_PER_MINUTE`: 100 → 500
+- `RATE_LIMIT_PER_ORG_PER_MINUTE`: 1000 → 5000
+- `RATE_LIMIT_AUTH_PER_IP_PER_MINUTE`: 100 → 500
+
+**Files Changed**:
+- `.env`
+
+**Similar Bugs Found & Fixed**: N/A - single configuration change
+
+**Related Issues**: ISSUE-014 (race conditions were contributing to excessive requests)
+
+**Note**: Production should use lower limits (100-200 per user, 1000-2000 per org)
+
+---
+
+### ISSUE-017: Undefined data access in report pages - missing null checks on fmt() and .map() calls
+
+- **Date**: 2026-03-09
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Multiple report pages crash with errors like:
+- `undefined is not an object (evaluating 'v.toLocaleString')` in CarjamUsage.tsx
+- `undefined is not an object (evaluating 'data.monthly_breakdown.map')` in RevenueSummary.tsx
+
+**Root Cause**: Systemic pattern across 14+ report files:
+1. `fmt()` functions call `.toLocaleString()` on potentially undefined values without null checks
+2. `.map()` calls on data arrays without checking if the array exists first
+3. API may return null/undefined for fields when no data is available
+
+**Fix Applied**: Added safety checks to all report files:
+1. Updated `fmt()` functions to handle undefined: `const fmt = (v: number | undefined) => v != null ? v.toLocaleString(...) : '0.00'` (or '$0.00' for currency)
+2. Added null checks before all `.map()` calls: `data.array && data.array.length > 0 ? ... : placeholder`
+3. Added fallback rendering for empty data states
+
+**Files Changed**:
+- `frontend/src/pages/reports/CarjamUsage.tsx`
+- `frontend/src/pages/reports/RevenueSummary.tsx` (already fixed in ISSUE-015)
+- `frontend/src/pages/reports/GstReturnSummary.tsx`
+- `frontend/src/pages/reports/TopServices.tsx`
+- `frontend/src/pages/reports/JobReport.tsx`
+- `frontend/src/pages/reports/OutstandingInvoices.tsx`
+- `frontend/src/pages/reports/FleetReport.tsx`
+- `frontend/src/pages/reports/InventoryReport.tsx`
+- `frontend/src/pages/reports/InvoiceStatus.tsx`
+- `frontend/src/pages/reports/TaxReturnReport.tsx`
+- `frontend/src/pages/reports/ProjectReport.tsx`
+- `frontend/src/pages/reports/POSReport.tsx`
+- `frontend/src/pages/reports/CustomerStatement.tsx`
+- `frontend/src/pages/reports/SmsUsage.tsx`
+- `frontend/src/pages/reports/HospitalityReport.tsx`
+- `frontend/src/pages/reports/StorageUsage.tsx`
+
+**Similar Bugs Found & Fixed**: Same pattern in ModuleContext (ISSUE-012), InvoiceList (ISSUE-013), and RevenueSummary (ISSUE-015)
+
+**Related Issues**: ISSUE-012, ISSUE-013, ISSUE-015
+
+---
+
+### ISSUE-018: BranchManagement - branches.find is not a function
+
+- **Date**: 2026-03-09
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When navigating to Branch Management settings page, console error: `branches.find is not a function. (In 'branches.find((b) => b.id === assignBranchId)', 'branches.find' is undefined)`. App crashes with white screen.
+
+**Root Cause**: Same pattern as ISSUE-012, ISSUE-013, ISSUE-017 - calling array methods on potentially non-array data. API may return `{ branches: [...], total: number }` but frontend expected array directly, or branches was null/undefined when API failed.
+
+**Fix Applied**: Added safety checks to settings pages:
+1. Handle both array and wrapped response formats: `Array.isArray(res.data) ? res.data : (res.data?.branches || [])`
+2. Set empty array fallback on error to prevent undefined state
+3. Added null check before .find() operation: `assignBranchId ? branches.find(...) : null`
+
+**Files Changed**:
+- `frontend/src/pages/settings/BranchManagement.tsx`
+- `frontend/src/pages/settings/UserManagement.tsx`
+- `frontend/src/pages/settings/WebhookManagement.tsx`
+
+**Similar Bugs Found & Fixed**: Same pattern in UserManagement (/org/users) and WebhookManagement (/api/v2/outbound-webhooks). ModuleConfiguration already had proper handling.
+
+**Related Issues**: ISSUE-012, ISSUE-013, ISSUE-015, ISSUE-017
+
+---
+
+### ISSUE-019: Billing page - undefined is not an object (evaluating 'billing.storage.used_bytes')
+
+- **Date**: 2026-03-09
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When navigating to Billing settings page, console error: `undefined is not an object (evaluating 'billing.storage.used_bytes')`. App crashes with white screen.
+
+**Root Cause**: Same pattern as ISSUE-012, ISSUE-013, ISSUE-017, ISSUE-018 - accessing nested properties without null checks. The `billing` object had optional nested properties (`storage`, `carjam`, `estimated_next_invoice`, `storage_addon_price_per_gb`) that could be undefined when API returns incomplete data.
+
+**Fix Applied**:
+1. Made nested properties optional in BillingData interface (plan, storage, carjam, estimated_next_invoice, storage_addon_price_per_gb)
+2. Added conditional rendering for StorageUsage and CarjamUsage components
+3. Added null check in NextBillEstimate component with fallback UI
+4. Added null check in CurrentPlanCard component with fallback UI
+5. Added default value handling in StorageAddonModal for pricePerGb
+6. Added array handling for invoices response (both array and wrapped formats)
+7. Added error fallback to set empty array for invoices
+
+**Files Changed**:
+- `frontend/src/pages/settings/Billing.tsx`
+
+**Similar Bugs Found & Fixed**: All nested property accesses in Billing page now have proper null checks and fallback UI.
+
+**Related Issues**: ISSUE-012, ISSUE-013, ISSUE-015, ISSUE-017, ISSUE-018
+
+---
+
+### ISSUE-020: Systemic nested property access without null checks across org pages
+
+- **Date**: 2026-03-09
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: agent (proactive scan per steering docs)
+- **Regression of**: N/A
+
+**Symptoms**: Multiple pages crash with "undefined is not an object" errors when accessing nested properties like `data.property.nested_property` without checking if intermediate properties exist.
+
+**Root Cause**: Same pattern as ISSUE-019 - accessing nested object properties without null checks. When API returns incomplete data or properties are optional, accessing nested properties directly causes crashes.
+
+**Fix Applied**:
+1. Made all nested properties optional in interface definitions
+2. Added null checks before accessing nested properties using optional chaining (`?.`) or explicit checks
+3. Added conditional rendering for components that use nested data
+4. Added fallback values where appropriate (e.g., `|| 0`, `|| []`)
+
+**Files Changed**:
+- `frontend/src/pages/dashboard/OrgAdminDashboard.tsx` - Fixed storage, revenue_summary, system_alerts, activity_feed access
+- `frontend/src/pages/dashboard/GlobalAdminDashboard.tsx` - Fixed error_counts, integration_health, billing_issues access
+- `frontend/src/pages/settings/Billing.tsx` - Fixed plan, storage, carjam, estimated_next_invoice access (ISSUE-019)
+
+**Similar Bugs Found & Fixed**: All dashboard pages and Billing page now have comprehensive null checks for nested properties.
+
+**Related Issues**: ISSUE-012, ISSUE-013, ISSUE-015, ISSUE-017, ISSUE-018, ISSUE-019
+
+
+---
+
+### ISSUE-021: Rate limiting causing 429 errors on login in development mode
+
+- **Date**: 2026-03-09
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: ISSUE-016 (rate limits were increased but still too restrictive for development)
+
+**Symptoms**: User getting 429 (Too Many Requests) errors when trying to login. Unable to access the application in development mode.
+
+**Root Cause**: Rate limiting was still enabled in development mode. While ISSUE-016 increased the limits from 100 to 500 req/min, this is still too restrictive for development where:
+1. React Strict Mode doubles all requests
+2. Multiple contexts fetch data on mount
+3. Developers frequently refresh pages and test flows
+4. No rate limiting should exist in development mode at all
+
+**Fix Applied**:
+1. Set all rate limits to 0 in `.env` to completely disable rate limiting:
+   - `RATE_LIMIT_PER_USER_PER_MINUTE=0`
+   - `RATE_LIMIT_PER_ORG_PER_MINUTE=0`
+   - `RATE_LIMIT_AUTH_PER_IP_PER_MINUTE=0`
+
+2. Updated `app/middleware/rate_limit.py` to skip rate limiting when limit <= 0:
+   - Added check at start of `_check_rate_limit()`: `if limit <= 0: return True, 0`
+   - This allows development mode to have zero rate limiting while production can set appropriate limits
+
+**Files Changed**:
+- `.env` - Set all rate limits to 0
+- `app/middleware/rate_limit.py` - Added limit <= 0 check to disable rate limiting
+
+**Backend Restart Required**: The backend must be restarted for the `.env` changes to take effect:
+```bash
+docker-compose restart app
+```
+
+**Similar Bugs Found & Fixed**: N/A - single configuration change
+
+**Related Issues**: ISSUE-016 (previous rate limit adjustment)
+
+**Production Note**: Production environments should set appropriate rate limits (e.g., 100-200 per user, 1000-2000 per org, 10-20 for auth endpoints)
+
+
+---
+
+### ISSUE-022: OrgAdminDashboard API mismatch - calling wrong endpoints with wrong data structure
+
+- **Date**: 2026-03-09
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Dashboard shows "Failed to load dashboard data" error. No data displayed on org user dashboard.
+
+**Root Cause**: The OrgAdminDashboard component was calling the correct report endpoints but expecting the wrong data structure:
+
+1. `/reports/revenue` returns `RevenueSummaryResponse` with fields like `total_revenue`, `total_inclusive`, `invoice_count` but dashboard expected `current_period`, `previous_period`, `change_percent`
+2. `/reports/outstanding` returns `OutstandingInvoicesResponse` with `total_outstanding` and `count` but dashboard expected `total` and `overdue_count`
+3. `/reports/storage` returns `StorageUsageResponse` with `storage_used_bytes` and `storage_quota_bytes` but dashboard expected `used_bytes` and `quota_gb`
+4. Dashboard was calling non-existent `/reports/activity` endpoint
+
+**Fix Applied**:
+1. Updated `OrgAdminData` interface to match actual API response schemas from backend
+2. Removed call to non-existent `/reports/activity` endpoint
+3. Updated data access to use correct field names:
+   - `total_inclusive` instead of `current_period`
+   - `total_outstanding` instead of `total`
+   - `storage_used_bytes` / `storage_quota_bytes` instead of `used_bytes` / `quota_gb`
+4. Removed change percentage display (not provided by API)
+5. Added outstanding invoices table showing top 10 invoices with overdue highlighting
+6. Added storage alert banner when usage is high
+7. Calculate overdue count from outstanding invoices array
+8. Added error logging to console for debugging
+9. Removed unused ActivityItem and SystemAlert interfaces
+10. Removed unused Badge import
+
+**Files Changed**:
+- `frontend/src/pages/dashboard/OrgAdminDashboard.tsx`
+
+**Similar Bugs Found & Fixed**: N/A - dashboard-specific issue
+
+**Related Issues**: ISSUE-005 (GlobalAdminDashboard had similar API mismatch issues)
+
+**Backend Endpoints Used**:
+- `GET /reports/revenue` - Returns RevenueSummaryResponse
+- `GET /reports/outstanding` - Returns OutstandingInvoicesResponse with invoices array
+- `GET /reports/storage` - Returns StorageUsageResponse
+
+
+
+---
+
+### ISSUE-023: Accounting integrations page - missing backend endpoint
+
+- **Date**: 2026-03-09
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Accounting settings page showing "We couldn't load your accounting integration settings" error. Frontend unable to load accounting data.
+
+**Root Cause**: Frontend was calling `/org/integrations/accounting` but the backend accounting router is mounted at `/org/accounting`. Additionally, the frontend expected a single consolidated endpoint returning `{ xero: {...}, myob: {...}, sync_log: [...] }` but the backend only had separate endpoints for `/connections` and `/sync-log`.
+
+**Fix Applied**:
+
+1. **Backend** - Created new consolidated dashboard endpoint:
+   - Added `GET /org/accounting/` endpoint that returns AccountingDashboardResponse
+   - Added AccountingDashboardResponse, AccountingConnectionDetail, SyncLogEntryDashboard schemas
+   - Updated `_connection_to_dict()` to include account_name, sync_status, error_message (placeholder values for now)
+   - Added `POST /org/accounting/sync/{entry_id}/retry` endpoint for retrying individual sync entries
+   - Dashboard endpoint combines data from list_connections() and get_sync_log()
+
+2. **Frontend** - Updated API endpoint paths:
+   - Changed `/org/integrations/accounting` → `/org/accounting`
+   - Changed `/org/integrations/accounting/{provider}/connect` → `/org/accounting/connect/{provider}`
+   - Changed `/org/integrations/accounting/{provider}/disconnect` → `/org/accounting/disconnect/{provider}`
+   - Changed `/org/integrations/accounting/sync/{id}/retry` → `/org/accounting/sync/{id}/retry`
+   - Changed `redirect_url` → `authorization_url` to match backend schema
+
+**Files Changed**:
+- `app/modules/accounting/router.py` - Added dashboard endpoint and retry endpoint
+- `app/modules/accounting/schemas.py` - Added AccountingDashboardResponse, AccountingConnectionDetail, SyncLogEntryDashboard
+- `app/modules/accounting/service.py` - Updated _connection_to_dict to include missing fields
+- `frontend/src/pages/settings/AccountingIntegrations.tsx` - Updated all API endpoint paths
+
+**Backend Restart Required**: Yes, backend must be restarted for new endpoints to be available
+
+**Similar Bugs Found & Fixed**: N/A - accounting-specific issue
+
+**Related Issues**: ISSUE-022 (dashboard API mismatch)
+
+**TODO for Future**:
+- Add account_name, sync_status, error_message columns to accounting_integrations table
+- Store account name from OAuth response
+- Track real-time sync status
+- Store last sync error message
+

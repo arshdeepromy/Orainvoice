@@ -81,7 +81,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const fetchSettings = useCallback(async () => {
+  const fetchSettings = useCallback(async (signal?: AbortSignal) => {
     setIsLoading(true)
     setError(null)
     try {
@@ -100,7 +100,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         default_due_days: number
         payment_terms_text: string | null
         terms_and_conditions: string | null
-      }>('/org/settings')
+      }>('/org/settings', { signal })
 
       const data = res.data
       const tenant: TenantSettings = {
@@ -128,8 +128,10 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       setSettings(tenant)
       applyBrandingCssVars(tenant.branding)
-    } catch {
-      setError('Failed to load organisation settings')
+    } catch (err: any) {
+      if (err.name !== 'CanceledError') {
+        setError('Failed to load organisation settings')
+      }
     } finally {
       setIsLoading(false)
     }
@@ -138,7 +140,9 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   // Fetch settings when user authenticates with an org (skip for global_admin without org context)
   useEffect(() => {
     if (isAuthenticated && user?.org_id && user?.role !== 'global_admin') {
-      fetchSettings()
+      const controller = new AbortController()
+      fetchSettings(controller.signal)
+      return () => controller.abort()
     } else {
       setSettings(null)
       clearBrandingCssVars()

@@ -52,15 +52,22 @@ export function ModuleProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const fetchModules = useCallback(async () => {
+  const fetchModules = useCallback(async (signal?: AbortSignal) => {
     setIsLoading(true)
     setError(null)
     try {
       // Modules endpoint is on v2 — use absolute path to bypass apiClient baseURL
-      const res = await apiClient.get<ModuleInfo[]>('/modules', { baseURL: '/api/v2' })
-      setModules(res.data)
-    } catch {
-      setError('Failed to load modules')
+      const res = await apiClient.get<{ modules: ModuleInfo[]; total: number }>('/modules', { 
+        baseURL: '/api/v2',
+        signal 
+      })
+      // API returns { modules: [...], total: number }
+      setModules(Array.isArray(res.data.modules) ? res.data.modules : [])
+    } catch (err: any) {
+      if (err.name !== 'CanceledError') {
+        setError('Failed to load modules')
+      }
+      setModules([]) // Set empty array on error
     } finally {
       setIsLoading(false)
     }
@@ -68,14 +75,16 @@ export function ModuleProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (isAuthenticated && user?.org_id && user?.role !== 'global_admin') {
-      fetchModules()
+      const controller = new AbortController()
+      fetchModules(controller.signal)
+      return () => controller.abort()
     } else {
       setModules([])
     }
   }, [isAuthenticated, user?.org_id, user?.role, fetchModules])
 
   const enabledModules = useMemo(
-    () => modules.filter((m) => m.is_enabled).map((m) => m.slug),
+    () => (modules || []).filter((m) => m.is_enabled).map((m) => m.slug),
     [modules],
   )
 

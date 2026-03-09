@@ -27,7 +27,7 @@ function defaultRange(): DateRange {
   return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
 }
 
-const fmt = (v: number) => `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`
+const fmt = (v: number | undefined) => v != null ? `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}` : '$0.00'
 
 /**
  * Fleet account report — total spend, vehicles serviced, outstanding balance.
@@ -124,7 +124,7 @@ export default function FleetReport() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {data.vehicles.length === 0 ? (
+                {!data.vehicles || data.vehicles.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-4 py-12 text-center text-sm text-gray-500">
                       No vehicles serviced in this period.

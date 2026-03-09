@@ -1,20 +1,59 @@
+# Git
 .git
-.hypothesis
-.kiro
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation
+*.md
+!README.md
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Environment
 .env
 .env.*
-!.env.example
-__pycache__
-*.pyc
-*.pyo
-node_modules
-frontend/node_modules
-frontend/dist
-.vite
-*.egg-info
-dist
-build
-.pytest_cache
-htmlcov
-.coverage
+
+# Logs
 *.log
+
+# Testing
+tests/
+.pytest_cache/
+
+# Node (if any)
+node_modules/
+npm-debug.log
+
+# Alembic (keep migrations)
+# alembic/versions/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
