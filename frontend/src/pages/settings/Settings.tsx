@@ -61,13 +61,13 @@ export function Settings() {
   const ActiveComponent = SECTION_COMPONENTS[active]
 
   return (
-    <div className="flex flex-col md:flex-row gap-6 min-h-[calc(100vh-8rem)]">
+    <div className="flex flex-col md:flex-row gap-6 h-full">
       {/* Sidebar nav */}
       <nav
         aria-label="Settings navigation"
-        className="md:w-56 flex-shrink-0 border-b md:border-b-0 md:border-r border-gray-200"
+        className="md:w-56 flex-shrink-0 border-b md:border-b-0 md:border-r border-gray-200 md:sticky md:top-0 md:self-start"
       >
-        <ul className="flex md:flex-col gap-1 p-2 overflow-x-auto md:overflow-x-visible">
+        <ul className="flex md:flex-col gap-1 p-2 overflow-x-auto md:overflow-x-visible md:overflow-y-auto md:max-h-[calc(100vh-10rem)]">
           {NAV_ITEMS.map((item) => (
             <li key={item.id}>
               <button

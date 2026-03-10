@@ -151,10 +151,10 @@ function ScheduleForm({ initial, onSave, onCancel }: ScheduleFormProps) {
     const timer = setTimeout(async () => {
       setCustomerLoading(true)
       try {
-        const res = await apiClient.get<{ items: CustomerOption[] }>('/customers', {
+        const res = await apiClient.get<{ items?: CustomerOption[]; customers?: CustomerOption[] }>('/customers', {
           params: { search: customerQuery.trim(), page_size: 8 },
         })
-        setCustomerResults(res.data.items ?? [])
+        setCustomerResults(res.data.items ?? res.data.customers ?? [])
         setShowCustomerDropdown(true)
       } catch {
         setCustomerResults([])
@@ -254,7 +254,7 @@ function ScheduleForm({ initial, onSave, onCancel }: ScheduleFormProps) {
               role="listbox"
               aria-label="Customer search results"
             >
-              {customerResults.map((c) => (
+              {customerResults && customerResults.length > 0 && customerResults.map((c) => (
                 <li
                   key={c.id}
                   role="option"

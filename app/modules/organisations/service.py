@@ -173,6 +173,13 @@ SETTINGS_JSONB_KEYS = {
     "primary_colour",
     "secondary_colour",
     "address",
+    "address_unit",
+    "address_street",
+    "address_city",
+    "address_state",
+    "address_country",
+    "address_postcode",
+    "website",
     "phone",
     "email",
     "invoice_header_text",
@@ -189,6 +196,7 @@ SETTINGS_JSONB_KEYS = {
     "payment_terms_text",
     "allow_partial_payments",
     "terms_and_conditions",
+    "sidebar_display_mode",
 }
 
 
@@ -978,3 +986,30 @@ async def public_signup(
         "stripe_setup_intent_client_secret": None,  # No payment during trial
         "signup_token": signup_token,
     }
+
+
+async def list_salespeople(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+) -> list[dict]:
+    """Return a simple list of active users for the salesperson dropdown.
+
+    Returns only id and display name (email) for active users.
+    This endpoint is accessible by both org_admin and salesperson roles.
+    """
+    result = await db.execute(
+        select(User).where(
+            User.org_id == org_id,
+            User.is_active.is_(True),
+        ).order_by(User.email)
+    )
+    users = result.scalars().all()
+
+    return [
+        {
+            "id": str(u.id),
+            "name": u.email,  # Use email as display name
+        }
+        for u in users
+    ]

@@ -59,12 +59,22 @@ class StaffService:
         payload: StaffMemberCreate,
     ) -> StaffMember:
         """Create a new staff member."""
+        first = payload.first_name.strip()
+        last = (payload.last_name or "").strip()
+        full_name = f"{first} {last}".strip()
         staff = StaffMember(
             org_id=org_id,
             user_id=payload.user_id,
-            name=payload.name,
+            name=full_name,
+            first_name=first,
+            last_name=last or None,
             email=payload.email,
             phone=payload.phone,
+            employee_id=payload.employee_id,
+            position=payload.position,
+            reporting_to=payload.reporting_to,
+            shift_start=payload.shift_start,
+            shift_end=payload.shift_end,
             role_type=payload.role_type,
             hourly_rate=payload.hourly_rate,
             overtime_rate=payload.overtime_rate,
@@ -95,6 +105,11 @@ class StaffService:
         update_data = payload.model_dump(exclude_unset=True)
         for field, value in update_data.items():
             setattr(staff, field, value)
+        # Keep legacy 'name' field in sync
+        if "first_name" in update_data or "last_name" in update_data:
+            first = staff.first_name or ""
+            last = staff.last_name or ""
+            staff.name = f"{first} {last}".strip()
         await self.db.flush()
         return staff
 

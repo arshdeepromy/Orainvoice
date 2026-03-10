@@ -20,6 +20,7 @@ export interface OrgBranding {
   address: string | null
   phone: string | null
   email: string | null
+  sidebar_display_mode: 'icon_and_name' | 'icon_only' | 'name_only'
 }
 
 export interface GstSettings {
@@ -105,13 +106,14 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       const data = res.data
       const tenant: TenantSettings = {
         branding: {
-          name: data.name,
+          name: data.org_name || data.name || '',
           logo_url: data.logo_url,
           primary_colour: data.primary_colour || DEFAULT_PRIMARY,
           secondary_colour: data.secondary_colour || DEFAULT_SECONDARY,
           address: data.address,
           phone: data.phone,
           email: data.email,
+          sidebar_display_mode: data.sidebar_display_mode || 'icon_and_name',
         },
         gst: {
           gst_number: data.gst_number,

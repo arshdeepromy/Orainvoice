@@ -3,6 +3,7 @@
 Tables:
 - org_vehicles: manually-entered vehicles per organisation (RLS enabled)
 - customer_vehicles: link table connecting customers to vehicles (RLS enabled)
+- odometer_readings: odometer reading history per global vehicle
 """
 
 from __future__ import annotations
@@ -15,8 +16,10 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
+    Text,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -115,3 +118,45 @@ class CustomerVehicle(Base):
     org_vehicle: Mapped[OrgVehicle | None] = relationship(
         back_populates="customer_vehicles"
     )
+
+
+class OdometerReading(Base):
+    """Odometer reading history for a global vehicle."""
+
+    __tablename__ = "odometer_readings"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    global_vehicle_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("global_vehicles.id"), nullable=False
+    )
+    reading_km: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)  # carjam, manual, invoice
+    recorded_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True
+    )
+    org_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=True
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('carjam','manual','invoice')",
+            name="ck_odometer_readings_source",
+        ),
+        Index("idx_odometer_readings_vehicle", "global_vehicle_id", "recorded_at"),
+    )
+
+    # Relationships
+    global_vehicle = relationship("GlobalVehicle", backref="odometer_readings")

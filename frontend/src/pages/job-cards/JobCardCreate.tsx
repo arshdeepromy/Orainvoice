@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import apiClient from '../../api/client'
-import { Button, Input, Spinner } from '../../components/ui'
+import { Button, Input, Spinner, Modal } from '../../components/ui'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -59,7 +59,7 @@ function CustomerSearch({
   const [results, setResults] = useState<Customer[]>([])
   const [loading, setLoading] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
-  const [showCreateForm, setShowCreateForm] = useState(false)
+  const [showCreateModal, setShowCreateModal] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
 
@@ -85,8 +85,9 @@ function CustomerSearch({
     if (q.length < 2) { setResults([]); return }
     setLoading(true)
     try {
-      const res = await apiClient.get<Customer[]>('/customers', { params: { search: q } })
-      setResults(res.data)
+      const res = await apiClient.get<{ customers: Customer[]; total: number } | Customer[]>('/customers', { params: { search: q } })
+      const customers = Array.isArray(res.data) ? res.data : (res.data?.customers || [])
+      setResults(customers)
     } catch { setResults([]) }
     finally { setLoading(false) }
   }, [])
@@ -94,7 +95,6 @@ function CustomerSearch({
   const handleInputChange = (value: string) => {
     setQuery(value)
     setShowDropdown(true)
-    setShowCreateForm(false)
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => search(value), 300)
   }
@@ -106,6 +106,22 @@ function CustomerSearch({
   }
 
   const handleClear = () => { onSelect(null); setQuery(''); setResults([]) }
+
+  const resetCreateForm = () => {
+    setNewFirst(''); setNewLast(''); setNewEmail(''); setNewPhone(''); setNewAddress('')
+    setCreateErrors({})
+  }
+
+  const handleOpenCreateModal = () => {
+    setShowDropdown(false)
+    resetCreateForm()
+    setShowCreateModal(true)
+  }
+
+  const handleCloseCreateModal = () => {
+    setShowCreateModal(false)
+    resetCreateForm()
+  }
 
   const validateCreate = (): boolean => {
     const errs: Record<string, string> = {}
@@ -128,8 +144,7 @@ function CustomerSearch({
       })
       onSelect(res.data)
       setQuery(`${res.data.first_name} ${res.data.last_name}`)
-      setShowCreateForm(false); setShowDropdown(false)
-      setNewFirst(''); setNewLast(''); setNewEmail(''); setNewPhone(''); setNewAddress('')
+      handleCloseCreateModal()
     } catch {
       setCreateErrors({ submit: 'Failed to create customer. Please try again.' })
     } finally { setCreating(false) }
@@ -154,50 +169,53 @@ function CustomerSearch({
   }
 
   return (
-    <div ref={containerRef} className="relative flex flex-col gap-1">
-      <Input label="Customer" placeholder="Search by name, phone, or email…" value={query}
-        onChange={(e) => handleInputChange(e.target.value)}
-        onFocus={() => query.length >= 2 && setShowDropdown(true)}
-        error={error} autoComplete="off" />
-      {showDropdown && (
-        <div className="absolute top-full left-0 right-0 z-30 mt-1 max-h-64 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
-          {loading && (
-            <div className="flex items-center gap-2 px-4 py-3 text-sm text-gray-500"><Spinner size="sm" /> Searching…</div>
-          )}
-          {!loading && results.map((c) => (
-            <button key={c.id} type="button" onClick={() => handleSelect(c)}
-              className="w-full px-4 py-3 text-left hover:bg-gray-50 focus-visible:bg-gray-50 focus-visible:outline-none min-h-[44px]">
-              <span className="font-medium text-gray-900">{c.first_name} {c.last_name}</span>
-              <span className="ml-2 text-sm text-gray-500">{c.phone}</span>
-              <span className="ml-2 text-sm text-gray-500">{c.email}</span>
+    <>
+      <div ref={containerRef} className="relative flex flex-col gap-1">
+        <Input label="Customer" placeholder="Search by name, phone, or email…" value={query}
+          onChange={(e) => handleInputChange(e.target.value)}
+          onFocus={() => query.length >= 2 && setShowDropdown(true)}
+          error={error} autoComplete="off" />
+        {showDropdown && (
+          <div className="absolute top-full left-0 right-0 z-30 mt-1 max-h-64 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+            {loading && (
+              <div className="flex items-center gap-2 px-4 py-3 text-sm text-gray-500"><Spinner size="sm" /> Searching…</div>
+            )}
+            {!loading && results && results.length > 0 && results.map((c) => (
+              <button key={c.id} type="button" onClick={() => handleSelect(c)}
+                className="w-full px-4 py-3 text-left hover:bg-gray-50 focus-visible:bg-gray-50 focus-visible:outline-none min-h-[44px]">
+                <span className="font-medium text-gray-900">{c.first_name} {c.last_name}</span>
+                <span className="ml-2 text-sm text-gray-500">{c.phone}</span>
+                <span className="ml-2 text-sm text-gray-500">{c.email}</span>
+              </button>
+            ))}
+            {!loading && query.length >= 2 && results.length === 0 && (
+              <div className="px-4 py-3 text-sm text-gray-500">No customers found</div>
+            )}
+            <button type="button" onClick={handleOpenCreateModal}
+              className="w-full border-t border-gray-100 px-4 py-3 text-left text-sm font-medium text-blue-600 hover:bg-blue-50 focus-visible:bg-blue-50 focus-visible:outline-none min-h-[44px]">
+              + Create new customer
             </button>
-          ))}
-          {!loading && query.length >= 2 && results.length === 0 && !showCreateForm && (
-            <div className="px-4 py-3 text-sm text-gray-500">No customers found</div>
-          )}
-          <button type="button" onClick={() => setShowCreateForm(true)}
-            className="w-full border-t border-gray-100 px-4 py-3 text-left text-sm font-medium text-blue-600 hover:bg-blue-50 focus-visible:bg-blue-50 focus-visible:outline-none min-h-[44px]">
-            + Create new customer
-          </button>
-          {showCreateForm && (
-            <div className="border-t border-gray-100 p-4 space-y-3">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <Input label="First name" value={newFirst} onChange={(e) => setNewFirst(e.target.value)} error={createErrors.first_name} />
-                <Input label="Last name" value={newLast} onChange={(e) => setNewLast(e.target.value)} error={createErrors.last_name} />
-              </div>
-              <Input label="Email" type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} error={createErrors.email} />
-              <Input label="Phone" type="tel" value={newPhone} onChange={(e) => setNewPhone(e.target.value)} error={createErrors.contact} />
-              <Input label="Address (optional)" value={newAddress} onChange={(e) => setNewAddress(e.target.value)} />
-              {createErrors.submit && <p className="text-sm text-red-600" role="alert">{createErrors.submit}</p>}
-              <div className="flex gap-2">
-                <Button size="sm" onClick={handleCreate} loading={creating}>Create &amp; select</Button>
-                <Button size="sm" variant="secondary" onClick={() => setShowCreateForm(false)}>Cancel</Button>
-              </div>
-            </div>
-          )}
+          </div>
+        )}
+      </div>
+
+      <Modal open={showCreateModal} onClose={handleCloseCreateModal} title="Create New Customer" className="max-w-md">
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input label="First name" value={newFirst} onChange={(e) => setNewFirst(e.target.value)} error={createErrors.first_name} />
+            <Input label="Last name" value={newLast} onChange={(e) => setNewLast(e.target.value)} error={createErrors.last_name} />
+          </div>
+          <Input label="Email" type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} error={createErrors.email} />
+          <Input label="Phone" type="tel" value={newPhone} onChange={(e) => setNewPhone(e.target.value)} error={createErrors.contact} />
+          <Input label="Address (optional)" value={newAddress} onChange={(e) => setNewAddress(e.target.value)} />
+          {createErrors.submit && <p className="text-sm text-red-600" role="alert">{createErrors.submit}</p>}
+          <div className="flex justify-end gap-3 pt-2">
+            <Button variant="secondary" onClick={handleCloseCreateModal}>Cancel</Button>
+            <Button onClick={handleCreate} loading={creating}>Create &amp; Select</Button>
+          </div>
         </div>
-      )}
-    </div>
+      </Modal>
+    </>
   )
 }
 

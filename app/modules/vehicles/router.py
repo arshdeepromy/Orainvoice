@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,19 +23,31 @@ from app.modules.auth.rbac import require_role
 from app.modules.vehicles.schemas import (
     ManualVehicleCreate,
     ManualVehicleResponse,
+    OdometerHistoryEntry,
+    OdometerReadingRequest,
+    OdometerReadingResponse,
+    OdometerReadingUpdateRequest,
     VehicleLinkRequest,
     VehicleLinkResponse,
     VehicleLookupNotFoundResponse,
     VehicleLookupResponse,
+    VehicleLookupWithFallbackRequest,
+    VehicleLookupWithFallbackResponse,
     VehicleProfileResponse,
     VehicleRefreshResponse,
+    VehicleSearchResponse,
 )
 from app.modules.vehicles.service import (
     create_manual_vehicle,
+    get_odometer_history,
     get_vehicle_profile,
     link_vehicle_to_customer,
     lookup_vehicle,
+    lookup_vehicle_with_abcd_fallback,
+    record_odometer_reading,
     refresh_vehicle,
+    search_vehicles,
+    update_odometer_reading,
 )
 
 router = APIRouter()
@@ -310,6 +322,194 @@ async def vehicle_link(
 
     return VehicleLinkResponse(**result)
 
+
+# ---------------------------------------------------------------------------
+# Live Search & ABCD Fallback (MUST be before /{vehicle_id} route!)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/search",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="Live search vehicles by registration",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def vehicle_search(
+    request: Request,
+    q: str = Query(..., min_length=2, max_length=20, description="Search query (registration prefix)"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Live search for vehicles in global_vehicles database.
+    
+    Returns up to 10 matching vehicles by rego prefix.
+    No API calls, no usage tracking - instant results for autocomplete.
+    Also returns linked customers for each vehicle within the org.
+    """
+    org_uuid, _, _ = _extract_org_context(request)
+    
+    if len(q) < 2:
+        return {"results": [], "total": 0}
+    
+    results = await search_vehicles(db, query=q, limit=10, org_id=org_uuid)
+    
+    return {"results": results, "total": len(results)}
+
+
+@router.post(
+    "/lookup-with-fallback",
+    response_model=VehicleLookupWithFallbackResponse,
+    responses={
+        404: {"description": "Vehicle not found in Carjam"},
+        429: {"description": "Carjam rate limit exceeded"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        502: {"description": "Carjam service error"},
+    },
+    summary="Look up vehicle with ABCD → Basic fallback",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def vehicle_lookup_with_fallback(
+    body: VehicleLookupWithFallbackRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis),
+):
+    """Look up vehicle using ABCD-first strategy with automatic Basic fallback.
+    
+    Strategy:
+    1. Check cache (global_vehicles) - if hit, return immediately (no cost)
+    2. Try ABCD API (2 attempts, ~$0.05) - lower cost, adequate data
+    3. If ABCD fails, automatically fallback to Basic API (~$0.15)
+    
+    This provides cost optimization while ensuring 100% success rate.
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+    
+    try:
+        result = await lookup_vehicle_with_abcd_fallback(
+            db,
+            redis,
+            rego=body.rego,
+            org_id=org_uuid,
+            user_id=user_uuid or uuid.uuid4(),
+            ip_address=ip_address,
+        )
+    except CarjamNotFoundError:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": f"No vehicle found for registration '{body.rego}'. You can enter the details manually.",
+                "rego": body.rego,
+                "suggest_manual_entry": True,
+            },
+        )
+    except CarjamRateLimitError as exc:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Vehicle lookup rate limit exceeded. Please try again shortly."},
+            headers={"Retry-After": str(exc.retry_after)},
+        )
+    except CarjamError as exc:
+        return JSONResponse(
+            status_code=502,
+            content={"detail": f"Vehicle lookup service error: {exc}"},
+        )
+    
+    return VehicleLookupWithFallbackResponse(**result)
+
+
+# ---------------------------------------------------------------------------
+# Odometer Reading Endpoints (MUST be before /{vehicle_id} route!)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/{vehicle_id}/odometer",
+    response_model=OdometerReadingResponse,
+    status_code=201,
+    summary="Record a new odometer reading",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def post_odometer_reading(
+    vehicle_id: uuid.UUID,
+    body: OdometerReadingRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Record a new odometer reading for a vehicle."""
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+
+    try:
+        result = await record_odometer_reading(
+            db,
+            global_vehicle_id=vehicle_id,
+            reading_km=body.reading_km,
+            source=body.source,
+            recorded_by=user_uuid,
+            invoice_id=uuid.UUID(body.invoice_id) if body.invoice_id else None,
+            org_id=org_uuid,
+            notes=body.notes,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return OdometerReadingResponse(**result)
+
+
+@router.get(
+    "/{vehicle_id}/odometer-history",
+    response_model=list[OdometerHistoryEntry],
+    summary="Get odometer reading history",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def get_odometer_history_endpoint(
+    vehicle_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Get odometer reading history for a vehicle, newest first."""
+    result = await get_odometer_history(db, global_vehicle_id=vehicle_id)
+    return result
+
+
+@router.put(
+    "/{vehicle_id}/odometer/{reading_id}",
+    summary="Correct an odometer reading",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def put_odometer_reading(
+    vehicle_id: uuid.UUID,
+    reading_id: uuid.UUID,
+    body: OdometerReadingUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Correct an existing odometer reading (e.g. accidental wrong entry)."""
+    _, user_uuid, _ = _extract_org_context(request)
+
+    try:
+        result = await update_odometer_reading(
+            db,
+            reading_id=reading_id,
+            new_reading_km=body.reading_km,
+            user_id=user_uuid or uuid.uuid4(),
+            notes=body.notes,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Vehicle Profile (MUST be after /search and /lookup-with-fallback!)
+# ---------------------------------------------------------------------------
 
 @router.get(
     "/{vehicle_id}",

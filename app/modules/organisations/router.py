@@ -27,6 +27,8 @@ from app.modules.organisations.schemas import (
     OrgSettingsResponse,
     OrgSettingsUpdateRequest,
     OrgSettingsUpdateResponse,
+    SalespersonItem,
+    SalespersonListResponse,
     SeatLimitResponse,
     UserDeactivateResponse,
     UserInviteRequest,
@@ -44,6 +46,7 @@ from app.modules.organisations.service import (
     invite_org_user,
     list_branches,
     list_org_users,
+    list_salespeople,
     save_onboarding_step,
     update_mfa_policy,
     update_org_settings,
@@ -467,6 +470,37 @@ async def get_users(
         users=[OrgUserResponse(**u) for u in result["users"]],
         total=result["total"],
         seat_limit=result["seat_limit"],
+    )
+
+
+@router.get(
+    "/salespeople",
+    response_model=SalespersonListResponse,
+    responses={401: {"description": "Authentication required"}, 403: {"description": "Organisation context required"}},
+    summary="List salespeople for dropdown",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def get_salespeople(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return a simple list of active users for the salesperson dropdown.
+
+    This endpoint is accessible by both org_admin and salesperson roles.
+    Returns only id and name (email) for active users.
+    """
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
+
+    result = await list_salespeople(db, org_id=org_uuid)
+    return SalespersonListResponse(
+        salespeople=[SalespersonItem(**u) for u in result]
     )
 
 
@@ -932,3 +966,54 @@ async def get_org_audit_log(
         page=result["page"],
         page_size=result["page_size"],
     )
+
+# ---------------------------------------------------------------------------
+# Plan features — subscription plan feature flags (Req 4.2, 4.3)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/plan-features",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Organisation context required"},
+    },
+    summary="Get organisation plan feature flags",
+)
+async def get_plan_features(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return feature flags derived from the organisation's subscription plan.
+
+    Currently returns ``sms_included`` so the frontend can gate SMS-related
+    UI elements based on the plan.
+
+    Requirements: 4.2, 4.3.
+    """
+    from sqlalchemy import select
+
+    from app.modules.admin.models import Organisation, SubscriptionPlan
+
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id format"},
+        )
+
+    result = await db.execute(
+        select(SubscriptionPlan.sms_included)
+        .join(Organisation, Organisation.plan_id == SubscriptionPlan.id)
+        .where(Organisation.id == org_uuid)
+    )
+    row = result.scalar_one_or_none()
+    return {"sms_included": bool(row) if row is not None else False}

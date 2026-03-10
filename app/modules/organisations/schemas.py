@@ -152,10 +152,17 @@ class OrgSettingsResponse(BaseModel):
     primary_colour: Optional[str] = Field(None, description="Primary brand colour hex")
     secondary_colour: Optional[str] = Field(None, description="Secondary brand colour hex")
 
-    # Contact
-    address: Optional[str] = Field(None, description="Organisation address")
-    phone: Optional[str] = Field(None, description="Organisation phone number")
-    email: Optional[str] = Field(None, description="Organisation email")
+    # Contact / Address
+    address: Optional[str] = Field(None, description="Legacy single-line address")
+    address_unit: Optional[str] = Field(None, description="Unit/Suite number")
+    address_street: Optional[str] = Field(None, description="Street number and name")
+    address_city: Optional[str] = Field(None, description="City/Town")
+    address_state: Optional[str] = Field(None, description="State/Region")
+    address_country: Optional[str] = Field(None, description="Country")
+    address_postcode: Optional[str] = Field(None, description="Postal/Zip code")
+    website: Optional[str] = Field(None, max_length=500, description="Organisation website URL")
+    phone: Optional[str] = Field(None, max_length=50, description="Organisation phone number")
+    email: Optional[str] = Field(None, max_length=255, description="Organisation email")
 
     # Invoice branding
     invoice_header_text: Optional[str] = Field(None, description="Custom invoice header text")
@@ -183,6 +190,11 @@ class OrgSettingsResponse(BaseModel):
         None, description="Custom T&C (rich text HTML with headings, bold, lists, links)"
     )
 
+    # Sidebar display mode
+    sidebar_display_mode: Optional[str] = Field(
+        None, description="Sidebar branding display: icon_and_name, icon_only, or name_only"
+    )
+
 
 class OrgSettingsUpdateRequest(BaseModel):
     """PUT /api/v1/org/settings request body.
@@ -198,7 +210,7 @@ class OrgSettingsUpdateRequest(BaseModel):
 
     # Branding
     logo_url: Optional[str] = Field(
-        None, max_length=2048, description="Logo URL (PNG or SVG)"
+        None, max_length=500000, description="Logo URL or base64 data URI (PNG or SVG)"
     )
     primary_colour: Optional[str] = Field(
         None,
@@ -213,8 +225,14 @@ class OrgSettingsUpdateRequest(BaseModel):
         description="Secondary brand colour hex",
     )
 
-    # Contact
-    address: Optional[str] = Field(None, max_length=1000, description="Organisation address")
+    # Contact / Address
+    address_unit: Optional[str] = Field(None, max_length=50, description="Unit/Suite number")
+    address_street: Optional[str] = Field(None, max_length=255, description="Street number and name")
+    address_city: Optional[str] = Field(None, max_length=100, description="City/Town")
+    address_state: Optional[str] = Field(None, max_length=100, description="State/Region")
+    address_country: Optional[str] = Field(None, max_length=100, description="Country")
+    address_postcode: Optional[str] = Field(None, max_length=20, description="Postal/Zip code")
+    website: Optional[str] = Field(None, max_length=500, description="Organisation website URL")
     phone: Optional[str] = Field(None, max_length=50, description="Organisation phone number")
     email: Optional[str] = Field(None, max_length=255, description="Organisation email")
 
@@ -268,6 +286,13 @@ class OrgSettingsUpdateRequest(BaseModel):
     # Terms & conditions (rich text)
     terms_and_conditions: Optional[str] = Field(
         None, max_length=50000, description="Custom T&C (rich text HTML)"
+    )
+
+    # Sidebar display mode
+    sidebar_display_mode: Optional[str] = Field(
+        None,
+        pattern=r"^(icon_and_name|icon_only|name_only)$",
+        description="Sidebar branding display: icon_and_name, icon_only, or name_only",
     )
 
 
@@ -480,3 +505,16 @@ class PublicSignupResponse(BaseModel):
     trial_ends_at: datetime
     stripe_setup_intent_client_secret: str | None  # None during trial period
     signup_token: str
+
+
+class SalespersonItem(BaseModel):
+    """Single salesperson in the dropdown list."""
+
+    id: str = Field(..., description="User UUID")
+    name: str = Field(..., description="Display name (email)")
+
+
+class SalespersonListResponse(BaseModel):
+    """GET /api/v1/org/salespeople response."""
+
+    salespeople: list[SalespersonItem] = Field(default_factory=list, description="List of salespeople")

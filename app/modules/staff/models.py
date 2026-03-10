@@ -37,8 +37,17 @@ class StaffMember(Base):
         UUID(as_uuid=True), nullable=True,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    first_name: Mapped[str] = mapped_column(String(100), nullable=False, server_default="")
+    last_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    employee_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    position: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reporting_to: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("staff_members.id", ondelete="SET NULL"), nullable=True,
+    )
+    shift_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    shift_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
     role_type: Mapped[str] = mapped_column(
         String(20), default="employee", nullable=False,
     )

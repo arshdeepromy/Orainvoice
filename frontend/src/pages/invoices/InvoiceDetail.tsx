@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Modal } from '../../components/ui'
+import { ModuleGate } from '../../components/common/ModuleGate'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -34,19 +35,21 @@ interface Vehicle {
 
 interface LineItem {
   id: string
-  type: 'service' | 'part' | 'labour'
+  item_type: string
+  type?: string
   description: string
   part_number?: string
   quantity: number
   unit_price: number
   hours?: number
   hourly_rate?: number
-  gst_exempt: boolean
-  discount_type: 'percentage' | 'fixed'
-  discount_value: number
+  is_gst_exempt?: boolean
+  gst_exempt?: boolean
+  discount_type: 'percentage' | 'fixed' | null
+  discount_value: number | null
   warranty_note?: string
   line_total: number
-  gst_amount: number
+  gst_amount?: number
 }
 
 interface Payment {
@@ -70,23 +73,35 @@ interface InvoiceDetail {
   id: string
   invoice_number: string | null
   status: InvoiceStatus
-  customer: Customer
-  vehicle: Vehicle | null
+  customer_id: string
+  customer?: Customer | null
+  vehicle?: Vehicle | null
+  vehicle_rego?: string | null
+  vehicle_make?: string | null
+  vehicle_model?: string | null
+  vehicle_year?: number | null
+  vehicle_odometer?: number | null
   line_items: LineItem[]
-  subtotal_ex_gst: number
+  subtotal: number
+  subtotal_ex_gst?: number
   gst_amount: number
-  total_incl_gst: number
-  discount_type: 'percentage' | 'fixed'
-  discount_value: number
+  total: number
+  total_incl_gst?: number
+  discount_type: 'percentage' | 'fixed' | null
+  discount_value: number | null
+  discount_amount: number
+  amount_paid: number
   balance_due: number
-  notes: string
+  notes_internal: string | null
+  notes_customer: string | null
+  notes?: string
   issue_date: string | null
   due_date: string | null
   created_at: string
   void_reason?: string
-  payments: Payment[]
-  credit_notes: CreditNote[]
-  org_name: string
+  payments?: Payment[]
+  credit_notes?: CreditNote[]
+  org_name?: string
   org_logo_url?: string
   org_address?: string
   org_phone?: string
@@ -98,8 +113,9 @@ interface InvoiceDetail {
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-function formatNZD(amount: number): string {
-  return new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(amount)
+function formatNZD(amount: number | null | undefined): string {
+  if (amount == null || isNaN(Number(amount))) return '$0.00'
+  return new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(Number(amount))
 }
 
 function formatDate(dateStr: string | null | undefined): string {
@@ -222,8 +238,10 @@ export default function InvoiceDetail() {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<InvoiceDetail>(`/invoices/${id}`)
-      setInvoice(res.data)
+      const res = await apiClient.get(`/invoices/${id}`)
+      // API wraps response in { invoice: {...} }
+      const data = res.data?.invoice || res.data
+      setInvoice(data)
     } catch {
       setError('Failed to load invoice. Please try again.')
     } finally {
@@ -354,6 +372,11 @@ export default function InvoiceDetail() {
 
         {/* Action buttons */}
         <div className="flex flex-wrap items-center gap-2">
+          {isDraft && (
+            <Button size="sm" variant="primary" onClick={() => { window.location.href = `/invoices/${invoice.id}/edit` }}>
+              Edit
+            </Button>
+          )}
           <Button size="sm" variant="secondary" onClick={handleDuplicate} loading={duplicating}>
             Duplicate
           </Button>
@@ -362,13 +385,13 @@ export default function InvoiceDetail() {
               Void
             </Button>
           )}
-          <Button size="sm" variant="secondary" onClick={handleEmail} loading={emailing} disabled={isDraft}>
+          <Button size="sm" variant="secondary" onClick={handleEmail} loading={emailing}>
             Email
           </Button>
           <Button size="sm" variant="secondary" onClick={handlePrint}>
             Print
           </Button>
-          <Button size="sm" variant="primary" onClick={handleDownloadPDF} loading={downloading} disabled={isDraft}>
+          <Button size="sm" variant="primary" onClick={handleDownloadPDF} loading={downloading}>
             Download PDF
           </Button>
         </div>
@@ -443,34 +466,73 @@ export default function InvoiceDetail() {
         {/* Customer */}
         <section className="rounded-lg border border-gray-200 p-4">
           <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Customer</h2>
-          <p className="font-medium text-gray-900">
-            {invoice.customer.first_name} {invoice.customer.last_name}
-          </p>
-          {invoice.customer.email && <p className="text-sm text-gray-600">{invoice.customer.email}</p>}
-          {invoice.customer.phone && <p className="text-sm text-gray-600">{invoice.customer.phone}</p>}
-          {invoice.customer.address && <p className="text-sm text-gray-600 mt-1">{invoice.customer.address}</p>}
+          {invoice.customer ? (
+            <>
+              <p className="font-medium text-gray-900">
+                {invoice.customer.first_name} {invoice.customer.last_name}
+              </p>
+              {invoice.customer.email && <p className="text-sm text-gray-600">{invoice.customer.email}</p>}
+              {invoice.customer.phone && <p className="text-sm text-gray-600">{invoice.customer.phone}</p>}
+              {invoice.customer.address && <p className="text-sm text-gray-600 mt-1">{invoice.customer.address}</p>}
+            </>
+          ) : (
+            <p className="text-sm text-gray-500">No customer information</p>
+          )}
         </section>
 
         {/* Vehicle */}
+        <ModuleGate module="vehicles">
         <section className="rounded-lg border border-gray-200 p-4">
           <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Vehicle</h2>
           {invoice.vehicle ? (
-            <>
-              <p className="font-medium text-gray-900 font-mono">{invoice.vehicle.rego}</p>
-              <p className="text-sm text-gray-700">
-                {invoice.vehicle.year} {invoice.vehicle.make} {invoice.vehicle.model}
-              </p>
+            <dl className="space-y-1.5">
+              <div>
+                <dt className="text-xs text-gray-500">Registration</dt>
+                <dd className="font-semibold text-gray-900 font-mono text-lg">{invoice.vehicle.rego}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-gray-500">Vehicle Details</dt>
+                <dd className="text-sm text-gray-900">
+                  {[invoice.vehicle.year, invoice.vehicle.make, invoice.vehicle.model].filter(Boolean).join(' ') || '—'}
+                </dd>
+              </div>
+              {invoice.vehicle_odometer != null && invoice.vehicle_odometer > 0 && (
+                <div>
+                  <dt className="text-xs text-gray-500">Odometer</dt>
+                  <dd className="text-sm text-gray-900">{invoice.vehicle_odometer.toLocaleString()} Kms</dd>
+                </div>
+              )}
               {invoice.vehicle.colour && (
-                <p className="text-sm text-gray-600">{invoice.vehicle.colour} · {invoice.vehicle.body_type}</p>
+                <div>
+                  <dt className="text-xs text-gray-500">Colour</dt>
+                  <dd className="text-sm text-gray-600">{invoice.vehicle.colour}</dd>
+                </div>
               )}
-              {invoice.vehicle.fuel_type && (
-                <p className="text-sm text-gray-600">{invoice.vehicle.fuel_type} · {invoice.vehicle.engine_size}</p>
+            </dl>
+          ) : invoice.vehicle_rego ? (
+            <dl className="space-y-1.5">
+              <div>
+                <dt className="text-xs text-gray-500">Registration</dt>
+                <dd className="font-semibold text-gray-900 font-mono text-lg">{invoice.vehicle_rego}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-gray-500">Vehicle Details</dt>
+                <dd className="text-sm text-gray-900">
+                  {[invoice.vehicle_year, invoice.vehicle_make, invoice.vehicle_model].filter(Boolean).join(' ') || '—'}
+                </dd>
+              </div>
+              {invoice.vehicle_odometer != null && invoice.vehicle_odometer > 0 && (
+                <div>
+                  <dt className="text-xs text-gray-500">Odometer</dt>
+                  <dd className="text-sm text-gray-900">{invoice.vehicle_odometer.toLocaleString()} Kms</dd>
+                </div>
               )}
-            </>
+            </dl>
           ) : (
             <p className="text-sm text-gray-500">No vehicle linked</p>
           )}
         </section>
+        </ModuleGate>
       </div>
 
       {/* ---- Line Items ---- */}
@@ -490,33 +552,33 @@ export default function InvoiceDetail() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 bg-white">
-              {invoice.line_items.map((item) => (
+              {(invoice.line_items || []).map((item) => (
                 <tr key={item.id}>
-                  <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-600">{lineItemTypeLabel(item.type)}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-600">{lineItemTypeLabel(item.item_type || item.type || 'service')}</td>
                   <td className="px-4 py-3 text-sm text-gray-900">
                     <div>{item.description}</div>
                     {item.part_number && <div className="text-xs text-gray-500">Part #: {item.part_number}</div>}
                     {item.warranty_note && (
                       <div className="text-xs text-blue-600 mt-0.5">Warranty: {item.warranty_note}</div>
                     )}
-                    {item.discount_value > 0 && (
+                    {(item.discount_value ?? 0) > 0 && (
                       <div className="text-xs text-green-600 mt-0.5">
                         Discount: {item.discount_type === 'percentage' ? `${item.discount_value}%` : formatNZD(item.discount_value)}
                       </div>
                     )}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums">
-                    {item.type === 'labour' ? (item.hours ?? 0) : item.quantity}
+                    {(item.item_type || item.type) === 'labour' ? (item.hours ?? 0) : item.quantity}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums">
-                    {item.type === 'labour' ? formatNZD(item.hourly_rate ?? 0) : formatNZD(item.unit_price)}
-                    {item.type === 'labour' && <span className="text-gray-500">/hr</span>}
+                    {(item.item_type || item.type) === 'labour' ? formatNZD(item.hourly_rate ?? 0) : formatNZD(item.unit_price)}
+                    {(item.item_type || item.type) === 'labour' && <span className="text-gray-500">/hr</span>}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums">
-                    {item.gst_exempt ? (
+                    {(item.is_gst_exempt ?? item.gst_exempt) ? (
                       <span className="text-gray-400">Exempt</span>
                     ) : (
-                      <span className="text-gray-700">{formatNZD(item.gst_amount)}</span>
+                      <span className="text-gray-700">{item.gst_amount != null ? formatNZD(item.gst_amount) : '—'}</span>
                     )}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-gray-900 text-right tabular-nums">
@@ -533,9 +595,9 @@ export default function InvoiceDetail() {
           <dl className="w-64 space-y-1 text-sm">
             <div className="flex justify-between">
               <dt className="text-gray-500">Subtotal (ex-GST)</dt>
-              <dd className="text-gray-900 tabular-nums">{formatNZD(invoice.subtotal_ex_gst)}</dd>
+              <dd className="text-gray-900 tabular-nums">{formatNZD(invoice.subtotal_ex_gst ?? invoice.subtotal)}</dd>
             </div>
-            {invoice.discount_value > 0 && (
+            {(invoice.discount_value ?? 0) > 0 && (
               <div className="flex justify-between text-green-700">
                 <dt>Discount</dt>
                 <dd className="tabular-nums">
@@ -551,11 +613,11 @@ export default function InvoiceDetail() {
             </div>
             <div className="flex justify-between border-t border-gray-200 pt-1 font-semibold">
               <dt className="text-gray-900">Total (incl. GST)</dt>
-              <dd className="text-gray-900 tabular-nums">{formatNZD(invoice.total_incl_gst)}</dd>
+              <dd className="text-gray-900 tabular-nums">{formatNZD(invoice.total_incl_gst ?? invoice.total)}</dd>
             </div>
             <div className="flex justify-between border-t border-gray-200 pt-1 font-semibold text-lg">
               <dt className="text-gray-900">Balance Due</dt>
-              <dd className={`tabular-nums ${invoice.balance_due > 0 ? 'text-red-600' : 'text-green-600'}`}>
+              <dd className={`tabular-nums ${(invoice.balance_due ?? 0) > 0 ? 'text-red-600' : 'text-green-600'}`}>
                 {formatNZD(invoice.balance_due)}
               </dd>
             </div>
@@ -564,19 +626,27 @@ export default function InvoiceDetail() {
       </section>
 
       {/* ---- Notes ---- */}
-      {invoice.notes && (
+      {(invoice.notes || invoice.notes_customer || invoice.notes_internal) && (
         <section className="mb-6">
           <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Notes</h2>
-          <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 whitespace-pre-wrap">
-            {invoice.notes}
-          </div>
+          {(invoice.notes_customer || invoice.notes) && (
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 whitespace-pre-wrap mb-2">
+              {invoice.notes_customer || invoice.notes}
+            </div>
+          )}
+          {invoice.notes_internal && (
+            <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4 text-sm text-gray-700 whitespace-pre-wrap">
+              <span className="text-xs font-medium text-yellow-700 uppercase">Internal Note</span>
+              <div className="mt-1">{invoice.notes_internal}</div>
+            </div>
+          )}
         </section>
       )}
 
       {/* ---- Payment History ---- */}
       <section className="mb-6">
         <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">Payment History</h2>
-        {invoice.payments.length === 0 ? (
+        {(invoice.payments || []).length === 0 ? (
           <p className="text-sm text-gray-500">No payments recorded.</p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-gray-200">
@@ -591,7 +661,7 @@ export default function InvoiceDetail() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {invoice.payments.map((payment) => (
+                {(invoice.payments || []).map((payment) => (
                   <tr key={payment.id}>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">{formatDate(payment.date)}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums font-medium">
@@ -610,7 +680,7 @@ export default function InvoiceDetail() {
       {/* ---- Credit Notes ---- */}
       <section className="mb-6">
         <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">Credit Notes</h2>
-        {invoice.credit_notes.length === 0 ? (
+        {(invoice.credit_notes || []).length === 0 ? (
           <p className="text-sm text-gray-500">No credit notes.</p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-gray-200">
@@ -625,7 +695,7 @@ export default function InvoiceDetail() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {invoice.credit_notes.map((cn) => (
+                {(invoice.credit_notes || []).map((cn) => (
                   <tr key={cn.id}>
                     <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-blue-600">{cn.reference_number}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-red-600 text-right tabular-nums font-medium">

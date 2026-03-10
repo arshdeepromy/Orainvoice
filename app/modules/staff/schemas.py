@@ -18,9 +18,15 @@ from pydantic import BaseModel, Field
 
 class StaffMemberCreate(BaseModel):
     user_id: UUID | None = None
-    name: str = Field(..., min_length=1, max_length=255)
+    first_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str | None = None
     email: str | None = None
     phone: str | None = None
+    employee_id: str | None = None
+    position: str | None = None
+    reporting_to: UUID | None = None
+    shift_start: str | None = Field(None, pattern=r"^\d{2}:\d{2}$")
+    shift_end: str | None = Field(None, pattern=r"^\d{2}:\d{2}$")
     role_type: str = Field(default="employee", pattern="^(employee|contractor)$")
     hourly_rate: Decimal | None = None
     overtime_rate: Decimal | None = None
@@ -29,9 +35,15 @@ class StaffMemberCreate(BaseModel):
 
 
 class StaffMemberUpdate(BaseModel):
-    name: str | None = Field(None, min_length=1, max_length=255)
+    first_name: str | None = Field(None, min_length=1, max_length=100)
+    last_name: str | None = None
     email: str | None = None
     phone: str | None = None
+    employee_id: str | None = None
+    position: str | None = None
+    reporting_to: UUID | None = None
+    shift_start: str | None = None
+    shift_end: str | None = None
     role_type: str | None = Field(None, pattern="^(employee|contractor)$")
     hourly_rate: Decimal | None = None
     overtime_rate: Decimal | None = None
@@ -54,8 +66,16 @@ class StaffMemberResponse(BaseModel):
     org_id: UUID
     user_id: UUID | None = None
     name: str
+    first_name: str
+    last_name: str | None = None
     email: str | None = None
     phone: str | None = None
+    employee_id: str | None = None
+    position: str | None = None
+    reporting_to: UUID | None = None
+    reporting_to_name: str | None = None
+    shift_start: str | None = None
+    shift_end: str | None = None
     role_type: str
     hourly_rate: Decimal | None = None
     overtime_rate: Decimal | None = None
@@ -78,6 +98,10 @@ class StaffMemberListResponse(BaseModel):
 
 class AssignToLocationRequest(BaseModel):
     location_id: UUID
+
+
+class CreateStaffAccountRequest(BaseModel):
+    password: str = Field(..., min_length=8, max_length=128)
 
 
 class UtilisationReport(BaseModel):

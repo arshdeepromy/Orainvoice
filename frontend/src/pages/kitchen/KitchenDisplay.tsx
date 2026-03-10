@@ -279,7 +279,7 @@ export default function KitchenDisplay() {
 
   const containerClass = isFullScreen
     ? 'fixed inset-0 z-50 bg-gray-900 text-white p-4 overflow-auto'
-    : 'min-h-screen bg-gray-900 text-white p-4'
+    : 'bg-gray-900 text-white p-4 -m-4 lg:-m-6'
 
   const bodyTextClass = isFullScreen ? 'text-lg' : 'text-base' // 18px+ in full-screen
   const headingTextClass = isFullScreen ? 'text-3xl' : 'text-2xl' // 24px+ in full-screen
@@ -288,7 +288,7 @@ export default function KitchenDisplay() {
 
   if (!kitchenEnabled) {
     return (
-      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center" data-testid="kitchen-display">
+      <div className="bg-gray-900 text-white flex items-center justify-center -m-4 lg:-m-6 p-4" data-testid="kitchen-display">
         <div className="text-center text-xl text-gray-400">Kitchen display is not enabled for this organisation.</div>
       </div>
     )

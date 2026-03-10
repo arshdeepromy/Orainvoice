@@ -23,13 +23,41 @@ def _customer_to_dict(customer: Customer) -> dict:
     """Convert a Customer ORM instance to a serialisable dict."""
     return {
         "id": str(customer.id),
+        # Identity
+        "customer_type": customer.customer_type or "individual",
+        "salutation": customer.salutation,
         "first_name": customer.first_name,
         "last_name": customer.last_name,
+        "company_name": customer.company_name,
+        "display_name": customer.display_name,
+        # Contact
         "email": customer.email,
         "phone": customer.phone,
+        "work_phone": customer.work_phone,
+        "mobile_phone": customer.mobile_phone,
+        # Preferences
+        "currency": customer.currency or "NZD",
+        "language": customer.language or "en",
+        # Business/Tax
+        "tax_rate_id": str(customer.tax_rate_id) if customer.tax_rate_id else None,
+        "company_id": customer.company_id,
+        "payment_terms": customer.payment_terms or "due_on_receipt",
+        # Options
+        "enable_bank_payment": customer.enable_bank_payment or False,
+        "enable_portal": customer.enable_portal or False,
+        # Addresses
         "address": customer.address,
+        "billing_address": customer.billing_address or {},
+        "shipping_address": customer.shipping_address or {},
+        # Additional data
+        "contact_persons": customer.contact_persons or [],
+        "custom_fields": customer.custom_fields or {},
+        # Notes
         "notes": customer.notes,
+        "remarks": customer.remarks,
+        # Status
         "is_anonymised": customer.is_anonymised,
+        # Timestamps
         "created_at": customer.created_at.isoformat() if customer.created_at else None,
         "updated_at": customer.updated_at.isoformat() if customer.updated_at else None,
     }
@@ -39,10 +67,15 @@ def _customer_to_search_dict(customer: Customer) -> dict:
     """Convert a Customer ORM instance to a search-result dict."""
     return {
         "id": str(customer.id),
+        "customer_type": customer.customer_type or "individual",
         "first_name": customer.first_name,
         "last_name": customer.last_name,
+        "company_name": customer.company_name,
+        "display_name": customer.display_name,
         "email": customer.email,
         "phone": customer.phone,
+        "mobile_phone": customer.mobile_phone,
+        "work_phone": customer.work_phone,
     }
 
 
@@ -53,6 +86,7 @@ async def search_customers(
     query: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    include_vehicles: bool = False,
 ) -> dict:
     """Search customers by name, phone, or email.
 
@@ -61,9 +95,20 @@ async def search_customers(
 
     Returns a dict with ``customers`` list, ``total`` count, and
     ``has_exact_match`` flag.
+    
+    If include_vehicles is True, also returns linked vehicles for each customer.
 
     Requirements: 11.1, 11.2, 11.3, 11.6
     """
+    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.admin.models import GlobalVehicle
+
+    # Gate linked_vehicles behind vehicles module (Req 6.1, 6.2)
+    from app.core.modules import ModuleService
+    module_svc = ModuleService(db)
+    if not await module_svc.is_enabled(str(org_id), "vehicles"):
+        include_vehicles = False
+    
     base_filter = [
         Customer.org_id == org_id,
         Customer.is_anonymised.is_(False),
@@ -120,8 +165,83 @@ async def search_customers(
         customers = result.scalars().all()
         has_exact_match = False
 
+    # Build customer dicts with optional vehicles and financial summaries
+    from app.modules.invoices.models import Invoice, CreditNote
+
+    # Batch-fetch receivables (sum of balance_due for non-voided invoices) per customer
+    customer_ids = [c.id for c in customers]
+    receivables_map: dict[uuid.UUID, float] = {}
+    credits_map: dict[uuid.UUID, float] = {}
+
+    if customer_ids:
+        recv_stmt = (
+            select(
+                Invoice.customer_id,
+                func.coalesce(func.sum(Invoice.balance_due), 0).label("receivable"),
+            )
+            .where(
+                Invoice.customer_id.in_(customer_ids),
+                Invoice.org_id == org_id,
+                Invoice.status.notin_(["voided", "draft"]),
+            )
+            .group_by(Invoice.customer_id)
+        )
+        recv_result = await db.execute(recv_stmt)
+        for row in recv_result.all():
+            receivables_map[row.customer_id] = float(row.receivable)
+
+        # Batch-fetch unused credits (sum of credit note amounts) per customer
+        cred_stmt = (
+            select(
+                Invoice.customer_id,
+                func.coalesce(func.sum(CreditNote.amount), 0).label("credits"),
+            )
+            .join(Invoice, CreditNote.invoice_id == Invoice.id)
+            .where(
+                Invoice.customer_id.in_(customer_ids),
+                Invoice.org_id == org_id,
+            )
+            .group_by(Invoice.customer_id)
+        )
+        cred_result = await db.execute(cred_stmt)
+        for row in cred_result.all():
+            credits_map[row.customer_id] = float(row.credits)
+
+    customer_dicts = []
+    for c in customers:
+        cust_dict = _customer_to_search_dict(c)
+        cust_dict["receivables"] = receivables_map.get(c.id, 0.0)
+        cust_dict["unused_credits"] = credits_map.get(c.id, 0.0)
+        
+        if include_vehicles:
+            # Fetch linked vehicles for this customer
+            cv_stmt = (
+                select(CustomerVehicle, GlobalVehicle)
+                .outerjoin(GlobalVehicle, CustomerVehicle.global_vehicle_id == GlobalVehicle.id)
+                .where(
+                    CustomerVehicle.customer_id == c.id,
+                    CustomerVehicle.org_id == org_id,
+                )
+                .order_by(CustomerVehicle.linked_at.desc())
+            )
+            cv_result = await db.execute(cv_stmt)
+            linked_vehicles = []
+            for cv, gv in cv_result.all():
+                if gv:
+                    linked_vehicles.append({
+                        "id": str(gv.id),
+                        "rego": gv.rego,
+                        "make": gv.make,
+                        "model": gv.model,
+                        "year": gv.year,
+                        "colour": gv.colour,
+                    })
+            cust_dict["linked_vehicles"] = linked_vehicles
+        
+        customer_dicts.append(cust_dict)
+
     return {
-        "customers": [_customer_to_search_dict(c) for c in customers],
+        "customers": customer_dicts,
         "total": total,
         "has_exact_match": has_exact_match,
     }
@@ -136,22 +256,66 @@ async def create_customer(
     last_name: str,
     email: str | None = None,
     phone: str | None = None,
+    mobile_phone: str | None = None,
+    work_phone: str | None = None,
     address: str | None = None,
     notes: str | None = None,
     ip_address: str | None = None,
+    # New fields
+    customer_type: str = "individual",
+    salutation: str | None = None,
+    company_name: str | None = None,
+    display_name: str | None = None,
+    currency: str = "NZD",
+    language: str = "en",
+    tax_rate_id: uuid.UUID | None = None,
+    company_id: str | None = None,
+    payment_terms: str = "due_on_receipt",
+    enable_bank_payment: bool = False,
+    enable_portal: bool = False,
+    billing_address: dict | None = None,
+    shipping_address: dict | None = None,
+    contact_persons: list | None = None,
+    custom_fields: dict | None = None,
+    remarks: str | None = None,
 ) -> dict:
     """Create a new customer record scoped to the organisation.
 
     Requirements: 11.4, 11.5, 11.6
     """
+    # Auto-generate display_name if not provided
+    if not display_name:
+        if customer_type == "business" and company_name:
+            display_name = company_name
+        else:
+            display_name = f"{first_name} {last_name}"
+    
     customer = Customer(
         org_id=org_id,
+        customer_type=customer_type,
+        salutation=salutation,
         first_name=first_name,
         last_name=last_name,
+        company_name=company_name,
+        display_name=display_name,
         email=email,
-        phone=phone,
+        phone=phone or mobile_phone,  # Backward compatibility
+        work_phone=work_phone,
+        mobile_phone=mobile_phone,
+        currency=currency,
+        language=language,
+        tax_rate_id=tax_rate_id,
+        company_id=company_id,
+        payment_terms=payment_terms,
+        enable_bank_payment=enable_bank_payment,
+        enable_portal=enable_portal,
         address=address,
+        billing_address=billing_address or {},
+        shipping_address=shipping_address or {},
+        contact_persons=contact_persons or [],
+        custom_fields=custom_fields or {},
         notes=notes,
+        remarks=remarks,
     )
     db.add(customer)
     await db.flush()
@@ -165,11 +329,12 @@ async def create_customer(
         entity_id=customer.id,
         before_value=None,
         after_value={
+            "customer_type": customer_type,
             "first_name": first_name,
             "last_name": last_name,
+            "company_name": company_name,
             "email": email,
-            "phone": phone,
-            "address": address,
+            "mobile_phone": mobile_phone,
         },
         ip_address=ip_address,
     )

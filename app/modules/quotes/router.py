@@ -28,6 +28,7 @@ from app.modules.quotes.schemas import (
 from app.modules.quotes.service import (
     convert_quote_to_invoice,
     create_quote,
+    delete_quote,
     get_quote,
     list_quotes,
     send_quote,
@@ -109,10 +110,22 @@ async def create_quote_endpoint(
             validity_days=payload.validity_days,
             line_items_data=line_items_data,
             notes=payload.notes,
+            terms=payload.terms,
+            subject=payload.subject,
+            project_id=payload.project_id,
+            discount_type=payload.discount_type,
+            discount_value=payload.discount_value,
+            shipping_charges=payload.shipping_charges,
+            adjustment=payload.adjustment,
             ip_address=ip_address,
         )
+        await db.commit()
     except ValueError as exc:
+        await db.rollback()
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except Exception:
+        await db.rollback()
+        raise
 
     quote_resp = QuoteResponse(
         **{k: v for k, v in result.items() if k != "line_items"},
@@ -246,10 +259,24 @@ async def update_quote_endpoint(
         updates["vehicle_model"] = payload.vehicle_model
     if payload.vehicle_year is not None:
         updates["vehicle_year"] = payload.vehicle_year
+    if payload.project_id is not None:
+        updates["project_id"] = payload.project_id
     if payload.validity_days is not None:
         updates["validity_days"] = payload.validity_days
     if payload.notes is not None:
         updates["notes"] = payload.notes
+    if payload.terms is not None:
+        updates["terms"] = payload.terms
+    if payload.subject is not None:
+        updates["subject"] = payload.subject
+    if payload.discount_type is not None:
+        updates["discount_type"] = payload.discount_type
+    if payload.discount_value is not None:
+        updates["discount_value"] = payload.discount_value
+    if payload.shipping_charges is not None:
+        updates["shipping_charges"] = payload.shipping_charges
+    if payload.adjustment is not None:
+        updates["adjustment"] = payload.adjustment
     if payload.line_items is not None:
         updates["line_items"] = [
             {
@@ -275,10 +302,15 @@ async def update_quote_endpoint(
             updates=updates,
             ip_address=ip_address,
         )
+        await db.commit()
     except ValueError as exc:
+        await db.rollback()
         error_msg = str(exc)
         status_code = 404 if "not found" in error_msg.lower() else 400
         return JSONResponse(status_code=status_code, content={"detail": error_msg})
+    except Exception:
+        await db.rollback()
+        raise
 
     return QuoteResponse(
         **{k: v for k, v in result.items() if k != "line_items"},
@@ -325,12 +357,15 @@ async def send_quote_endpoint(
             quote_id=quote_id,
             ip_address=ip_address,
         )
+        await db.commit()
     except ValueError as exc:
+        await db.rollback()
         error_msg = str(exc)
         status_code = 404 if "not found" in error_msg.lower() else 400
         return JSONResponse(status_code=status_code, content={"detail": error_msg})
-
-    await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
 
     return QuoteSendResponse(**result)
 
@@ -372,11 +407,59 @@ async def convert_quote_endpoint(
             quote_id=quote_id,
             ip_address=ip_address,
         )
+        await db.commit()
     except ValueError as exc:
+        await db.rollback()
         error_msg = str(exc)
         status_code = 404 if "not found" in error_msg.lower() else 400
         return JSONResponse(status_code=status_code, content={"detail": error_msg})
-
-    await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
 
     return QuoteConvertResponse(**result)
+
+
+@router.delete(
+    "/{quote_id}",
+    responses={
+        400: {"description": "Quote cannot be deleted in current status"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        404: {"description": "Quote not found"},
+    },
+    summary="Delete a quote",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def delete_quote_endpoint(
+    quote_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Delete a quote. Only draft, declined, or expired quotes can be deleted."""
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid or not user_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        result = await delete_quote(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            quote_id=quote_id,
+            ip_address=ip_address,
+        )
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        error_msg = str(exc)
+        status_code = 404 if "not found" in error_msg.lower() else 400
+        return JSONResponse(status_code=status_code, content={"detail": error_msg})
+    except Exception:
+        await db.rollback()
+        raise
+
+    return result

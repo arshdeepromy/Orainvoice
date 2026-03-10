@@ -9,12 +9,15 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from decimal import Decimal
+
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     func,
@@ -51,6 +54,12 @@ class Booking(Base):
     service_type: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )
+    service_catalogue_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("service_catalogue.id"), nullable=True
+    )
+    service_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2), nullable=True
+    )
     scheduled_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -62,6 +71,21 @@ class Booking(Base):
         String(20), nullable=False, server_default="scheduled"
     )
     reminder_sent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    send_email_confirmation: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    send_sms_confirmation: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    reminder_offset_hours: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 1), nullable=True
+    )
+    reminder_scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reminder_cancelled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
     assigned_to: Mapped[uuid.UUID | None] = mapped_column(

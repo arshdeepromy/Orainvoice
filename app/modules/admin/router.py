@@ -837,11 +837,17 @@ async def update_subscription_plan(
             updated_by=uuid.UUID(user_id) if user_id else None,
             ip_address=ip_address,
         )
+        await db.commit()
     except ValueError as exc:
+        await db.rollback()
         msg = str(exc)
         if "not found" in msg.lower():
             return JSONResponse(status_code=404, content={"detail": msg})
         return JSONResponse(status_code=400, content={"detail": msg})
+    except Exception as exc:
+        await db.rollback()
+        logger.exception("Unexpected error updating subscription plan")
+        return JSONResponse(status_code=500, content={"detail": "An error occurred while updating the plan"})
 
     return PlanResponse(**result)
 

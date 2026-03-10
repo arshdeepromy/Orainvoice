@@ -209,3 +209,89 @@ class VehicleProfileResponse(BaseModel):
     rego_expiry: ExpiryIndicator
     linked_customers: list[LinkedCustomerSummary] = Field(default_factory=list)
     service_history: list[ServiceHistoryEntry] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Live Search & ABCD Fallback (New)
+# ---------------------------------------------------------------------------
+
+
+class VehicleSearchResult(BaseModel):
+    """A single vehicle result from live search."""
+
+    id: str = Field(..., description="Global vehicle UUID")
+    rego: str = Field(..., description="Registration number")
+    make: Optional[str] = None
+    model: Optional[str] = None
+    year: Optional[int] = None
+    colour: Optional[str] = None
+    lookup_type: Optional[str] = Field(None, description="'abcd', 'basic', or 'manual'")
+
+
+class VehicleSearchResponse(BaseModel):
+    """GET /api/v1/vehicles/search response."""
+
+    results: list[VehicleSearchResult] = Field(default_factory=list)
+    total: int = Field(..., description="Total number of results")
+
+
+class VehicleLookupWithFallbackRequest(BaseModel):
+    """POST /api/v1/vehicles/lookup-with-fallback request."""
+
+    rego: str = Field(..., min_length=1, max_length=20, description="Registration number")
+
+
+class VehicleLookupWithFallbackResponse(BaseModel):
+    """POST /api/v1/vehicles/lookup-with-fallback response."""
+
+    success: bool = Field(..., description="Whether lookup succeeded")
+    vehicle: Optional[VehicleLookupResponse] = Field(None, description="Vehicle data if found")
+    source: str = Field(..., description="'cache', 'abcd', or 'basic'")
+    attempts: int = Field(..., description="Number of API attempts made")
+    cost_estimate_nzd: float = Field(..., description="Estimated cost of the lookup")
+    message: str = Field(..., description="Human-readable result message")
+
+
+
+# ---------------------------------------------------------------------------
+# Odometer Reading Schemas
+# ---------------------------------------------------------------------------
+
+
+class OdometerReadingRequest(BaseModel):
+    """POST /api/v1/vehicles/{id}/odometer request body."""
+
+    reading_km: int = Field(..., ge=0, description="Odometer reading in kilometres")
+    source: str = Field("manual", description="Source: manual, invoice")
+    invoice_id: Optional[str] = Field(None, description="Invoice UUID if from invoice")
+    notes: Optional[str] = Field(None, description="Optional notes")
+
+
+class OdometerReadingResponse(BaseModel):
+    """Response for odometer reading operations."""
+
+    id: str
+    global_vehicle_id: str
+    reading_km: int
+    source: str
+    recorded_at: Optional[str] = None
+    vehicle_odometer_updated: bool = False
+
+
+class OdometerReadingUpdateRequest(BaseModel):
+    """PUT /api/v1/vehicles/{id}/odometer/{reading_id} request body."""
+
+    reading_km: int = Field(..., ge=0, description="Corrected odometer reading")
+    notes: Optional[str] = Field(None, description="Reason for correction")
+
+
+class OdometerHistoryEntry(BaseModel):
+    """A single odometer reading in history."""
+
+    id: str
+    reading_km: int
+    source: str
+    recorded_by: Optional[str] = None
+    invoice_id: Optional[str] = None
+    notes: Optional[str] = None
+    recorded_at: Optional[str] = None

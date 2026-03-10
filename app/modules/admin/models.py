@@ -401,6 +401,8 @@ class EmailProvider(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     smtp_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
     smtp_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    smtp_encryption: Mapped[str | None] = mapped_column(String(10), nullable=True, server_default="'tls'")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     credentials_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     credentials_set: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")

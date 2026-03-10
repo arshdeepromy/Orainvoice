@@ -9,7 +9,7 @@ import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
@@ -228,12 +228,15 @@ async def create_invoice(
     vehicle_model: str | None = None,
     vehicle_year: int | None = None,
     vehicle_odometer: int | None = None,
+    global_vehicle_id: uuid.UUID | None = None,
     branch_id: uuid.UUID | None = None,
     status: str = "draft",
     line_items_data: list[dict] | None = None,
     notes_internal: str | None = None,
     notes_customer: str | None = None,
     due_date: date | None = None,
+    issue_date: date | None = None,
+    payment_terms: str | None = None,
     discount_type: str | None = None,
     discount_value: Decimal | None = None,
     currency: str = "NZD",
@@ -244,9 +247,14 @@ async def create_invoice(
 
     - Draft: no invoice number, fully editable
     - Issued: assigns sequential number with org prefix, locks structural edits
+    
+    If global_vehicle_id is provided, automatically links the customer to the vehicle
+    if not already linked.
 
     Requirements: 17.1, 17.3, 17.4, 17.5, 17.6, 79.1, 79.2, 79.3, 79.4
     """
+    from app.modules.vehicles.models import CustomerVehicle
+    
     # Validate customer exists and belongs to org
     cust_result = await db.execute(
         select(Customer).where(
@@ -270,6 +278,17 @@ async def create_invoice(
     gst_rate = Decimal(str(org_settings.get("gst_percentage", 15)))
     invoice_prefix = org_settings.get("invoice_prefix", "INV-")
 
+    # Gate vehicle fields behind vehicles module (Req 3.1–3.4)
+    from app.core.modules import ModuleService
+    module_svc = ModuleService(db)
+    if not await module_svc.is_enabled(str(org_id), "vehicles"):
+        vehicle_rego = None
+        vehicle_make = None
+        vehicle_model = None
+        vehicle_year = None
+        vehicle_odometer = None
+        global_vehicle_id = None
+
     # Validate currency against org settings (Req 79.1, 79.2)
     validate_invoice_currency(currency, org_settings)
 
@@ -291,16 +310,22 @@ async def create_invoice(
 
     # Determine invoice number
     invoice_number = None
-    issue_date_val = None
+    issue_date_val = issue_date or date.today()  # Always set issue date
     if status == "issued":
         invoice_number = await _get_next_invoice_number(db, org_id, invoice_prefix)
-        issue_date_val = date.today()
 
-    # Calculate due date if not provided and issuing
-    if due_date is None and status == "issued":
-        default_due_days = int(org_settings.get("default_due_days", 30))
-        from datetime import timedelta
-        due_date = date.today() + timedelta(days=default_due_days)
+    # Calculate due date based on payment terms
+    if due_date is None:
+        default_due_days = int(org_settings.get("default_due_days", 0))
+        if payment_terms == "due_on_receipt" or default_due_days == 0:
+            due_date = issue_date_val
+        else:
+            terms_days_map = {
+                "net_15": 15, "net_30": 30, "net_45": 45, "net_60": 60, "net_90": 90,
+            }
+            days = terms_days_map.get(payment_terms or "", default_due_days)
+            from datetime import timedelta
+            due_date = issue_date_val + timedelta(days=days)
 
     # Create invoice record
     invoice = Invoice(
@@ -328,6 +353,7 @@ async def create_invoice(
         balance_due=totals["balance_due"],
         notes_internal=notes_internal,
         notes_customer=notes_customer,
+        invoice_data_json={"payment_terms": payment_terms} if payment_terms else {},
         created_by=user_id,
     )
     db.add(invoice)
@@ -382,6 +408,57 @@ async def create_invoice(
         ip_address=ip_address,
     )
 
+    # Auto-link customer to vehicle if global_vehicle_id provided and not already linked
+    if global_vehicle_id:
+        existing_link = await db.execute(
+            select(CustomerVehicle).where(
+                CustomerVehicle.org_id == org_id,
+                CustomerVehicle.customer_id == customer_id,
+                CustomerVehicle.global_vehicle_id == global_vehicle_id,
+            )
+        )
+        if existing_link.scalar_one_or_none() is None:
+            # Create the link
+            cv = CustomerVehicle(
+                org_id=org_id,
+                customer_id=customer_id,
+                global_vehicle_id=global_vehicle_id,
+            )
+            db.add(cv)
+            await db.flush()
+            
+            # Audit log for the link
+            await write_audit_log(
+                session=db,
+                org_id=org_id,
+                user_id=user_id,
+                action="customer.vehicle_auto_linked",
+                entity_type="customer_vehicle",
+                entity_id=cv.id,
+                before_value=None,
+                after_value={
+                    "customer_id": str(customer_id),
+                    "global_vehicle_id": str(global_vehicle_id),
+                    "linked_via": "invoice_creation",
+                    "invoice_id": str(invoice.id),
+                },
+                ip_address=ip_address,
+            )
+
+    # Record odometer reading if provided and vehicle is linked
+    if vehicle_odometer and vehicle_odometer > 0 and global_vehicle_id:
+        from app.modules.vehicles.service import record_odometer_reading
+        await record_odometer_reading(
+            db,
+            global_vehicle_id=global_vehicle_id,
+            reading_km=vehicle_odometer,
+            source="invoice",
+            recorded_by=user_id,
+            invoice_id=invoice.id,
+            org_id=org_id,
+            notes=f"Invoice {invoice_number or 'draft'}",
+        )
+
     return _invoice_to_dict(invoice, created_line_items)
 
 
@@ -422,6 +499,7 @@ def _invoice_to_dict(invoice: Invoice, line_items: list[LineItem]) -> dict:
         "created_by": invoice.created_by,
         "created_at": invoice.created_at,
         "updated_at": invoice.updated_at,
+        "payment_terms": (invoice.invoice_data_json or {}).get("payment_terms"),
     }
 
 
@@ -494,6 +572,7 @@ async def _recalculate_invoice(
     invoice.balance_due = totals["total"] - invoice.amount_paid
 
     await db.flush()
+    await db.refresh(invoice)
     return _invoice_to_dict(invoice, line_items)
 
 
@@ -862,7 +941,120 @@ async def get_invoice(
     )
     line_items = list(li_result.scalars().all())
 
-    return _invoice_to_dict(invoice, line_items)
+    result = _invoice_to_dict(invoice, line_items)
+
+    # Include organisation details for invoice preview
+    from app.modules.admin.models import Organisation
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org:
+        settings = org.settings or {}
+        result["org_name"] = org.name
+        result["org_address"] = ", ".join(filter(None, [
+            settings.get("address_unit"),
+            settings.get("address_street"),
+            settings.get("address_city"),
+            settings.get("address_state"),
+            settings.get("address_postcode"),
+            settings.get("address_country"),
+        ])) or settings.get("address") or settings.get("business_address")
+        result["org_address_unit"] = settings.get("address_unit")
+        result["org_address_street"] = settings.get("address_street")
+        result["org_address_city"] = settings.get("address_city")
+        result["org_address_state"] = settings.get("address_state")
+        result["org_address_country"] = settings.get("address_country")
+        result["org_address_postcode"] = settings.get("address_postcode")
+        result["org_phone"] = settings.get("phone") or settings.get("business_phone")
+        result["org_email"] = settings.get("email") or settings.get("business_email")
+        result["org_logo_url"] = settings.get("logo_url")
+        result["org_gst_number"] = settings.get("gst_number") or settings.get("tax_number")
+        result["org_website"] = settings.get("website")
+
+    # Include customer details
+    if invoice.customer_id:
+        cust_result = await db.execute(
+            select(Customer).where(Customer.id == invoice.customer_id)
+        )
+        customer = cust_result.scalar_one_or_none()
+        if customer:
+            result["customer"] = {
+                "id": str(customer.id),
+                "first_name": customer.first_name,
+                "last_name": customer.last_name,
+                "email": customer.email,
+                "phone": customer.phone or customer.mobile_phone,
+                "address": getattr(customer, "address", None),
+                "company_name": getattr(customer, "company_name", None),
+                "display_name": getattr(customer, "display_name", None),
+            }
+
+    # Include vehicle details from global vehicle table (rego, make, model, year, odometer, WOF expiry)
+    if invoice.vehicle_rego:
+        from app.modules.admin.models import GlobalVehicle
+        gv_result = await db.execute(
+            select(GlobalVehicle).where(
+                func.upper(GlobalVehicle.rego) == invoice.vehicle_rego.upper()
+            )
+        )
+        gv = gv_result.scalar_one_or_none()
+        if gv:
+            result["vehicle"] = {
+                "rego": gv.rego,
+                "make": gv.make,
+                "model": gv.model,
+                "year": gv.year,
+                "wof_expiry": gv.wof_expiry.isoformat() if getattr(gv, "wof_expiry", None) else None,
+                "odometer": getattr(gv, "odometer_last_recorded", None),
+            }
+
+    # Include payments
+    pay_result = await db.execute(
+        select(Payment).where(Payment.invoice_id == invoice.id).order_by(Payment.created_at)
+    )
+    payments = list(pay_result.scalars().all())
+
+    # Resolve recorded_by UUIDs to user emails
+    recorder_ids = {p.recorded_by for p in payments if hasattr(p, "recorded_by") and p.recorded_by}
+    recorder_map: dict[uuid.UUID, str] = {}
+    if recorder_ids:
+        from app.modules.auth.models import User
+        user_result = await db.execute(
+            select(User.id, User.email).where(User.id.in_(recorder_ids))
+        )
+        for uid, uemail in user_result.all():
+            recorder_map[uid] = uemail
+
+    result["payments"] = [
+        {
+            "id": str(p.id),
+            "date": p.payment_date.isoformat() if hasattr(p, "payment_date") and p.payment_date else (p.created_at.isoformat() if p.created_at else None),
+            "amount": p.amount,
+            "method": p.payment_method if hasattr(p, "payment_method") else "cash",
+            "recorded_by": recorder_map.get(p.recorded_by, str(p.recorded_by)) if hasattr(p, "recorded_by") and p.recorded_by else "",
+            "note": getattr(p, "note", None) or getattr(p, "notes", None),
+        }
+        for p in payments
+    ]
+
+    # Include credit notes
+    cn_result = await db.execute(
+        select(CreditNote).where(CreditNote.invoice_id == invoice.id).order_by(CreditNote.created_at)
+    )
+    credit_notes = list(cn_result.scalars().all())
+    result["credit_notes"] = [
+        {
+            "id": str(cn.id),
+            "reference_number": cn.credit_note_number if hasattr(cn, "credit_note_number") else str(cn.id)[:8],
+            "amount": cn.amount,
+            "reason": cn.reason if hasattr(cn, "reason") else "",
+            "created_at": cn.created_at.isoformat() if cn.created_at else None,
+        }
+        for cn in credit_notes
+    ]
+
+    return result
 
 
 async def issue_invoice(
@@ -916,6 +1108,7 @@ async def issue_invoice(
         invoice.due_date = date.today() + timedelta(days=default_due_days)
 
     await db.flush()
+    await db.refresh(invoice)
 
     # Audit log — record issuance with before/after values (Req 23.3)
     await write_audit_log(
@@ -1209,6 +1402,7 @@ async def update_invoice(
     )
     line_items = list(li_result.scalars().all())
 
+    await db.refresh(invoice)
     return _invoice_to_dict(invoice, line_items)
 
 
@@ -2452,12 +2646,26 @@ async def generate_invoice_pdf(
         "logo_url": settings.get("logo_url"),
         "primary_colour": settings.get("primary_colour", "#1a1a1a"),
         "secondary_colour": settings.get("secondary_colour"),
-        "address": settings.get("address"),
+        "address": ", ".join(filter(None, [
+            settings.get("address_unit"),
+            settings.get("address_street"),
+            settings.get("address_city"),
+            settings.get("address_state"),
+            settings.get("address_postcode"),
+            settings.get("address_country"),
+        ])) or settings.get("address"),
+        "address_unit": settings.get("address_unit"),
+        "address_street": settings.get("address_street"),
+        "address_city": settings.get("address_city"),
+        "address_state": settings.get("address_state"),
+        "address_country": settings.get("address_country"),
+        "address_postcode": settings.get("address_postcode"),
         "phone": settings.get("phone"),
         "email": settings.get("email"),
+        "website": settings.get("website"),
         "gst_number": settings.get("gst_number"),
-        "invoice_header": settings.get("invoice_header"),
-        "invoice_footer": settings.get("invoice_footer"),
+        "invoice_header": settings.get("invoice_header_text"),
+        "invoice_footer": settings.get("invoice_footer_text"),
     }
 
     gst_percentage = settings.get("gst_percentage", 15)
@@ -2517,13 +2725,23 @@ async def email_invoice(
     invoice_id: uuid.UUID,
     recipient_email: str | None = None,
 ) -> dict:
-    """Generate the invoice PDF and queue an email to the customer.
+    """Generate the invoice PDF and send an email to the customer.
 
+    Uses the highest-priority active email provider configured in the system.
     If *recipient_email* is not provided the customer's email on file is used.
     Returns a summary dict with the recipient and status.
 
     Requirements: 32.3
     """
+    import json as _json
+    import smtplib
+    from email.mime.application import MIMEApplication
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    from app.core.encryption import envelope_decrypt_str
+    from app.modules.admin.models import EmailProvider
+
     # Fetch invoice to get customer email if needed
     invoice_dict = await get_invoice(db, org_id=org_id, invoice_id=invoice_id)
 
@@ -2545,9 +2763,126 @@ async def email_invoice(
     pdf_bytes = await generate_invoice_pdf(db, org_id=org_id, invoice_id=invoice_id)
 
     inv_number = invoice_dict.get("invoice_number") or "DRAFT"
+    org_name = invoice_dict.get("org_name") or "Your Company"
+    balance_due = invoice_dict.get("balance_due", 0)
+    currency = invoice_dict.get("currency", "NZD")
 
-    # In production this would enqueue a Celery task via tasks/notifications.py.
-    # For now we record the intent and return a confirmation dict.
+    # Find all active email providers ordered by priority (failover)
+    provider_result = await db.execute(
+        select(EmailProvider)
+        .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
+        .order_by(EmailProvider.priority)
+    )
+    providers = list(provider_result.scalars().all())
+
+    if not providers:
+        raise ValueError(
+            "No active email provider configured. Please set up an email provider in Admin > Email Providers."
+        )
+
+    # Build the email message (reusable across provider attempts)
+    def _build_message(from_name: str, from_email: str) -> MIMEMultipart:
+        msg = MIMEMultipart("mixed")
+        msg["From"] = f"{from_name} <{from_email}>"
+        msg["To"] = recipient_email
+        msg["Subject"] = f"Invoice {inv_number} from {org_name}"
+
+        body = (
+            f"Hi,\n\n"
+            f"Please find attached invoice {inv_number} from {org_name}.\n\n"
+            f"Amount Due: {currency} {balance_due}\n\n"
+            f"If you have any questions, please don't hesitate to contact us.\n\n"
+            f"Thank you for your business.\n\n"
+            f"{org_name}\n"
+        )
+        msg.attach(MIMEText(body, "plain"))
+
+        pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
+        pdf_attachment.add_header(
+            "Content-Disposition", "attachment", filename=f"{inv_number}.pdf"
+        )
+        msg.attach(pdf_attachment)
+        return msg
+
+    # Try each provider in priority order until one succeeds
+    last_error = None
+    used_provider = None
+
+    for provider in providers:
+        try:
+            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
+            credentials = _json.loads(creds_json)
+
+            smtp_host = provider.smtp_host
+            smtp_port = provider.smtp_port or 587
+            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
+            username = credentials.get("username") or credentials.get("api_key", "")
+            password = credentials.get("password") or credentials.get("api_key", "")
+
+            config = provider.config or {}
+            from_email = config.get("from_email") or username
+            from_name = config.get("from_name") or org_name
+
+            msg = _build_message(from_name, from_email)
+
+            if smtp_encryption == "ssl":
+                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+            else:
+                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+                if smtp_encryption == "tls":
+                    server.starttls()
+
+            if username and password:
+                server.login(username, password)
+
+            server.sendmail(from_email, recipient_email, msg.as_string())
+            server.quit()
+            used_provider = provider
+            break
+        except Exception as e:
+            last_error = e
+            continue
+
+    if used_provider is None:
+        raise ValueError(
+            f"All email providers failed. Last error: {last_error}"
+        )
+
+    # Auto-issue the invoice if it's still a draft
+    inv_result = await db.execute(
+        select(Invoice).where(Invoice.id == invoice_id, Invoice.org_id == org_id)
+    )
+    invoice_obj = inv_result.scalar_one_or_none()
+    if invoice_obj and invoice_obj.status == "draft":
+        invoice_obj.status = "issued"
+        if not invoice_obj.issue_date:
+            invoice_obj.issue_date = date.today()
+        if not invoice_obj.due_date:
+            # Use payment terms from invoice_data_json, or default to issue date (due on receipt)
+            inv_data = invoice_obj.invoice_data_json or {}
+            pt = inv_data.get("payment_terms", "due_on_receipt")
+            terms_days_map = {
+                "due_on_receipt": 0, "net_15": 15, "net_30": 30,
+                "net_45": 45, "net_60": 60, "net_90": 90,
+            }
+            from datetime import timedelta
+            days = terms_days_map.get(pt, 0)
+            invoice_obj.due_date = invoice_obj.issue_date + timedelta(days=days)
+        if not invoice_obj.invoice_number:
+            # Get prefix from org settings
+            org_result2 = await db.execute(
+                select(Organisation).where(Organisation.id == org_id)
+            )
+            org2 = org_result2.scalar_one_or_none()
+            prefix = (org2.settings or {}).get("invoice_prefix", "INV-") if org2 else "INV-"
+            invoice_obj.invoice_number = await _get_next_invoice_number(
+                db, org_id, prefix
+            )
+        await db.flush()
+        await db.refresh(invoice_obj)
+        inv_number = invoice_obj.invoice_number or inv_number
+
+    # Audit log
     await write_audit_log(
         db,
         action="invoice.email_sent",
@@ -2558,6 +2893,7 @@ async def email_invoice(
             "recipient": recipient_email,
             "invoice_number": inv_number,
             "pdf_size_bytes": len(pdf_bytes),
+            "provider": used_provider.provider_key,
         },
     )
     await db.flush()
@@ -2567,5 +2903,5 @@ async def email_invoice(
         "invoice_number": inv_number,
         "recipient_email": recipient_email,
         "pdf_size_bytes": len(pdf_bytes),
-        "status": "queued",
+        "status": "sent",
     }

@@ -175,7 +175,7 @@ export function SetupWizard() {
 
   if (loadingProgress) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="bg-gray-50 flex items-center justify-center py-20">
         <Spinner label="Loading setup wizard" />
       </div>
     )
@@ -211,7 +211,7 @@ export function SetupWizard() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-start justify-center px-4 py-12 sm:py-16">
+    <div className="bg-gray-50 flex items-start justify-center px-4 py-12 sm:py-16">
       <div className="w-full max-w-2xl">
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-gray-900">Set Up Your Business</h1>

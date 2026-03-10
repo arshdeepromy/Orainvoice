@@ -156,6 +156,9 @@ async def provision_organisation(
         ip_address=ip_address,
     )
 
+    # 10. Seed org_modules from the plan's enabled_modules
+    await _sync_org_modules_from_plan(db, org.id, plan.enabled_modules or [])
+
     return {
         "organisation_id": str(org.id),
         "organisation_name": name,
@@ -164,6 +167,29 @@ async def provision_organisation(
         "admin_email": admin_email,
         "invitation_expires_at": expires_at,
     }
+
+
+async def _sync_org_modules_from_plan(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    enabled_modules: list[str],
+) -> None:
+    """Sync a single org's org_modules from a plan's enabled_modules list.
+
+    Called during org provisioning to seed the initial module set.
+    """
+    from app.core.modules import CORE_MODULES
+    from app.modules.module_management.models import OrgModule
+
+    for slug in enabled_modules:
+        if slug in CORE_MODULES:
+            continue
+        db.add(OrgModule(
+            org_id=org_id,
+            module_slug=slug,
+            is_enabled=True,
+        ))
+    await db.flush()
 
 
 async def _send_org_admin_invitation_email(
@@ -1481,6 +1507,10 @@ async def create_plan(
 
     logger.info("Created subscription plan %s (%s)", plan.id, name)
 
+    # Refresh server-generated timestamps to avoid MissingGreenlet on
+    # lazy load in async context.
+    await db.refresh(plan, ["created_at", "updated_at"])
+
     return {
         "id": str(plan.id),
         "name": plan.name,
@@ -1573,6 +1603,63 @@ async def get_plan(
     }
 
 
+async def _sync_plan_modules_to_orgs(
+    db: AsyncSession,
+    plan_id: uuid.UUID,
+    enabled_modules: list[str],
+) -> None:
+    """Sync a plan's enabled_modules to the org_modules table for every org on that plan.
+
+    This does NOT force-enable or force-disable modules. It only ensures that
+    modules newly added to the plan get an org_modules row (disabled by default)
+    so they appear as "available" in the org admin's module configuration page.
+    Modules removed from the plan are left as-is (the frontend uses in_plan to
+    gate the toggle). Org admin enable/disable choices are always preserved.
+    """
+    from app.core.modules import CORE_MODULES, ModuleService
+    from app.modules.module_management.models import OrgModule
+
+    # Find all orgs on this plan
+    result = await db.execute(
+        select(Organisation.id).where(Organisation.plan_id == plan_id)
+    )
+    org_ids = [row[0] for row in result.all()]
+    if not org_ids:
+        return
+
+    plan_modules = set(enabled_modules)
+
+    for org_id in org_ids:
+        org_id_str = str(org_id)
+
+        # Get existing org_module rows
+        stmt = select(OrgModule).where(OrgModule.org_id == org_id)
+        result = await db.execute(stmt)
+        existing = {om.module_slug: om for om in result.scalars().all()}
+
+        # Add rows for newly available modules (disabled by default so org admin can choose)
+        for slug in plan_modules:
+            if slug in CORE_MODULES:
+                continue
+            if slug not in existing:
+                db.add(OrgModule(
+                    org_id=org_id,
+                    module_slug=slug,
+                    is_enabled=False,
+                ))
+
+        await db.flush()
+
+        # Invalidate module cache for this org
+        svc = ModuleService(db)
+        await svc._invalidate_cache(org_id_str)
+
+    logger.info(
+        "Synced plan module availability from plan %s to %d org(s)",
+        plan_id, len(org_ids),
+    )
+
+
 async def update_plan(
     db: AsyncSession,
     plan_id: uuid.UUID,
@@ -1642,6 +1729,15 @@ async def update_plan(
 
     logger.info("Updated subscription plan %s", plan.id)
 
+    # If enabled_modules changed, sync to all orgs on this plan
+    if "enabled_modules" in after:
+        await _sync_plan_modules_to_orgs(db, plan_id, plan.enabled_modules)
+
+    # Refresh timestamps — onupdate=func.now() expires updated_at after
+    # flush, and accessing it would trigger a lazy load that fails in
+    # async context (MissingGreenlet).
+    await db.refresh(plan, ["created_at", "updated_at"])
+
     return {
         "id": str(plan.id),
         "name": plan.name,
@@ -1666,12 +1762,16 @@ async def update_plan(
 
 def _serialise_audit(data: dict) -> dict:
     """Make audit log values JSON-serialisable."""
+    from decimal import Decimal
+    
     out = {}
     for k, v in data.items():
         if isinstance(v, (datetime,)):
             out[k] = v.isoformat()
         elif isinstance(v, (uuid.UUID,)):
             out[k] = str(v)
+        elif isinstance(v, Decimal):
+            out[k] = float(v)
         else:
             out[k] = v
     return out
@@ -1712,6 +1812,10 @@ async def archive_plan(
     )
 
     logger.info("Archived subscription plan %s (%s)", plan.id, plan.name)
+
+    # Refresh server-generated timestamps to avoid MissingGreenlet on
+    # lazy load in async context.
+    await db.refresh(plan, ["created_at", "updated_at"])
 
     return {
         "id": str(plan.id),
@@ -2333,6 +2437,9 @@ async def update_organisation(
 
         if notify_org_admin:
             await _notify_org_admin_status_change(db, org, "plan_changed", None)
+
+        # Sync the new plan's enabled_modules to this org's org_modules table
+        await _sync_plan_modules_to_orgs(db, new_plan_id, new_plan.enabled_modules)
 
         return {
             "message": f"Organisation moved to plan '{new_plan.name}'",

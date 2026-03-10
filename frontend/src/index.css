@@ -5,6 +5,46 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Global form element styling */
+@layer base {
+  select {
+    @apply h-[42px] w-full appearance-none rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm transition-colors;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%236b7280'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+    background-size: 20px 20px;
+    background-position: right 8px center;
+    background-repeat: no-repeat;
+    padding-right: 2.5rem;
+  }
+  
+  select:focus {
+    @apply outline-none ring-2 ring-blue-500 ring-offset-2 border-blue-500;
+  }
+  
+  /* Ensure inputs also have consistent height */
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="number"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="search"],
+  input[type="date"],
+  input[type="time"],
+  input[type="datetime-local"],
+  textarea {
+    @apply h-[42px] w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm transition-colors;
+  }
+  
+  input:focus,
+  textarea:focus {
+    @apply outline-none ring-2 ring-blue-500 ring-offset-2 border-blue-500;
+  }
+  
+  textarea {
+    @apply h-auto min-h-[84px];
+  }
+}
+
 /* Dialog element fixes */
 dialog {
   border: none;

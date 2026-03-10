@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quote {{ quote.quote_number }} from {{ org.name }}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; line-height: 1.5; }
+  .container { max-width: 800px; margin: 40px auto; background: #fff; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); overflow: hidden; }
+  .header { padding: 32px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: flex-start; }
+  .header-left { max-width: 55%; }
+  .org-name { font-size: 22px; font-weight: 700; color: {{ org.primary_colour | default('#1a1a1a') }}; }
+  .org-details { font-size: 13px; color: #666; margin-top: 4px; }
+  .quote-title { font-size: 28px; font-weight: 700; color: {{ org.primary_colour | default('#1a1a1a') }}; text-align: right; }
+  .quote-meta { font-size: 13px; color: #555; text-align: right; margin-top: 8px; }
+  .quote-meta td { padding: 2px 0; }
+  .quote-meta td:first-child { font-weight: 600; padding-right: 12px; }
+  .body { padding: 32px; }
+  .details-grid { display: flex; gap: 32px; margin-bottom: 24px; }
+  .details-col { flex: 1; }
+  .section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: {{ org.primary_colour | default('#555') }}; border-bottom: 1px solid #eee; padding-bottom: 4px; margin-bottom: 8px; }
+  .items-table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  .items-table th { text-align: left; padding: 10px 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; color: #666; border-bottom: 2px solid #eee; }
+  .items-table td { padding: 10px 8px; font-size: 14px; border-bottom: 1px solid #f0f0f0; }
+  .items-table .text-right { text-align: right; }
+  .items-table .text-center { text-align: center; }
+  .totals { display: flex; justify-content: flex-end; margin-bottom: 24px; }
+  .totals table { min-width: 250px; }
+  .totals td { padding: 6px 0; font-size: 14px; }
+  .totals td:first-child { padding-right: 24px; }
+  .totals td:last-child { text-align: right; font-weight: 500; }
+  .totals .total-row { border-top: 2px solid #333; font-size: 18px; font-weight: 700; }
+  .totals .total-row td { padding-top: 12px; }
+  .notes { background: #f9f9f9; padding: 16px; border-radius: 6px; margin-bottom: 24px; font-size: 14px; }
+  .accept-section { text-align: center; padding: 32px; border-top: 1px solid #eee; }
+  .accept-btn { display: inline-block; padding: 14px 48px; background: #22c55e; color: #fff; font-size: 16px; font-weight: 600; border: none; border-radius: 6px; cursor: pointer; text-decoration: none; transition: background 0.2s; }
+  .accept-btn:hover { background: #16a34a; }
+  .accepted-badge { display: inline-block; padding: 12px 32px; background: #dcfce7; color: #166534; font-size: 16px; font-weight: 600; border-radius: 6px; }
+  .expired-badge { display: inline-block; padding: 12px 32px; background: #fef2f2; color: #991b1b; font-size: 16px; font-weight: 600; border-radius: 6px; }
+  .logo { max-height: 50px; max-width: 180px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="header-left">
+      {% if org.logo_url %}<img src="{{ org.logo_url }}" alt="{{ org.name }}" class="logo"><br>{% endif %}
+      <div class="org-name">{{ org.name }}</div>
+      <div class="org-details">
+        {% if org.address %}{{ org.address }}<br>{% endif %}
+        {% if org.phone %}Ph: {{ org.phone }}<br>{% endif %}
+        {% if org.email %}{{ org.email }}{% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="quote-title">Quote</div>
+      <table class="quote-meta">
+        <tr><td>Quote #</td><td>{{ quote.quote_number }}</td></tr>
+        {% if quote.valid_until %}<tr><td>Valid Until</td><td>{{ quote.valid_until }}</td></tr>{% endif %}
+        <tr><td>Status</td><td>{{ quote.status | upper }}</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="body">
+    <div class="details-grid">
+      <div class="details-col">
+        <div class="section-title">Prepared For</div>
+        <strong>{{ customer.first_name }} {{ customer.last_name }}</strong><br>
+        {% if customer.email %}{{ customer.email }}<br>{% endif %}
+        {% if customer.phone %}{{ customer.phone }}{% endif %}
+      </div>
+      {% if quote.vehicle_rego %}
+      <div class="details-col">
+        <div class="section-title">Vehicle</div>
+        <strong>{{ quote.vehicle_rego }}</strong><br>
+        {{ quote.vehicle_make or '' }} {{ quote.vehicle_model or '' }}
+        {% if quote.vehicle_year %}({{ quote.vehicle_year }}){% endif %}
+      </div>
+      {% endif %}
+    </div>
+
+    <table class="items-table">
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th class="text-center">Qty</th>
+          <th class="text-right">Rate</th>
+          <th class="text-center">GST</th>
+          <th class="text-right">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in quote.line_items %}
+        <tr>
+          <td>{{ item.description }}</td>
+          <td class="text-center">{% if item.item_type == 'labour' %}{{ item.hours or '' }}{% else %}{{ item.quantity }}{% endif %}</td>
+          <td class="text-right">${% if item.item_type == 'labour' %}{{ "%.2f" | format(item.hourly_rate or 0) }}{% else %}{{ "%.2f" | format(item.unit_price) }}{% endif %}</td>
+          <td class="text-center">{% if item.is_gst_exempt %}Exempt{% else %}✓{% endif %}</td>
+          <td class="text-right"><strong>${{ "%.2f" | format(item.line_total) }}</strong></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="totals">
+      <table>
+        <tr><td>Subtotal (excl. GST)</td><td>${{ "%.2f" | format(quote.subtotal) }}</td></tr>
+        <tr><td>GST ({{ gst_percentage }}%)</td><td>${{ "%.2f" | format(quote.gst_amount) }}</td></tr>
+        <tr class="total-row"><td>Total (NZD)</td><td>${{ "%.2f" | format(quote.total) }}</td></tr>
+      </table>
+    </div>
+
+    {% if quote.notes %}
+    <div class="notes"><strong>Notes:</strong> {{ quote.notes }}</div>
+    {% endif %}
+  </div>
+
+  <div class="accept-section">
+    {% if can_accept %}
+      <p style="margin-bottom: 16px; color: #555;">Happy with this quote? Click below to accept.</p>
+      <form method="POST" action="/api/v1/public/quotes/accept/{{ token }}">
+        <button type="submit" class="accept-btn">Accept Quote</button>
+      </form>
+    {% elif already_accepted %}
+      <div class="accepted-badge">✓ Quote Accepted</div>
+      <p style="margin-top: 12px; color: #555;">This quote has been accepted and an invoice has been created.</p>
+    {% else %}
+      <div class="expired-badge">Quote {{ quote.status | upper }}</div>
+    {% endif %}
+  </div>
+</div>
+</body>
+</html>

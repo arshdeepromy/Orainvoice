@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Tabs } from '@/components/ui/Tabs'
 import { ToastContainer, useToast } from '@/components/ui/Toast'
+import { useTenant } from '@/contexts/TenantContext'
 import apiClient from '@/api/client'
 
 /* ── Types ── */
@@ -12,7 +13,14 @@ interface BrandingForm {
   logo_url: string | null
   primary_colour: string
   secondary_colour: string
-  address: string
+  sidebar_display_mode: string
+  address_unit: string
+  address_street: string
+  address_city: string
+  address_state: string
+  address_country: string
+  address_postcode: string
+  website: string
   phone: string
   email: string
   invoice_header_text: string
@@ -39,9 +47,11 @@ interface InvoiceForm {
 /* ── Branding Tab ── */
 
 function BrandingTab() {
+  const { refetch: refetchTenant } = useTenant()
   const [form, setForm] = useState<BrandingForm>({
-    name: '', logo_url: null, primary_colour: '#2563eb', secondary_colour: '#1e40af',
-    address: '', phone: '', email: '', invoice_header_text: '', invoice_footer_text: '', email_signature: '',
+    name: '', logo_url: null, primary_colour: '#2563eb', secondary_colour: '#1e40af', sidebar_display_mode: 'icon_and_name',
+    address_unit: '', address_street: '', address_city: '', address_state: '', address_country: 'New Zealand', address_postcode: '',
+    website: '', phone: '', email: '', invoice_header_text: '', invoice_footer_text: '', email_signature: '',
   })
   const [saving, setSaving] = useState(false)
   const { toasts, addToast, dismissToast } = useToast()
@@ -50,9 +60,13 @@ function BrandingTab() {
   useEffect(() => {
     apiClient.get('/org/settings').then(({ data }) => {
       setForm({
-        name: data.name || '', logo_url: data.logo_url || null,
+        name: data.org_name || data.name || '', logo_url: data.logo_url || null,
         primary_colour: data.primary_colour || '#2563eb', secondary_colour: data.secondary_colour || '#1e40af',
-        address: data.address || '', phone: data.phone || '', email: data.email || '',
+        sidebar_display_mode: data.sidebar_display_mode || 'icon_and_name',
+        address_unit: data.address_unit || '', address_street: data.address_street || data.address || '',
+        address_city: data.address_city || '', address_state: data.address_state || '',
+        address_country: data.address_country || 'New Zealand', address_postcode: data.address_postcode || '',
+        website: data.website || '', phone: data.phone || '', email: data.email || '',
         invoice_header_text: data.invoice_header_text || '', invoice_footer_text: data.invoice_footer_text || '',
         email_signature: data.email_signature || '',
       })
@@ -77,7 +91,8 @@ function BrandingTab() {
   const save = async () => {
     setSaving(true)
     try {
-      await apiClient.put('/org/settings', form)
+      await apiClient.put('/org/settings', { ...form, org_name: form.name })
+      await refetchTenant()
       addToast('success', 'Branding saved')
     } catch {
       addToast('error', 'Failed to save branding')
@@ -118,7 +133,47 @@ function BrandingTab() {
         </div>
       </div>
 
-      <Input label="Address" value={form.address} onChange={(e) => update('address', e.target.value)} />
+      {/* Sidebar Display Mode */}
+      <div className="flex flex-col gap-1">
+        <label className="text-sm font-medium text-gray-700">Sidebar Display</label>
+        <p className="text-xs text-gray-500 mb-2">Choose how your branding appears in the sidebar</p>
+        <div className="flex gap-3">
+          {([
+            { value: 'icon_and_name', label: 'Icon & Name', desc: 'Show logo and organisation name' },
+            { value: 'icon_only', label: 'Icon Only', desc: 'Show only the logo' },
+            { value: 'name_only', label: 'Name Only', desc: 'Show only the organisation name' },
+          ] as const).map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => update('sidebar_display_mode', opt.value)}
+              className={`flex-1 rounded-lg border-2 p-3 text-left transition-colors ${
+                form.sidebar_display_mode === opt.value
+                  ? 'border-blue-500 bg-blue-50'
+                  : 'border-gray-200 hover:border-gray-300'
+              }`}
+            >
+              <span className="block text-sm font-medium text-gray-900">{opt.label}</span>
+              <span className="block text-xs text-gray-500 mt-0.5">{opt.desc}</span>
+            </button>
+          ))}
+        </div>
+        {form.sidebar_display_mode === 'icon_only' && !form.logo_url && (
+          <p className="text-xs text-amber-600 mt-1">No logo uploaded — organisation name will be shown as fallback</p>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Input label="Unit / Suite" value={form.address_unit} onChange={(e) => update('address_unit', e.target.value)} placeholder="e.g. Unit 3" />
+        <Input label="Street Number & Name" value={form.address_street} onChange={(e) => update('address_street', e.target.value)} placeholder="e.g. 34 Wai Iti Place" />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <Input label="City / Town" value={form.address_city} onChange={(e) => update('address_city', e.target.value)} placeholder="e.g. Auckland" />
+        <Input label="State / Region" value={form.address_state} onChange={(e) => update('address_state', e.target.value)} placeholder="e.g. Auckland" />
+        <Input label="Postcode" value={form.address_postcode} onChange={(e) => update('address_postcode', e.target.value)} placeholder="e.g. 0600" />
+      </div>
+      <Input label="Country" value={form.address_country} onChange={(e) => update('address_country', e.target.value)} placeholder="e.g. New Zealand" />
+      <Input label="Website" value={form.website} onChange={(e) => update('website', e.target.value)} placeholder="e.g. https://www.example.co.nz" type="url" />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Input label="Phone" value={form.phone} onChange={(e) => update('phone', e.target.value)} type="tel" />
         <Input label="Email" value={form.email} onChange={(e) => update('email', e.target.value)} type="email" />

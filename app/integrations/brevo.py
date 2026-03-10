@@ -77,6 +77,15 @@ class SmtpConfig:
 
 
 @dataclass
+class EmailAttachment:
+    """A file attachment for an email."""
+
+    filename: str
+    content: bytes
+    mime_type: str = "application/pdf"
+
+
+@dataclass
 class EmailMessage:
     """A single outbound email."""
 
@@ -87,6 +96,7 @@ class EmailMessage:
     text_body: str = ""
     from_name: str | None = None  # override global from_name
     reply_to: str | None = None   # override global reply-to
+    attachments: list[EmailAttachment] = field(default_factory=list)
 
 
 @dataclass
@@ -150,6 +160,15 @@ class EmailClient:
             payload["textContent"] = msg.text_body
         if reply_to:
             payload["replyTo"] = {"email": reply_to}
+        if msg.attachments:
+            import base64
+            payload["attachment"] = [
+                {
+                    "name": att.filename,
+                    "content": base64.b64encode(att.content).decode(),
+                }
+                for att in msg.attachments
+            ]
 
         try:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -197,6 +216,17 @@ class EmailClient:
             payload["content"].append({"type": "text/plain", "value": ""})
         if reply_to:
             payload["reply_to"] = {"email": reply_to}
+        if msg.attachments:
+            import base64
+            payload["attachments"] = [
+                {
+                    "content": base64.b64encode(att.content).decode(),
+                    "filename": att.filename,
+                    "type": att.mime_type,
+                    "disposition": "attachment",
+                }
+                for att in msg.attachments
+            ]
 
         try:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -237,6 +267,14 @@ class EmailClient:
             mime.attach(MIMEText(msg.text_body, "plain"))
         if msg.html_body:
             mime.attach(MIMEText(msg.html_body, "html"))
+        for att in msg.attachments:
+            from email.mime.base import MIMEBase
+            from email import encoders
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(att.content)
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f"attachment; filename={att.filename}")
+            mime.attach(part)
 
         try:
             host = self._config.host
@@ -310,6 +348,7 @@ async def send_org_email(
     text_body: str = "",
     org_sender_name: str | None = None,
     org_reply_to: str | None = None,
+    attachments: list[EmailAttachment] | None = None,
 ) -> SendResult:
     """Send an email using global infrastructure with org-level overrides.
 
@@ -332,5 +371,6 @@ async def send_org_email(
         text_body=text_body,
         from_name=org_sender_name,
         reply_to=org_reply_to,
+        attachments=attachments or [],
     )
     return await client.send(message)

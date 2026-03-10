@@ -20,12 +20,14 @@ export function Input({
 
   return (
     <div className="flex flex-col gap-1">
-      <label htmlFor={inputId} className="text-sm font-medium text-gray-700">
-        {label}
-      </label>
+      {label && (
+        <label htmlFor={inputId} className="text-sm font-medium text-gray-700">
+          {label}
+        </label>
+      )}
       <input
         id={inputId}
-        className={`rounded-md border px-3 py-2 text-gray-900 shadow-sm transition-colors
+        className={`h-[42px] w-full rounded-md border px-3 py-2 text-gray-900 shadow-sm transition-colors
           placeholder:text-gray-400
           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:border-blue-500
           ${error ? 'border-red-500 focus-visible:ring-red-500 focus-visible:border-red-500' : 'border-gray-300'}

@@ -28,6 +28,7 @@ import { FeatureFlags } from '@/pages/admin/FeatureFlags'
 
 /* ── Org pages (lazy loaded) ── */
 const CustomerList = lazy(() => import('@/pages/customers/CustomerList'))
+const CustomerCreate = lazy(() => import('@/pages/customers/CustomerCreate'))
 const CustomerProfile = lazy(() => import('@/pages/customers/CustomerProfile'))
 const VehicleList = lazy(() => import('@/pages/vehicles/VehicleList'))
 const VehicleProfile = lazy(() => import('@/pages/vehicles/VehicleProfile'))
@@ -259,6 +260,7 @@ function AppRoutes() {
 
           {/* Customers */}
           <Route path="/customers" element={<Suspense fallback={<LazyFallback />}><CustomerList /></Suspense>} />
+          <Route path="/customers/new" element={<Suspense fallback={<LazyFallback />}><CustomerCreate /></Suspense>} />
           <Route path="/customers/:id" element={<Suspense fallback={<LazyFallback />}><CustomerProfile /></Suspense>} />
 
           {/* Vehicles */}
@@ -268,11 +270,13 @@ function AppRoutes() {
           {/* Invoices */}
           <Route path="/invoices" element={<Suspense fallback={<LazyFallback />}><InvoiceList /></Suspense>} />
           <Route path="/invoices/new" element={<Suspense fallback={<LazyFallback />}><InvoiceCreate /></Suspense>} />
-          <Route path="/invoices/:id" element={<Suspense fallback={<LazyFallback />}><InvoiceDetail /></Suspense>} />
+          <Route path="/invoices/:id/edit" element={<Suspense fallback={<LazyFallback />}><InvoiceCreate /></Suspense>} />
+          <Route path="/invoices/:id" element={<Suspense fallback={<LazyFallback />}><InvoiceList /></Suspense>} />
 
           {/* Quotes */}
           <Route path="/quotes" element={<Suspense fallback={<LazyFallback />}><QuoteList /></Suspense>} />
           <Route path="/quotes/new" element={<Suspense fallback={<LazyFallback />}><QuoteCreate /></Suspense>} />
+          <Route path="/quotes/:id/edit" element={<Suspense fallback={<LazyFallback />}><QuoteCreate /></Suspense>} />
           <Route path="/quotes/:id" element={<Suspense fallback={<LazyFallback />}><QuoteDetailRoute /></Suspense>} />
 
           {/* Job Cards */}

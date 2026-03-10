@@ -285,13 +285,24 @@ export function FeatureFlagSettings() {
   const fetchFlags = useCallback(async () => {
     try {
       const res = await apiClient.get('/api/v2/flags')
-      // The API returns a map of key→boolean for the context, but the org settings
-      // endpoint returns detailed flag objects. Normalise both shapes.
+      // The API returns { flags: [{ key, enabled }, ...] } for the org context.
       const data = res.data
-      if (Array.isArray(data)) {
+      if (data && Array.isArray(data.flags)) {
+        // Structured response: { flags: [{ key, enabled }, ...] }
+        const mapped: OrgFeatureFlag[] = data.flags.map((f: { key: string; enabled: boolean }) => ({
+          key: f.key,
+          name: f.key.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
+          description: '',
+          category: 'General',
+          enabled: Boolean(f.enabled),
+          source: 'explicit' as const,
+          can_override: false,
+        }))
+        setFlags(mapped)
+      } else if (Array.isArray(data)) {
         setFlags(data)
       } else if (typeof data === 'object' && data !== null) {
-        // Convert flat map to OrgFeatureFlag array
+        // Convert flat map to OrgFeatureFlag array (backwards compat)
         const mapped: OrgFeatureFlag[] = Object.entries(data).map(([key, enabled]) => ({
           key,
           name: key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),

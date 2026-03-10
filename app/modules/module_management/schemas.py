@@ -19,6 +19,7 @@ class ModuleResponse(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     status: str = "available"
     is_enabled: bool = False
+    in_plan: bool = True
 
     model_config = {"from_attributes": True}
 

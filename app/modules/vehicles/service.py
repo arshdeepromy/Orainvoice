@@ -106,6 +106,149 @@ def _carjam_data_to_global_vehicle(data: CarjamVehicleData) -> GlobalVehicle:
     )
 
 
+# ---------------------------------------------------------------------------
+# Odometer Reading Management
+# ---------------------------------------------------------------------------
+
+
+async def record_odometer_reading(
+    db: AsyncSession,
+    *,
+    global_vehicle_id: uuid.UUID,
+    reading_km: int,
+    source: str = "manual",
+    recorded_by: uuid.UUID | None = None,
+    invoice_id: uuid.UUID | None = None,
+    org_id: uuid.UUID | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Record a new odometer reading and update global vehicle if higher.
+
+    Saves to odometer_readings history table. Only updates
+    global_vehicles.odometer_last_recorded if the new reading is >= current.
+    """
+    from app.modules.vehicles.models import OdometerReading
+
+    # Load the global vehicle
+    result = await db.execute(
+        select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
+    )
+    vehicle = result.scalar_one_or_none()
+    if vehicle is None:
+        raise ValueError(f"Vehicle with id '{global_vehicle_id}' not found")
+
+    # Save to history
+    reading = OdometerReading(
+        global_vehicle_id=global_vehicle_id,
+        reading_km=reading_km,
+        source=source,
+        recorded_by=recorded_by,
+        invoice_id=invoice_id,
+        org_id=org_id,
+        notes=notes,
+    )
+    db.add(reading)
+    await db.flush()
+
+    # Update global vehicle only if new reading is higher
+    current = vehicle.odometer_last_recorded or 0
+    if reading_km >= current:
+        vehicle.odometer_last_recorded = reading_km
+        await db.flush()
+
+    return {
+        "id": str(reading.id),
+        "global_vehicle_id": str(global_vehicle_id),
+        "reading_km": reading_km,
+        "source": source,
+        "recorded_at": reading.recorded_at.isoformat() if reading.recorded_at else None,
+        "vehicle_odometer_updated": reading_km >= current,
+    }
+
+
+async def get_odometer_history(
+    db: AsyncSession,
+    *,
+    global_vehicle_id: uuid.UUID,
+    limit: int = 50,
+) -> list[dict]:
+    """Get odometer reading history for a vehicle, newest first."""
+    from app.modules.vehicles.models import OdometerReading
+
+    result = await db.execute(
+        select(OdometerReading)
+        .where(OdometerReading.global_vehicle_id == global_vehicle_id)
+        .order_by(OdometerReading.recorded_at.desc())
+        .limit(limit)
+    )
+    readings = result.scalars().all()
+
+    return [
+        {
+            "id": str(r.id),
+            "reading_km": r.reading_km,
+            "source": r.source,
+            "recorded_by": str(r.recorded_by) if r.recorded_by else None,
+            "invoice_id": str(r.invoice_id) if r.invoice_id else None,
+            "notes": r.notes,
+            "recorded_at": r.recorded_at.isoformat() if r.recorded_at else None,
+        }
+        for r in readings
+    ]
+
+
+async def update_odometer_reading(
+    db: AsyncSession,
+    *,
+    reading_id: uuid.UUID,
+    new_reading_km: int,
+    user_id: uuid.UUID,
+    notes: str | None = None,
+) -> dict:
+    """Correct an existing odometer reading (e.g. accidental wrong entry).
+
+    Also recalculates the vehicle's odometer_last_recorded from the max
+    of all readings.
+    """
+    from app.modules.vehicles.models import OdometerReading
+
+    result = await db.execute(
+        select(OdometerReading).where(OdometerReading.id == reading_id)
+    )
+    reading = result.scalar_one_or_none()
+    if reading is None:
+        raise ValueError(f"Odometer reading '{reading_id}' not found")
+
+    old_km = reading.reading_km
+    reading.reading_km = new_reading_km
+    if notes is not None:
+        reading.notes = notes
+    await db.flush()
+
+    # Recalculate vehicle's odometer_last_recorded from max of all readings
+    from sqlalchemy import func as sa_func
+    max_result = await db.execute(
+        select(sa_func.max(OdometerReading.reading_km))
+        .where(OdometerReading.global_vehicle_id == reading.global_vehicle_id)
+    )
+    max_km = max_result.scalar() or 0
+
+    vehicle_result = await db.execute(
+        select(GlobalVehicle).where(GlobalVehicle.id == reading.global_vehicle_id)
+    )
+    vehicle = vehicle_result.scalar_one_or_none()
+    if vehicle:
+        vehicle.odometer_last_recorded = max_km
+        await db.flush()
+
+    return {
+        "id": str(reading.id),
+        "old_reading_km": old_km,
+        "new_reading_km": new_reading_km,
+        "vehicle_odometer_now": max_km,
+    }
+
+
 async def lookup_vehicle(
     db: AsyncSession,
     redis: Redis,
@@ -257,9 +400,24 @@ async def refresh_vehicle(
     existing.num_seats = carjam_data.seats
     existing.wof_expiry = _parse_date(carjam_data.wof_expiry)
     existing.registration_expiry = _parse_date(carjam_data.rego_expiry)
-    existing.odometer_last_recorded = carjam_data.odometer
+    existing.odometer_last_recorded = max(
+        carjam_data.odometer or 0,
+        existing.odometer_last_recorded or 0,
+    ) or None
     existing.last_pulled_at = now
     existing.lookup_type = carjam_data.lookup_type
+
+    # Record CarJam odometer reading in history if available
+    if carjam_data.odometer and carjam_data.odometer > 0:
+        await record_odometer_reading(
+            db,
+            global_vehicle_id=existing.id,
+            reading_km=carjam_data.odometer,
+            source="carjam",
+            recorded_by=user_id,
+            org_id=org_id,
+            notes="CarJam resync",
+        )
     # Extended fields
     existing.vin = carjam_data.vin
     existing.chassis = carjam_data.chassis
@@ -593,3 +751,277 @@ async def get_vehicle_profile(
         "linked_customers": linked_customers,
         "service_history": service_history,
     }
+
+
+# ---------------------------------------------------------------------------
+# Live Search & ABCD Fallback
+# ---------------------------------------------------------------------------
+
+async def search_vehicles(
+    db: AsyncSession,
+    *,
+    query: str,
+    limit: int = 10,
+    org_id: uuid.UUID | None = None,
+) -> list[dict]:
+    """Search global_vehicles by rego prefix match.
+    
+    Returns up to `limit` results. No API calls, no usage tracking.
+    Fast database-only search for live autocomplete.
+    
+    If org_id is provided, also returns linked customers for each vehicle.
+    """
+    from app.modules.customers.models import Customer
+    from app.modules.vehicles.models import CustomerVehicle
+    
+    query_upper = query.upper().strip()
+    logger.info(f"search_vehicles called: query={query_upper}, limit={limit}, org_id={org_id}")
+    
+    if not query_upper:
+        return []
+    
+    stmt = (
+        select(GlobalVehicle)
+        .where(GlobalVehicle.rego.like(f"{query_upper}%"))
+        .order_by(GlobalVehicle.rego)
+        .limit(limit)
+    )
+    
+    result = await db.execute(stmt)
+    vehicles = result.scalars().all()
+    
+    logger.info(f"search_vehicles found {len(vehicles)} results")
+    
+    results = []
+    for v in vehicles:
+        vehicle_data = {
+            "id": str(v.id),
+            "rego": v.rego,
+            "make": v.make,
+            "model": v.model,
+            "year": v.year,
+            "colour": v.colour,
+            "lookup_type": v.lookup_type,
+            "odometer": v.odometer_last_recorded,
+            "linked_customers": [],
+        }
+        
+        # If org_id provided, fetch linked customers
+        if org_id:
+            links_result = await db.execute(
+                select(CustomerVehicle, Customer)
+                .join(Customer, CustomerVehicle.customer_id == Customer.id)
+                .where(
+                    CustomerVehicle.global_vehicle_id == v.id,
+                    CustomerVehicle.org_id == org_id,
+                )
+            )
+            for link, cust in links_result.all():
+                vehicle_data["linked_customers"].append({
+                    "id": str(cust.id),
+                    "first_name": cust.first_name,
+                    "last_name": cust.last_name,
+                    "email": cust.email,
+                    "phone": cust.phone,
+                    "mobile_phone": cust.mobile_phone,
+                    "display_name": cust.display_name,
+                    "company_name": cust.company_name,
+                })
+        
+        results.append(vehicle_data)
+    
+    logger.info(f"search_vehicles returning: {results}")
+    return results
+
+
+async def lookup_vehicle_with_abcd_fallback(
+    db: AsyncSession,
+    redis: Redis,
+    *,
+    rego: str,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Look up vehicle with ABCD-first strategy, fallback to Basic.
+    
+    Strategy:
+    1. Check cache (global_vehicles) - if hit, return immediately
+    2. Try ABCD API (2 attempts with 1s delay for async data fetch)
+    3. If ABCD fails, fallback to Basic API
+    4. Store result and increment appropriate usage counter
+    
+    Returns dict with:
+    - success: bool
+    - vehicle: dict (vehicle data)
+    - source: 'cache' | 'abcd' | 'basic'
+    - attempts: int (number of API attempts)
+    - cost_estimate_nzd: float
+    - message: str
+    """
+    import asyncio
+    from app.integrations.carjam import CarjamNotFoundError, CarjamRateLimitError
+    from app.core.encryption import envelope_decrypt_str
+    from app.modules.admin.models import IntegrationConfig
+    
+    rego = rego.upper().strip()
+    logger.info(f"lookup_vehicle_with_abcd_fallback: rego={rego}, org_id={org_id}")
+    
+    # Step 1: Check cache
+    result = await db.execute(
+        select(GlobalVehicle).where(GlobalVehicle.rego == rego)
+    )
+    existing = result.scalar_one_or_none()
+    
+    if existing is not None:
+        logger.info(f"Cache hit for {rego}")
+        return {
+            "success": True,
+            "vehicle": _global_vehicle_to_dict(existing, source="cache"),
+            "source": "cache",
+            "attempts": 0,
+            "cost_estimate_nzd": 0.0,
+            "message": f"Vehicle found in database",
+        }
+    
+    # Load Carjam config
+    config_result = await db.execute(
+        select(IntegrationConfig).where(IntegrationConfig.name == "carjam")
+    )
+    config_row = config_result.scalar_one_or_none()
+    
+    if not config_row:
+        raise CarjamError("Carjam integration not configured")
+    
+    try:
+        config_data = json.loads(envelope_decrypt_str(config_row.config_encrypted))
+        api_key = config_data.get("api_key", "")
+        base_url = config_data.get("endpoint_url", "https://www.carjam.co.nz")
+        rate_limit = config_data.get("global_rate_limit_per_minute", 60)
+    except Exception as e:
+        logger.error(f"Failed to load Carjam config: {e}")
+        raise CarjamError("Failed to load Carjam configuration")
+    
+    client = CarjamClient(
+        redis=redis,
+        api_key=api_key,
+        base_url=base_url,
+        rate_limit=rate_limit,
+    )
+    
+    # Step 2: Try ABCD (2 attempts)
+    abcd_attempts = 0
+    for attempt in range(2):
+        abcd_attempts += 1
+        try:
+            logger.info(f"ABCD attempt {abcd_attempts} for {rego}")
+            carjam_data = await client.lookup_vehicle_abcd(rego, use_mvr=True)
+            
+            # Success! Store and return
+            new_vehicle = _carjam_data_to_global_vehicle(carjam_data)
+            db.add(new_vehicle)
+            await db.flush()
+            
+            # Increment org counter
+            org_result = await db.execute(
+                select(Organisation).where(Organisation.id == org_id)
+            )
+            org = org_result.scalar_one_or_none()
+            if org is not None:
+                org.carjam_lookups_this_month += 1
+                await db.flush()
+            
+            # Audit log
+            await write_audit_log(
+                session=db,
+                org_id=org_id,
+                user_id=user_id,
+                action="vehicle.carjam_abcd_lookup",
+                entity_type="global_vehicle",
+                entity_id=new_vehicle.id,
+                before_value=None,
+                after_value={"rego": rego, "source": "abcd", "attempts": abcd_attempts},
+                ip_address=ip_address,
+            )
+            
+            await db.commit()
+            
+            message = f"Vehicle found via ABCD API"
+            if abcd_attempts > 1:
+                message += f" ({abcd_attempts} attempts)"
+            
+            return {
+                "success": True,
+                "vehicle": _global_vehicle_to_dict(new_vehicle, source="abcd"),
+                "source": "abcd",
+                "attempts": abcd_attempts,
+                "cost_estimate_nzd": 0.05,  # ABCD cost estimate
+                "message": message,
+            }
+            
+        except CarjamError as exc:
+            if str(exc) == "ABCD_FETCHING" and attempt < 1:
+                # Data being fetched, retry after delay
+                logger.info(f"ABCD data being fetched for {rego}, retrying in 1s")
+                await asyncio.sleep(1)
+                continue
+            else:
+                # ABCD failed, break to fallback
+                logger.info(f"ABCD failed for {rego}: {exc}")
+                break
+        except Exception as exc:
+            logger.error(f"ABCD error for {rego}: {exc}")
+            break
+    
+    # Step 3: Fallback to Basic
+    logger.info(f"Falling back to Basic API for {rego}")
+    try:
+        carjam_data = await client.lookup_vehicle(rego)
+        
+        # Store result
+        new_vehicle = _carjam_data_to_global_vehicle(carjam_data)
+        db.add(new_vehicle)
+        await db.flush()
+        
+        # Increment org counter
+        org_result = await db.execute(
+            select(Organisation).where(Organisation.id == org_id)
+        )
+        org = org_result.scalar_one_or_none()
+        if org is not None:
+            org.carjam_lookups_this_month += 1
+            await db.flush()
+        
+        # Audit log
+        await write_audit_log(
+            session=db,
+            org_id=org_id,
+            user_id=user_id,
+            action="vehicle.carjam_basic_lookup",
+            entity_type="global_vehicle",
+            entity_id=new_vehicle.id,
+            before_value=None,
+            after_value={"rego": rego, "source": "basic", "abcd_attempts": abcd_attempts},
+            ip_address=ip_address,
+        )
+        
+        await db.commit()
+        
+        return {
+            "success": True,
+            "vehicle": _global_vehicle_to_dict(new_vehicle, source="basic"),
+            "source": "basic",
+            "attempts": 1,
+            "cost_estimate_nzd": 0.15,  # Basic cost estimate
+            "message": "Vehicle found via Basic lookup (ABCD unavailable)",
+        }
+        
+    except CarjamNotFoundError:
+        # Both ABCD and Basic failed - vehicle not found
+        raise
+    except CarjamRateLimitError:
+        # Rate limit - don't catch, let it propagate
+        raise
+    except CarjamError as exc:
+        # Other Carjam error
+        raise

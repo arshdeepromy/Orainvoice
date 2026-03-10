@@ -59,11 +59,15 @@ class SecurityHeadersMiddleware:
 
         is_api = request.url.path.startswith("/api")
         is_dev = settings.environment == "development"
+        is_public_html = request.url.path.startswith("/api/v1/public/") or request.url.path.startswith("/api/v2/public/")
 
         async def inject_headers(message):
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
                 for name, value in REQUIRED_SECURITY_HEADERS.items():
+                    # Skip CSP for public HTML pages — they set their own
+                    if is_public_html and name.lower() == "content-security-policy":
+                        continue
                     headers.append((name.lower().encode(), value.encode()))
                 headers.append((b"x-xss-protection", b"1; mode=block"))
                 if is_api and is_dev:

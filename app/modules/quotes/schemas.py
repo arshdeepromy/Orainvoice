@@ -52,9 +52,16 @@ class QuoteCreate(BaseModel):
     vehicle_make: str | None = None
     vehicle_model: str | None = None
     vehicle_year: int | None = None
+    project_id: uuid.UUID | None = None
     validity_days: int = Field(default=30)
     line_items: list[QuoteLineItemCreate] = Field(default_factory=list)
     notes: str | None = None
+    terms: str | None = None
+    subject: str | None = None
+    discount_type: str | None = Field(default="percentage")
+    discount_value: Decimal = Field(default=Decimal("0"), ge=0)
+    shipping_charges: Decimal = Field(default=Decimal("0"), ge=0)
+    adjustment: Decimal = Field(default=Decimal("0"))
 
     @field_validator("validity_days")
     @classmethod
@@ -72,10 +79,17 @@ class QuoteUpdate(BaseModel):
     vehicle_make: str | None = None
     vehicle_model: str | None = None
     vehicle_year: int | None = None
+    project_id: uuid.UUID | None = None
     status: QuoteStatus | None = None
     validity_days: int | None = None
     line_items: list[QuoteLineItemCreate] | None = None
     notes: str | None = None
+    terms: str | None = None
+    subject: str | None = None
+    discount_type: str | None = None
+    discount_value: Decimal | None = None
+    shipping_charges: Decimal | None = None
+    adjustment: Decimal | None = None
 
     @field_validator("validity_days")
     @classmethod
@@ -112,12 +126,22 @@ class QuoteResponse(BaseModel):
     vehicle_make: str | None = None
     vehicle_model: str | None = None
     vehicle_year: int | None = None
+    project_id: uuid.UUID | None = None
     status: str
     valid_until: date | None = None
     subtotal: Decimal
     gst_amount: Decimal
     total: Decimal
+    discount_type: str | None = None
+    discount_value: Decimal = Decimal("0")
+    discount_amount: Decimal = Decimal("0")
+    shipping_charges: Decimal = Decimal("0")
+    adjustment: Decimal = Decimal("0")
     notes: str | None = None
+    terms: str | None = None
+    subject: str | None = None
+    acceptance_token: str | None = None
+    converted_invoice_id: uuid.UUID | None = None
     line_items: list[QuoteLineItemResponse] = Field(default_factory=list)
     created_by: uuid.UUID
     created_at: datetime
@@ -141,6 +165,7 @@ class QuoteSearchResult(BaseModel):
     total: Decimal
     status: str
     valid_until: date | None = None
+    created_at: datetime | None = None
 
 
 class QuoteListResponse(BaseModel):

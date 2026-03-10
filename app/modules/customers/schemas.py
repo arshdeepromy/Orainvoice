@@ -15,31 +15,130 @@ from pydantic import BaseModel, Field
 # Request schemas
 # ---------------------------------------------------------------------------
 
+# Enums for customer fields
+CUSTOMER_TYPES = ["individual", "business"]
+SALUTATIONS = ["Mr", "Mrs", "Ms", "Miss", "Dr", "Prof", ""]
+PAYMENT_TERMS = ["due_on_receipt", "net_7", "net_15", "net_30", "net_45", "net_60", "net_90"]
+
+
+class AddressSchema(BaseModel):
+    """Structured address for billing/shipping."""
+    
+    street: Optional[str] = Field(None, max_length=500, description="Street address")
+    city: Optional[str] = Field(None, max_length=100, description="City")
+    state: Optional[str] = Field(None, max_length=100, description="State/Province/Region")
+    postal_code: Optional[str] = Field(None, max_length=20, description="Postal/ZIP code")
+    country: Optional[str] = Field(None, max_length=100, description="Country")
+
+
+class ContactPersonSchema(BaseModel):
+    """Additional contact person for a customer."""
+    
+    salutation: Optional[str] = Field(None, max_length=20)
+    first_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(..., min_length=1, max_length=100)
+    email: Optional[str] = Field(None, max_length=255)
+    work_phone: Optional[str] = Field(None, max_length=50)
+    mobile_phone: Optional[str] = Field(None, max_length=50)
+    designation: Optional[str] = Field(None, max_length=100, description="Job title")
+    is_primary: bool = Field(False, description="Is this the primary contact")
+
 
 class CustomerCreateRequest(BaseModel):
     """POST /api/v1/customers request body.
 
-    Inline creation from search dropdown — minimal form.
+    Comprehensive customer creation with all fields.
     Requirements: 11.4, 11.5
     """
 
+    # Required fields
     first_name: str = Field(
         ..., min_length=1, max_length=100, description="Customer first name"
     )
     last_name: str = Field(
         ..., min_length=1, max_length=100, description="Customer last name"
     )
-    email: Optional[str] = Field(
-        None, max_length=255, description="Customer email address"
+    email: str = Field(
+        ..., max_length=255, description="Customer email address (required)"
+    )
+    mobile_phone: str = Field(
+        ..., max_length=50, description="Mobile phone number (required)"
+    )
+    
+    # Customer type and identity
+    customer_type: Optional[str] = Field(
+        "individual", description="Customer type: individual or business"
+    )
+    salutation: Optional[str] = Field(
+        None, max_length=20, description="Salutation: Mr, Mrs, Ms, Dr, etc."
+    )
+    company_name: Optional[str] = Field(
+        None, max_length=255, description="Company name (for business customers)"
+    )
+    display_name: Optional[str] = Field(
+        None, max_length=255, description="Display name for invoices"
+    )
+    
+    # Additional contact info
+    work_phone: Optional[str] = Field(
+        None, max_length=50, description="Work phone number"
     )
     phone: Optional[str] = Field(
-        None, max_length=50, description="Customer phone number"
+        None, max_length=50, description="Legacy phone field (use mobile_phone)"
     )
+    
+    # Preferences
+    currency: Optional[str] = Field(
+        "NZD", max_length=3, description="ISO 4217 currency code"
+    )
+    language: Optional[str] = Field(
+        "en", max_length=10, description="Preferred language code"
+    )
+    
+    # Business/Tax settings
+    tax_rate_id: Optional[str] = Field(
+        None, description="Default tax rate UUID"
+    )
+    company_id: Optional[str] = Field(
+        None, max_length=100, description="Business registration / company ID"
+    )
+    payment_terms: Optional[str] = Field(
+        "due_on_receipt", description="Payment terms"
+    )
+    
+    # Portal and payment options
+    enable_bank_payment: Optional[bool] = Field(
+        False, description="Allow bank account payment"
+    )
+    enable_portal: Optional[bool] = Field(
+        False, description="Allow customer portal access"
+    )
+    
+    # Addresses
     address: Optional[str] = Field(
-        None, max_length=2000, description="Customer physical address (optional)"
+        None, max_length=2000, description="Simple address string"
     )
+    billing_address: Optional[AddressSchema] = Field(
+        None, description="Structured billing address"
+    )
+    shipping_address: Optional[AddressSchema] = Field(
+        None, description="Structured shipping address"
+    )
+    
+    # Additional data
+    contact_persons: Optional[list[ContactPersonSchema]] = Field(
+        None, description="Additional contact persons"
+    )
+    custom_fields: Optional[dict] = Field(
+        None, description="Custom fields key-value pairs"
+    )
+    
+    # Notes
     notes: Optional[str] = Field(
         None, max_length=5000, description="Internal notes"
+    )
+    remarks: Optional[str] = Field(
+        None, max_length=5000, description="Additional remarks"
     )
 
 
@@ -50,23 +149,92 @@ class CustomerUpdateRequest(BaseModel):
     Requirements: 11.5
     """
 
+    # Identity fields
     first_name: Optional[str] = Field(
         None, min_length=1, max_length=100, description="Customer first name"
     )
     last_name: Optional[str] = Field(
         None, min_length=1, max_length=100, description="Customer last name"
     )
+    customer_type: Optional[str] = Field(
+        None, description="Customer type: individual or business"
+    )
+    salutation: Optional[str] = Field(
+        None, max_length=20, description="Salutation"
+    )
+    company_name: Optional[str] = Field(
+        None, max_length=255, description="Company name"
+    )
+    display_name: Optional[str] = Field(
+        None, max_length=255, description="Display name"
+    )
+    
+    # Contact info
     email: Optional[str] = Field(
         None, max_length=255, description="Customer email address"
     )
     phone: Optional[str] = Field(
-        None, max_length=50, description="Customer phone number"
+        None, max_length=50, description="Phone number"
     )
+    work_phone: Optional[str] = Field(
+        None, max_length=50, description="Work phone"
+    )
+    mobile_phone: Optional[str] = Field(
+        None, max_length=50, description="Mobile phone"
+    )
+    
+    # Preferences
+    currency: Optional[str] = Field(
+        None, max_length=3, description="Currency code"
+    )
+    language: Optional[str] = Field(
+        None, max_length=10, description="Language code"
+    )
+    
+    # Business/Tax
+    tax_rate_id: Optional[str] = Field(
+        None, description="Tax rate UUID"
+    )
+    company_id: Optional[str] = Field(
+        None, max_length=100, description="Company ID"
+    )
+    payment_terms: Optional[str] = Field(
+        None, description="Payment terms"
+    )
+    
+    # Options
+    enable_bank_payment: Optional[bool] = Field(
+        None, description="Allow bank payment"
+    )
+    enable_portal: Optional[bool] = Field(
+        None, description="Allow portal access"
+    )
+    
+    # Addresses
     address: Optional[str] = Field(
-        None, max_length=2000, description="Customer physical address"
+        None, max_length=2000, description="Simple address"
     )
+    billing_address: Optional[AddressSchema] = Field(
+        None, description="Billing address"
+    )
+    shipping_address: Optional[AddressSchema] = Field(
+        None, description="Shipping address"
+    )
+    
+    # Additional data
+    contact_persons: Optional[list[ContactPersonSchema]] = Field(
+        None, description="Contact persons"
+    )
+    custom_fields: Optional[dict] = Field(
+        None, description="Custom fields"
+    )
+    
+    # Notes
     notes: Optional[str] = Field(
         None, max_length=5000, description="Internal notes"
+    )
+    remarks: Optional[str] = Field(
+        None, max_length=5000, description="Remarks"
     )
 
 
@@ -82,15 +250,64 @@ class CustomerResponse(BaseModel):
     """
 
     id: str = Field(..., description="Customer UUID")
+    
+    # Identity
+    customer_type: str = Field("individual", description="individual or business")
+    salutation: Optional[str] = Field(None, description="Salutation")
     first_name: str = Field(..., description="First name")
     last_name: str = Field(..., description="Last name")
+    company_name: Optional[str] = Field(None, description="Company name")
+    display_name: Optional[str] = Field(None, description="Display name")
+    
+    # Contact
     email: Optional[str] = Field(None, description="Email address")
     phone: Optional[str] = Field(None, description="Phone number")
-    address: Optional[str] = Field(None, description="Physical address")
+    work_phone: Optional[str] = Field(None, description="Work phone")
+    mobile_phone: Optional[str] = Field(None, description="Mobile phone")
+    
+    # Preferences
+    currency: str = Field("NZD", description="Currency code")
+    language: str = Field("en", description="Language code")
+    
+    # Business/Tax
+    tax_rate_id: Optional[str] = Field(None, description="Tax rate UUID")
+    company_id: Optional[str] = Field(None, description="Company ID")
+    payment_terms: str = Field("due_on_receipt", description="Payment terms")
+    
+    # Options
+    enable_bank_payment: bool = Field(False, description="Bank payment enabled")
+    enable_portal: bool = Field(False, description="Portal access enabled")
+    
+    # Addresses
+    address: Optional[str] = Field(None, description="Simple address")
+    billing_address: Optional[dict] = Field(None, description="Billing address")
+    shipping_address: Optional[dict] = Field(None, description="Shipping address")
+    
+    # Additional data
+    contact_persons: list = Field(default_factory=list, description="Contact persons")
+    custom_fields: dict = Field(default_factory=dict, description="Custom fields")
+    
+    # Notes
     notes: Optional[str] = Field(None, description="Internal notes")
-    is_anonymised: bool = Field(False, description="Whether the record is anonymised")
+    remarks: Optional[str] = Field(None, description="Remarks")
+    
+    # Status
+    is_anonymised: bool = Field(False, description="Whether anonymised")
+    
+    # Timestamps
     created_at: str = Field(..., description="ISO 8601 creation timestamp")
     updated_at: str = Field(..., description="ISO 8601 last update timestamp")
+
+
+class LinkedVehicleSummary(BaseModel):
+    """A vehicle linked to a customer (for search results)."""
+    
+    id: str = Field(..., description="Global vehicle UUID")
+    rego: str = Field(..., description="Registration number")
+    make: Optional[str] = Field(None, description="Vehicle make")
+    model: Optional[str] = Field(None, description="Vehicle model")
+    year: Optional[int] = Field(None, description="Vehicle year")
+    colour: Optional[str] = Field(None, description="Vehicle colour")
 
 
 class CustomerSearchResult(BaseModel):
@@ -100,10 +317,20 @@ class CustomerSearchResult(BaseModel):
     """
 
     id: str = Field(..., description="Customer UUID")
+    customer_type: str = Field("individual", description="individual or business")
     first_name: str = Field(..., description="First name")
     last_name: str = Field(..., description="Last name")
+    company_name: Optional[str] = Field(None, description="Company name")
+    display_name: Optional[str] = Field(None, description="Display name")
     email: Optional[str] = Field(None, description="Email address")
     phone: Optional[str] = Field(None, description="Phone number")
+    mobile_phone: Optional[str] = Field(None, description="Mobile phone")
+    work_phone: Optional[str] = Field(None, description="Work phone")
+    receivables: float = Field(0.0, description="Total outstanding balance due (BCY)")
+    unused_credits: float = Field(0.0, description="Total unused credit notes (BCY)")
+    linked_vehicles: Optional[list[LinkedVehicleSummary]] = Field(
+        None, description="Linked vehicles (when include_vehicles=true)"
+    )
 
 
 class CustomerListResponse(BaseModel):
@@ -206,15 +433,44 @@ class CustomerProfileResponse(BaseModel):
     """
 
     id: str
+    # Identity
+    customer_type: str = "individual"
+    salutation: Optional[str] = None
     first_name: str
     last_name: str
+    company_name: Optional[str] = None
+    display_name: Optional[str] = None
+    # Contact
     email: Optional[str] = None
     phone: Optional[str] = None
+    work_phone: Optional[str] = None
+    mobile_phone: Optional[str] = None
+    # Preferences
+    currency: str = "NZD"
+    language: str = "en"
+    # Business/Tax
+    tax_rate_id: Optional[str] = None
+    company_id: Optional[str] = None
+    payment_terms: str = "due_on_receipt"
+    # Options
+    enable_bank_payment: bool = False
+    enable_portal: bool = False
+    # Addresses
     address: Optional[str] = None
+    billing_address: Optional[dict] = Field(default_factory=dict)
+    shipping_address: Optional[dict] = Field(default_factory=dict)
+    # Additional data
+    contact_persons: Optional[list] = Field(default_factory=list)
+    custom_fields: Optional[dict] = Field(default_factory=dict)
+    # Notes
     notes: Optional[str] = None
+    remarks: Optional[str] = None
+    # Status
     is_anonymised: bool = False
+    # Timestamps
     created_at: str
     updated_at: str
+    # Profile data
     vehicles: list[LinkedVehicleResponse] = Field(default_factory=list)
     invoices: list[InvoiceHistoryItem] = Field(default_factory=list)
     total_spend: str = Field("0.00", description="Total amount paid across all invoices")

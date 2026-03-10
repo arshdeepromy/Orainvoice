@@ -1,59 +1,97 @@
 /**
- * Staff list page with paginated table, role filter, active/inactive filter,
- * and create button.
- *
- * Validates: Requirement — Staff Module
+ * Staff list page — styled to match the rest of the app.
+ * Supports search, filters, pagination, add/edit modal.
  */
 
 import { useEffect, useState, useCallback } from 'react'
-import apiClient from '@/api/client'
+import { useNavigate } from 'react-router-dom'
+import apiClient from '../../api/client'
+import { Button } from '../../components/ui'
+import WorkSchedule, { type WeekSchedule } from '../../components/WorkSchedule'
 
 interface StaffMember {
   id: string
-  org_id: string
   name: string
+  first_name: string
+  last_name: string | null
   email: string | null
   phone: string | null
+  employee_id: string | null
+  position: string | null
+  reporting_to: string | null
+  reporting_to_name: string | null
+  shift_start: string | null
+  shift_end: string | null
   role_type: string
   hourly_rate: string | null
+  overtime_rate: string | null
+  skills: string[]
+  availability_schedule: Record<string, { start: string; end: string }>
   is_active: boolean
   created_at: string
 }
 
-const ROLE_OPTIONS = [
-  { value: '', label: 'All Roles' },
-  { value: 'employee', label: 'Employee' },
-  { value: 'contractor', label: 'Contractor' },
-]
+interface StaffFormData {
+  first_name: string
+  last_name: string
+  email: string
+  phone: string
+  employee_id: string
+  position: string
+  reporting_to: string
+  role_type: string
+  hourly_rate: string
+  overtime_rate: string
+  skills: string
+}
 
-const ACTIVE_OPTIONS = [
-  { value: '', label: 'All Status' },
-  { value: 'true', label: 'Active' },
-  { value: 'false', label: 'Inactive' },
-]
+const DEFAULT_SCHEDULE: WeekSchedule = {
+  monday: { start: '09:00', end: '17:00' },
+  tuesday: { start: '09:00', end: '17:00' },
+  wednesday: { start: '09:00', end: '17:00' },
+  thursday: { start: '09:00', end: '17:00' },
+  friday: { start: '09:00', end: '17:00' },
+}
+
+const emptyForm: StaffFormData = {
+  first_name: '', last_name: '', email: '', phone: '',
+  employee_id: '', position: '', reporting_to: '',
+  role_type: 'employee', hourly_rate: '', overtime_rate: '', skills: '',
+}
 
 export default function StaffList() {
+  const navigate = useNavigate()
   const [staff, setStaff] = useState<StaffMember[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
+  const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState('')
   const [activeFilter, setActiveFilter] = useState('')
   const pageSize = 20
 
+  // Modal state
+  const [showModal, setShowModal] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [form, setForm] = useState<StaffFormData>({ ...emptyForm })
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState('')
+
+  // All staff for "reporting to" dropdown
+  const [allStaff, setAllStaff] = useState<StaffMember[]>([])
+
+  // Work schedule for modal
+  const [schedule, setSchedule] = useState<WeekSchedule>({ ...DEFAULT_SCHEDULE })
   const fetchStaff = useCallback(async () => {
     setLoading(true)
     try {
-      const params = new URLSearchParams({
-        page: String(page),
-        page_size: String(pageSize),
-      })
-      if (roleFilter) params.set('role_type', roleFilter)
-      if (activeFilter) params.set('is_active', activeFilter)
-
-      const res = await apiClient.get(`/api/v2/staff?${params}`)
-      setStaff(res.data.staff)
-      setTotal(res.data.total)
+      const params: Record<string, string> = { page: String(page), page_size: String(pageSize) }
+      if (roleFilter) params.role_type = roleFilter
+      if (activeFilter) params.is_active = activeFilter
+      const res = await apiClient.get('/staff', { baseURL: '/api/v2', params })
+      const data = res.data as any
+      setStaff(data?.staff ?? [])
+      setTotal(data?.total ?? 0)
     } catch {
       setStaff([])
     } finally {
@@ -63,89 +101,325 @@ export default function StaffList() {
 
   useEffect(() => { fetchStaff() }, [fetchStaff])
 
+  // Load all staff for reporting_to dropdown
+  useEffect(() => {
+    async function loadAll() {
+      try {
+        const res = await apiClient.get('/staff', { baseURL: '/api/v2', params: { page_size: '200' } })
+        setAllStaff((res.data as any)?.staff ?? [])
+      } catch { /* non-blocking */ }
+    }
+    loadAll()
+  }, [])
+
   const totalPages = Math.ceil(total / pageSize)
 
-  if (loading) {
-    return <div role="status" aria-label="Loading staff">Loading staff…</div>
+  const openAdd = () => {
+    setEditingId(null)
+    setForm({ ...emptyForm })
+    setSchedule({ ...DEFAULT_SCHEDULE })
+    setFormError('')
+    setShowModal(true)
+  }
+
+  const openEdit = (member: StaffMember) => {
+    setEditingId(member.id)
+    setForm({
+      first_name: member.first_name || '',
+      last_name: member.last_name || '',
+      email: member.email || '',
+      phone: member.phone || '',
+      employee_id: member.employee_id || '',
+      position: member.position || '',
+      reporting_to: member.reporting_to || '',
+      role_type: member.role_type || 'employee',
+      hourly_rate: member.hourly_rate || '',
+      overtime_rate: member.overtime_rate || '',
+      skills: (member.skills || []).join(', '),
+    })
+    setSchedule(member.availability_schedule && Object.keys(member.availability_schedule).length > 0
+      ? { ...member.availability_schedule }
+      : { ...DEFAULT_SCHEDULE })
+    setFormError('')
+    setShowModal(true)
+  }
+
+  const handleSave = async () => {
+    if (!form.first_name.trim()) { setFormError('First name is required'); return }
+    setSaving(true)
+    setFormError('')
+    try {
+      const payload: any = {
+        first_name: form.first_name.trim(),
+        last_name: form.last_name.trim() || null,
+        email: form.email.trim() || null,
+        phone: form.phone.trim() || null,
+        employee_id: form.employee_id.trim() || null,
+        position: form.position.trim() || null,
+        reporting_to: form.reporting_to || null,
+        availability_schedule: schedule,
+        role_type: form.role_type,
+        hourly_rate: form.hourly_rate ? parseFloat(form.hourly_rate) : null,
+        overtime_rate: form.overtime_rate ? parseFloat(form.overtime_rate) : null,
+        skills: form.skills ? form.skills.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
+      }
+      if (editingId) {
+        await apiClient.put(`/staff/${editingId}`, payload, { baseURL: '/api/v2' })
+      } else {
+        await apiClient.post('/staff', payload, { baseURL: '/api/v2' })
+      }
+      setShowModal(false)
+      fetchStaff()
+    } catch (err: any) {
+      setFormError(err?.response?.data?.detail || 'Failed to save')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDeactivate = async (id: string) => {
+    if (!confirm('Deactivate this staff member?')) return
+    try {
+      await apiClient.delete(`/staff/${id}`, { baseURL: '/api/v2' })
+      fetchStaff()
+    } catch { /* non-blocking */ }
+  }
+
+  const handleActivate = async (id: string) => {
+    try {
+      await apiClient.post(`/staff/${id}/activate`, {}, { baseURL: '/api/v2' })
+      fetchStaff()
+    } catch { /* non-blocking */ }
   }
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1>Staff</h1>
-        <a href="/staff/new" role="link" aria-label="Add staff member">
-          <button>+ Add Staff</button>
-        </a>
-      </div>
-
-      {/* Filters */}
-      <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
-        <div>
-          <label htmlFor="role-filter">Role</label>
-          <select
-            id="role-filter"
-            value={roleFilter}
-            onChange={e => { setRoleFilter(e.target.value); setPage(1) }}
-          >
-            {ROLE_OPTIONS.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label htmlFor="active-filter">Status</label>
-          <select
-            id="active-filter"
-            value={activeFilter}
-            onChange={e => { setActiveFilter(e.target.value); setPage(1) }}
-          >
-            {ACTIVE_OPTIONS.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
+    <div className="h-full">
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-semibold text-gray-900">Staff</h1>
+          <Button onClick={openAdd}>+ Add Staff</Button>
         </div>
       </div>
 
-      {/* Staff table */}
-      {staff.length === 0 ? (
-        <p>No staff members found. Add your first staff member to get started.</p>
-      ) : (
-        <>
-          <table role="grid" aria-label="Staff list">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Email</th>
-                <th>Phone</th>
-                <th>Role</th>
-                <th>Hourly Rate</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {staff.map(member => (
-                <tr key={member.id} role="row">
-                  <td><a href={`/staff/${member.id}`}>{member.name}</a></td>
-                  <td>{member.email || '—'}</td>
-                  <td>{member.phone || '—'}</td>
-                  <td>{member.role_type}</td>
-                  <td>{member.hourly_rate ? `$${Number(member.hourly_rate).toFixed(2)}/hr` : '—'}</td>
-                  <td>{member.is_active ? 'Active' : 'Inactive'}</td>
-                  <td><a href={`/staff/${member.id}`}>View</a></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div className="px-6 py-4 space-y-4">
+        {/* Filters */}
+        <div className="flex flex-wrap items-center gap-3">
+          <input type="text" placeholder="Search by name or email…" value={search}
+            onChange={(e) => { setSearch(e.target.value) }}
+            className="w-64 rounded-md border border-gray-300 px-3 py-2 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <select value={roleFilter} onChange={(e) => { setRoleFilter(e.target.value); setPage(1) }}
+            className="rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">All Roles</option>
+            <option value="employee">Employee</option>
+            <option value="contractor">Contractor</option>
+          </select>
+          <select value={activeFilter} onChange={(e) => { setActiveFilter(e.target.value); setPage(1) }}
+            className="rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">All Status</option>
+            <option value="true">Active</option>
+            <option value="false">Inactive</option>
+          </select>
+        </div>
 
-          {totalPages > 1 && (
-            <nav aria-label="Pagination">
-              <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Previous</button>
-              <span>Page {page} of {totalPages}</span>
-              <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next</button>
-            </nav>
-          )}
-        </>
+        {/* Table */}
+        {loading ? (
+          <div className="py-16 text-center text-gray-500">Loading staff…</div>
+        ) : staff.length === 0 ? (
+          <div className="py-16 text-center">
+            <p className="text-gray-500">No staff members found.</p>
+            <p className="text-sm text-gray-400 mt-1">Add your first staff member to get started.</p>
+          </div>
+        ) : (
+          <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="py-3 px-4">Employee ID</th>
+                    <th className="py-3 px-4">Name</th>
+                    <th className="py-3 px-4">Position</th>
+                    <th className="py-3 px-4">Email</th>
+                    <th className="py-3 px-4">Phone</th>
+                    <th className="py-3 px-4">Work Days</th>
+                    <th className="py-3 px-4">Reports To</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {staff.filter(m => {
+                    if (!search) return true
+                    const q = search.toLowerCase()
+                    const fullName = `${m.first_name} ${m.last_name || ''}`.toLowerCase()
+                    return fullName.includes(q) || (m.email || '').toLowerCase().includes(q) || (m.employee_id || '').toLowerCase().includes(q)
+                  }).map((member) => (
+                    <tr key={member.id} className="hover:bg-gray-50">
+                      <td className="py-3 px-4 text-gray-500">{member.employee_id || '—'}</td>
+                      <td className="py-3 px-4">
+                        <button onClick={() => navigate(`/staff/${member.id}`)}
+                          className="font-medium text-blue-600 hover:text-blue-800">
+                          {member.first_name} {member.last_name || ''}
+                        </button>
+                      </td>
+                      <td className="py-3 px-4 text-gray-700">{member.position || '—'}</td>
+                      <td className="py-3 px-4 text-gray-600">{member.email || '—'}</td>
+                      <td className="py-3 px-4 text-gray-600">{member.phone || '—'}</td>
+                      <td className="py-3 px-4 text-gray-600">
+                        {member.availability_schedule && Object.keys(member.availability_schedule).length > 0
+                          ? ['monday','tuesday','wednesday','thursday','friday','saturday','sunday']
+                              .filter(d => member.availability_schedule[d])
+                              .map(d => d.slice(0, 3).charAt(0).toUpperCase() + d.slice(1, 3))
+                              .join(', ')
+                          : (member.shift_start && member.shift_end ? `${member.shift_start} - ${member.shift_end}` : '-')}
+                      </td>
+                      <td className="py-3 px-4 text-gray-600">{member.reporting_to_name || '—'}</td>
+                      <td className="py-3 px-4">
+                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${member.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+                          {member.is_active ? 'Active' : 'Inactive'}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => openEdit(member)}
+                            className="text-sm text-blue-600 hover:text-blue-800">Edit</button>
+                          {member.is_active ? (
+                            <button onClick={() => handleDeactivate(member.id)}
+                              className="text-sm text-red-600 hover:text-red-800">Deactivate</button>
+                          ) : (
+                            <button onClick={() => handleActivate(member.id)}
+                              className="text-sm text-emerald-600 hover:text-emerald-800">Activate</button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between border-t border-gray-200 px-4 py-3 bg-gray-50">
+                <span className="text-sm text-gray-600">
+                  Showing {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)} of {total}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}
+                    className="rounded-md border border-gray-300 px-3 py-1.5 text-sm disabled:opacity-50 hover:bg-gray-100">
+                    Previous
+                  </button>
+                  <span className="text-sm text-gray-600">Page {page} of {totalPages}</span>
+                  <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}
+                    className="rounded-md border border-gray-300 px-3 py-1.5 text-sm disabled:opacity-50 hover:bg-gray-100">
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Add/Edit Modal */}
+      {showModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+              <h2 className="text-lg font-semibold text-gray-900">
+                {editingId ? 'Edit Staff Member' : 'Add Staff Member'}
+              </h2>
+              <button onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-600" aria-label="Close">✕</button>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">First Name *</label>
+                  <input type="text" value={form.first_name} onChange={(e) => setForm(f => ({ ...f, first_name: e.target.value }))}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Last Name</label>
+                  <input type="text" value={form.last_name} onChange={(e) => setForm(f => ({ ...f, last_name: e.target.value }))}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                  <input type="email" value={form.email} onChange={(e) => setForm(f => ({ ...f, email: e.target.value }))}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                  <input type="tel" value={form.phone} onChange={(e) => setForm(f => ({ ...f, phone: e.target.value }))}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Employee ID</label>
+                  <input type="text" value={form.employee_id} onChange={(e) => setForm(f => ({ ...f, employee_id: e.target.value }))}
+                    placeholder="e.g. EMP-001"
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Position</label>
+                  <input type="text" value={form.position} onChange={(e) => setForm(f => ({ ...f, position: e.target.value }))}
+                    placeholder="e.g. Senior Mechanic"
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Role Type</label>
+                  <select value={form.role_type} onChange={(e) => setForm(f => ({ ...f, role_type: e.target.value }))}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="employee">Employee</option>
+                    <option value="contractor">Contractor</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Hourly Rate ($)</label>
+                  <input type="number" step="0.01" min="0" value={form.hourly_rate}
+                    onChange={(e) => setForm(f => ({ ...f, hourly_rate: e.target.value }))}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Overtime Rate ($)</label>
+                  <input type="number" step="0.01" min="0" value={form.overtime_rate}
+                    onChange={(e) => setForm(f => ({ ...f, overtime_rate: e.target.value }))}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Skills (comma-separated)</label>
+                  <input type="text" value={form.skills}
+                    onChange={(e) => setForm(f => ({ ...f, skills: e.target.value }))}
+                    placeholder="e.g. Brakes, Engine, Electrical"
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reports To</label>
+                <select value={form.reporting_to} onChange={(e) => setForm(f => ({ ...f, reporting_to: e.target.value }))}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <option value="">— None —</option>
+                  {allStaff.filter(s => s.id !== editingId && s.is_active).map(s => (
+                    <option key={s.id} value={s.id}>{s.first_name} {s.last_name || ''} {s.position ? `(${s.position})` : ''}</option>
+                  ))}
+                </select>
+              </div>
+              <WorkSchedule schedule={schedule} onChange={setSchedule} />
+              {formError && <p className="text-sm text-red-600">{formError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-6 py-4 bg-gray-50 rounded-b-lg">
+              <Button variant="secondary" onClick={() => setShowModal(false)}>Cancel</Button>
+              <Button onClick={handleSave} loading={saving}>{editingId ? 'Save Changes' : 'Add Staff'}</Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

@@ -87,6 +87,7 @@ async def list_customers(
     q: str | None = Query(None, description="Search query (name, phone, email)"),
     limit: int = Query(20, ge=1, le=100, description="Max results"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
+    include_vehicles: bool = Query(False, description="Include linked vehicles for each customer"),
     db: AsyncSession = Depends(get_db_session),
 ):
     """Search customers by name, phone, or email with live dropdown results.
@@ -97,6 +98,8 @@ async def list_customers(
 
     When no matching customer is found, the ``has_exact_match`` field is
     False, signalling the frontend to display a "Create new customer" option.
+    
+    When ``include_vehicles`` is True, also returns linked vehicles for each customer.
 
     Requirements: 11.1, 11.2, 11.3
     """
@@ -108,7 +111,7 @@ async def list_customers(
         )
 
     result = await search_customers(
-        db, org_id=org_uuid, query=q, limit=limit, offset=offset
+        db, org_id=org_uuid, query=q, limit=limit, offset=offset, include_vehicles=include_vehicles
     )
 
     return CustomerListResponse(
@@ -137,7 +140,8 @@ async def create_new_customer(
 ):
     """Create a new customer record inline from the search dropdown.
 
-    Accepts first name, last name, email, phone, and optional address.
+    Accepts comprehensive customer information including contact details,
+    business info, addresses, and preferences.
     The customer is scoped to the current organisation and never shared
     across organisations.
 
@@ -150,16 +154,51 @@ async def create_new_customer(
             content={"detail": "Organisation context required"},
         )
 
+    # Parse tax_rate_id if provided
+    tax_rate_uuid = None
+    if payload.tax_rate_id:
+        try:
+            tax_rate_uuid = uuid.UUID(payload.tax_rate_id)
+        except (ValueError, TypeError):
+            pass
+
     customer_data = await create_customer(
         db,
         org_id=org_uuid,
         user_id=user_uuid or uuid.uuid4(),
+        # Required fields
         first_name=payload.first_name,
         last_name=payload.last_name,
         email=payload.email,
+        mobile_phone=payload.mobile_phone,
+        # Identity
+        customer_type=payload.customer_type or "individual",
+        salutation=payload.salutation,
+        company_name=payload.company_name,
+        display_name=payload.display_name,
+        # Contact
+        work_phone=payload.work_phone,
         phone=payload.phone,
+        # Preferences
+        currency=payload.currency or "NZD",
+        language=payload.language or "en",
+        # Business/Tax
+        tax_rate_id=tax_rate_uuid,
+        company_id=payload.company_id,
+        payment_terms=payload.payment_terms or "due_on_receipt",
+        # Options
+        enable_bank_payment=payload.enable_bank_payment or False,
+        enable_portal=payload.enable_portal or False,
+        # Addresses
         address=payload.address,
+        billing_address=payload.billing_address.model_dump() if payload.billing_address else None,
+        shipping_address=payload.shipping_address.model_dump() if payload.shipping_address else None,
+        # Additional data
+        contact_persons=[cp.model_dump() for cp in payload.contact_persons] if payload.contact_persons else None,
+        custom_fields=payload.custom_fields,
+        # Notes
         notes=payload.notes,
+        remarks=payload.remarks,
         ip_address=ip_address,
     )
 

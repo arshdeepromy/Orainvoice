@@ -10,6 +10,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
@@ -118,7 +119,7 @@ async def create_invoice_endpoint(
             "catalogue_item_id": li.catalogue_item_id,
             "part_number": li.part_number,
             "quantity": li.quantity,
-            "unit_price": li.unit_price,
+            "unit_price": li.get_unit_price(),  # Use helper to get unit_price or rate
             "hours": li.hours,
             "hourly_rate": li.hourly_rate,
             "discount_type": li.discount_type,
@@ -141,12 +142,15 @@ async def create_invoice_endpoint(
             vehicle_model=payload.vehicle_model,
             vehicle_year=payload.vehicle_year,
             vehicle_odometer=payload.vehicle_odometer,
+            global_vehicle_id=payload.global_vehicle_id,
             branch_id=payload.branch_id,
             status=payload.status.value,
             line_items_data=line_items_data,
             notes_internal=payload.notes_internal,
             notes_customer=payload.notes_customer,
             due_date=payload.due_date,
+            issue_date=payload.issue_date,
+            payment_terms=payload.payment_terms,
             discount_type=payload.discount_type,
             discount_value=payload.discount_value,
             currency=payload.currency,
@@ -393,9 +397,18 @@ async def get_invoice_endpoint(
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    # Separate nested objects from flat invoice fields
+    customer_data = result.pop("customer", None)
+    payments_data = result.pop("payments", [])
+    credit_notes_data = result.pop("credit_notes", [])
+    line_items_data = result.pop("line_items", [])
+
     invoice_resp = InvoiceResponse(
-        **{k: v for k, v in result.items() if k != "line_items"},
-        line_items=[LineItemResponse(**li) for li in result["line_items"]],
+        **result,
+        customer=customer_data,
+        line_items=[LineItemResponse(**li) for li in line_items_data],
+        payments=payments_data,
+        credit_notes=credit_notes_data,
     )
 
     return GetInvoiceResponse(invoice=invoice_resp)
@@ -1218,7 +1231,7 @@ async def get_invoice_pdf_endpoint(
     from app.modules.invoices.service import get_invoice as _get_inv
 
     inv = await _get_inv(db, org_id=org_uuid, invoice_id=invoice_id)
-    filename = f"invoice_{inv.get('invoice_number') or 'DRAFT'}.pdf"
+    filename = f"{inv.get('invoice_number') or 'DRAFT'}.pdf"
 
     return Response(
         content=pdf_bytes,
@@ -1282,3 +1295,65 @@ async def email_invoice_endpoint(
         pdf_size_bytes=result["pdf_size_bytes"],
         status=result["status"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Public Invoice Sharing — Requirements: Share invoice via public URL
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{invoice_id}/share",
+    responses={
+        200: {"description": "Share link generated"},
+        400: {"description": "Invoice not found"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="Generate a public share link for an invoice",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def share_invoice_endpoint(
+    invoice_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Generate or retrieve a public share token for an invoice.
+
+    The token is stored in invoice_data_json and can be used to view
+    the invoice without authentication.
+    """
+    import secrets
+
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    from app.modules.invoices.models import Invoice as InvoiceModel
+
+    inv_result = await db.execute(
+        select(InvoiceModel).where(
+            InvoiceModel.id == invoice_id, InvoiceModel.org_id == org_uuid
+        )
+    )
+    invoice = inv_result.scalar_one_or_none()
+    if invoice is None:
+        return JSONResponse(status_code=400, content={"detail": "Invoice not found"})
+
+    # Reuse existing token or generate a new one
+    data = invoice.invoice_data_json or {}
+    token = data.get("share_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        data["share_token"] = token
+        invoice.invoice_data_json = data
+        # Force SQLAlchemy to detect JSONB mutation
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(invoice, "invoice_data_json")
+        await db.flush()
+        await db.commit()
+
+    return JSONResponse(content={"share_token": token, "invoice_id": str(invoice_id)})

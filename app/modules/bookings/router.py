@@ -87,11 +87,15 @@ async def create_booking_endpoint(
             vehicle_rego=payload.vehicle_rego,
             branch_id=payload.branch_id,
             service_type=payload.service_type,
+            service_catalogue_id=payload.service_catalogue_id,
             scheduled_at=payload.scheduled_at,
             duration_minutes=payload.duration_minutes,
             notes=payload.notes,
             assigned_to=payload.assigned_to,
             send_confirmation=payload.send_confirmation,
+            send_email_confirmation=payload.send_email_confirmation,
+            send_sms_confirmation=payload.send_sms_confirmation,
+            reminder_offset_hours=payload.reminder_offset_hours,
             ip_address=ip_address,
         )
     except ValueError as exc:

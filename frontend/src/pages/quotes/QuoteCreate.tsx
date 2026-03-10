@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import apiClient from '../../api/client'
-import { Button, Input, Select, Spinner } from '../../components/ui'
+import { Button } from '../../components/ui'
+import { useModules } from '../../contexts/ModuleContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -22,64 +24,51 @@ interface Vehicle {
   model: string
   year: number | null
   colour: string
-  body_type: string
-  fuel_type: string
-  engine_size: string
-  wof_expiry: string | null
-  registration_expiry: string | null
 }
 
-interface CatalogueService {
+interface Project {
   id: string
   name: string
+  status: string
+}
+
+interface CatalogueItem {
+  id: string
+  name: string
+  description?: string
   default_price: number
   gst_applicable: boolean
-  category: string
+  category?: string
+  sku?: string
 }
 
-interface LabourRate {
+interface TaxRate {
   id: string
   name: string
-  hourly_rate: number
+  rate: number
 }
-
-type LineItemType = 'service' | 'part' | 'labour'
-type DiscountType = 'percentage' | 'fixed'
 
 interface LineItem {
   key: string
-  type: LineItemType
+  item_id?: string
   description: string
-  service_id?: string
-  part_number?: string
   quantity: number
-  unit_price: number
-  hours?: number
-  hourly_rate?: number
-  labour_rate_id?: string
-  gst_exempt: boolean
-  discount_type: DiscountType
-  discount_value: number
-  warranty_note: string
-}
-
-interface QuoteLevelDiscount {
-  type: DiscountType
-  value: number
+  rate: number
+  tax_id: string
+  tax_rate: number
+  amount: number
 }
 
 interface FormErrors {
   customer?: string
-  vehicle?: string
   lineItems?: string
+  submit?: string
   [key: string]: string | undefined
 }
 
 /* ------------------------------------------------------------------ */
-/*  Helpers                                                            */
+/*  Constants                                                          */
 /* ------------------------------------------------------------------ */
-
-const GST_RATE = 0.15
 
 const VALIDITY_OPTIONS = [
   { value: '7', label: '7 days' },
@@ -87,76 +76,45 @@ const VALIDITY_OPTIONS = [
   { value: '30', label: '30 days' },
 ]
 
-function calcLineTotal(item: LineItem): number {
-  let base: number
-  if (item.type === 'labour') {
-    base = (item.hours ?? 0) * (item.hourly_rate ?? 0)
-  } else {
-    base = item.quantity * item.unit_price
-  }
-  if (item.discount_value > 0) {
-    if (item.discount_type === 'percentage') {
-      base = base * (1 - item.discount_value / 100)
-    } else {
-      base = Math.max(0, base - item.discount_value)
-    }
-  }
-  return Math.round(base * 100) / 100
-}
+const DEFAULT_TAX_RATES: TaxRate[] = [
+  { id: 'gst_15', name: 'GST (15%)', rate: 15 },
+  { id: 'gst_0', name: 'GST Exempt (0%)', rate: 0 },
+]
 
-function calcTotals(items: LineItem[], quoteDiscount: QuoteLevelDiscount) {
-  let subtotalExGst = 0
-  let gstAmount = 0
-
-  for (const item of items) {
-    const lineTotal = calcLineTotal(item)
-    subtotalExGst += lineTotal
-    if (!item.gst_exempt) {
-      gstAmount += lineTotal * GST_RATE
-    }
-  }
-
-  if (quoteDiscount.value > 0) {
-    let discountAmount: number
-    if (quoteDiscount.type === 'percentage') {
-      discountAmount = subtotalExGst * (quoteDiscount.value / 100)
-    } else {
-      discountAmount = quoteDiscount.value
-    }
-    const ratio = discountAmount / (subtotalExGst || 1)
-    subtotalExGst = Math.max(0, subtotalExGst - discountAmount)
-    gstAmount = Math.max(0, gstAmount * (1 - ratio))
-  }
-
-  subtotalExGst = Math.round(subtotalExGst * 100) / 100
-  gstAmount = Math.round(gstAmount * 100) / 100
-  const totalInclGst = Math.round((subtotalExGst + gstAmount) * 100) / 100
-
-  return { subtotalExGst, gstAmount, totalInclGst }
-}
-
-function newLineItem(type: LineItemType): LineItem {
-  return {
-    key: crypto.randomUUID(),
-    type,
-    description: '',
-    quantity: type === 'labour' ? 0 : 1,
-    unit_price: 0,
-    hours: type === 'labour' ? 0 : undefined,
-    hourly_rate: type === 'labour' ? 0 : undefined,
-    gst_exempt: false,
-    discount_type: 'percentage',
-    discount_value: 0,
-    warranty_note: '',
-  }
-}
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
 
 function formatNZD(amount: number): string {
   return new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(amount)
 }
 
+function formatDate(d: Date): string {
+  return new Intl.DateTimeFormat('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' }).format(d)
+}
+
+function formatDateISO(d: Date): string {
+  return d.toISOString().split('T')[0]
+}
+
+function newLineItem(): LineItem {
+  return {
+    key: crypto.randomUUID(),
+    description: '',
+    quantity: 1,
+    rate: 0,
+    tax_id: 'gst_15',
+    tax_rate: 15,
+    amount: 0,
+  }
+}
+
+function calcLineAmount(item: LineItem): number {
+  return Math.round(item.quantity * item.rate * 100) / 100
+}
+
 /* ------------------------------------------------------------------ */
-/*  Sub-components                                                     */
+/*  Customer Search                                                    */
 /* ------------------------------------------------------------------ */
 
 function CustomerSearch({
@@ -172,98 +130,46 @@ function CustomerSearch({
   const [results, setResults] = useState<Customer[]>([])
   const [loading, setLoading] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
-  const [showCreateForm, setShowCreateForm] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
 
-  const [newFirst, setNewFirst] = useState('')
-  const [newLast, setNewLast] = useState('')
-  const [newEmail, setNewEmail] = useState('')
-  const [newPhone, setNewPhone] = useState('')
-  const [newAddress, setNewAddress] = useState('')
-  const [creating, setCreating] = useState(false)
-  const [createErrors, setCreateErrors] = useState<Record<string, string>>({})
-
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setShowDropdown(false)
-      }
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setShowDropdown(false)
     }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
   }, [])
 
   const search = useCallback(async (q: string) => {
     if (q.length < 2) { setResults([]); return }
     setLoading(true)
     try {
-      const res = await apiClient.get<Customer[]>('/customers', { params: { search: q } })
-      setResults(res.data)
+      const res = await apiClient.get('/customers', { params: { search: q } })
+      const data = res.data as any
+      setResults(Array.isArray(data) ? data : (data?.customers ?? []))
     } catch { setResults([]) }
     finally { setLoading(false) }
   }, [])
 
-  const handleInputChange = (value: string) => {
+  const handleInput = (value: string) => {
     setQuery(value)
     setShowDropdown(true)
-    setShowCreateForm(false)
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => search(value), 300)
-  }
-
-  const handleSelect = (c: Customer) => {
-    onSelect(c)
-    setQuery(`${c.first_name} ${c.last_name}`)
-    setShowDropdown(false)
-  }
-
-  const handleClear = () => { onSelect(null); setQuery(''); setResults([]) }
-
-  const validateCreate = (): boolean => {
-    const errs: Record<string, string> = {}
-    if (!newFirst.trim()) errs.first_name = 'First name is required'
-    if (!newLast.trim()) errs.last_name = 'Last name is required'
-    if (!newPhone.trim() && !newEmail.trim()) errs.contact = 'Phone or email is required'
-    if (newEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) errs.email = 'Invalid email format'
-    setCreateErrors(errs)
-    return Object.keys(errs).length === 0
-  }
-
-  const handleCreate = async () => {
-    if (!validateCreate()) return
-    setCreating(true)
-    try {
-      const res = await apiClient.post<Customer>('/customers', {
-        first_name: newFirst.trim(),
-        last_name: newLast.trim(),
-        email: newEmail.trim() || undefined,
-        phone: newPhone.trim() || undefined,
-        address: newAddress.trim() || undefined,
-      })
-      onSelect(res.data)
-      setQuery(`${res.data.first_name} ${res.data.last_name}`)
-      setShowCreateForm(false)
-      setShowDropdown(false)
-      setNewFirst(''); setNewLast(''); setNewEmail(''); setNewPhone(''); setNewAddress('')
-    } catch {
-      setCreateErrors({ submit: 'Failed to create customer. Please try again.' })
-    } finally { setCreating(false) }
   }
 
   if (selectedCustomer) {
     return (
       <div className="flex flex-col gap-1">
-        <label className="text-sm font-medium text-gray-700">Customer</label>
+        <label className="text-sm font-medium text-gray-700">Customer Name *</label>
         <div className="flex items-center gap-2 rounded-md border border-gray-300 bg-gray-50 px-3 py-2">
           <span className="flex-1 text-gray-900">
             {selectedCustomer.first_name} {selectedCustomer.last_name}
-            {selectedCustomer.phone && <span className="ml-2 text-gray-500">· {selectedCustomer.phone}</span>}
             {selectedCustomer.email && <span className="ml-2 text-gray-500">· {selectedCustomer.email}</span>}
           </span>
-          <button type="button" onClick={handleClear}
-            className="rounded p-1 text-gray-400 hover:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-            aria-label="Change customer">✕</button>
+          <button type="button" onClick={() => { onSelect(null); setQuery('') }}
+            className="rounded p-1 text-gray-400 hover:text-gray-600" aria-label="Change customer">✕</button>
         </div>
       </div>
     )
@@ -271,45 +177,26 @@ function CustomerSearch({
 
   return (
     <div ref={containerRef} className="relative flex flex-col gap-1">
-      <Input label="Customer" placeholder="Search by name, phone, or email…" value={query}
-        onChange={(e) => handleInputChange(e.target.value)}
+      <label className="text-sm font-medium text-gray-700">Customer Name *</label>
+      <input type="text" value={query} onChange={(e) => handleInput(e.target.value)}
         onFocus={() => query.length >= 2 && setShowDropdown(true)}
-        error={error} autoComplete="off" />
+        placeholder="Search or select a customer"
+        className={`w-full rounded-md border px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${error ? 'border-red-500' : 'border-gray-300'}`}
+        autoComplete="off" />
+      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
       {showDropdown && (
-        <div className="absolute top-full left-0 right-0 z-30 mt-1 max-h-64 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
-          {loading && (
-            <div className="flex items-center gap-2 px-4 py-3 text-sm text-gray-500"><Spinner size="sm" /> Searching…</div>
-          )}
+        <div className="absolute top-full left-0 right-0 z-30 mt-1 max-h-56 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+          {loading && <div className="px-4 py-3 text-sm text-gray-500">Searching…</div>}
           {!loading && results.map((c) => (
-            <button key={c.id} type="button" onClick={() => handleSelect(c)}
-              className="w-full px-4 py-3 text-left hover:bg-gray-50 focus-visible:bg-gray-50 focus-visible:outline-none min-h-[44px]">
+            <button key={c.id} type="button"
+              onClick={() => { onSelect(c); setQuery(`${c.first_name} ${c.last_name}`); setShowDropdown(false) }}
+              className="w-full px-4 py-2.5 text-left hover:bg-gray-50 text-sm">
               <span className="font-medium text-gray-900">{c.first_name} {c.last_name}</span>
-              <span className="ml-2 text-sm text-gray-500">{c.phone}</span>
-              <span className="ml-2 text-sm text-gray-500">{c.email}</span>
+              {c.email && <span className="ml-2 text-gray-500">{c.email}</span>}
             </button>
           ))}
-          {!loading && query.length >= 2 && results.length === 0 && !showCreateForm && (
+          {!loading && query.length >= 2 && results.length === 0 && (
             <div className="px-4 py-3 text-sm text-gray-500">No customers found</div>
-          )}
-          <button type="button" onClick={() => setShowCreateForm(true)}
-            className="w-full border-t border-gray-100 px-4 py-3 text-left text-sm font-medium text-blue-600 hover:bg-blue-50 focus-visible:bg-blue-50 focus-visible:outline-none min-h-[44px]">
-            + Create new customer
-          </button>
-          {showCreateForm && (
-            <div className="border-t border-gray-100 p-4 space-y-3">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <Input label="First name" value={newFirst} onChange={(e) => setNewFirst(e.target.value)} error={createErrors.first_name} />
-                <Input label="Last name" value={newLast} onChange={(e) => setNewLast(e.target.value)} error={createErrors.last_name} />
-              </div>
-              <Input label="Email" type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} error={createErrors.email} />
-              <Input label="Phone" type="tel" value={newPhone} onChange={(e) => setNewPhone(e.target.value)} error={createErrors.contact} />
-              <Input label="Address (optional)" value={newAddress} onChange={(e) => setNewAddress(e.target.value)} />
-              {createErrors.submit && <p className="text-sm text-red-600" role="alert">{createErrors.submit}</p>}
-              <div className="flex gap-2">
-                <Button size="sm" onClick={handleCreate} loading={creating}>Create &amp; select</Button>
-                <Button size="sm" variant="secondary" onClick={() => setShowCreateForm(false)}>Cancel</Button>
-              </div>
-            </div>
           )}
         </div>
       )}
@@ -317,442 +204,614 @@ function CustomerSearch({
   )
 }
 
-
-function VehicleRegoLookup({
-  vehicle,
-  onVehicleFound,
-  error,
-}: {
-  vehicle: Vehicle | null
-  onVehicleFound: (v: Vehicle | null) => void
-  error?: string
-}) {
-  const [rego, setRego] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [lookupError, setLookupError] = useState('')
-
-  const lookup = async () => {
-    const cleaned = rego.trim().toUpperCase()
-    if (!cleaned) return
-    setLoading(true)
-    setLookupError('')
-    try {
-      const res = await apiClient.get<Vehicle>(`/vehicles/lookup/${encodeURIComponent(cleaned)}`)
-      onVehicleFound(res.data)
-    } catch (err: unknown) {
-      const status = (err as { response?: { status?: number } })?.response?.status
-      if (status === 404) {
-        setLookupError('Vehicle not found. You can enter details manually.')
-      } else {
-        setLookupError('Lookup failed. Please try again.')
-      }
-      onVehicleFound(null)
-    } finally { setLoading(false) }
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') { e.preventDefault(); lookup() }
-  }
-
-  if (vehicle) {
-    return (
-      <div className="flex flex-col gap-1">
-        <label className="text-sm font-medium text-gray-700">Vehicle</label>
-        <div className="rounded-md border border-gray-300 bg-gray-50 p-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="font-semibold text-gray-900">{vehicle.rego}</span>
-              <span className="ml-2 text-gray-700">{vehicle.year} {vehicle.make} {vehicle.model}</span>
-              {vehicle.colour && <span className="ml-2 text-gray-500">· {vehicle.colour}</span>}
-            </div>
-            <button type="button" onClick={() => { onVehicleFound(null); setRego('') }}
-              className="rounded p-1 text-gray-400 hover:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              aria-label="Change vehicle">✕</button>
-          </div>
-          {vehicle.body_type && (
-            <div className="mt-1 text-sm text-gray-500">{vehicle.body_type} · {vehicle.fuel_type} · {vehicle.engine_size}</div>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex flex-col gap-1">
-      <label className="text-sm font-medium text-gray-700">Vehicle registration</label>
-      <div className="flex gap-2">
-        <input type="text" value={rego} onChange={(e) => setRego(e.target.value.toUpperCase())}
-          onKeyDown={handleKeyDown} placeholder="e.g. ABC123"
-          className={`flex-1 rounded-md border px-3 py-2 text-gray-900 shadow-sm transition-colors
-            placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500
-            ${error || lookupError ? 'border-red-500' : 'border-gray-300'}`}
-          aria-label="Vehicle registration number" aria-invalid={!!(error || lookupError)} />
-        <Button onClick={lookup} loading={loading} size="md">Lookup</Button>
-      </div>
-      {(error || lookupError) && <p className="text-sm text-red-600" role="alert">{error || lookupError}</p>}
-    </div>
-  )
-}
-
-
 /* ------------------------------------------------------------------ */
-/*  Line Item Row                                                      */
+/*  Item Table Row                                                     */
 /* ------------------------------------------------------------------ */
 
-function LineItemRow({
+function ItemTableRow({
   item,
   index,
-  services,
-  labourRates,
+  catalogueItems,
+  taxRates,
   onChange,
   onRemove,
 }: {
   item: LineItem
   index: number
-  services: CatalogueService[]
-  labourRates: LabourRate[]
+  catalogueItems: CatalogueItem[]
+  taxRates: TaxRate[]
   onChange: (index: number, updated: LineItem) => void
   onRemove: (index: number) => void
 }) {
-  const update = (patch: Partial<LineItem>) => onChange(index, { ...item, ...patch })
+  const [showItemDropdown, setShowItemDropdown] = useState(false)
+  const [itemSearch, setItemSearch] = useState('')
+  const containerRef = useRef<HTMLDivElement>(null)
 
-  const handleServiceSelect = (serviceId: string) => {
-    const svc = services.find((s) => s.id === serviceId)
-    if (svc) {
-      update({ service_id: svc.id, description: svc.name, unit_price: svc.default_price, gst_exempt: !svc.gst_applicable })
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setShowItemDropdown(false)
     }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const update = (patch: Partial<LineItem>) => {
+    const updated = { ...item, ...patch }
+    updated.amount = calcLineAmount(updated)
+    onChange(index, updated)
   }
 
-  const handleLabourRateSelect = (rateId: string) => {
-    const rate = labourRates.find((r) => r.id === rateId)
-    if (rate) {
-      update({ labour_rate_id: rate.id, description: rate.name, hourly_rate: rate.hourly_rate })
-    }
+  const handleItemSelect = (ci: CatalogueItem) => {
+    update({
+      item_id: ci.id,
+      description: ci.name,
+      rate: ci.default_price,
+      tax_rate: ci.gst_applicable ? 15 : 0,
+      tax_id: ci.gst_applicable ? 'gst_15' : 'gst_0',
+    })
+    setShowItemDropdown(false)
+    setItemSearch('')
   }
 
-  const lineTotal = calcLineTotal(item)
+  const handleTaxChange = (taxId: string) => {
+    const tax = taxRates.find(t => t.id === taxId)
+    update({ tax_id: taxId, tax_rate: tax?.rate || 0 })
+  }
+
+  const filteredItems = (Array.isArray(catalogueItems) ? catalogueItems : []).filter(ci =>
+    ci.name.toLowerCase().includes(itemSearch.toLowerCase()) ||
+    (ci.sku && ci.sku.toLowerCase().includes(itemSearch.toLowerCase()))
+  )
 
   return (
-    <div className="rounded-md border border-gray-200 bg-white p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-gray-500">
-          {item.type === 'service' ? 'Service' : item.type === 'part' ? 'Part' : 'Labour'} #{index + 1}
-        </span>
+    <tr className="border-b border-gray-100 hover:bg-gray-50">
+      <td className="py-3 px-2">
+        <div ref={containerRef} className="relative">
+          <input type="text" value={item.description}
+            onChange={(e) => { update({ description: e.target.value }); setItemSearch(e.target.value) }}
+            onFocus={() => setShowItemDropdown(true)}
+            placeholder="Type or click to select an item"
+            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          {showItemDropdown && (
+            <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+              {filteredItems.slice(0, 10).map((ci) => (
+                <button key={ci.id} type="button" onClick={() => handleItemSelect(ci)}
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50">
+                  <div className="font-medium text-gray-900">{ci.name}</div>
+                  {ci.sku && <div className="text-xs text-gray-500">SKU: {ci.sku}</div>}
+                  <div className="text-xs text-gray-500">{formatNZD(ci.default_price)}</div>
+                </button>
+              ))}
+              {filteredItems.length === 0 && (
+                <div className="px-3 py-2 text-sm text-gray-500">No items found</div>
+              )}
+            </div>
+          )}
+        </div>
+      </td>
+      <td className="py-3 px-2 w-24">
+        <input type="number" min="1" step="1" value={item.quantity}
+          onChange={(e) => update({ quantity: Math.max(1, Number(e.target.value) || 1) })}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </td>
+      <td className="py-3 px-2 w-32">
+        <input type="number" min="0" step="0.01" value={item.rate}
+          onChange={(e) => update({ rate: Math.max(0, Number(e.target.value) || 0) })}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </td>
+      <td className="py-3 px-2 w-36">
+        <select value={item.tax_id || ''} onChange={(e) => handleTaxChange(e.target.value)}
+          className="w-full rounded border border-gray-300 px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+          {taxRates.map((tax) => (
+            <option key={tax.id} value={tax.id}>{tax.name}</option>
+          ))}
+        </select>
+      </td>
+      <td className="py-3 px-2 w-28 text-right text-sm font-medium text-gray-900">
+        {formatNZD(item.amount)}
+      </td>
+      <td className="py-3 px-2 w-12">
         <button type="button" onClick={() => onRemove(index)}
-          className="rounded p-1 text-gray-400 hover:text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 min-h-[44px] min-w-[44px] flex items-center justify-center"
-          aria-label={`Remove line item ${index + 1}`}>✕</button>
-      </div>
-
-      {item.type === 'service' && (
-        <Select label="Service"
-          options={services.map((s) => ({ value: s.id, label: `${s.name} — ${formatNZD(s.default_price)}` }))}
-          value={item.service_id || ''} onChange={(e) => handleServiceSelect(e.target.value)} placeholder="Select a service…" />
-      )}
-
-      <Input label="Description" value={item.description} onChange={(e) => update({ description: e.target.value })}
-        placeholder={item.type === 'service' ? 'Auto-filled from catalogue' : 'Describe the item…'} />
-
-      {item.type === 'part' && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Input label="Part number" value={item.part_number || ''} onChange={(e) => update({ part_number: e.target.value })} placeholder="Optional" />
-          <Input label="Quantity" type="number" min="1" step="1" value={String(item.quantity)}
-            onChange={(e) => update({ quantity: Math.max(1, Number(e.target.value) || 1) })} />
-          <Input label="Unit price (ex-GST)" type="number" min="0" step="0.01" value={String(item.unit_price)}
-            onChange={(e) => update({ unit_price: Math.max(0, Number(e.target.value) || 0) })} />
-        </div>
-      )}
-
-      {item.type === 'service' && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Input label="Quantity" type="number" min="1" step="1" value={String(item.quantity)}
-            onChange={(e) => update({ quantity: Math.max(1, Number(e.target.value) || 1) })} />
-          <Input label="Unit price (ex-GST)" type="number" min="0" step="0.01" value={String(item.unit_price)}
-            onChange={(e) => update({ unit_price: Math.max(0, Number(e.target.value) || 0) })} />
-        </div>
-      )}
-
-      {item.type === 'labour' && (
-        <>
-          <Select label="Labour rate"
-            options={labourRates.map((r) => ({ value: r.id, label: `${r.name} — ${formatNZD(r.hourly_rate)}/hr` }))}
-            value={item.labour_rate_id || ''} onChange={(e) => handleLabourRateSelect(e.target.value)} placeholder="Select a rate…" />
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Input label="Hours" type="number" min="0" step="0.25" value={String(item.hours ?? 0)}
-              onChange={(e) => update({ hours: Math.max(0, Number(e.target.value) || 0) })} />
-            <Input label="Hourly rate" type="number" min="0" step="0.01" value={String(item.hourly_rate ?? 0)}
-              onChange={(e) => update({ hourly_rate: Math.max(0, Number(e.target.value) || 0) })} />
-          </div>
-        </>
-      )}
-
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <Select label="Discount type"
-          options={[{ value: 'percentage', label: 'Percentage (%)' }, { value: 'fixed', label: 'Fixed ($)' }]}
-          value={item.discount_type} onChange={(e) => update({ discount_type: e.target.value as DiscountType })} />
-        <Input label={item.discount_type === 'percentage' ? 'Discount (%)' : 'Discount ($)'}
-          type="number" min="0" step={item.discount_type === 'percentage' ? '1' : '0.01'}
-          value={String(item.discount_value)}
-          onChange={(e) => update({ discount_value: Math.max(0, Number(e.target.value) || 0) })} />
-        <div className="flex items-end pb-1">
-          <label className="flex items-center gap-2 min-h-[44px] cursor-pointer">
-            <input type="checkbox" checked={item.gst_exempt} onChange={(e) => update({ gst_exempt: e.target.checked })}
-              className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
-            <span className="text-sm text-gray-700">GST exempt</span>
-          </label>
-        </div>
-      </div>
-
-      <Input label="Warranty note (optional)" value={item.warranty_note} onChange={(e) => update({ warranty_note: e.target.value })}
-        placeholder="e.g. 12-month warranty on parts and labour" />
-
-      <div className="text-right text-sm font-medium text-gray-700">
-        Line total: <span className="text-gray-900">{formatNZD(lineTotal)}</span>
-        {item.gst_exempt && <span className="ml-1 text-gray-500">(GST exempt)</span>}
-      </div>
-    </div>
+          className="rounded p-1 text-gray-400 hover:text-red-500" aria-label="Remove item">
+          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
+      </td>
+    </tr>
   )
 }
-
 
 /* ------------------------------------------------------------------ */
 /*  Main Component                                                     */
 /* ------------------------------------------------------------------ */
 
 export default function QuoteCreate() {
-  /* --- State --- */
+  const navigate = useNavigate()
+  const { id: editId } = useParams<{ id: string }>()
+  const isEditMode = Boolean(editId)
+  const { isEnabled } = useModules()
+  const projectsEnabled = isEnabled('projects')
+
+  // Header fields
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [vehicle, setVehicle] = useState<Vehicle | null>(null)
-  const [lineItems, setLineItems] = useState<LineItem[]>([])
-  const [quoteDiscount, setQuoteDiscount] = useState<QuoteLevelDiscount>({ type: 'percentage', value: 0 })
+  const [vehicleRego, setVehicleRego] = useState('')
+  const [vehicleLookupLoading, setVehicleLookupLoading] = useState(false)
+  const [vehicleLookupError, setVehicleLookupError] = useState('')
+  const [subject, setSubject] = useState('')
+  const [validityDays, setValidityDays] = useState('30')
+  const [quoteDate] = useState(() => formatDateISO(new Date()))
+
+  // Projects
+  const [projects, setProjects] = useState<Project[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState('')
+
+  // Line items
+  const [lineItems, setLineItems] = useState<LineItem[]>([newLineItem()])
+  const [catalogueItems, setCatalogueItems] = useState<CatalogueItem[]>([])
+  const [taxRates] = useState<TaxRate[]>(DEFAULT_TAX_RATES)
+
+  // Totals adjustments (aligned with invoice)
+  const [discountType, setDiscountType] = useState<'percentage' | 'fixed'>('percentage')
+  const [discountValue, setDiscountValue] = useState(0)
+  const [shippingCharges, setShippingCharges] = useState(0)
+  const [adjustment, setAdjustment] = useState(0)
+
+  // Notes and terms
   const [notes, setNotes] = useState('')
-  const [validityDays, setValidityDays] = useState('14')
+  const [terms, setTerms] = useState('')
 
-  const [services, setServices] = useState<CatalogueService[]>([])
-  const [labourRates, setLabourRates] = useState<LabourRate[]>([])
-  const [catalogueLoading, setCatalogueLoading] = useState(true)
-
+  // Form state
   const [saving, setSaving] = useState(false)
+  const [sendingAndSaving, setSendingAndSaving] = useState(false)
   const [errors, setErrors] = useState<FormErrors>({})
+  const [loadingQuote, setLoadingQuote] = useState(isEditMode)
 
-  /* --- Load catalogue data --- */
+  const expiryDate = formatDate(new Date(Date.now() + Number(validityDays) * 86400000))
+
+  // Calculate totals (same approach as InvoiceCreate)
+  const subTotal = lineItems.reduce((sum, item) => sum + item.amount, 0)
+  const discountAmount = discountType === 'percentage'
+    ? (subTotal * discountValue / 100)
+    : discountValue
+  const afterDiscount = subTotal - discountAmount
+  const taxAmount = lineItems.reduce((sum, item) => sum + (item.amount * item.tax_rate / 100), 0)
+  const total = afterDiscount + taxAmount + shippingCharges + adjustment
+
+  // Load existing quote for edit mode
+  useEffect(() => {
+    if (!editId) return
+    let cancelled = false
+    async function loadQuote() {
+      try {
+        const res = await apiClient.get(`/quotes/${editId}`)
+        const q = (res.data as any)?.quote || (res.data as any)
+        if (cancelled) return
+
+        if (q.customer_id) {
+          try {
+            const custRes = await apiClient.get(`/customers/${q.customer_id}`)
+            const cust = (custRes.data as any)?.customer || custRes.data
+            if (!cancelled) setCustomer(cust)
+          } catch { /* non-blocking */ }
+        }
+
+        if (q.vehicle_rego) {
+          setVehicleRego(q.vehicle_rego)
+          setVehicle({
+            id: '', rego: q.vehicle_rego,
+            make: q.vehicle_make || '', model: q.vehicle_model || '',
+            year: q.vehicle_year || null, colour: '',
+          })
+        }
+
+        setSubject(q.subject || '')
+        setNotes(q.notes || '')
+        setTerms(q.terms || '')
+        if (q.project_id) setSelectedProjectId(q.project_id)
+
+        // Populate discount/shipping/adjustment
+        if (q.discount_type) setDiscountType(q.discount_type === 'fixed' ? 'fixed' : 'percentage')
+        if (q.discount_value != null) setDiscountValue(Number(q.discount_value))
+        if (q.shipping_charges != null) setShippingCharges(Number(q.shipping_charges))
+        if (q.adjustment != null) setAdjustment(Number(q.adjustment))
+
+        // Populate line items (convert from quote format to invoice-aligned format)
+        if (q.line_items && q.line_items.length > 0) {
+          setLineItems(q.line_items.map((li: any) => ({
+            key: crypto.randomUUID(),
+            item_id: '',
+            description: li.description || '',
+            quantity: Number(li.quantity) || 1,
+            rate: Number(li.unit_price) || 0,
+            tax_id: li.is_gst_exempt ? 'gst_0' : 'gst_15',
+            tax_rate: li.is_gst_exempt ? 0 : 15,
+            amount: Number(li.line_total) || 0,
+          })))
+        }
+      } catch {
+        setErrors({ submit: 'Failed to load quote for editing' })
+      } finally {
+        if (!cancelled) setLoadingQuote(false)
+      }
+    }
+    loadQuote()
+    return () => { cancelled = true }
+  }, [editId])
+
+  // Load catalogue items
   useEffect(() => {
     let cancelled = false
     async function load() {
       try {
-        const [svcRes, rateRes] = await Promise.all([
-          apiClient.get<CatalogueService[]>('/catalogue/services', { params: { active: true } }),
-          apiClient.get<LabourRate[]>('/catalogue/labour-rates'),
-        ])
-        if (!cancelled) {
-          setServices(svcRes.data)
-          setLabourRates(rateRes.data)
-        }
-      } catch {
-        // Non-blocking
-      } finally {
-        if (!cancelled) setCatalogueLoading(false)
-      }
+        const res = await apiClient.get('/catalogue/services', { params: { active: true } })
+        const data = res.data as any
+        if (!cancelled) setCatalogueItems(Array.isArray(data) ? data : (data?.services || []))
+      } catch { /* non-blocking */ }
     }
     load()
     return () => { cancelled = true }
   }, [])
 
-  /* --- Totals --- */
-  const { subtotalExGst, gstAmount, totalInclGst } = calcTotals(lineItems, quoteDiscount)
-
-  /* --- Line item management --- */
-  const addLineItem = (type: LineItemType) => {
-    setLineItems((prev) => [...prev, newLineItem(type)])
-    if (errors.lineItems) {
-      setErrors((prev) => { const { lineItems: _, ...rest } = prev; return rest })
+  // Load projects if enabled
+  useEffect(() => {
+    if (!projectsEnabled || !customer) return
+    let cancelled = false
+    async function load() {
+      try {
+        const res = await apiClient.get('/projects', {
+          baseURL: '/api/v2',
+          params: { customer_id: customer?.id, page_size: 100 },
+        })
+        const data = res.data as any
+        if (!cancelled) setProjects(data?.projects ?? [])
+      } catch { /* non-blocking */ }
     }
+    load()
+    return () => { cancelled = true }
+  }, [projectsEnabled, customer])
+
+  // Vehicle lookup
+  const lookupVehicle = async () => {
+    const cleaned = vehicleRego.trim().toUpperCase()
+    if (!cleaned) return
+    setVehicleLookupLoading(true)
+    setVehicleLookupError('')
+    try {
+      const res = await apiClient.get(`/vehicles/lookup/${encodeURIComponent(cleaned)}`)
+      setVehicle(res.data as Vehicle)
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status
+      setVehicleLookupError(status === 404 ? 'Vehicle not found' : 'Lookup failed')
+      setVehicle(null)
+    } finally { setVehicleLookupLoading(false) }
   }
 
+  // Line item management
+  const addLineItem = () => setLineItems(prev => [...prev, newLineItem()])
   const updateLineItem = (index: number, updated: LineItem) => {
-    setLineItems((prev) => prev.map((item, i) => (i === index ? updated : item)))
+    setLineItems(prev => prev.map((item, i) => i === index ? updated : item))
   }
-
   const removeLineItem = (index: number) => {
-    setLineItems((prev) => prev.filter((_, i) => i !== index))
+    if (lineItems.length > 1) setLineItems(prev => prev.filter((_, i) => i !== index))
   }
 
-  /* --- Validation --- */
+  // Validation
   const validate = (): boolean => {
     const errs: FormErrors = {}
-    if (!customer) errs.customer = 'Please select or create a customer'
-    if (lineItems.length === 0) errs.lineItems = 'Add at least one line item'
-    for (let i = 0; i < lineItems.length; i++) {
-      const item = lineItems[i]
-      if (!item.description.trim()) errs[`line_${i}_description`] = `Line item ${i + 1}: description is required`
-      if (item.type === 'labour' && (!item.hours || item.hours <= 0)) errs[`line_${i}_hours`] = `Line item ${i + 1}: hours must be greater than 0`
-      if (item.type === 'labour' && (!item.hourly_rate || item.hourly_rate <= 0)) errs[`line_${i}_rate`] = `Line item ${i + 1}: hourly rate is required`
-      if (item.type !== 'labour' && item.unit_price <= 0) errs[`line_${i}_price`] = `Line item ${i + 1}: unit price must be greater than 0`
-    }
+    if (!customer) errs.customer = 'Please select a customer'
+    if (lineItems.every(item => !item.description.trim())) errs.lineItems = 'Add at least one item'
     setErrors(errs)
     return Object.keys(errs).length === 0
   }
 
-  /* --- Build payload --- */
+  // Build payload — sends fields matching backend QuoteCreate/QuoteUpdate schemas
   const buildPayload = () => ({
     customer_id: customer?.id,
-    vehicle_id: vehicle?.id,
-    notes,
+    vehicle_rego: vehicle?.rego ?? (vehicleRego.trim() || undefined),
+    vehicle_make: vehicle?.make ?? undefined,
+    vehicle_model: vehicle?.model ?? undefined,
+    vehicle_year: vehicle?.year ?? undefined,
+    project_id: selectedProjectId || undefined,
     validity_days: Number(validityDays),
-    discount_type: quoteDiscount.type,
-    discount_value: quoteDiscount.value,
-    line_items: lineItems.map((item) => ({
-      type: item.type,
+    notes: notes || undefined,
+    terms: terms || undefined,
+    subject: subject || undefined,
+    discount_type: discountType === 'fixed' ? 'fixed' : 'percentage',
+    discount_value: discountValue,
+    shipping_charges: shippingCharges,
+    adjustment: adjustment,
+    line_items: lineItems.filter(item => item.description.trim()).map((item, i) => ({
+      item_type: 'service',
       description: item.description,
-      service_id: item.service_id,
-      part_number: item.part_number,
-      quantity: item.type === 'labour' ? undefined : item.quantity,
-      unit_price: item.type === 'labour' ? undefined : item.unit_price,
-      hours: item.hours,
-      hourly_rate: item.hourly_rate,
-      labour_rate_id: item.labour_rate_id,
-      gst_exempt: item.gst_exempt,
-      discount_type: item.discount_type,
-      discount_value: item.discount_value,
-      warranty_note: item.warranty_note || undefined,
+      quantity: item.quantity,
+      unit_price: item.rate,
+      is_gst_exempt: item.tax_rate === 0,
+      sort_order: i,
     })),
   })
 
-  /* --- Save as Draft --- */
+  // Save as Draft
   const handleSaveDraft = async () => {
     if (!validate()) return
     setSaving(true)
     try {
-      await apiClient.post('/quotes', { ...buildPayload(), status: 'draft' })
-      window.location.href = '/quotes'
-    } catch {
-      setErrors({ submit: 'Failed to save quote. Please try again.' })
+      if (isEditMode && editId) {
+        await apiClient.put(`/quotes/${editId}`, buildPayload())
+        navigate(`/quotes/${editId}`)
+      } else {
+        await apiClient.post('/quotes', buildPayload())
+        navigate('/quotes')
+      }
+    } catch (err: unknown) {
+      const detail = (err as any)?.response?.data?.detail
+      setErrors({ submit: detail ?? 'Failed to save quote' })
     } finally { setSaving(false) }
   }
 
-  /* --- Collect line-item-level errors --- */
-  const lineItemErrors = Object.entries(errors)
-    .filter(([key]) => key.startsWith('line_'))
-    .map(([, msg]) => msg)
-    .filter(Boolean) as string[]
+  // Save and Send
+  const handleSaveAndSend = async () => {
+    if (!validate()) return
+    setSendingAndSaving(true)
+    try {
+      let quoteId = editId
+      if (isEditMode && editId) {
+        await apiClient.put(`/quotes/${editId}`, buildPayload())
+      } else {
+        const createRes = await apiClient.post('/quotes', buildPayload())
+        const quoteData = (createRes.data as any)?.quote ?? createRes.data
+        quoteId = quoteData?.id
+      }
+      if (quoteId) await apiClient.post(`/quotes/${quoteId}/send`)
+      navigate('/quotes')
+    } catch (err: unknown) {
+      const detail = (err as any)?.response?.data?.detail
+      setErrors({ submit: detail ?? 'Failed to save and send quote' })
+    } finally { setSendingAndSaving(false) }
+  }
 
-  /* --- Render --- */
+  const handleCancel = () => {
+    navigate(isEditMode && editId ? `/quotes/${editId}` : '/quotes')
+  }
+
+  const isBusy = saving || sendingAndSaving
+
+  if (loadingQuote) {
+    return (
+      <div className="mx-auto max-w-5xl px-4 py-16 text-center">
+        <div className="text-gray-500">Loading quote…</div>
+      </div>
+    )
+  }
+
   return (
-    <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
-      <h1 className="text-2xl font-semibold text-gray-900 mb-6">Create Quote</h1>
-
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-[1fr_320px]">
-        {/* ---- Left column: main form ---- */}
-        <div className="space-y-6">
-          {/* Customer */}
-          <section aria-labelledby="section-customer">
-            <h2 id="section-customer" className="sr-only">Customer</h2>
-            <CustomerSearch selectedCustomer={customer} onSelect={setCustomer} error={errors.customer} />
-          </section>
-
-          {/* Vehicle */}
-          <section aria-labelledby="section-vehicle">
-            <h2 id="section-vehicle" className="sr-only">Vehicle</h2>
-            <VehicleRegoLookup vehicle={vehicle} onVehicleFound={setVehicle} error={errors.vehicle} />
-          </section>
-
-          {/* Line Items */}
-          <section aria-labelledby="section-line-items">
-            <h2 id="section-line-items" className="text-lg font-medium text-gray-900 mb-3">Line Items</h2>
-
-            {lineItems.length === 0 && (
-              <p className="text-sm text-gray-500 mb-3">No line items yet. Add a service, part, or labour entry below.</p>
-            )}
-
-            {errors.lineItems && <p className="text-sm text-red-600 mb-3" role="alert">{errors.lineItems}</p>}
-
-            <div className="space-y-4">
-              {lineItems.map((item, i) => (
-                <LineItemRow key={item.key} item={item} index={i} services={services}
-                  labourRates={labourRates} onChange={updateLineItem} onRemove={removeLineItem} />
-              ))}
-            </div>
-
-            {lineItemErrors.length > 0 && (
-              <div className="mt-3 space-y-1">
-                {lineItemErrors.map((msg, i) => (
-                  <p key={i} className="text-sm text-red-600" role="alert">{msg}</p>
-                ))}
-              </div>
-            )}
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Button variant="secondary" size="md" onClick={() => addLineItem('service')}
-                disabled={catalogueLoading} className="min-h-[44px]">+ Service</Button>
-              <Button variant="secondary" size="md" onClick={() => addLineItem('part')}
-                className="min-h-[44px]">+ Part</Button>
-              <Button variant="secondary" size="md" onClick={() => addLineItem('labour')}
-                disabled={catalogueLoading} className="min-h-[44px]">+ Labour</Button>
-            </div>
-          </section>
-
-          {/* Notes */}
-          <section aria-labelledby="section-notes">
-            <h2 id="section-notes" className="sr-only">Notes</h2>
-            <div className="flex flex-col gap-1">
-              <label htmlFor="quote-notes" className="text-sm font-medium text-gray-700">Notes (optional)</label>
-              <textarea id="quote-notes" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)}
-                placeholder="Internal notes or customer-facing message…"
-                className="rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm
-                  placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
-            </div>
-          </section>
+    <div className="bg-gray-50">
+      {/* Header — matches InvoiceCreate */}
+      <div className="bg-white border-b border-gray-200 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-semibold text-gray-900">{isEditMode ? 'Edit Quote' : 'New Quote'}</h1>
+          <div className="flex items-center gap-3">
+            <Button variant="secondary" onClick={handleCancel} disabled={isBusy}>Cancel</Button>
+            <Button variant="secondary" onClick={handleSaveDraft} loading={saving} disabled={isBusy}>Save as Draft</Button>
+            <Button onClick={handleSaveAndSend} loading={sendingAndSaving} disabled={isBusy}>Save and Send</Button>
+          </div>
         </div>
+      </div>
 
-        {/* ---- Right column: totals & actions ---- */}
-        <aside className="md:sticky md:top-6 md:self-start">
-          <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm space-y-4">
-            <h2 className="text-lg font-medium text-gray-900">Summary</h2>
+      <div className="max-w-5xl mx-auto px-6 py-6">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-6">
 
-            {/* Validity period */}
-            <Select label="Quote valid for" options={VALIDITY_OPTIONS} value={validityDays}
-              onChange={(e) => setValidityDays(e.target.value)} />
+          {/* Customer and Quote Details — 2-column layout like InvoiceCreate */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Left Column — Customer + Vehicle */}
+            <div className="space-y-4">
+              <CustomerSearch selectedCustomer={customer} onSelect={setCustomer} error={errors.customer} />
 
-            {/* Quote-level discount */}
-            <div className="space-y-2">
-              <p className="text-sm font-medium text-gray-700">Quote discount</p>
-              <div className="grid grid-cols-2 gap-2">
-                <Select label="" options={[{ value: 'percentage', label: '%' }, { value: 'fixed', label: '$' }]}
-                  value={quoteDiscount.type}
-                  onChange={(e) => setQuoteDiscount((prev) => ({ ...prev, type: e.target.value as DiscountType }))} />
-                <input type="number" min="0" step={quoteDiscount.type === 'percentage' ? '1' : '0.01'}
-                  value={String(quoteDiscount.value)}
-                  onChange={(e) => setQuoteDiscount((prev) => ({ ...prev, value: Math.max(0, Number(e.target.value) || 0) }))}
-                  className="rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm
-                    focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  aria-label={quoteDiscount.type === 'percentage' ? 'Discount percentage' : 'Discount amount'} />
-              </div>
+              {/* Vehicle (module-gated) */}
+              {isEnabled('vehicles') && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Vehicle</label>
+                  {vehicle ? (
+                    <div className="flex items-center gap-2 rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm">
+                      <span className="font-semibold">{vehicle.rego}</span>
+                      <span className="text-gray-600">{vehicle.year} {vehicle.make} {vehicle.model}</span>
+                      <button type="button" onClick={() => { setVehicle(null); setVehicleRego('') }}
+                        className="ml-auto text-gray-400 hover:text-gray-600" aria-label="Clear vehicle">✕</button>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="flex gap-2">
+                        <input type="text" value={vehicleRego} onChange={(e) => setVehicleRego(e.target.value.toUpperCase())}
+                          onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), lookupVehicle())}
+                          placeholder="e.g. ABC123"
+                          className="w-40 rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        <Button size="sm" onClick={lookupVehicle} loading={vehicleLookupLoading}>Lookup</Button>
+                      </div>
+                      {vehicleLookupError && <p className="mt-1 text-xs text-red-600">{vehicleLookupError}</p>}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Project (module-gated) */}
+              {projectsEnabled && customer && (
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-gray-700">Project</label>
+                  <select value={selectedProjectId} onChange={(e) => setSelectedProjectId(e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="">Select a project</option>
+                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+              )}
             </div>
 
-            {/* Totals */}
-            <div className="border-t border-gray-100 pt-4 space-y-2">
-              <div className="flex justify-between text-sm text-gray-600">
-                <span>Subtotal (ex-GST)</span><span>{formatNZD(subtotalExGst)}</span>
+            {/* Right Column — Quote details */}
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-gray-700">Quote Date</label>
+                  <input type="date" value={quoteDate} disabled
+                    className="w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-gray-700">Expiry Date</label>
+                  <div className="rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                    {expiryDate}
+                  </div>
+                </div>
               </div>
-              <div className="flex justify-between text-sm text-gray-600">
-                <span>GST (15%)</span><span>{formatNZD(gstAmount)}</span>
-              </div>
-              <div className="flex justify-between text-base font-semibold text-gray-900 border-t border-gray-200 pt-2">
-                <span>Total (incl. GST)</span><span>{formatNZD(totalInclGst)}</span>
-              </div>
-            </div>
 
-            {/* Submit error */}
-            {errors.submit && <p className="text-sm text-red-600" role="alert">{errors.submit}</p>}
-
-            {/* Action buttons */}
-            <div className="space-y-2 pt-2">
-              <Button variant="primary" size="lg" className="w-full min-h-[48px]"
-                onClick={handleSaveDraft} loading={saving}>
-                Save Quote as Draft
-              </Button>
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-gray-700">Valid For</label>
+                <select value={validityDays} onChange={(e) => setValidityDays(e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  {VALIDITY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
             </div>
           </div>
-        </aside>
+
+          {/* Subject — full width like InvoiceCreate */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
+            <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)}
+              placeholder="Let your customer know what this quote is for"
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+
+          {/* Item Table — matches InvoiceCreate layout */}
+          <div>
+            <h3 className="text-sm font-medium text-gray-700 mb-3">Item Table</h3>
+            {errors.lineItems && <p className="text-sm text-red-600 mb-2">{errors.lineItems}</p>}
+
+            <div className="overflow-visible border border-gray-200 rounded-lg">
+              <table className="w-full">
+                <thead className="bg-gray-50">
+                  <tr className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="py-3 px-2">Item Details</th>
+                    <th className="py-3 px-2 w-24">Quantity</th>
+                    <th className="py-3 px-2 w-32">Rate</th>
+                    <th className="py-3 px-2 w-36">Tax</th>
+                    <th className="py-3 px-2 w-28 text-right">Amount</th>
+                    <th className="py-3 px-2 w-12"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lineItems.map((item, index) => (
+                    <ItemTableRow
+                      key={item.key}
+                      item={item}
+                      index={index}
+                      catalogueItems={catalogueItems}
+                      taxRates={taxRates}
+                      onChange={updateLineItem}
+                      onRemove={removeLineItem}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex gap-3 mt-3">
+              <Button variant="secondary" size="sm" onClick={addLineItem}>+ Add New Row</Button>
+            </div>
+          </div>
+
+          {/* Totals Section — matches InvoiceCreate exactly */}
+          <div className="flex justify-end">
+            <div className="w-full max-w-sm space-y-3">
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Sub Total</span>
+                <span className="font-medium text-gray-900">{formatNZD(subTotal)}</span>
+              </div>
+
+              {/* Discount */}
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-600">Discount</span>
+                <div className="flex items-center gap-2">
+                  <div className="inline-flex rounded-md border border-gray-300 overflow-hidden">
+                    <button type="button" onClick={() => setDiscountType('percentage')}
+                      className={`min-w-[36px] px-2.5 py-1.5 text-sm font-medium text-center transition-colors ${discountType === 'percentage' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                      %
+                    </button>
+                    <button type="button" onClick={() => setDiscountType('fixed')}
+                      className={`min-w-[36px] px-2.5 py-1.5 text-sm font-medium text-center border-l border-gray-300 transition-colors ${discountType === 'fixed' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                      $
+                    </button>
+                  </div>
+                  <input type="number" min="0" step={discountType === 'percentage' ? '1' : '0.01'}
+                    value={discountValue}
+                    onChange={(e) => setDiscountValue(Math.max(0, Number(e.target.value) || 0))}
+                    className="w-24 rounded-md border border-gray-300 px-3 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
+                </div>
+              </div>
+              {discountAmount > 0 && (
+                <div className="flex justify-between text-sm text-red-600">
+                  <span></span>
+                  <span>-{formatNZD(discountAmount)}</span>
+                </div>
+              )}
+
+              {/* Tax */}
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">GST (15%)</span>
+                <span className="text-gray-900">{formatNZD(taxAmount)}</span>
+              </div>
+
+              {/* Shipping */}
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-600">Shipping Charges</span>
+                <input type="number" min="0" step="0.01" value={shippingCharges}
+                  onChange={(e) => setShippingCharges(Math.max(0, Number(e.target.value) || 0))}
+                  className="w-24 rounded border border-gray-300 px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+
+              {/* Adjustment */}
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-600">Adjustment</span>
+                <input type="number" step="0.01" value={adjustment}
+                  onChange={(e) => setAdjustment(Number(e.target.value) || 0)}
+                  className="w-24 rounded border border-gray-300 px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+
+              {/* Total */}
+              <div className="flex justify-between text-base font-semibold border-t border-gray-200 pt-3">
+                <span className="text-gray-900">Total (NZD)</span>
+                <span className="text-gray-900">{formatNZD(total)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Customer Notes — full width like InvoiceCreate */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Customer Notes</label>
+            <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)}
+              placeholder="Enter any notes to be displayed in your transaction"
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+
+          {/* Terms & Conditions — full width like InvoiceCreate */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Terms & Conditions</label>
+            <textarea rows={3} value={terms} onChange={(e) => setTerms(e.target.value)}
+              placeholder="Enter the terms and conditions of your business to be displayed in your transaction"
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+
+          {/* Submit Error */}
+          {errors.submit && (
+            <p className="text-sm text-red-600" role="alert">{errors.submit}</p>
+          )}
+
+          {/* Bottom Actions — matches InvoiceCreate */}
+          <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
+            <Button variant="secondary" onClick={handleCancel} disabled={isBusy}>Cancel</Button>
+            <Button variant="secondary" onClick={handleSaveDraft} loading={saving} disabled={isBusy}>Save as Draft</Button>
+            <Button onClick={handleSaveAndSend} loading={sendingAndSaving} disabled={isBusy}>Save and Send</Button>
+          </div>
+        </div>
       </div>
     </div>
   )

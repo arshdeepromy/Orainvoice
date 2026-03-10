@@ -226,7 +226,7 @@ export default function POSScreen() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-gray-100">
+    <div className="flex flex-col bg-gray-100 h-full -m-4 lg:-m-6">
       {/* Offline indicator banner */}
       {!isOnline && (
         <div

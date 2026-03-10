@@ -440,6 +440,14 @@ def create_app() -> FastAPI:
     from app.modules.email_providers.router import router as email_providers_router
     app.include_router(email_providers_router, prefix="/api/v2/admin/email-providers", tags=["v2-admin-email-providers"])
 
+    # --- Public (no-auth) invoice sharing ---
+    from app.modules.invoices.public_router import router as public_invoice_router
+    app.include_router(public_invoice_router, prefix="/api/v1/public/invoice", tags=["public"])
+
+    # --- Public (no-auth) quote acceptance ---
+    from app.modules.quotes.public_router import router as public_quote_router
+    app.include_router(public_quote_router, prefix="/api/v1/public/quotes", tags=["public-quotes"])
+
     @app.get("/health")
     async def health_check():
         return {"status": "ok"}

@@ -21,6 +21,7 @@ interface ModuleDefinition {
   description: string
   category: string
   is_enabled: boolean
+  in_plan: boolean
   dependencies: string[]
   dependents: string[]
   status: 'available' | 'coming_soon'
@@ -83,6 +84,7 @@ function ModuleCard({
   toggling: boolean
 }) {
   const comingSoon = isComingSoon(mod)
+  const notInPlan = !mod.in_plan
   const depNames = mod.dependencies
     .map((slug) => allModules.find((m) => m.slug === slug)?.name ?? slug)
   const dependentNames = mod.dependents
@@ -91,6 +93,7 @@ function ModuleCard({
   return (
     <div
       className={`border rounded-lg p-4 transition-colors ${
+        notInPlan ? 'border-gray-200 bg-gray-50 opacity-60' :
         comingSoon ? 'border-gray-200 bg-gray-50 opacity-75' : 'border-gray-200 bg-white'
       }`}
       data-testid={`module-card-${mod.slug}`}
@@ -99,23 +102,33 @@ function ModuleCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-medium text-gray-900">{mod.name}</span>
-            {comingSoon && (
+            {notInPlan && (
+              <Badge variant="neutral" data-testid={`not-in-plan-badge-${mod.slug}`}>
+                Not in plan
+              </Badge>
+            )}
+            {comingSoon && !notInPlan && (
               <Badge variant="info" data-testid={`coming-soon-badge-${mod.slug}`}>
                 Coming Soon
               </Badge>
             )}
-            {mod.is_enabled && !comingSoon && (
+            {mod.is_enabled && !comingSoon && !notInPlan && (
               <Badge variant="success">Enabled</Badge>
             )}
           </div>
           {mod.description && (
             <p className="text-sm text-gray-500 mt-1">{mod.description}</p>
           )}
+          {notInPlan && (
+            <p className="text-xs text-amber-600 mt-1">
+              Contact your administrator to add this module to your plan.
+            </p>
+          )}
         </div>
         <ModuleToggle
           checked={mod.is_enabled}
           onChange={() => onToggle(mod)}
-          disabled={toggling || comingSoon}
+          disabled={toggling || comingSoon || notInPlan}
           label={`Toggle ${mod.name}`}
         />
       </div>
@@ -360,14 +373,16 @@ export function ModuleConfiguration() {
     try {
       const res = await apiClient.get('/api/v2/modules')
       const data = res.data
-      if (Array.isArray(data)) {
+      const rawModules = Array.isArray(data) ? data : (data?.modules ?? [])
+      if (rawModules.length > 0 || Array.isArray(data?.modules)) {
         // Normalise: ensure dependencies/dependents arrays exist
-        const normalised: ModuleDefinition[] = data.map((m: Record<string, unknown>) => ({
+        const normalised: ModuleDefinition[] = rawModules.map((m: Record<string, unknown>) => ({
           slug: String(m.slug ?? ''),
           name: String(m.name ?? m.display_name ?? m.slug ?? ''),
           description: String(m.description ?? ''),
           category: String(m.category ?? 'General'),
           is_enabled: Boolean(m.is_enabled),
+          in_plan: m.in_plan !== false,
           dependencies: Array.isArray(m.dependencies) ? m.dependencies : [],
           dependents: Array.isArray(m.dependents) ? m.dependents : [],
           status: m.status === 'coming_soon' ? 'coming_soon' : 'available',
@@ -416,6 +431,7 @@ export function ModuleConfiguration() {
   const handleToggle = useCallback(
     (mod: ModuleDefinition) => {
       if (isComingSoon(mod)) return
+      if (!mod.in_plan) return
 
       const newEnabled = !mod.is_enabled
 
@@ -478,7 +494,8 @@ export function ModuleConfiguration() {
       )
 
       try {
-        await apiClient.put(`/api/v2/modules/${mod.slug}`, { is_enabled: newEnabled })
+        const action = newEnabled ? 'enable' : 'disable'
+        await apiClient.put(`/api/v2/modules/${mod.slug}/${action}`)
         await refetchModuleContext()
         addToast('success', `${mod.name} ${newEnabled ? 'enabled' : 'disabled'}`)
       } catch {

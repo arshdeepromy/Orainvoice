@@ -215,10 +215,11 @@ export default function CustomerProfilePage() {
       return
     }
     try {
-      const res = await apiClient.get<{ customers: CustomerSearchResult[] }>('/customers', {
+      const res = await apiClient.get<{ customers?: CustomerSearchResult[] }>('/customers', {
         params: { search: query.trim(), page_size: 10 },
       })
-      setMergeResults(res.data.customers.filter((c) => c.id !== id))
+      const customers = res.data.customers || []
+      setMergeResults(customers.filter((c) => c.id !== id))
     } catch {
       /* ignore search errors */
     }

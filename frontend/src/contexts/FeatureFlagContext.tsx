@@ -58,8 +58,19 @@ export function FeatureFlagProvider({ children }: { children: ReactNode }) {
     setIsLoading(true)
     setError(null)
     try {
-      const res = await apiClient.get<FlagMap>('/api/v2/flags', { signal })
-      setFlags(res.data)
+      const res = await apiClient.get('/api/v2/flags', { signal })
+      // API returns { flags: [{ key, enabled }, ...] } — transform to flat map
+      const data = res.data
+      if (data && Array.isArray(data.flags)) {
+        const map: FlagMap = {}
+        for (const f of data.flags) {
+          if (f.key) map[f.key] = Boolean(f.enabled)
+        }
+        setFlags(map)
+      } else if (data && typeof data === 'object' && !Array.isArray(data)) {
+        // Already a flat map (backwards compat)
+        setFlags(data as FlagMap)
+      }
     } catch (err: any) {
       if (err.name !== 'CanceledError') {
         setError('Failed to load feature flags')

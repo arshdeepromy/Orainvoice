@@ -23,7 +23,7 @@ TWO_PLACES = Decimal("0.01")
 # Valid status transitions
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "draft": {"sent", "accepted", "declined"},
-    "sent": {"accepted", "declined", "expired"},
+    "sent": {"draft", "accepted", "declined", "expired"},
     "accepted": set(),
     "declined": set(),
     "expired": set(),
@@ -131,12 +131,22 @@ def _quote_to_dict(quote: Quote, line_items: list[QuoteLineItem]) -> dict:
         "vehicle_make": quote.vehicle_make,
         "vehicle_model": quote.vehicle_model,
         "vehicle_year": quote.vehicle_year,
+        "project_id": quote.project_id,
         "status": quote.status,
         "valid_until": quote.valid_until,
         "subtotal": quote.subtotal,
         "gst_amount": quote.gst_amount,
         "total": quote.total,
+        "discount_type": quote.discount_type,
+        "discount_value": quote.discount_value,
+        "discount_amount": quote.discount_amount,
+        "shipping_charges": quote.shipping_charges,
+        "adjustment": quote.adjustment,
         "notes": quote.notes,
+        "terms": quote.terms,
+        "subject": quote.subject,
+        "acceptance_token": quote.acceptance_token,
+        "converted_invoice_id": quote.converted_invoice_id,
         "line_items": [_line_item_to_dict(li) for li in line_items],
         "created_by": quote.created_by,
         "created_at": quote.created_at,
@@ -174,6 +184,13 @@ async def create_quote(
     validity_days: int = 30,
     line_items_data: list[dict] | None = None,
     notes: str | None = None,
+    terms: str | None = None,
+    subject: str | None = None,
+    project_id: uuid.UUID | None = None,
+    discount_type: str | None = "percentage",
+    discount_value: Decimal | None = None,
+    shipping_charges: Decimal | None = None,
+    adjustment: Decimal | None = None,
     ip_address: str | None = None,
 ) -> dict:
     """Create a new quote in Draft status.
@@ -209,6 +226,18 @@ async def create_quote(
     items = line_items_data or []
     totals = _calculate_quote_totals(items, gst_rate)
 
+    # Apply discount, shipping, adjustment
+    _discount_value = Decimal(str(discount_value or 0))
+    _discount_type = discount_type or "percentage"
+    if _discount_type == "percentage":
+        _discount_amount = (totals["subtotal"] * _discount_value / Decimal("100")).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    else:
+        _discount_amount = _discount_value.quantize(TWO_PLACES)
+    _shipping = Decimal(str(shipping_charges or 0)).quantize(TWO_PLACES)
+    _adjustment = Decimal(str(adjustment or 0)).quantize(TWO_PLACES)
+
+    final_total = (totals["subtotal"] - _discount_amount + totals["gst_amount"] + _shipping + _adjustment).quantize(TWO_PLACES)
+
     # Assign quote number
     quote_number = await _get_next_quote_number(db, org_id, quote_prefix)
 
@@ -224,16 +253,25 @@ async def create_quote(
         vehicle_make=vehicle_make,
         vehicle_model=vehicle_model,
         vehicle_year=vehicle_year,
+        project_id=project_id,
         status="draft",
         valid_until=valid_until,
         subtotal=totals["subtotal"],
         gst_amount=totals["gst_amount"],
-        total=totals["total"],
+        total=final_total,
+        discount_type=_discount_type,
+        discount_value=_discount_value,
+        discount_amount=_discount_amount,
+        shipping_charges=_shipping,
+        adjustment=_adjustment,
         notes=notes,
+        terms=terms,
+        subject=subject,
         created_by=user_id,
     )
     db.add(quote)
     await db.flush()
+    await db.refresh(quote)
 
     # Create line items
     created_line_items: list[QuoteLineItem] = []
@@ -350,6 +388,7 @@ async def list_quotes(
             Quote.total,
             Quote.status,
             Quote.valid_until,
+            Quote.created_at,
         )
         .join(Customer, Quote.customer_id == Customer.id, isouter=True)
         .where(*base_filter)
@@ -373,6 +412,7 @@ async def list_quotes(
                 "total": row.total,
                 "status": row.status,
                 "valid_until": row.valid_until,
+                "created_at": row.created_at,
             }
         )
 
@@ -424,7 +464,9 @@ async def update_quote(
     # Only draft quotes allow structural edits
     if quote.status == "draft":
         for field in ("customer_id", "vehicle_rego", "vehicle_make",
-                       "vehicle_model", "vehicle_year", "notes"):
+                       "vehicle_model", "vehicle_year", "notes",
+                       "terms", "subject", "project_id",
+                       "discount_type", "discount_value", "shipping_charges", "adjustment"):
             if field in updates and updates[field] is not None:
                 setattr(quote, field, updates[field])
 
@@ -455,7 +497,18 @@ async def update_quote(
             totals = _calculate_quote_totals(items, gst_rate)
             quote.subtotal = totals["subtotal"]
             quote.gst_amount = totals["gst_amount"]
-            quote.total = totals["total"]
+
+            # Recalculate discount amount and final total
+            _dv = Decimal(str(quote.discount_value or 0))
+            _dt = quote.discount_type or "percentage"
+            if _dt == "percentage":
+                _da = (totals["subtotal"] * _dv / Decimal("100")).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+            else:
+                _da = _dv.quantize(TWO_PLACES)
+            quote.discount_amount = _da
+            _ship = Decimal(str(quote.shipping_charges or 0))
+            _adj = Decimal(str(quote.adjustment or 0))
+            quote.total = (totals["subtotal"] - _da + totals["gst_amount"] + _ship + _adj).quantize(TWO_PLACES)
 
             for i, item_data in enumerate(items):
                 li = QuoteLineItem(
@@ -480,6 +533,9 @@ async def update_quote(
             quote.notes = updates["notes"]
 
     await db.flush()
+
+    # Refresh to get updated server-side timestamps
+    await db.refresh(quote)
 
     # Audit log
     after_value = {
@@ -510,6 +566,60 @@ async def update_quote(
     line_items = list(li_result.scalars().all())
 
     return _quote_to_dict(quote, line_items)
+
+
+async def delete_quote(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    quote_id: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Hard-delete a quote and its line items.
+
+    Only draft, declined, and expired quotes can be deleted.
+    Sent/accepted/converted quotes cannot be deleted.
+    """
+    q_result = await db.execute(
+        select(Quote).where(Quote.id == quote_id, Quote.org_id == org_id)
+    )
+    quote = q_result.scalar_one_or_none()
+    if quote is None:
+        raise ValueError("Quote not found in this organisation")
+
+    non_deletable = {"sent", "accepted", "converted"}
+    if quote.status in non_deletable:
+        raise ValueError(
+            f"Cannot delete a quote with status '{quote.status}'. "
+            "Only draft, declined, or expired quotes can be deleted."
+        )
+
+    quote_number = quote.quote_number
+
+    # Delete line items first
+    li_result = await db.execute(
+        select(QuoteLineItem).where(QuoteLineItem.quote_id == quote.id)
+    )
+    for li in li_result.scalars().all():
+        await db.delete(li)
+
+    await db.delete(quote)
+    await db.flush()
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="quote.deleted",
+        entity_type="quote",
+        entity_id=quote_id,
+        after_value={"quote_number": quote_number},
+        ip_address=ip_address,
+    )
+
+    return {"quote_id": quote_id, "quote_number": quote_number, "deleted": True}
 
 
 async def expire_quotes(db: AsyncSession) -> int:
@@ -660,7 +770,7 @@ async def send_quote(
     # Generate PDF
     pdf_bytes = await generate_quote_pdf(db, org_id=org_id, quote_id=quote_id)
 
-    # Transition status to "sent" if currently draft
+    # Transition status to "sent" if currently draft, and generate acceptance token
     if quote_dict["status"] == "draft":
         result = await db.execute(
             select(Quote).where(
@@ -670,8 +780,124 @@ async def send_quote(
         )
         quote_obj = result.scalar_one_or_none()
         if quote_obj is not None:
+            import secrets
             quote_obj.status = "sent"
+            if not quote_obj.acceptance_token:
+                quote_obj.acceptance_token = secrets.token_urlsafe(32)
             await db.flush()
+
+    # Send the email with PDF attachment using EmailProvider (same as invoice email)
+    import json as _json
+    import smtplib
+    from email.mime.application import MIMEApplication
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    from app.core.encryption import envelope_decrypt_str
+    from app.modules.admin.models import EmailProvider
+
+    org_result2 = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result2.scalar_one_or_none()
+    org_settings = org.settings or {} if org else {}
+    org_name = org.name if org else "Company"
+
+    # Build a public view link if acceptance token exists
+    acceptance_token = quote_dict.get("acceptance_token")
+    if not acceptance_token and quote_obj is not None:
+        acceptance_token = quote_obj.acceptance_token
+    view_link_text = ""
+    if acceptance_token:
+        view_link_text = (
+            f"\nYou can also view and accept this quote online at:\n"
+            f"/api/v1/public/quotes/view/{acceptance_token}\n"
+        )
+
+    # Find all active email providers ordered by priority (failover)
+    provider_result = await db.execute(
+        select(EmailProvider)
+        .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
+        .order_by(EmailProvider.priority)
+    )
+    providers = list(provider_result.scalars().all())
+
+    if not providers:
+        raise ValueError(
+            "No active email provider configured. Please set up an email provider in Admin > Email Providers."
+        )
+
+    def _build_message(from_name: str, from_email: str) -> MIMEMultipart:
+        msg = MIMEMultipart("mixed")
+        msg["From"] = f"{from_name} <{from_email}>"
+        msg["To"] = recipient_email
+        msg["Subject"] = f"Quote {quote_dict['quote_number']} from {org_name}"
+        reply_to = org_settings.get("email")
+        if reply_to:
+            msg["Reply-To"] = reply_to
+
+        body = (
+            f"Hi,\n\n"
+            f"Please find attached quote {quote_dict['quote_number']} from {org_name}.\n\n"
+            f"Total: ${quote_dict['total']:.2f} (incl. GST)\n"
+            f"This quote is valid until {quote_dict.get('valid_until', 'N/A')}.\n"
+            f"{view_link_text}\n"
+            f"If you have any questions, please don't hesitate to contact us.\n\n"
+            f"Kind regards,\n{org_name}\n"
+        )
+        msg.attach(MIMEText(body, "plain"))
+
+        pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
+        pdf_attachment.add_header(
+            "Content-Disposition", "attachment",
+            filename=f"{quote_dict['quote_number']}.pdf",
+        )
+        msg.attach(pdf_attachment)
+        return msg
+
+    # Try each provider in priority order until one succeeds
+    last_error = None
+    used_provider = None
+
+    for provider in providers:
+        try:
+            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
+            credentials = _json.loads(creds_json)
+
+            smtp_host = provider.smtp_host
+            smtp_port = provider.smtp_port or 587
+            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
+            username = credentials.get("username") or credentials.get("api_key", "")
+            password = credentials.get("password") or credentials.get("api_key", "")
+
+            config = provider.config or {}
+            from_email = config.get("from_email") or username
+            from_name = config.get("from_name") or org_name
+
+            msg = _build_message(from_name, from_email)
+
+            if smtp_encryption == "ssl":
+                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+            else:
+                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+                if smtp_encryption == "tls":
+                    server.starttls()
+
+            if username and password:
+                server.login(username, password)
+
+            server.sendmail(from_email, recipient_email, msg.as_string())
+            server.quit()
+            used_provider = provider
+            break
+        except Exception as e:
+            last_error = e
+            continue
+
+    if used_provider is None:
+        raise ValueError(
+            f"All email providers failed. Last error: {last_error}"
+        )
 
     # Audit log
     await write_audit_log(
@@ -685,6 +911,8 @@ async def send_quote(
             "recipient": recipient_email,
             "quote_number": quote_dict["quote_number"],
             "pdf_size_bytes": len(pdf_bytes),
+            "email_sent": True,
+            "provider": used_provider.provider_key,
         },
         ip_address=ip_address,
     )
@@ -695,7 +923,7 @@ async def send_quote(
         "quote_number": quote_dict["quote_number"],
         "recipient_email": recipient_email,
         "pdf_size_bytes": len(pdf_bytes),
-        "status": "queued",
+        "status": "sent",
     }
 
 
@@ -794,3 +1022,128 @@ async def convert_quote_to_invoice(
         "invoice_status": "draft",
         "message": f"Quote {quote_dict['quote_number']} converted to draft invoice",
     }
+
+
+async def accept_quote_by_token(
+    db: AsyncSession,
+    *,
+    token: str,
+) -> dict:
+    """Accept a quote via its public acceptance token.
+
+    Transitions the quote from 'sent' to 'accepted', then auto-converts
+    to a draft invoice with 'issued' status.
+    """
+    import secrets
+    from datetime import datetime, timezone
+
+    result = await db.execute(
+        select(Quote).where(Quote.acceptance_token == token)
+    )
+    quote = result.scalar_one_or_none()
+    if quote is None:
+        raise ValueError("Invalid or expired acceptance link")
+
+    if quote.status == "accepted":
+        raise ValueError("This quote has already been accepted")
+
+    if quote.status not in ("sent",):
+        raise ValueError(f"Quote cannot be accepted in '{quote.status}' status")
+
+    # Check expiry
+    if quote.valid_until and quote.valid_until < date.today():
+        quote.status = "expired"
+        await db.flush()
+        raise ValueError("This quote has expired")
+
+    # Transition to accepted
+    quote.status = "accepted"
+    quote.accepted_at = datetime.now(timezone.utc)
+    await db.flush()
+
+    # Auto-convert to invoice
+    from app.modules.invoices.service import create_invoice
+
+    li_result = await db.execute(
+        select(QuoteLineItem)
+        .where(QuoteLineItem.quote_id == quote.id)
+        .order_by(QuoteLineItem.sort_order)
+    )
+    line_items = list(li_result.scalars().all())
+
+    invoice_line_items = []
+    for li in line_items:
+        invoice_line_items.append({
+            "item_type": li.item_type,
+            "description": li.description,
+            "quantity": li.quantity,
+            "unit_price": li.unit_price,
+            "hours": li.hours,
+            "hourly_rate": li.hourly_rate,
+            "is_gst_exempt": li.is_gst_exempt,
+            "warranty_note": li.warranty_note,
+            "sort_order": li.sort_order,
+        })
+
+    invoice_dict = await create_invoice(
+        db,
+        org_id=quote.org_id,
+        user_id=quote.created_by,
+        customer_id=quote.customer_id,
+        vehicle_rego=quote.vehicle_rego,
+        vehicle_make=quote.vehicle_make,
+        vehicle_model=quote.vehicle_model,
+        vehicle_year=quote.vehicle_year,
+        status="issued",
+        line_items_data=invoice_line_items,
+        notes_customer=quote.notes,
+    )
+
+    quote.converted_invoice_id = invoice_dict["id"]
+    await db.flush()
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        org_id=quote.org_id,
+        user_id=None,
+        action="quote.accepted_by_customer",
+        entity_type="quote",
+        entity_id=quote.id,
+        after_value={
+            "quote_number": quote.quote_number,
+            "invoice_id": str(invoice_dict["id"]),
+            "accepted_via": "public_link",
+        },
+    )
+
+    return {
+        "quote_id": quote.id,
+        "quote_number": quote.quote_number,
+        "status": "accepted",
+        "invoice_id": invoice_dict["id"],
+        "message": "Quote accepted and invoice created",
+    }
+
+
+async def generate_acceptance_token(
+    db: AsyncSession,
+    *,
+    quote_id: uuid.UUID,
+    org_id: uuid.UUID,
+) -> str:
+    """Generate and store an acceptance token for a quote."""
+    import secrets
+
+    result = await db.execute(
+        select(Quote).where(Quote.id == quote_id, Quote.org_id == org_id)
+    )
+    quote = result.scalar_one_or_none()
+    if quote is None:
+        raise ValueError("Quote not found")
+
+    if not quote.acceptance_token:
+        quote.acceptance_token = secrets.token_urlsafe(32)
+        await db.flush()
+
+    return quote.acceptance_token

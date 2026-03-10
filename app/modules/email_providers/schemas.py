@@ -14,6 +14,8 @@ class EmailProviderResponse(BaseModel):
     description: str | None = None
     smtp_host: str | None = None
     smtp_port: int | None = None
+    smtp_encryption: str | None = None
+    priority: int = 1
     is_active: bool
     credentials_set: bool
     config: dict = Field(default_factory=dict)
@@ -39,6 +41,7 @@ class EmailProviderCredentialsRequest(BaseModel):
     credentials: dict = Field(..., description="Provider-specific credentials")
     smtp_host: str | None = Field(None, description="Override SMTP host")
     smtp_port: int | None = Field(None, ge=1, le=65535, description="Override SMTP port")
+    smtp_encryption: str | None = Field(None, pattern=r"^(none|tls|ssl)$", description="SMTP encryption type")
     from_email: str | None = Field(None, description="Default from email")
     from_name: str | None = Field(None, description="Default from display name")
     reply_to: str | None = Field(None, description="Reply-to address")
@@ -60,3 +63,14 @@ class EmailProviderTestResponse(BaseModel):
     success: bool
     message: str
     error: str | None = None
+
+
+class EmailProviderPriorityRequest(BaseModel):
+    """PUT priority for an email provider."""
+    priority: int = Field(..., ge=1, le=10, description="Priority (1 = highest)")
+
+
+class EmailProviderPriorityResponse(BaseModel):
+    """Response after updating priority."""
+    message: str
+    priority: int

@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import apiClient from '../../api/client'
-import { Button, Input, Spinner, Pagination, Modal } from '../../components/ui'
+import { Button, Input, Spinner, Pagination } from '../../components/ui'
+import { CustomerCreateModal } from '../../components/customers/CustomerCreateModal'
+import { CustomerEditModal } from '../../components/customers/CustomerEditModal'
+import { CustomerViewModal } from '../../components/customers/CustomerViewModal'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -10,8 +13,15 @@ interface CustomerSearchResult {
   id: string
   first_name: string
   last_name: string
+  company_name?: string | null
+  display_name?: string | null
   email: string | null
   phone: string | null
+  mobile_phone?: string | null
+  work_phone?: string | null
+  customer_type?: string
+  receivables?: number
+  unused_credits?: number
 }
 
 interface CustomerListResponse {
@@ -20,25 +30,12 @@ interface CustomerListResponse {
   has_exact_match: boolean
 }
 
-interface CreateCustomerForm {
-  first_name: string
-  last_name: string
-  email: string
-  phone: string
-  address: string
-  notes: string
-}
-
-const EMPTY_FORM: CreateCustomerForm = {
-  first_name: '',
-  last_name: '',
-  email: '',
-  phone: '',
-  address: '',
-  notes: '',
-}
-
 const PAGE_SIZE = 20
+
+function formatNZD(amount: number | null | undefined): string {
+  if (amount == null || isNaN(Number(amount))) return 'NZD0.00'
+  return `NZD${Number(amount).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -53,9 +50,14 @@ export default function CustomerList() {
 
   /* Create modal */
   const [createOpen, setCreateOpen] = useState(false)
-  const [form, setForm] = useState<CreateCustomerForm>(EMPTY_FORM)
-  const [creating, setCreating] = useState(false)
-  const [createError, setCreateError] = useState('')
+
+  /* Edit modal */
+  const [editOpen, setEditOpen] = useState(false)
+  const [editCustomerId, setEditCustomerId] = useState<string | null>(null)
+
+  /* View modal */
+  const [viewOpen, setViewOpen] = useState(false)
+  const [viewCustomerId, setViewCustomerId] = useState<string | null>(null)
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
   const abortRef = useRef<AbortController>()
@@ -71,8 +73,11 @@ export default function CustomerList() {
     setLoading(true)
     setError('')
     try {
-      const params: Record<string, string | number> = { page: pg, page_size: PAGE_SIZE }
-      if (search.trim()) params.search = search.trim()
+      const params: Record<string, string | number> = {
+        limit: PAGE_SIZE,
+        offset: (pg - 1) * PAGE_SIZE,
+      }
+      if (search.trim()) params.q = search.trim()
 
       const res = await apiClient.get<CustomerListResponse>('/customers', {
         params,
@@ -102,45 +107,30 @@ export default function CustomerList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page])
 
-  /* --- Create customer --- */
-  const handleCreate = async () => {
-    if (!form.first_name.trim() || !form.last_name.trim()) {
-      setCreateError('First name and last name are required.')
-      return
-    }
-    setCreating(true)
-    setCreateError('')
-    try {
-      const body: Record<string, string> = {
-        first_name: form.first_name.trim(),
-        last_name: form.last_name.trim(),
-      }
-      if (form.email.trim()) body.email = form.email.trim()
-      if (form.phone.trim()) body.phone = form.phone.trim()
-      if (form.address.trim()) body.address = form.address.trim()
-      if (form.notes.trim()) body.notes = form.notes.trim()
-
-      const res = await apiClient.post<{ customer: { id: string } }>('/customers', body)
-      setCreateOpen(false)
-      setForm(EMPTY_FORM)
-      window.location.href = `/customers/${res.data.customer.id}`
-    } catch {
-      setCreateError('Failed to create customer.')
-    } finally {
-      setCreating(false)
-    }
+  /* --- Handle customer created --- */
+  const handleCustomerCreated = (customer: { id: string }) => {
+    setCreateOpen(false)
+    window.location.href = `/customers/${customer.id}`
   }
 
-  const updateField = (field: keyof CreateCustomerForm, value: string) => {
-    setForm((prev) => ({ ...prev, [field]: value }))
+  /* --- Open view modal --- */
+  const handleView = (c: CustomerSearchResult) => {
+    setViewCustomerId(c.id)
+    setViewOpen(true)
+  }
+
+  /* --- Open edit modal --- */
+  const handleEditOpen = (c: CustomerSearchResult) => {
+    setEditCustomerId(c.id)
+    setEditOpen(true)
   }
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
-        <h1 className="text-2xl font-semibold text-gray-900">Customers</h1>
-        <Button onClick={() => setCreateOpen(true)}>+ New Customer</Button>
+        <h1 className="text-2xl font-semibold text-gray-900">Active Customers</h1>
+        <Button onClick={() => setCreateOpen(true)}>+ New</Button>
       </div>
 
       {/* Search */}
@@ -191,14 +181,18 @@ export default function CustomerList() {
               <thead className="bg-gray-50">
                 <tr>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Name</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Company Name</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Email</th>
-                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Phone</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Work Phone</th>
+                  <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Receivables (BCY)</th>
+                  <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Unused Credits (BCY)</th>
+                  <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {data.customers.length === 0 ? (
+                {!data.customers || data.customers.length === 0 ? (
                   <tr>
-                    <td colSpan={3} className="px-4 py-12 text-center text-sm text-gray-500">
+                    <td colSpan={7} className="px-4 py-12 text-center text-sm text-gray-500">
                       {searchQuery ? 'No customers match your search.' : 'No customers yet. Create your first customer to get started.'}
                     </td>
                   </tr>
@@ -210,13 +204,47 @@ export default function CustomerList() {
                       onClick={() => { window.location.href = `/customers/${c.id}` }}
                     >
                       <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-blue-600">
-                        {c.first_name} {c.last_name}
+                        {c.display_name || `${c.first_name} ${c.last_name}`}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">
+                        {c.company_name || '—'}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">
                         {c.email || '—'}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">
-                        {c.phone || '—'}
+                        {c.work_phone || c.phone || c.mobile_phone || '—'}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-900">
+                        {formatNZD(c.receivables)}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-900">
+                        {formatNZD(c.unused_credits)}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleView(c) }}
+                            className="rounded p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                            title="View details"
+                            aria-label={`View ${c.first_name} ${c.last_name}`}
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleEditOpen(c) }}
+                            className="rounded p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 transition-colors"
+                            title="Edit customer"
+                            aria-label={`Edit ${c.first_name} ${c.last_name}`}
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
+                            </svg>
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -237,31 +265,26 @@ export default function CustomerList() {
       )}
 
       {/* Create Customer Modal */}
-      <Modal open={createOpen} onClose={() => { setCreateOpen(false); setCreateError('') }} title="New Customer">
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <Input label="First name *" value={form.first_name} onChange={(e) => updateField('first_name', e.target.value)} />
-            <Input label="Last name *" value={form.last_name} onChange={(e) => updateField('last_name', e.target.value)} />
-          </div>
-          <Input label="Email" type="email" value={form.email} onChange={(e) => updateField('email', e.target.value)} />
-          <Input label="Phone" value={form.phone} onChange={(e) => updateField('phone', e.target.value)} />
-          <Input label="Address" value={form.address} onChange={(e) => updateField('address', e.target.value)} />
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
-            <textarea
-              value={form.notes}
-              onChange={(e) => updateField('notes', e.target.value)}
-              rows={2}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            />
-          </div>
-        </div>
-        {createError && <p className="mt-2 text-sm text-red-600" role="alert">{createError}</p>}
-        <div className="mt-4 flex justify-end gap-2">
-          <Button variant="secondary" size="sm" onClick={() => { setCreateOpen(false); setCreateError('') }}>Cancel</Button>
-          <Button size="sm" onClick={handleCreate} loading={creating}>Create Customer</Button>
-        </div>
-      </Modal>
+      <CustomerCreateModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCustomerCreated={handleCustomerCreated}
+      />
+
+      {/* View Customer Modal */}
+      <CustomerViewModal
+        open={viewOpen}
+        customerId={viewCustomerId}
+        onClose={() => setViewOpen(false)}
+      />
+
+      {/* Edit Customer Modal */}
+      <CustomerEditModal
+        open={editOpen}
+        customerId={editCustomerId}
+        onClose={() => setEditOpen(false)}
+        onSaved={() => fetchCustomers(searchQuery, page)}
+      />
     </div>
   )
 }

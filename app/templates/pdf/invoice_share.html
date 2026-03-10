@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ invoice.invoice_number or 'DRAFT' }} — {{ org.name }}</title>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14px; color: #333; background: #f3f4f6; line-height: 1.5;
+  }
+  .toolbar {
+    position: sticky; top: 0; z-index: 50;
+    background: #fff; border-bottom: 1px solid #e5e7eb;
+    padding: 12px 24px; display: flex; align-items: center; justify-content: space-between;
+  }
+  .toolbar-title { font-size: 15px; font-weight: 600; color: #374151; }
+  .toolbar-actions { display: flex; gap: 8px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600;
+    border: 1px solid #d1d5db; background: #fff; color: #374151; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn:hover { background: #f9fafb; border-color: #9ca3af; }
+  .btn-primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+  .btn-primary:hover { background: #1d4ed8; }
+  .btn svg { width: 16px; height: 16px; }
+
+  .page-wrapper { max-width: 800px; margin: 24px auto; padding: 0 16px; }
+  .invoice-card {
+    background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    border: 1px solid #e5e7eb; overflow: hidden;
+  }
+  .card-inner { padding: 32px; }
+
+  /* Header */
+  .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; }
+  .logo { max-height: 48px; max-width: 180px; margin-bottom: 8px; }
+  .org-name { font-size: 18px; font-weight: 700; color: #111827; }
+  .org-details { font-size: 12px; color: #6b7280; margin-top: 4px; line-height: 1.6; }
+  .inv-title { font-size: 26px; font-weight: 800; color: #111827; text-align: right; letter-spacing: -0.5px; }
+  .inv-number { font-size: 13px; color: #9ca3af; text-align: right; margin-top: 2px; }
+  .balance-box {
+    margin-top: 12px; padding: 8px 16px; background: #f9fafb; border: 1px solid #f3f4f6;
+    border-radius: 8px; text-align: center;
+  }
+  .balance-box .lbl { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; }
+  .balance-box .amt { font-size: 20px; font-weight: 800; color: #111827; }
+
+  /* Bill To + Meta */
+  .bill-meta-row { display: flex; gap: 24px; margin-bottom: 20px; }
+  .bill-to-box {
+    flex: 1; background: rgba(239,246,255,0.5); border: 1px solid #bfdbfe;
+    border-radius: 8px; padding: 14px 18px;
+  }
+  .bill-to-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #2563eb; margin-bottom: 6px; }
+  .bill-to-name { font-size: 14px; font-weight: 700; color: #111827; }
+  .bill-to-detail { font-size: 13px; color: #6b7280; margin-top: 2px; }
+  .meta-col { width: 220px; flex-shrink: 0; }
+  .meta-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+  .meta-row .lbl { color: #9ca3af; }
+  .meta-row .val { color: #111827; font-weight: 600; }
+
+  /* Vehicle */
+  .vehicle-bar {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+    padding: 10px 18px; margin-bottom: 20px; display: flex; gap: 24px; align-items: center;
+    font-size: 13px;
+  }
+  .v-item { display: flex; align-items: center; gap: 6px; }
+  .v-label { font-size: 10px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; }
+  .v-value { color: #111827; font-weight: 600; }
+  .rego-tag {
+    background: #fef9c3; padding: 2px 8px; border-radius: 4px;
+    font-family: ui-monospace, monospace; font-weight: 800; font-size: 12px; color: #111827;
+  }
+
+  /* Line items */
+  .items-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+  .items-table thead th {
+    background: linear-gradient(135deg, #2563eb, #4f46e5);
+    color: #fff; padding: 10px 14px; font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .items-table thead th:first-child { border-radius: 8px 0 0 0; }
+  .items-table thead th:last-child { border-radius: 0 8px 0 0; }
+  .items-table tbody td { padding: 12px 14px; border-bottom: 1px solid #f3f4f6; font-size: 13px; }
+  .items-table tbody tr:nth-child(even) { background: rgba(249,250,251,0.5); }
+  .part-num { font-size: 11px; color: #9ca3af; margin-left: 6px; }
+  .warranty-note { font-size: 11px; color: #3b82f6; margin-top: 2px; }
+
+  /* Totals */
+  .totals-wrapper { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+  .totals-block { width: 280px; }
+  .total-line { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+  .total-line .lbl { color: #9ca3af; }
+  .total-line .val { color: #111827; font-weight: 500; }
+  .total-line.discount .lbl, .total-line.discount .val { color: #059669; }
+  .total-line.grand { padding-top: 10px; border-top: 2px solid #111827; font-size: 15px; font-weight: 800; }
+  .total-line.grand .lbl, .total-line.grand .val { color: #111827; }
+  .total-line.payment .lbl, .total-line.payment .val { color: #059669; }
+  .balance-bar {
+    background: linear-gradient(135deg, #2563eb, #4f46e5);
+    color: #fff; border-radius: 8px; padding: 10px 16px; margin-top: 6px;
+    display: flex; justify-content: space-between; font-size: 14px; font-weight: 800;
+  }
+
+  /* Status banners */
+  .status-banner { text-align: center; padding: 10px; border-radius: 6px; font-weight: 700; font-size: 13px; margin-top: 16px; }
+  .status-paid { background: #dcfce7; border: 1px solid #4ade80; color: #166534; }
+  .status-voided { background: #fce4ec; border: 1px solid #f87171; color: #991b1b; }
+  .status-overdue { background: #fff7ed; border: 1px solid #fb923c; color: #9a3412; }
+
+  /* Notes & footer */
+  .notes-section { margin-top: 20px; }
+  .section-title { font-size: 10px; font-weight: 700; text-transform: uppercase; color: #9ca3af; letter-spacing: 0.5px; border-bottom: 1px solid #f3f4f6; padding-bottom: 4px; margin-bottom: 6px; }
+  .notes-text { font-size: 13px; color: #6b7280; }
+  .footer { margin-top: 24px; padding-top: 12px; border-top: 1px solid #f3f4f6; text-align: center; font-size: 12px; color: #9ca3af; line-height: 1.7; }
+
+  /* Print styles */
+  @media print {
+    body { background: #fff; }
+    .toolbar { display: none; }
+    .page-wrapper { margin: 0; padding: 0; max-width: 100%; }
+    .invoice-card { box-shadow: none; border: none; border-radius: 0; }
+    .card-inner { padding: 20px; }
+    @page { margin: 15mm; size: A4; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Toolbar -->
+<div class="toolbar">
+  <div class="toolbar-title">{{ invoice.invoice_number or 'Draft Invoice' }} — {{ org.name }}</div>
+  <div class="toolbar-actions">
+    <button class="btn" id="btn-print">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0110.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0l.229 2.523a1.125 1.125 0 01-1.12 1.227H7.231c-.662 0-1.18-.568-1.12-1.227L6.34 18m11.318 0h1.091A2.25 2.25 0 0021 15.75V9.456c0-1.081-.768-2.015-1.837-2.175a48.055 48.055 0 00-1.913-.247M6.34 18H5.25A2.25 2.25 0 013 15.75V9.456c0-1.081.768-2.015 1.837-2.175a48.041 48.041 0 011.913-.247m10.5 0a48.536 48.536 0 00-10.5 0m10.5 0V3.375c0-.621-.504-1.125-1.125-1.125h-8.25c-.621 0-1.125.504-1.125 1.125v3.659M18 10.5h.008v.008H18V10.5zm-3 0h.008v.008H15V10.5z"/></svg>
+      Print
+    </button>
+    <button class="btn btn-primary" id="btn-pdf">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+      Save as PDF
+    </button>
+  </div>
+</div>
+
+<div class="page-wrapper">
+  <div class="invoice-card">
+    <div class="card-inner">
+
+      <!-- Header -->
+      <div class="header">
+        <div>
+          {% if org.logo_url %}
+          <img src="{{ org.logo_url }}" alt="{{ org.name }}" class="logo">
+          {% endif %}
+          <div class="org-name">{{ org.name }}</div>
+          <div class="org-details">
+            {% if org.address_unit %}{{ org.address_unit }}<br>{% endif %}
+            {% if org.address_street %}{{ org.address_street }}<br>{% endif %}
+            {% if org.address_city or org.address_state or org.address_postcode %}
+              {{ org.address_city or '' }}{% if org.address_city and (org.address_state or org.address_postcode) %}, {% endif %}{{ org.address_state or '' }}{% if org.address_state and org.address_postcode %}, {% endif %}{{ org.address_postcode or '' }}<br>
+            {% elif org.address %}{{ org.address }}<br>{% endif %}
+            {% if org.address_country %}{{ org.address_country }}<br>{% endif %}
+            {% if org.phone %}{{ org.phone }}<br>{% endif %}
+            {% if org.email %}{{ org.email }}<br>{% endif %}
+            {% if org.website %}{{ org.website }}{% endif %}
+          </div>
+        </div>
+        <div>
+          <div class="inv-title">INVOICE</div>
+          <div class="inv-number"># {{ invoice.invoice_number or 'DRAFT' }}</div>
+          <div class="balance-box">
+            <div class="lbl">Balance Due</div>
+            <div class="amt">NZD{{ "%.2f" | format(invoice.balance_due | float) }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bill To + Meta -->
+      <div class="bill-meta-row">
+        <div class="bill-to-box">
+          <div class="bill-to-label">Bill To</div>
+          <div class="bill-to-name">{{ customer.first_name }} {{ customer.last_name }}</div>
+          {% if customer.email %}<div class="bill-to-detail">{{ customer.email }}</div>{% endif %}
+          {% if customer.phone %}<div class="bill-to-detail">{{ customer.phone }}</div>{% endif %}
+          {% if customer.address %}<div class="bill-to-detail">{{ customer.address }}</div>{% endif %}
+        </div>
+        <div class="meta-col">
+          {% if invoice.issue_date %}
+          <div class="meta-row"><span class="lbl">Invoice Date :</span><span class="val">{{ invoice.issue_date }}</span></div>
+          {% endif %}
+          <div class="meta-row">
+            <span class="lbl">Terms :</span>
+            <span class="val">{% if invoice.payment_terms %}{{ invoice.payment_terms | replace('_', ' ') | title }}{% else %}Due on Receipt{% endif %}</span>
+          </div>
+          {% if invoice.due_date %}
+          <div class="meta-row"><span class="lbl">Due Date :</span><span class="val">{{ invoice.due_date }}</span></div>
+          {% endif %}
+          {% if org.gst_number %}
+          <div class="meta-row"><span class="lbl">GST No :</span><span class="val">{{ org.gst_number }}</span></div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Vehicle -->
+      {% set v = invoice.vehicle %}
+      {% if v or invoice.vehicle_rego %}
+      <div class="vehicle-bar">
+        <div class="v-item">
+          <span class="v-label">Rego</span>
+          <span class="rego-tag">{{ v.rego if v else invoice.vehicle_rego }}</span>
+        </div>
+        {% if (v and (v.make or v.model)) or invoice.vehicle_make %}
+        <div class="v-item">
+          <span class="v-label">Vehicle</span>
+          <span class="v-value">{% if v %}{{ v.year or '' }} {{ v.make or '' }} {{ v.model or '' }}{% else %}{{ invoice.vehicle_year or '' }} {{ invoice.vehicle_make or '' }} {{ invoice.vehicle_model or '' }}{% endif %}</span>
+        </div>
+        {% endif %}
+        {% set odo = (v.odometer if v and v.odometer else invoice.vehicle_odometer) %}
+        {% if odo %}
+        <div class="v-item">
+          <span class="v-label">Odometer</span>
+          <span class="v-value">{{ "{:,}".format(odo | int) }} km</span>
+        </div>
+        {% endif %}
+        {% if v and v.wof_expiry %}
+        <div class="v-item">
+          <span class="v-label">WOF Expiry</span>
+          <span class="v-value">{{ v.wof_expiry }}</span>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      <!-- Line Items -->
+      <table class="items-table">
+        <thead>
+          <tr>
+            <th style="text-align:left; width:36px;">#</th>
+            <th style="text-align:left;">Description</th>
+            <th style="text-align:right; width:70px;">Qty</th>
+            <th style="text-align:right; width:90px;">Rate</th>
+            <th style="text-align:right; width:100px;">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in invoice.line_items %}
+          <tr>
+            <td style="color:#9ca3af;">{{ loop.index }}</td>
+            <td>
+              {{ item.description }}
+              {% if item.part_number %}<span class="part-num">#{{ item.part_number }}</span>{% endif %}
+              {% if item.warranty_note %}<div class="warranty-note">Warranty: {{ item.warranty_note }}</div>{% endif %}
+            </td>
+            <td style="text-align:right;">
+              {% if item.item_type == 'labour' %}{{ "%.2f" | format((item.hours or 0) | float) }}{% else %}{{ "%.2f" | format(item.quantity | float) }}{% endif %}
+            </td>
+            <td style="text-align:right;">
+              {% if item.item_type == 'labour' %}{{ "%.2f" | format((item.hourly_rate or 0) | float) }}{% else %}{{ "%.2f" | format(item.unit_price | float) }}{% endif %}
+            </td>
+            <td style="text-align:right; font-weight:600;">{{ "%.2f" | format(item.line_total | float) }}</td>
+          </tr>
+          {% endfor %}
+          {% if not invoice.line_items %}
+          <tr><td colspan="5" style="text-align:center; padding:24px; color:#9ca3af;">No line items</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+
+      <!-- Totals -->
+      <div class="totals-wrapper">
+        <div class="totals-block">
+          <div class="total-line"><span class="lbl">Sub Total</span><span class="val">{{ "%.2f" | format(invoice.subtotal | float) }}</span></div>
+          {% if invoice.discount_amount and invoice.discount_amount > 0 %}
+          <div class="total-line discount">
+            <span class="lbl">Discount</span>
+            <span class="val">{% if invoice.discount_type == 'percentage' %}&minus;{{ invoice.discount_value }}%{% else %}&minus;{{ "%.2f" | format(invoice.discount_amount | float) }}{% endif %}</span>
+          </div>
+          {% endif %}
+          <div class="total-line"><span class="lbl">GST ({{ gst_percentage }}%)</span><span class="val">{{ "%.2f" | format(invoice.gst_amount | float) }}</span></div>
+          <div class="total-line grand"><span class="lbl">Total</span><span class="val">NZD{{ "%.2f" | format(invoice.total | float) }}</span></div>
+          {% if invoice.amount_paid and invoice.amount_paid > 0 %}
+          <div class="total-line payment"><span class="lbl">Payments</span><span class="val">&minus;NZD{{ "%.2f" | format(invoice.amount_paid | float) }}</span></div>
+          {% endif %}
+          <div class="balance-bar">
+            <span>Balance Due</span>
+            <span>NZD{{ "%.2f" | format(invoice.balance_due | float) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Status -->
+      {% if invoice.status == 'paid' %}
+      <div class="status-banner status-paid">PAID IN FULL</div>
+      {% elif invoice.status == 'voided' %}
+      <div class="status-banner status-voided">VOIDED{% if invoice.void_reason %} &mdash; {{ invoice.void_reason }}{% endif %}</div>
+      {% elif invoice.status == 'overdue' %}
+      <div class="status-banner status-overdue">OVERDUE</div>
+      {% endif %}
+
+      <!-- Notes -->
+      {% if invoice.notes_customer %}
+      <div class="notes-section">
+        <div class="section-title">Notes</div>
+        <p class="notes-text">{{ invoice.notes_customer }}</p>
+      </div>
+      {% endif %}
+
+      {% if payment_terms %}
+      <div class="notes-section">
+        <div class="section-title">Payment Terms</div>
+        <p class="notes-text">{{ payment_terms }}</p>
+      </div>
+      {% endif %}
+
+      {% if terms_and_conditions %}
+      <div class="notes-section">
+        <div class="section-title">Terms &amp; Conditions</div>
+        <div style="font-size:12px; color:#9ca3af;">{{ terms_and_conditions | safe }}</div>
+      </div>
+      {% endif %}
+
+      <!-- Footer -->
+      <div class="footer">
+        {% if org.invoice_footer %}<p>{{ org.invoice_footer }}</p>{% endif %}
+        <p>Thank you for your business.</p>
+        {% if org.gst_number %}
+        <p>Payments can be paid by direct bank transfer. Please use your Invoice number as your ref number on your bank transfer.</p>
+        {% endif %}
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  document.getElementById('btn-print').addEventListener('click', function() {
+    window.print();
+  });
+  document.getElementById('btn-pdf').addEventListener('click', function() {
+    window.print();
+  });
+</script>
+
+</body>
+</html>

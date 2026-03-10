@@ -762,3 +762,1028 @@ docker-compose restart app
 - Track real-time sync status
 - Store last sync error message
 
+
+
+---
+
+### ISSUE-024: Subscription plan update hanging - missing commit + Decimal serialization error
+
+- **Date**: 2026-03-09
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When updating a subscription plan in the admin panel, the frontend gets stuck in loading state with "Update plan" button showing spinner indefinitely. Backend logs show UPDATE query executing but then ROLLBACK instead of COMMIT. After fixing the commit issue, a second error appeared: `TypeError: Object of type Decimal is not JSON serializable` when trying to serialize audit log data.
+
+**Root Cause**: Two separate issues:
+1. The `update_subscription_plan` endpoint in `app/modules/admin/router.py` was missing `await db.commit()` after calling the `update_plan` service function. The service function only does `await db.flush()` which writes changes to the database but doesn't commit the transaction. The `get_db_session` dependency uses `async with session.begin()` which auto-commits on context exit, but the endpoint was returning the response before the context exited, causing the transaction to roll back.
+2. The `_serialise_audit` helper function didn't handle `Decimal` types, causing JSON serialization to fail when audit logging the `per_sms_cost_nzd` field (which is a Decimal in the database).
+
+**Fix Applied**: 
+1. Added explicit `await db.commit()` after the `update_plan` service call, and added proper error handling with `await db.rollback()` in exception blocks.
+2. Added Decimal type handling to `_serialise_audit` function to convert Decimal values to float before JSON serialization.
+
+**Files Changed**:
+- `app/modules/admin/router.py` - Added commit/rollback to update_subscription_plan endpoint
+- `app/modules/admin/service.py` - Added Decimal handling to _serialise_audit function
+
+**Backend Restart Required**: Yes, backend must be restarted for the fix to take effect
+
+**Similar Bugs Found & Fixed**: Checked other admin endpoints - most already have proper commit/rollback handling (e.g., hard_delete_org). This was an isolated omission in the plan update endpoint. The Decimal serialization issue may exist in other audit log calls - should be monitored.
+
+**Related Issues**: None
+
+**Note**: The pattern of using `flush()` in service functions and `commit()` in route handlers is correct - service functions should not commit to allow for transaction composition. Route handlers are responsible for committing or rolling back based on the overall operation success.
+
+**Known Limitation**: Plan updates currently only update the `subscription_plans` table. Organizations on that plan will see the changes after logout/login (when ModuleContext refetches), but the system doesn't actively enforce plan-level module restrictions. The `get_all_modules_for_org` method checks the `OrgModule` table for enabled modules but doesn't validate against the plan's `enabled_modules` list. This means:
+- If an org manually enabled a module that's later removed from their plan, they'll keep access until manually disabled
+- Plan updates don't automatically disable modules for existing organizations
+- The plan's `enabled_modules` acts more as a "default set" for new organizations rather than an enforced restriction
+
+**Future Enhancement**: Consider adding plan-level module enforcement that:
+1. Validates module enable/disable operations against the org's current plan
+2. Optionally auto-disables modules when a plan is updated to remove them
+3. Shows a warning in the admin panel when updating plans that will affect existing organizations
+
+
+---
+
+### ISSUE-025: Vehicle live search not working - CORS blocking requests + route order conflict
+
+- **Date**: 2026-03-09
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Vehicle live search in InvoiceCreate page not working. User types registration but no results appear. Browser console shows CORS errors. Additionally, the `/vehicles/search` endpoint was returning 422 errors before the CORS fix was applied.
+
+**Root Cause**: Two separate issues:
+1. **CORS Configuration**: The frontend is exposed on port 3000 (via Docker port mapping 3000:5173), but the CORS configuration in `.env` only allowed `http://localhost:5173`. Requests from `http://localhost:3000` were being blocked with "Disallowed CORS origin" error.
+2. **Route Order Conflict** (fixed in previous session): The `/search` and `/lookup-with-fallback` routes were defined AFTER the `/{vehicle_id}` route in `app/modules/vehicles/router.py`. FastAPI matches routes in order, so "search" was being interpreted as a vehicle_id UUID, causing 422 validation errors.
+
+**Fix Applied**:
+1. Updated `.env` to include both ports in CORS_ORIGINS: `["http://localhost:5173", "http://localhost:3000"]`
+2. Recreated the app container to pick up the new environment variable: `docker-compose up -d app --force-recreate`
+3. Route order was already fixed in previous session - `/search` and `/lookup-with-fallback` routes are now defined BEFORE `/{vehicle_id}` route.
+
+**Files Changed**:
+- `.env` - Added `http://localhost:3000` to CORS_ORIGINS
+
+**Backend Restart Required**: Yes, container must be recreated (not just restarted) to pick up new .env values
+
+**Similar Bugs Found & Fixed**: N/A - CORS configuration issue specific to Docker port mapping
+
+**Related Issues**: None
+
+**Note**: The vehicle live search feature is now fully functional:
+- `/vehicles/search?q=XX` - Returns matching vehicles from global_vehicles database (instant, no API cost)
+- `/vehicles/lookup-with-fallback` - Tries ABCD API first (~$0.05), falls back to Basic (~$0.15) if ABCD fails
+- Frontend component `VehicleLiveSearch.tsx` provides live autocomplete with "Sync with Carjam" button for new vehicles
+
+**Testing Verified**:
+- Search endpoint returns results: `GET /vehicles/search?q=QT` → `{"results":[{"id":"...","rego":"QTD216","make":"TOYOTA",...}],"total":1}`
+- Lookup with fallback works: `POST /vehicles/lookup-with-fallback` → `{"success":true,"vehicle":{...},"source":"cache",...}`
+- CORS preflight passes: `OPTIONS /vehicles/search` → 200 OK with `access-control-allow-origin: http://localhost:3000`
+
+
+---
+
+### ISSUE-026: Inline "Create new customer" form too compacted - needs Modal popup
+
+- **Date**: 2026-03-09
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When clicking "Create new customer" in the customer search dropdown on InvoiceCreate, QuoteCreate, and JobCardCreate pages, the inline form was too compacted and difficult to use, especially on mobile devices.
+
+**Root Cause**: The create customer form was rendered inline within the dropdown menu, which has limited space. This made the form cramped and hard to use on smaller screens.
+
+**Fix Applied**:
+1. Converted inline create form to Modal popup in all affected pages
+2. Added `showCreateModal` state to replace `showCreateForm`
+3. Added `handleOpenCreateModal()` and `handleCloseCreateModal()` functions
+4. Added `resetCreateForm()` function to clear form state
+5. Used the existing `Modal` component from `components/ui` for consistent styling
+6. Modal is responsive and renders appropriately based on screen size
+
+**Files Changed**:
+- `frontend/src/pages/invoices/InvoiceCreate.tsx` - Converted to Modal (completed in previous session)
+- `frontend/src/pages/quotes/QuoteCreate.tsx` - Converted to Modal (completed in previous session)
+- `frontend/src/pages/job-cards/JobCardCreate.tsx` - Added Modal import (was missing)
+
+**Similar Bugs Found & Fixed**: Checked all other pages with customer search:
+- `frontend/src/pages/invoices/RecurringInvoices.tsx` - Already uses Modal properly
+- `frontend/src/pages/bookings/BookingForm.tsx` - Already uses Modal properly
+- `frontend/src/pages/customers/CustomerList.tsx` - Already uses Modal properly
+
+**Related Issues**: None
+
+**Note**: The Modal component (`frontend/src/components/ui/Modal.tsx`) provides:
+- Responsive sizing with `max-w-md` class
+- Proper focus trapping for accessibility
+- Escape key to close
+- Click outside to close
+- Sticky header with close button
+
+
+---
+
+### ISSUE-027: Enhanced customer creation form with comprehensive fields
+
+- **Date**: 2026-03-09
+- **Severity**: enhancement
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: User requested a comprehensive customer creation form matching Zoho-style design with:
+- Customer type (Business/Individual)
+- Salutation, first name, last name
+- Company name (for business customers)
+- Display name
+- Currency and language preferences
+- Work phone and mobile phone (separate fields)
+- Payment terms
+- Company ID / business registration
+- Bank payment and portal access options
+- Structured billing and shipping addresses
+- Contact persons
+- Custom fields
+- Remarks
+
+**Root Cause**: The existing customer creation form only had basic fields (first name, last name, email, phone, address, notes). The database schema and API didn't support the comprehensive customer data needed for business use.
+
+**Fix Applied**:
+
+1. **Database Migration** (`0072_enhance_customer_fields`):
+   - Added 17 new columns to `customers` table
+   - `customer_type` (individual/business)
+   - `salutation`, `company_name`, `display_name`
+   - `work_phone`, `mobile_phone`
+   - `currency`, `language`
+   - `tax_rate_id`, `company_id`, `payment_terms`
+   - `enable_bank_payment`, `enable_portal`
+   - `billing_address`, `shipping_address` (JSONB)
+   - `contact_persons` (JSONB array)
+   - `custom_fields` (JSONB)
+   - `remarks`, `documents`, `owner_user_id`
+   - Created indexes for customer_type and company_name
+
+2. **Backend Model** (`app/modules/customers/models.py`):
+   - Updated Customer model with all new fields
+   - Proper JSONB defaults for structured data
+
+3. **Backend Schemas** (`app/modules/customers/schemas.py`):
+   - Added `AddressSchema` and `ContactPersonSchema`
+   - Updated `CustomerCreateRequest` with all new fields
+   - Updated `CustomerUpdateRequest` with all new fields
+   - Updated `CustomerResponse` with all new fields
+   - Updated `CustomerSearchResult` with company_name and display_name
+
+4. **Backend Service** (`app/modules/customers/service.py`):
+   - Updated `_customer_to_dict()` to include all new fields
+   - Updated `_customer_to_search_dict()` to include company info
+   - Updated `create_customer()` to accept all new parameters
+   - Auto-generates display_name if not provided
+
+5. **Backend Router** (`app/modules/customers/router.py`):
+   - Updated `create_new_customer()` to pass all new fields to service
+
+6. **Frontend Component** (`frontend/src/components/customers/CustomerCreateModal.tsx`):
+   - New comprehensive modal component with tabbed interface
+   - Customer type toggle (Business/Individual)
+   - Primary contact fields with salutation
+   - Currency and language selectors
+   - Phone fields with country code prefix
+   - Tabbed sections: Other Details, Address, Contact Persons, Custom Fields, Remarks
+   - Payment terms, bank payment, and portal access options
+   - Billing and shipping address forms
+   - Contact persons management (add/remove)
+   - Responsive design matching Zoho-style UI
+
+7. **Frontend Integration** (`frontend/src/pages/invoices/InvoiceCreate.tsx`):
+   - Updated CustomerSearch to use new CustomerCreateModal
+   - Removed inline form state and validation
+   - Simplified component with callback pattern
+
+**Files Changed**:
+- `alembic/versions/2026_03_09_1700-0072_enhance_customer_fields.py` (new)
+- `app/modules/customers/models.py`
+- `app/modules/customers/schemas.py`
+- `app/modules/customers/service.py`
+- `app/modules/customers/router.py`
+- `frontend/src/components/customers/CustomerCreateModal.tsx` (new)
+- `frontend/src/components/customers/index.ts` (new)
+- `frontend/src/pages/invoices/InvoiceCreate.tsx`
+
+**Required Fields**:
+- First name, last name, email, mobile phone are mandatory
+- All other fields are optional
+
+**Related Issues**: ISSUE-026 (Modal popup fix)
+
+
+---
+
+### ISSUE-028: Redesign InvoiceCreate page with Zoho-style UI
+
+- **Date**: 2026-03-09
+- **Severity**: enhancement
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: User requested a complete redesign of the invoice creation page to match Zoho-style design with:
+- Customer Name dropdown with search icon
+- Invoice# (auto-generated), Order Number
+- Invoice Date, Terms dropdown (Due on Receipt, Net 15, etc.), Due Date
+- Salesperson dropdown
+- GST No* field (auto-populated from org settings)
+- Subject field
+- Item Table with columns: Item Details, Quantity, Rate, Tax dropdown, Amount
+- Add New Row / Add Items in Bulk buttons
+- Sub Total, Discount (% toggle), Shipping Charges, Adjustment, Total (NZD)
+- Customer Notes textarea
+- Terms & Conditions textarea
+- Attach Files to Invoice
+- Payment Gateway selection (Stripe, Bank Transfer)
+- Save as Draft / Save and Send / Cancel buttons
+- Make Recurring option
+
+**Root Cause**: The existing invoice creation page had a different layout focused on vehicle workshop invoices with service/part/labour line items. The new design needed to be more generic and match Zoho's invoice creation UI.
+
+**Fix Applied**:
+
+1. **Complete UI Redesign** (`frontend/src/pages/invoices/InvoiceCreate.tsx`):
+   - Clean header with action buttons (Cancel, Save as Draft, Save and Send)
+   - Two-column layout for customer and invoice details
+   - Customer search with search icon and dropdown
+   - Auto-generated invoice number with prefix
+   - Invoice date, terms dropdown, and auto-calculated due date
+   - Salesperson dropdown
+   - GST number auto-populated from `useTenant()` hook (org settings)
+   - Subject field for invoice description
+
+2. **Item Table Component**:
+   - Table layout with columns: Item Details, Quantity, Rate, Tax, Amount
+   - Inline item search with catalogue dropdown
+   - Tax rate selector per line item
+   - Auto-calculated line amounts
+   - Add New Row and Add Items in Bulk buttons
+
+3. **Totals Section**:
+   - Sub Total calculation
+   - Discount with % / $ toggle
+   - Shipping Charges input
+   - Adjustment input (positive or negative)
+   - Total (NZD) with currency formatting
+
+4. **Additional Fields**:
+   - Customer Notes textarea
+   - Terms & Conditions textarea (pre-populated from org settings)
+   - File attachment section with upload button
+   - Payment Gateway selection (Stripe, Bank Transfer)
+   - Make Recurring checkbox
+
+5. **GST Integration**:
+   - Uses `useTenant()` hook to get `settings.gst.gst_number`
+   - GST field is disabled and shows helper text
+   - Auto-populates from organisation settings
+
+**Files Changed**:
+- `frontend/src/pages/invoices/InvoiceCreate.tsx` (complete rewrite)
+
+**Key Features**:
+- GST number auto-populated from org settings via TenantContext
+- Due date auto-calculated based on payment terms
+- Invoice number auto-generated with timestamp
+- Terms & Conditions pre-populated from org settings
+- Responsive design with clean Zoho-style UI
+
+**Related Issues**: ISSUE-027 (Customer creation modal used in this page)
+
+
+---
+
+### ISSUE-029: Customer Profile page fails to load - missing exchange_rate_to_nzd column
+
+- **Date**: 2026-03-09
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When clicking on a customer from the customer list to view their profile, the page fails to load. Backend returns 500 error with message: `column invoices.exchange_rate_to_nzd does not exist`.
+
+**Root Cause**: Two issues:
+1. The Invoice model in `app/modules/invoices/models.py` has an `exchange_rate_to_nzd` column defined, but no migration existed to add this column to the database.
+2. The alembic_version table had a `version_num` column of type `VARCHAR(32)`, which was too short for the new migration revision ID `0073_add_exchange_rate_to_invoices` (34 characters).
+
+**Fix Applied**:
+1. Created migration `0073_add_exchange_rate_to_invoices.py` to add the `exchange_rate_to_nzd` column to the invoices table with default value `1.000000`.
+2. Fixed the alembic_version table column size:
+   ```sql
+   ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(64);
+   ```
+3. Ran the migration successfully.
+4. Updated `CustomerProfileResponse` schema in `app/modules/customers/schemas.py` to include all new customer fields from ISSUE-027.
+
+**Files Changed**:
+- `alembic/versions/2026_03_09_0930-0073_add_exchange_rate_to_invoices.py` (new)
+- `app/modules/customers/schemas.py` (CustomerProfileResponse updated)
+
+**Database Changes**:
+- Added `exchange_rate_to_nzd NUMERIC(12,6) NOT NULL DEFAULT 1.000000` to `invoices` table
+- Altered `alembic_version.version_num` from `VARCHAR(32)` to `VARCHAR(64)`
+
+**Related Issues**: ISSUE-027 (customer fields enhancement)
+
+
+---
+
+### ISSUE-030: Auto-link customer and vehicle on invoice creation
+
+- **Date**: 2026-03-09
+- **Severity**: enhancement
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: User requested that when a customer and vehicle are selected on an invoice, they should be automatically linked so that:
+1. When selecting a customer, their linked vehicles appear and can be auto-selected
+2. When selecting a vehicle, its linked customers appear and can be auto-selected
+3. When an invoice is created, the customer-vehicle link is automatically created if not already linked
+
+**Root Cause**: No automatic linking existed between customers and vehicles during invoice creation. Users had to manually link them separately.
+
+**Fix Applied**:
+
+1. **Backend - Vehicle Search** (`app/modules/vehicles/service.py`, `app/modules/vehicles/router.py`):
+   - Updated `search_vehicles()` to accept optional `org_id` parameter
+   - When org_id is provided, returns `linked_customers` array for each vehicle
+   - Router now passes org_id from request context
+
+2. **Backend - Customer Search** (`app/modules/customers/service.py`, `app/modules/customers/router.py`):
+   - Updated `search_customers()` to accept optional `include_vehicles` parameter
+   - When true, returns `linked_vehicles` array for each customer
+   - Router accepts `include_vehicles` query parameter
+
+3. **Backend - Invoice Creation** (`app/modules/invoices/service.py`, `app/modules/invoices/schemas.py`, `app/modules/invoices/router.py`):
+   - Added `global_vehicle_id` field to `InvoiceCreateRequest` schema
+   - Updated `create_invoice()` to accept `global_vehicle_id` parameter
+   - When invoice is created with both customer and vehicle, automatically creates `CustomerVehicle` link if not already linked
+   - Audit log records the auto-link with `linked_via: invoice_creation`
+
+4. **Frontend - VehicleLiveSearch** (`frontend/src/components/vehicles/VehicleLiveSearch.tsx`):
+   - Added `LinkedCustomer` interface
+   - Added `onCustomerAutoSelect` callback prop
+   - Search results now show linked customer count badge
+   - When vehicle is selected, auto-selects first linked customer if callback provided
+
+5. **Frontend - InvoiceCreate** (`frontend/src/pages/invoices/InvoiceCreate.tsx`):
+   - Added `LinkedVehicle` and `LinkedCustomer` interfaces
+   - Updated CustomerSearch to pass `include_vehicles=true` to API
+   - Added `onVehicleAutoSelect` callback to CustomerSearch
+   - Search results now show linked vehicle count badge
+   - When customer is selected, auto-selects first linked vehicle if no vehicle selected
+   - When vehicle is selected, auto-selects first linked customer if no customer selected
+   - Payload now includes `global_vehicle_id` for auto-linking
+
+6. **Schema Updates** (`app/modules/customers/schemas.py`):
+   - Added `LinkedVehicleSummary` schema
+   - Added `linked_vehicles` optional field to `CustomerSearchResult`
+
+**Files Changed**:
+- `app/modules/vehicles/service.py`
+- `app/modules/vehicles/router.py`
+- `app/modules/customers/service.py`
+- `app/modules/customers/router.py`
+- `app/modules/customers/schemas.py`
+- `app/modules/invoices/service.py`
+- `app/modules/invoices/schemas.py`
+- `app/modules/invoices/router.py`
+- `frontend/src/components/vehicles/VehicleLiveSearch.tsx`
+- `frontend/src/pages/invoices/InvoiceCreate.tsx`
+
+**User Experience**:
+- When selecting a customer, their linked vehicles are shown with a badge count
+- First linked vehicle is auto-selected if no vehicle is currently selected
+- When selecting a vehicle, its linked customers are shown with a badge count
+- First linked customer is auto-selected if no customer is currently selected
+- When invoice is saved, customer-vehicle link is automatically created if not already linked
+
+**Related Issues**: ISSUE-029 (customer profile fix)
+
+
+---
+
+### ISSUE-031: Item search dropdown hidden/clipped in invoice table
+
+- **Date**: 2026-03-09
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When adding items to an invoice, the item search dropdown was hidden/clipped inside the table. Users could not see the search results when typing to search for catalogue items.
+
+**Root Cause**: Two CSS issues:
+1. The table container had `overflow-x-auto` which clips any absolutely positioned elements (like dropdowns) that extend beyond the container bounds
+2. The dropdown had `z-index: 20` which was not high enough to appear above other elements
+
+**Fix Applied**:
+1. Changed table container from `overflow-x-auto` to `overflow-visible` to allow dropdown to extend beyond table bounds
+2. Increased dropdown z-index from `z-20` to `z-50` to ensure it appears above other elements
+
+**Files Changed**:
+- `frontend/src/pages/invoices/InvoiceCreate.tsx`
+
+**Related Issues**: N/A
+
+
+---
+
+### ISSUE-032: Salesperson dropdown showing mock data instead of actual org users
+
+- **Date**: 2026-03-09
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: The salesperson dropdown in the invoice creation page was showing hardcoded mock data ("John Smith", "Jane Doe") instead of actual organisation users.
+
+**Root Cause**: The frontend was using mock data instead of fetching from an API endpoint. The existing `/org/users` endpoint requires `org_admin` role, which would prevent salespeople from seeing the dropdown options.
+
+**Fix Applied**:
+
+1. **Backend - New endpoint** (`app/modules/organisations/service.py`, `app/modules/organisations/router.py`):
+   - Added `list_salespeople()` service function that returns active users with id and name (email)
+   - Added `GET /api/v1/org/salespeople` endpoint accessible by both `org_admin` and `salesperson` roles
+   - Returns a simple list of `{id, name}` for dropdown population
+
+2. **Backend - New schemas** (`app/modules/organisations/schemas.py`):
+   - Added `SalespersonItem` schema with id and name fields
+   - Added `SalespersonListResponse` schema
+
+3. **Frontend - InvoiceCreate** (`frontend/src/pages/invoices/InvoiceCreate.tsx`):
+   - Replaced mock data with API call to `/org/salespeople`
+   - Handles both array and wrapped response formats
+
+**Files Changed**:
+- `app/modules/organisations/service.py`
+- `app/modules/organisations/router.py`
+- `app/modules/organisations/schemas.py`
+- `frontend/src/pages/invoices/InvoiceCreate.tsx`
+
+**Related Issues**: N/A
+
+
+---
+
+### ISSUE-033: Email Providers missing test, TLS/SSL encryption, and priority features
+
+- **Date**: 2026-03-09
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: The Email Providers admin page was missing three key features:
+1. No way to test individual email providers after configuration
+2. No option to select TLS or SSL encryption for Custom SMTP
+3. No way to set priority when multiple providers are active
+
+**Root Cause**: These features were never implemented. The backend model and frontend UI only supported basic credential storage without encryption options, testing capability, or priority ordering.
+
+**Fix Applied**:
+
+1. **Database Migration** (`alembic/versions/2026_03_09_1100-0074_add_email_provider_encryption_priority.py`):
+   - Added `smtp_encryption` column (varchar, default 'tls')
+   - Added `priority` column (integer, default 1)
+
+2. **Backend - Model** (`app/modules/admin/models.py`):
+   - Added `smtp_encryption` and `priority` columns to EmailProvider model
+
+3. **Backend - Schemas** (`app/modules/email_providers/schemas.py`):
+   - Added `smtp_encryption` and `priority` to `EmailProviderResponse`
+   - Added `smtp_encryption` to `EmailProviderCredentialsRequest`
+   - Added `EmailProviderPriorityRequest` and `EmailProviderPriorityResponse`
+   - Added `EmailProviderTestResponse`
+
+4. **Backend - Service** (`app/modules/email_providers/service.py`):
+   - Added `test_email_provider()` function that sends a test email via SMTP
+   - Added `update_email_provider_priority()` function
+   - Updated `save_email_credentials()` to handle `smtp_encryption`
+   - Updated `_provider_to_dict()` to include new fields
+
+5. **Backend - Router** (`app/modules/email_providers/router.py`):
+   - Added `POST /{provider_key}/test` endpoint to send test emails
+   - Added `PUT /{provider_key}/priority` endpoint to update priority
+   - Updated credentials endpoint to pass `smtp_encryption`
+
+6. **Frontend - EmailProviders** (`frontend/src/pages/admin/EmailProviders.tsx`):
+   - Added `smtp_encryption` select field (none/tls/ssl) to Custom SMTP config
+   - Added "Send Test Email" button for providers with credentials
+   - Added priority input for active providers
+   - Updated sorting to show active providers first, sorted by priority
+
+**Files Changed**:
+- `alembic/versions/2026_03_09_1100-0074_add_email_provider_encryption_priority.py`
+- `app/modules/admin/models.py`
+- `app/modules/email_providers/schemas.py`
+- `app/modules/email_providers/service.py`
+- `app/modules/email_providers/router.py`
+- `frontend/src/pages/admin/EmailProviders.tsx`
+
+**Related Issues**: N/A
+
+
+---
+
+### ISSUE-034: InvoiceDetail shows $NaN, missing data, no Edit button, broken actions
+
+- **Date**: 2026-03-09
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Invoice detail page shows $NaN for all monetary values, no customer or vehicle info, no Edit button, and Duplicate/Email/Download PDF buttons don't work.
+
+**Root Cause**: Multiple frontend/backend field name mismatches:
+1. API returns `{ invoice: {...} }` wrapper but frontend read `res.data` directly
+2. API returns `subtotal`, `total`, `balance_due` but frontend expected `subtotal_ex_gst`, `total_incl_gst`
+3. API returns `item_type` on line items but frontend expected `type`
+4. API returns `is_gst_exempt` but frontend expected `gst_exempt`
+5. API only returned `customer_id` without customer details
+6. No payments or credit notes included in response
+7. No Edit button existed for draft invoices
+8. No edit route existed in App.tsx
+
+**Fix Applied**:
+
+1. **Backend - Service** (`app/modules/invoices/service.py`): Updated `get_invoice()` to include customer details, payments, and credit notes in the response
+2. **Backend - Schemas** (`app/modules/invoices/schemas.py`): Added `CustomerSummary`, `PaymentSummary`, `CreditNoteSummary` schemas and added `customer`, `payments`, `credit_notes` fields to `InvoiceResponse`
+3. **Backend - Router** (`app/modules/invoices/router.py`): Updated `get_invoice_endpoint` to pass through nested objects
+4. **Frontend - InvoiceDetail** (`frontend/src/pages/invoices/InvoiceDetail.tsx`): Fixed field mappings, added NaN-safe `formatNZD`, unwrapped `{ invoice: {...} }` response, added Edit button for drafts, handled both field name variants
+5. **Frontend - InvoiceCreate** (`frontend/src/pages/invoices/InvoiceCreate.tsx`): Added edit mode support with `useParams`, loads existing invoice data, uses PUT for updates
+6. **Frontend - App.tsx**: Added `/invoices/:id/edit` route
+
+**Files Changed**:
+- `app/modules/invoices/service.py`
+- `app/modules/invoices/schemas.py`
+- `app/modules/invoices/router.py`
+- `frontend/src/pages/invoices/InvoiceDetail.tsx`
+- `frontend/src/pages/invoices/InvoiceCreate.tsx`
+- `frontend/src/App.tsx`
+
+**Related Issues**: ISSUE-005 (same pattern of frontend/backend field mismatch)
+
+
+---
+
+### ISSUE-035: Enhanced vehicle display on invoice + odometer reading management
+
+- **Date**: 2026-03-10
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Invoice detail page showed minimal vehicle info (just rego and make/model). No way to record odometer readings on invoices. No odometer history tracking. CarJam resync could overwrite higher local odometer with lower CarJam value.
+
+**Root Cause**: Missing feature — odometer reading management system not implemented.
+
+**Fix Applied**:
+
+1. **Database**: Created `odometer_readings` history table with fields: `id`, `global_vehicle_id`, `reading_km`, `source` (carjam/manual/invoice), `recorded_by`, `invoice_id`, `org_id`, `notes`, `recorded_at`. Migration `0075_add_odometer_readings_table`.
+2. **Model**: Added `OdometerReading` model in `app/modules/vehicles/models.py`.
+3. **Vehicle Service** (`app/modules/vehicles/service.py`):
+   - Added `record_odometer_reading()` — saves to history AND updates `global_vehicles.odometer_last_recorded` only if new reading >= current
+   - Added `get_odometer_history()` — returns history newest first
+   - Added `update_odometer_reading()` — corrects a reading and recalculates vehicle's max odometer
+   - Updated `refresh_vehicle()` CarJam sync to use `max(local, carjam)` for odometer preservation
+   - Updated `refresh_vehicle()` to record CarJam odometer in history table
+   - Updated `search_vehicles()` to return odometer in results
+4. **Vehicle Router** (`app/modules/vehicles/router.py`): Added 3 endpoints:
+   - `POST /{vehicle_id}/odometer` — record new reading
+   - `GET /{vehicle_id}/odometer-history` — get history
+   - `PUT /{vehicle_id}/odometer/{reading_id}` — correct a reading
+5. **Vehicle Schemas** (`app/modules/vehicles/schemas.py`): Added `OdometerReadingRequest`, `OdometerReadingResponse`, `OdometerReadingUpdateRequest`, `OdometerHistoryEntry`
+6. **Invoice Service** (`app/modules/invoices/service.py`): Updated `create_invoice()` to call `record_odometer_reading()` when saving invoice with odometer + global_vehicle_id
+7. **Frontend - InvoiceCreate** (`frontend/src/pages/invoices/InvoiceCreate.tsx`):
+   - Added `odometer` and `newOdometer` to Vehicle interface
+   - Added odometer input field per vehicle showing current reading and allowing new entry
+   - Payload now sends `vehicle_odometer` from new reading
+8. **Frontend - InvoiceDetail** (`frontend/src/pages/invoices/InvoiceDetail.tsx`):
+   - Enhanced vehicle section with structured display: Registration, Vehicle Details (year make model), Odometer in Kms
+   - Added `vehicle_odometer` to InvoiceDetail interface
+9. **Frontend - VehicleLiveSearch** (`frontend/src/components/vehicles/VehicleLiveSearch.tsx`):
+   - Added `odometer` to Vehicle and SearchResult interfaces
+   - Shows odometer in vehicle summary display
+   - Passes odometer through on selection
+
+**Files Changed**:
+- `alembic/versions/2026_03_10_0900-0075_add_odometer_readings_table.py`
+- `app/modules/vehicles/models.py`
+- `app/modules/vehicles/service.py`
+- `app/modules/vehicles/router.py`
+- `app/modules/vehicles/schemas.py`
+- `app/modules/invoices/service.py`
+- `frontend/src/pages/invoices/InvoiceCreate.tsx`
+- `frontend/src/pages/invoices/InvoiceDetail.tsx`
+- `frontend/src/components/vehicles/VehicleLiveSearch.tsx`
+
+**Related Issues**: ISSUE-034 (InvoiceDetail improvements)
+
+---
+
+### ISSUE-036: Customer list page missing Receivables and Unused Credits columns
+
+- **Date**: 2026-03-10
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Customer list page showed minimal info (just name and email). No financial summary columns. Missing work phone. User wanted Zoho-style layout with Receivables and Unused Credits columns.
+
+**Root Cause**: Missing feature — customer list page was basic and didn't show financial data.
+
+**Fix Applied**:
+
+1. **Backend Service** (`app/modules/customers/service.py`):
+   - Updated `search_customers()` to batch-fetch receivables (sum of `Invoice.balance_due` where status not in voided/draft) and unused credits (sum of `CreditNote.amount`) per customer
+   - Added `work_phone` to `_customer_to_search_dict()`
+   - Removed duplicate return statement
+2. **Backend Schema** (`app/modules/customers/schemas.py`):
+   - Added `receivables: float`, `unused_credits: float`, and `work_phone` to `CustomerSearchResult`
+3. **Frontend** (`frontend/src/pages/customers/CustomerList.tsx`):
+   - Rewritten with 6 columns: Name, Company Name, Email, Work Phone, Receivables (BCY), Unused Credits (BCY)
+   - Fixed API params from `page`/`page_size`/`search` to `limit`/`offset`/`q` to match backend
+   - Added `formatNZD()` helper for currency formatting
+   - Added debounced search, pagination, and create customer modal
+
+**Files Changed**:
+- `app/modules/customers/service.py`
+- `app/modules/customers/schemas.py`
+- `frontend/src/pages/customers/CustomerList.tsx`
+
+**Related Issues**: None
+
+---
+
+### ISSUE-037: Redesign invoices page with split-panel layout and invoice preview
+
+- **Date**: 2026-03-10
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Invoice list was a basic table. No inline preview. Clicking an invoice navigated to a separate page. Missing features like Record Payment, Send/Mark as Sent, PDF/Print dropdown, Share link, and Void from the list view.
+
+**Root Cause**: Missing feature — invoices page needed a Zoho-style split-panel redesign.
+
+**Fix Applied**:
+
+1. **Frontend InvoiceList** (`frontend/src/pages/invoices/InvoiceList.tsx`): Complete rewrite with:
+   - Left sidebar (320px): scrollable invoice list with status filter dropdown, search, pagination, status badges with colour coding, due date warnings
+   - Right panel: full invoice detail with branded preview card showing org logo/name, Bill To section, line items table with gradient header, totals breakdown with Balance Due highlight bar
+   - Toolbar: Edit (draft only), Send dropdown (Send Invoice / Mark as Sent), Share (copy link), PDF/Print dropdown, Record Payment (green button), More menu (Duplicate, Copy Link, Void)
+   - Draft banner with "Send Invoice" and "Mark As Sent" quick actions
+   - Void modal with reason input
+   - Record Payment modal with amount, method, and note fields
+   - Vehicle info card, Payment History table, Credit Notes table, Internal Notes below preview
+   - Auto-selects first invoice on load
+2. **Backend** (`app/modules/invoices/service.py`): Added org info (name, address, phone, email, logo, GST, website) to `get_invoice()` response from Organisation settings
+3. **Backend Schema** (`app/modules/invoices/schemas.py`): Added `org_name`, `org_address`, `org_phone`, `org_email`, `org_logo_url`, `org_gst_number`, `org_website` to `InvoiceResponse`
+4. **Backend** (`app/modules/invoices/service.py`): Added customer `address` to invoice detail response
+5. **Routes** (`frontend/src/App.tsx`): Changed `/invoices/:id` route to use InvoiceList (split-panel) instead of separate InvoiceDetail page
+
+**Files Changed**:
+- `frontend/src/pages/invoices/InvoiceList.tsx`
+- `frontend/src/App.tsx`
+- `app/modules/invoices/service.py`
+- `app/modules/invoices/schemas.py`
+
+**Related Issues**: ISSUE-034 (InvoiceDetail improvements)
+
+---
+
+### ISSUE-038: Sidebar shows "WorkshopPro" instead of org name + missing sidebar display mode option
+
+- **Date**: 2026-03-10
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Sidebar header always shows "WorkshopPro" instead of the organisation's actual name ("Oraflows"). User also wanted the ability to choose between showing icon + name, icon only, or name only in the sidebar.
+
+**Root Cause**: TenantContext was reading `data.name` from the API response, but the backend `OrgSettingsResponse` returns the field as `org_name`. So `data.name` was always `undefined`, triggering the `'WorkshopPro'` fallback.
+
+**Fix Applied**:
+
+1. **TenantContext** (`frontend/src/contexts/TenantContext.tsx`):
+   - Changed `name: data.name` → `name: data.org_name || data.name || ''` to correctly read the org name
+   - Added `sidebar_display_mode` to `OrgBranding` interface and data mapping
+2. **OrgLayout** (`frontend/src/layouts/OrgLayout.tsx`):
+   - Updated sidebar header to respect `sidebar_display_mode` setting: `icon_and_name` (default), `icon_only`, or `name_only`
+   - Falls back to showing name if `icon_only` is selected but no logo is uploaded
+3. **OrgSettings Branding Tab** (`frontend/src/pages/settings/OrgSettings.tsx`):
+   - Added `sidebar_display_mode` to form state and data loading
+   - Added visual selector with three card-style buttons for the display mode
+   - Shows warning when `icon_only` is selected but no logo is uploaded
+   - Added `refetchTenant()` call after save so sidebar updates immediately
+   - Fixed data loading to read `data.org_name` instead of `data.name`
+4. **Backend** (`app/modules/organisations/service.py`, `app/modules/organisations/schemas.py`):
+   - Added `sidebar_display_mode` to `SETTINGS_JSONB_KEYS`, `OrgSettingsResponse`, and `OrgSettingsUpdateRequest`
+
+**Files Changed**:
+- `frontend/src/contexts/TenantContext.tsx`
+- `frontend/src/layouts/OrgLayout.tsx`
+- `frontend/src/pages/settings/OrgSettings.tsx`
+- `app/modules/organisations/service.py`
+- `app/modules/organisations/schemas.py`
+
+**Related Issues**: None
+
+---
+
+### ISSUE-039: Broken scrolling on multiple pages — content clipped or overflows viewport
+
+- **Date**: 2026-03-10
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Several pages throughout the app have broken scrolling. Content gets clipped at the bottom of the viewport and cannot be scrolled to. The Settings > Modules page (showing Franchise, Ecommerce, Reports, Assets toggles) is one visible example — module cards below the fold are unreachable. Other affected pages include InvoiceCreate, InvoiceList, POSScreen, KitchenDisplay, SetupWizard, and OnboardingWizard.
+
+**Root Cause**: The OrgLayout (and AdminLayout) use a `h-screen overflow-hidden` root container with a `flex-1 overflow-y-auto` `<main>` element as the designated scroll container. Multiple child pages were setting their own viewport-relative height constraints (`min-h-screen`, `h-screen`, `min-h-[calc(100vh-8rem)]`, `h-[calc(100vh-64px)]`) which conflict with this layout pattern:
+
+1. `min-h-screen` / `h-screen` forces the page to be at least 100vh tall, but the `<main>` scroll container is shorter than 100vh (it excludes the header). This pushes content below the scroll container's visible area.
+2. `min-h-[calc(100vh-8rem)]` in Settings.tsx tried to account for the header but still referenced the viewport instead of the parent container.
+3. `h-[calc(100vh-64px)] overflow-hidden` in InvoiceList.tsx created a fixed-height container that didn't account for the layout's padding, causing content to be clipped.
+
+**Fix Applied**:
+
+1. `Settings.tsx`: Changed `min-h-[calc(100vh-8rem)]` → `h-full` so it fills the parent scroll container. Added `md:sticky md:top-0 md:self-start` to the sidebar nav so it stays pinned while content scrolls. Added `md:overflow-y-auto md:max-h-[calc(100vh-10rem)]` to the nav list for long settings menus.
+2. `InvoiceList.tsx`: Changed `h-[calc(100vh-64px)] overflow-hidden` → `h-full overflow-hidden -m-4 lg:-m-6` to fill the parent and use negative margins to cancel the `<main>` padding (split-pane layout needs edge-to-edge).
+3. `InvoiceCreate.tsx`: Changed `min-h-screen` → removed (just `bg-gray-50`), allowing natural content flow within the scroll container.
+4. `POSScreen.tsx`: Changed `h-screen` → `h-full -m-4 lg:-m-6` for edge-to-edge full-height layout within the scroll container.
+5. `KitchenDisplay.tsx`: Changed `min-h-screen` → removed for non-fullscreen mode, added `-m-4 lg:-m-6` for edge-to-edge dark theme. Fixed disabled state container similarly.
+6. `SetupWizard.tsx`: Removed `min-h-screen` from both loading and main containers.
+7. `OnboardingWizard.tsx`: Removed `min-h-screen` from main container.
+
+**Files Changed**:
+- `frontend/src/pages/settings/Settings.tsx`
+- `frontend/src/pages/invoices/InvoiceList.tsx`
+- `frontend/src/pages/invoices/InvoiceCreate.tsx`
+- `frontend/src/pages/pos/POSScreen.tsx`
+- `frontend/src/pages/kitchen/KitchenDisplay.tsx`
+- `frontend/src/pages/setup/SetupWizard.tsx`
+- `frontend/src/pages/onboarding/OnboardingWizard.tsx`
+
+**Key Principle**: Pages rendered inside OrgLayout/AdminLayout should never use viewport-relative heights (`h-screen`, `min-h-screen`, `100vh`). The layout's `<main>` element is the scroll container — child pages should use `h-full` to fill it or let content flow naturally. Pages that need edge-to-edge layout (like split-pane InvoiceList or POS) should use negative margins (`-m-4 lg:-m-6`) to cancel the `<main>` padding.
+
+**Pages NOT changed** (correctly standalone/auth pages that own their viewport):
+- Auth pages (Login, Signup, MFA, PasswordReset, etc.) — rendered outside OrgLayout
+- BookingPage — public-facing standalone page
+- App.tsx loading spinners — rendered before layout mounts
+
+**Similar Bugs Found & Fixed**: All 7 pages with viewport-relative heights inside OrgLayout were fixed in one pass.
+
+**Related Issues**: ISSUE-028 (InvoiceCreate redesign introduced min-h-screen), ISSUE-037 (InvoiceList redesign introduced h-[calc(100vh-64px)])
+
+
+---
+
+### ISSUE-040: Quote Save as Draft hangs — missing db.commit() in quotes router
+
+- **Date**: 2026-03-10
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A (same class of bug as ISSUE-024)
+
+**Symptoms**: Clicking "Save as Draft" on the QuoteCreate page shows a loading spinner indefinitely. The quote is never saved. "Save and Send" also fails for the same reason (create step fails, so send never executes).
+
+**Root Cause**: The `create_quote_endpoint` and `update_quote_endpoint` in `app/modules/quotes/router.py` were missing `await db.commit()` after calling the service functions. The service functions use `db.flush()` which writes to the database but doesn't commit. Without an explicit commit in the router, the transaction rolls back when the session closes, discarding all changes. Backend logs confirmed: INSERT queries execute successfully, then ROLLBACK instead of COMMIT.
+
+This is the same class of bug as ISSUE-024 (subscription plan update hanging due to missing commit).
+
+**Fix Applied**:
+1. Added `await db.commit()` to `create_quote_endpoint` after `create_quote()` call
+2. Added `await db.commit()` to `update_quote_endpoint` after `update_quote()` call
+3. Added proper `await db.rollback()` in exception handlers for all 4 endpoints
+4. Moved `await db.commit()` inside try blocks for `send_quote_endpoint` and `convert_quote_endpoint` (were previously outside try/except, meaning errors during commit would be unhandled)
+
+**Files Changed**:
+- `app/modules/quotes/router.py`
+
+**Backend Restart Required**: Yes
+
+**Similar Bugs Found & Fixed**: `update_quote_endpoint` had the same missing commit. `send_quote_endpoint` and `convert_quote_endpoint` already had commits but lacked rollback handling — fixed those too.
+
+**Related Issues**: ISSUE-024 (identical bug pattern in admin plan update endpoint)
+
+---
+
+### ISSUE-041: Quote "Send to Customer" email not sending + no Edit button
+
+- **Date**: 2026-03-10
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Two issues reported:
+1. Clicking "Send to Customer" on a quote appeared to succeed (status changed to "sent") but no email was actually delivered to the customer. No error was shown to the user.
+2. There was no way to edit a quote after creating it — no Edit button on the QuoteDetail page and no edit route.
+
+**Root Cause**:
+1. **Email not sending**: The `send_quote` service was using `send_org_email` from `app/integrations/brevo.py`, which reads SMTP config from the `integration_configs` database table. However, the app's actual email infrastructure uses the `EmailProvider` model (from `app/modules/admin/models`) with the `email_providers` table — a completely different system. The invoice email (`email_invoice`) works because it queries `EmailProvider` directly and sends via SMTP with failover across providers. The quote email was using the wrong email system entirely.
+2. **No Edit button**: `QuoteDetail.tsx` only had "Send to Customer" and "Convert to Invoice" buttons. No edit button existed. `QuoteCreate.tsx` was create-only with no edit mode support. No `/quotes/:id/edit` route existed in `App.tsx`.
+
+**Fix Applied**:
+1. **Quote send service** (`app/modules/quotes/service.py`):
+   - Replaced `send_org_email` (brevo.py) with the same `EmailProvider`-based SMTP approach used by `email_invoice` in the invoice service
+   - Queries `EmailProvider` table for active providers with credentials, ordered by priority
+   - Builds MIME message with PDF attachment using `MIMEApplication`
+   - Tries each provider in priority order with failover (same pattern as invoice email)
+   - Includes a "View Quote Online" link in the email body using the acceptance token
+   - Raises `ValueError` with clear message if no providers configured or all fail
+3. **Edit button** (`frontend/src/pages/quotes/QuoteDetail.tsx`):
+   - Added "Edit" button visible when quote status is `draft`, navigates to `/quotes/{id}/edit`
+4. **Edit mode** (`frontend/src/pages/quotes/QuoteCreate.tsx`):
+   - Added `useParams` to detect edit mode via URL param `id`
+   - Added `loadingQuote` state and data loading effect that fetches existing quote and populates all form fields (customer, vehicle, line items, notes, terms, subject)
+   - Updated `handleSaveDraft` to use PUT for edit mode, navigating back to quote detail
+   - Updated `handleSaveAndSend` to use PUT for edit mode
+   - Updated header title to show "Edit Quote" vs "New Quote"
+   - Updated Cancel button to navigate back to quote detail in edit mode
+5. **Route** (`frontend/src/App.tsx`):
+   - Added `/quotes/:id/edit` route pointing to `QuoteCreate` component
+
+**Files Changed**:
+- `app/modules/quotes/service.py`
+- `frontend/src/pages/quotes/QuoteDetail.tsx`
+- `frontend/src/pages/quotes/QuoteCreate.tsx`
+- `frontend/src/App.tsx`
+
+**Related Issues**: ISSUE-040 (quote router commit fixes were prerequisite for these to work)
+
+---
+
+### ISSUE-042: Quote list missing Requote, Delete actions and Expires In column
+
+- **Date**: 2026-03-10
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: The quote list page had no way to edit/requote sent quotes, no way to delete quotes, and no visibility into when quotes expire.
+
+**Root Cause**: Feature gap — these actions and the expiry column were never implemented.
+
+**Fix Applied**:
+1. **Backend** — Added `delete_quote` service function (hard delete, only for draft/declined/expired quotes) and `DELETE /quotes/{id}` router endpoint. Added "draft" to valid transitions from "sent" status to support requoting.
+2. **QuoteList.tsx** — Added "Expires In" column showing days until expiry with color coding (red < 0, orange ≤ 3, yellow ≤ 7). Added "Edit" button for draft quotes, "Requote" button for sent quotes (reverts to draft then navigates to edit), and "Delete" button for draft/declined/expired quotes with confirmation dialog.
+3. **QuoteDetail.tsx** — Added "Requote" button for sent quotes, "Delete" button with inline confirmation for deletable statuses.
+
+**Files Changed**:
+- `app/modules/quotes/service.py`
+- `app/modules/quotes/router.py`
+- `frontend/src/pages/quotes/QuoteList.tsx`
+- `frontend/src/pages/quotes/QuoteDetail.tsx`
+
+**Related Issues**: ISSUE-041
+
+---
+
+### ISSUE-043: StaffDetail page — old schema, unstyled, double-prefixed API URL
+
+- **Date**: 2026-03-10
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: agent (continuation of staff module implementation)
+- **Regression of**: N/A
+
+**Symptoms**: The StaffDetail page at `/staff/:id` used the old single `name` field, sent `name` on save instead of `first_name`/`last_name`, had a double-prefixed API URL (`/api/v2/staff/${staffId}` without baseURL override), displayed old fields (overtime_rate, skills, availability_schedule) that aren't part of the new simple onboarding, and was completely unstyled (raw HTML with inline styles).
+
+**Root Cause**: StaffDetail was never updated when the staff schema was enhanced in migration 0080. The StaffList was rewritten but StaffDetail was left with the original placeholder implementation.
+
+**Fix Applied**:
+1. Full rewrite of `StaffDetail.tsx` with proper Tailwind styling matching the rest of the app
+2. Fixed API URL to use `apiClient.get('/staff/${staffId}', { baseURL: '/api/v2' })` pattern
+3. Updated form to use `first_name`/`last_name` instead of `name`
+4. Added all new fields: employee_id, position, reporting_to (with dropdown), shift_start, shift_end
+5. View/edit toggle — shows read-only view by default, edit mode on button click
+6. Added "Reports To" dropdown populated from all active staff
+7. Added deactivate button with confirmation
+8. Removed unused `debounceRef` from StaffList.tsx
+
+**Files Changed**:
+- `frontend/src/pages/staff/StaffDetail.tsx` (full rewrite)
+- `frontend/src/pages/staff/StaffList.tsx` (removed unused import/ref)
+
+**Related Issues**: Part of staff module implementation (ISSUE-043 is the detail page completion)
+
+---
+
+### ISSUE-044: Staff router "closed transaction" error — db.commit()/db.rollback() conflicts with session.begin() context manager
+
+- **Date**: 2026-03-10
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Creating or updating a staff member returns error: "Can't operate on closed transaction inside context manager. Please complete the context manager before emitting further commands."
+
+**Root Cause**: `get_db_session()` uses `async with session.begin():` which auto-commits on successful exit and auto-rolls-back on exception. The staff router endpoints were manually calling `await db.commit()` inside the `session.begin()` context manager, which closed the transaction prematurely. After that, `_enrich_reporting_to()` tried to query on the closed transaction, and the context manager's `__aexit__` also failed trying to operate on the already-committed transaction.
+
+**Fix Applied**: Removed all manual `db.commit()` and `db.rollback()` calls from the staff router. Replaced `db.commit()` with `db.flush()` where needed (to get server-generated values before `db.refresh()`). The `session.begin()` context manager handles commit/rollback automatically.
+
+Affected endpoints: POST (create), PUT (update), DELETE (deactivate), POST assign-location, DELETE remove-from-location.
+
+**Files Changed**:
+- `app/modules/staff/router.py`
+
+**Related Issues**: ISSUE-043
+
+---
+
+### ISSUE-045: No way to reactivate deactivated staff + no user account creation for staff
+
+- **Date**: 2026-03-10
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Once a staff member was deactivated, there was no way to reactivate them. Also, no mechanism existed to create an organisation user account (login) for a staff member.
+
+**Root Cause**: Feature gap. The deactivate endpoint existed but no activate counterpart. The staff model had a `user_id` field for linking to user accounts but no endpoint or UI to create the link.
+
+**Fix Applied**:
+
+1. Backend:
+   - Added `POST /api/v2/staff/{id}/activate` endpoint to reactivate inactive staff
+   - Added `POST /api/v2/staff/{id}/create-account` endpoint that creates a User record (org_admin role) with a password, links it to the staff member via `user_id`, and marks email as verified
+   - Added `CreateStaffAccountRequest` schema (password field, min 8 chars)
+
+2. Frontend StaffDetail:
+   - Added "Activate" button (green) for inactive staff, replacing "Deactivate"
+   - Added "Create User Account" button for active staff with email but no user_id
+   - Shows "Has Login" badge when staff has a linked user account
+   - Create Account modal with password input and validation
+   - Deactivate now stays on detail page (refreshes) instead of navigating away
+
+3. Frontend StaffList:
+   - Added `handleActivate` function
+   - Actions column now shows "Activate" for inactive staff instead of hiding the button
+
+**Files Changed**:
+- `app/modules/staff/router.py` (2 new endpoints)
+- `app/modules/staff/schemas.py` (new CreateStaffAccountRequest)
+- `frontend/src/pages/staff/StaffDetail.tsx` (activate, create account modal, has-login badge)
+- `frontend/src/pages/staff/StaffList.tsx` (activate action in table)
+
+**Related Issues**: ISSUE-043, ISSUE-044
+
+---
+
+### ISSUE-046: No visual way to manage staff work days/schedule
+
+- **Date**: 2026-03-10
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Staff forms only had basic shift_start/shift_end text fields. No intuitive way to specify which days a staff member works and their hours per day.
+
+**Root Cause**: Feature gap. The `availability_schedule` JSONB field existed on the `staff_members` table (format: `{"monday": {"start": "09:00", "end": "17:00"}, ...}`) but the frontend only exposed `shift_start`/`shift_end` text inputs.
+
+**Fix Applied**:
+
+1. Created `WorkSchedule.tsx` shared component — toggleable day buttons (Mon-Sun) with start/end time inputs per day. Supports read-only mode for detail view.
+2. StaffList modal: Replaced shift_start/shift_end inputs with WorkSchedule component. New staff defaults to Mon-Fri 9-5. Table column shows abbreviated active day names.
+3. StaffDetail page: Replaced "Shift Hours" section with WorkSchedule component under a "Work Schedule" section header. Read-only when not editing.
+4. Both pages send `availability_schedule` in save payload instead of `shift_start`/`shift_end`.
+
+**Files Changed**:
+- `frontend/src/components/WorkSchedule.tsx` (new)
+- `frontend/src/pages/staff/StaffList.tsx` (work schedule in modal + table column)
+- `frontend/src/pages/staff/StaffDetail.tsx` (work schedule section)
+
+**Related Issues**: ISSUE-043, ISSUE-044, ISSUE-045

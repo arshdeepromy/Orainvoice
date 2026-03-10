@@ -22,10 +22,13 @@ interface JobCardSummary {
 
 interface JobCardListResponse {
   items: JobCardSummary[]
+  job_cards?: JobCardSummary[]
   total: number
   page: number
   page_size: number
   total_pages: number
+  limit?: number
+  offset?: number
 }
 
 type BadgeVariant = 'success' | 'warning' | 'error' | 'info' | 'neutral'
@@ -88,7 +91,13 @@ export default function JobCardList() {
         params,
         signal: controller.signal,
       })
-      setData(res.data)
+      // Normalise: backend returns { job_cards, total, limit, offset }
+      const raw = res.data
+      const items = raw.items ?? raw.job_cards ?? []
+      const total = raw.total ?? 0
+      const pageSize = raw.page_size ?? raw.limit ?? PAGE_SIZE
+      const totalPages = raw.total_pages ?? (Math.ceil(total / pageSize) || 1)
+      setData({ items, total, page: pg, page_size: pageSize, total_pages: totalPages })
     } catch (err: unknown) {
       if ((err as { name?: string })?.name === 'CanceledError') return
       setError('Failed to load job cards. Please try again.')

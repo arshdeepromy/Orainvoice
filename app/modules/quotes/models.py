@@ -79,7 +79,36 @@ class Quote(Base):
     total: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), nullable=False, server_default="0"
     )
+    discount_type: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, server_default="percentage"
+    )
+    discount_value: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, server_default="0"
+    )
+    discount_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, server_default="0"
+    )
+    shipping_charges: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, server_default="0"
+    )
+    adjustment: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, server_default="0"
+    )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    terms: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    acceptance_token: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    converted_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -95,7 +124,7 @@ class Quote(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('draft','sent','accepted','declined','expired')",
+            "status IN ('draft','sent','accepted','declined','expired','converted')",
             name="ck_quotes_status",
         ),
         {"extend_existing": True},

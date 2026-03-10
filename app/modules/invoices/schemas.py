@@ -32,12 +32,15 @@ class InvoiceStatus(str, Enum):
 class LineItemCreate(BaseModel):
     """Schema for creating a single invoice line item."""
 
-    item_type: ItemType
+    model_config = {"extra": "ignore"}  # Ignore extra fields from frontend
+
+    item_type: ItemType = ItemType.service  # Default to service
     description: str = Field(..., min_length=1, max_length=500)
     catalogue_item_id: uuid.UUID | None = None
     part_number: str | None = None
     quantity: Decimal = Field(default=Decimal("1"), gt=0)
-    unit_price: Decimal = Field(..., ge=0)
+    unit_price: Decimal | None = Field(default=None, ge=0)  # Made optional, can use rate
+    rate: Decimal | None = Field(default=None, ge=0)  # Frontend sends this
     hours: Decimal | None = Field(default=None, ge=0)
     hourly_rate: Decimal | None = Field(default=None, ge=0)
     discount_type: str | None = Field(default=None, pattern=r"^(percentage|fixed)$")
@@ -52,10 +55,30 @@ class LineItemCreate(BaseModel):
         if v is not None and v not in ("percentage", "fixed"):
             raise ValueError("discount_type must be 'percentage' or 'fixed'")
         return v
+    
+    def get_unit_price(self) -> Decimal:
+        """Get unit price, preferring unit_price over rate."""
+        if self.unit_price is not None:
+            return self.unit_price
+        if self.rate is not None:
+            return self.rate
+        return Decimal("0")
+
+
+class VehicleItem(BaseModel):
+    """Schema for a vehicle in the vehicles array."""
+
+    id: uuid.UUID
+    rego: str
+    make: str | None = None
+    model: str | None = None
+    year: int | None = None
 
 
 class InvoiceCreateRequest(BaseModel):
     """Request body for POST /api/v1/invoices."""
+
+    model_config = {"extra": "ignore"}  # Ignore extra fields from frontend
 
     customer_id: uuid.UUID
     vehicle_rego: str | None = None
@@ -63,12 +86,22 @@ class InvoiceCreateRequest(BaseModel):
     vehicle_model: str | None = None
     vehicle_year: int | None = None
     vehicle_odometer: int | None = None
+    global_vehicle_id: uuid.UUID | None = Field(
+        default=None, 
+        description="Global vehicle UUID - if provided, auto-links customer to vehicle"
+    )
+    vehicles: list[VehicleItem] | None = Field(
+        default=None,
+        description="List of vehicles associated with this invoice"
+    )
     branch_id: uuid.UUID | None = None
     status: InvoiceStatus = InvoiceStatus.draft
     line_items: list[LineItemCreate] = Field(default_factory=list)
     notes_internal: str | None = None
     notes_customer: str | None = None
+    issue_date: date | None = Field(default=None, description="Invoice date (defaults to today)")
     due_date: date | None = None
+    payment_terms: str | None = Field(default=None, description="Payment terms e.g. due_on_receipt, net_15, net_30")
     discount_type: str | None = Field(default=None, pattern=r"^(percentage|fixed)$")
     discount_value: Decimal | None = Field(default=None, ge=0)
     currency: str = Field(default="NZD", max_length=3, min_length=3)
@@ -95,6 +128,36 @@ class LineItemResponse(BaseModel):
     sort_order: int
 
 
+class CustomerSummary(BaseModel):
+    """Embedded customer info in invoice response."""
+    id: str
+    first_name: str
+    last_name: str
+    email: str | None = None
+    phone: str | None = None
+    company_name: str | None = None
+    display_name: str | None = None
+
+
+class PaymentSummary(BaseModel):
+    """Embedded payment info in invoice response."""
+    id: str
+    date: str | None = None
+    amount: Decimal
+    method: str = "cash"
+    recorded_by: str = ""
+    note: str | None = None
+
+
+class CreditNoteSummary(BaseModel):
+    """Embedded credit note info in invoice response."""
+    id: str
+    reference_number: str
+    amount: Decimal
+    reason: str = ""
+    created_at: str | None = None
+
+
 class InvoiceResponse(BaseModel):
     """Response schema for a created invoice."""
 
@@ -102,6 +165,7 @@ class InvoiceResponse(BaseModel):
     org_id: uuid.UUID
     invoice_number: str | None = None
     customer_id: uuid.UUID
+    customer: CustomerSummary | None = None
     vehicle_rego: str | None = None
     vehicle_make: str | None = None
     vehicle_model: str | None = None
@@ -111,6 +175,7 @@ class InvoiceResponse(BaseModel):
     status: str
     issue_date: date | None = None
     due_date: date | None = None
+    payment_terms: str | None = None
     currency: str
     exchange_rate_to_nzd: Decimal = Decimal("1")
     subtotal: Decimal
@@ -128,6 +193,23 @@ class InvoiceResponse(BaseModel):
     voided_at: datetime | None = None
     voided_by: uuid.UUID | None = None
     line_items: list[LineItemResponse] = Field(default_factory=list)
+    payments: list[PaymentSummary] = Field(default_factory=list)
+    credit_notes: list[CreditNoteSummary] = Field(default_factory=list)
+    # Organisation details for invoice preview
+    org_name: str | None = None
+    org_address: str | None = None
+    org_address_unit: str | None = None
+    org_address_street: str | None = None
+    org_address_city: str | None = None
+    org_address_state: str | None = None
+    org_address_country: str | None = None
+    org_address_postcode: str | None = None
+    org_phone: str | None = None
+    org_email: str | None = None
+    org_logo_url: str | None = None
+    org_gst_number: str | None = None
+    org_website: str | None = None
+    vehicle: dict | None = None
     created_by: uuid.UUID
     created_at: datetime
     updated_at: datetime

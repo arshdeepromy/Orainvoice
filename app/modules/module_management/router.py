@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
@@ -69,6 +70,25 @@ async def enable_module(
             status_code=400,
             content={"detail": "Organisation context required"},
         )
+
+    # Validate module is available in the org's plan
+    from app.modules.admin.models import Organisation, SubscriptionPlan
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org and org.plan_id:
+        plan_result = await db.execute(
+            select(SubscriptionPlan.enabled_modules).where(SubscriptionPlan.id == org.plan_id)
+        )
+        plan_modules = plan_result.scalar_one_or_none()
+        if plan_modules is not None:
+            plan_set = set(plan_modules) if isinstance(plan_modules, list) else set()
+            if "all" not in plan_set and slug not in plan_set and slug not in CORE_MODULES:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": f"Module '{slug}' is not available in your plan."},
+                )
 
     svc = ModuleService(db)
     additionally_enabled = await svc.enable_module(org_id, slug, enabled_by=user_id)

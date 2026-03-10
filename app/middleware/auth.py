@@ -49,6 +49,7 @@ PUBLIC_PATHS: set[str] = {
 # Prefixes that are public (e.g. customer portal tokens).
 PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/v1/portal/",
+    "/api/v1/public/",
     "/api/v2/portal/",
     "/api/v2/public/",
 )

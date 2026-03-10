@@ -53,6 +53,7 @@ MODULE_ENDPOINT_MAP: dict[str, str] = {
     "/api/v2/loyalty": "loyalty",
     "/api/v2/franchise": "franchise",
     "/api/v2/ecommerce": "ecommerce",
+    "/api/v1/vehicles": "vehicles",
 }
 
 

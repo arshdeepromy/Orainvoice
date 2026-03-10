@@ -139,23 +139,40 @@ export function OrgLayout() {
       >
         {/* Org branding */}
         <div className="flex h-16 items-center gap-3 border-b border-gray-200 px-4">
-          {branding?.logo_url ? (
-            <img
-              src={branding.logo_url}
-              alt={`${branding.name} logo`}
-              className="h-8 w-8 rounded-md object-contain"
-            />
-          ) : (
-            <div
-              className="h-8 w-8 rounded-md flex items-center justify-center text-white text-sm font-bold"
-              style={{ backgroundColor: 'var(--color-primary, #2563eb)' }}
-            >
-              {(branding?.name ?? 'W').charAt(0).toUpperCase()}
-            </div>
-          )}
-          <span className="text-lg font-semibold text-gray-900 truncate">
-            {branding?.name ?? 'WorkshopPro'}
-          </span>
+          {(() => {
+            const mode = branding?.sidebar_display_mode || 'icon_and_name'
+            const hasLogo = !!branding?.logo_url
+            const orgName = branding?.name || 'WorkshopPro'
+            const showIcon = mode === 'icon_and_name' || mode === 'icon_only'
+            const showName = mode === 'icon_and_name' || mode === 'name_only' || (mode === 'icon_only' && !hasLogo)
+            const iconOnly = mode === 'icon_only' && hasLogo
+
+            return (
+              <>
+                {showIcon && (
+                  hasLogo ? (
+                    <img
+                      src={branding!.logo_url!}
+                      alt={`${orgName} logo`}
+                      className={`rounded-md object-contain shrink-0 ${iconOnly ? 'h-10 max-w-[160px]' : 'h-8 w-8'}`}
+                    />
+                  ) : (
+                    <div
+                      className={`rounded-md flex items-center justify-center text-white font-bold shrink-0 ${iconOnly ? 'h-10 w-10 text-lg' : 'h-8 w-8 text-sm'}`}
+                      style={{ backgroundColor: 'var(--color-primary, #2563eb)' }}
+                    >
+                      {orgName.charAt(0).toUpperCase()}
+                    </div>
+                  )
+                )}
+                {showName && (
+                  <span className="text-lg font-semibold text-gray-900 truncate">
+                    {orgName}
+                  </span>
+                )}
+              </>
+            )
+          })()}
           <button
             className="ml-auto min-h-[44px] min-w-[44px] flex items-center justify-center lg:hidden"
             onClick={() => setSidebarOpen(false)}

@@ -175,8 +175,9 @@ class ModuleService:
         return enabled
 
     async def get_all_modules_for_org(self, org_id: str) -> list[dict]:
-        """Return all modules with their enabled state for an org."""
+        """Return all modules with their enabled state and plan availability for an org."""
         from app.modules.module_management.models import ModuleRegistry, OrgModule
+        from app.modules.admin.models import Organisation
 
         # Try cache first
         try:
@@ -186,21 +187,43 @@ class ModuleService:
         except Exception:
             logger.warning("Redis read failed for all-modules cache")
 
+        # Get the org's plan enabled_modules
+        plan_modules: set[str] = set()
+        try:
+            stmt_org = select(Organisation).where(Organisation.id == org_id)
+            result_org = await self._db.execute(stmt_org)
+            org = result_org.scalar_one_or_none()
+            if org and org.plan_id:
+                from app.modules.admin.models import SubscriptionPlan
+                stmt_plan = select(SubscriptionPlan.enabled_modules).where(
+                    SubscriptionPlan.id == org.plan_id
+                )
+                result_plan = await self._db.execute(stmt_plan)
+                row = result_plan.scalar_one_or_none()
+                if row:
+                    plan_modules = set(row) if isinstance(row, list) else set()
+        except Exception:
+            logger.warning("Failed to fetch plan modules for org %s", org_id)
+
         # Query all registry modules with org enablement
         stmt = select(ModuleRegistry)
         result = await self._db.execute(stmt)
         registry_modules = result.scalars().all()
 
-        stmt_org = select(OrgModule).where(
+        stmt_om = select(OrgModule).where(
             and_(OrgModule.org_id == org_id, OrgModule.is_enabled == True)  # noqa: E712
         )
-        result_org = await self._db.execute(stmt_org)
-        enabled_slugs = {om.module_slug for om in result_org.scalars().all()}
+        result_om = await self._db.execute(stmt_om)
+        enabled_slugs = {om.module_slug for om in result_om.scalars().all()}
+
+        # "all" in plan_modules means everything is available
+        all_available = "all" in plan_modules
 
         modules = []
         for mod in registry_modules:
             is_core = mod.is_core
             is_enabled = is_core or mod.slug in enabled_slugs
+            in_plan = is_core or all_available or mod.slug in plan_modules
             deps = mod.dependencies or []
             if isinstance(deps, str):
                 try:
@@ -216,6 +239,7 @@ class ModuleService:
                 "dependencies": deps if isinstance(deps, list) else [],
                 "status": mod.status,
                 "is_enabled": is_enabled,
+                "in_plan": in_plan,
             })
 
         # Cache
