@@ -556,7 +556,10 @@ export default function InvoiceDetail() {
                 <tr key={item.id}>
                   <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-600">{lineItemTypeLabel(item.item_type || item.type || 'service')}</td>
                   <td className="px-4 py-3 text-sm text-gray-900">
-                    <div>{item.description}</div>
+                    <div>{item.description?.split('\n')[0]}</div>
+                    {item.description?.includes('\n') && (
+                      <div className="text-xs text-gray-500 mt-0.5 whitespace-pre-line">{item.description.split('\n').slice(1).join('\n')}</div>
+                    )}
                     {item.part_number && <div className="text-xs text-gray-500">Part #: {item.part_number}</div>}
                     {item.warranty_note && (
                       <div className="text-xs text-blue-600 mt-0.5">Warranty: {item.warranty_note}</div>

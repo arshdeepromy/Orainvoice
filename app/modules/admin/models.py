@@ -186,6 +186,7 @@ class GlobalVehicle(Base):
     wof_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
     registration_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
     odometer_last_recorded: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    service_due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     
     # Extended fields
     vin: Mapped[str | None] = mapped_column(String(17), nullable=True)

@@ -1,6 +1,6 @@
-"""Business logic for Service Catalogue, Parts Catalogue, and Labour Rates CRUD.
+"""Business logic for Items Catalogue, Parts Catalogue, and Labour Rates CRUD.
 
-Requirements: 27.1, 27.2, 27.3, 28.1, 28.2, 28.3
+Requirements: 1.4, 1.5, 2.1, 2.2, 2.3, 2.5, 27.1, 27.2, 27.3, 28.1, 28.2, 28.3
 """
 
 from __future__ import annotations
@@ -13,85 +13,96 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
-from app.modules.catalogue.models import LabourRate, PartsCatalogue, ServiceCatalogue
+from app.modules.catalogue.models import ItemsCatalogue, LabourRate, PartsCatalogue
 
 logger = logging.getLogger(__name__)
 
 
-def _service_to_dict(service: ServiceCatalogue) -> dict:
-    """Convert a ServiceCatalogue ORM instance to a serialisable dict."""
+def _item_to_dict(item: ItemsCatalogue) -> dict:
+    """Convert an ItemsCatalogue ORM instance to a serialisable dict."""
     return {
-        "id": str(service.id),
-        "name": service.name,
-        "description": service.description,
-        "default_price": str(service.default_price),
-        "is_gst_exempt": service.is_gst_exempt,
-        "category": service.category,
-        "is_active": service.is_active,
-        "created_at": service.created_at.isoformat() if service.created_at else None,
-        "updated_at": service.updated_at.isoformat() if service.updated_at else None,
+        "id": str(item.id),
+        "name": item.name,
+        "description": item.description,
+        "default_price": str(item.default_price),
+        "is_gst_exempt": item.is_gst_exempt,
+        "category": item.category,
+        "is_active": item.is_active,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
     }
 
 
-async def list_services(
+# Backward-compatible alias
+_service_to_dict = _item_to_dict
+
+
+async def list_items(
     db: AsyncSession,
     *,
     org_id: uuid.UUID,
     active_only: bool = False,
     category: str | None = None,
+    search: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict:
-    """List service catalogue entries for an organisation.
+    """List items catalogue entries for an organisation.
 
-    When ``active_only`` is True, only active services are returned.
-    This supports Req 27.2 — inactive services hidden from invoice creation.
+    When ``active_only`` is True, only active items are returned.
+    When ``search`` is provided, filters items whose name contains the
+    search term (case-insensitive).
 
-    Requirements: 27.1, 27.2
+    Requirements: 2.1, 2.5
     """
-    filters = [ServiceCatalogue.org_id == org_id]
+    filters = [ItemsCatalogue.org_id == org_id]
 
     if active_only:
-        filters.append(ServiceCatalogue.is_active.is_(True))
+        filters.append(ItemsCatalogue.is_active.is_(True))
 
     if category:
-        filters.append(ServiceCatalogue.category == category)
+        filters.append(ItemsCatalogue.category == category)
 
-    count_stmt = select(func.count(ServiceCatalogue.id)).where(*filters)
+    if search:
+        filters.append(ItemsCatalogue.name.ilike(f"%{search}%"))
+
+    count_stmt = select(func.count(ItemsCatalogue.id)).where(*filters)
     total = (await db.execute(count_stmt)).scalar() or 0
 
     stmt = (
-        select(ServiceCatalogue)
+        select(ItemsCatalogue)
         .where(*filters)
-        .order_by(ServiceCatalogue.name)
+        .order_by(ItemsCatalogue.name)
         .limit(limit)
         .offset(offset)
     )
     result = await db.execute(stmt)
-    services = result.scalars().all()
+    items = result.scalars().all()
 
     return {
-        "services": [_service_to_dict(s) for s in services],
+        "items": [_item_to_dict(i) for i in items],
         "total": total,
     }
 
 
-async def create_service(
+async def create_item(
     db: AsyncSession,
     *,
     org_id: uuid.UUID,
     user_id: uuid.UUID,
     name: str,
     default_price: str,
-    category: str,
+    category: str | None = None,
     description: str | None = None,
     is_gst_exempt: bool = False,
     is_active: bool = True,
     ip_address: str | None = None,
 ) -> dict:
-    """Create a new service catalogue entry.
+    """Create a new items catalogue entry.
 
-    Requirements: 27.1
+    Accepts any string or None for category (free-text, no constraint).
+
+    Requirements: 1.4, 1.5, 2.2
     """
     try:
         price = Decimal(default_price)
@@ -101,11 +112,7 @@ async def create_service(
     if price < 0:
         raise ValueError("Price cannot be negative")
 
-    valid_categories = {"warrant", "service", "repair", "diagnostic"}
-    if category not in valid_categories:
-        raise ValueError(f"Invalid category. Must be one of: {', '.join(sorted(valid_categories))}")
-
-    service = ServiceCatalogue(
+    item = ItemsCatalogue(
         org_id=org_id,
         name=name,
         description=description,
@@ -114,16 +121,17 @@ async def create_service(
         category=category,
         is_active=is_active,
     )
-    db.add(service)
+    db.add(item)
     await db.flush()
+    await db.refresh(item)
 
     await write_audit_log(
         session=db,
         org_id=org_id,
         user_id=user_id,
-        action="catalogue.service.created",
-        entity_type="service_catalogue",
-        entity_id=service.id,
+        action="catalogue.item.created",
+        entity_type="items_catalogue",
+        entity_id=item.id,
         before_value=None,
         after_value={
             "name": name,
@@ -135,34 +143,35 @@ async def create_service(
         ip_address=ip_address,
     )
 
-    return _service_to_dict(service)
+    return _item_to_dict(item)
 
 
-async def update_service(
+async def update_item(
     db: AsyncSession,
     *,
     org_id: uuid.UUID,
     user_id: uuid.UUID,
-    service_id: uuid.UUID,
+    item_id: uuid.UUID,
     ip_address: str | None = None,
     **kwargs,
 ) -> dict:
-    """Update a service catalogue entry. Only non-None kwargs are applied.
+    """Update an items catalogue entry. Only non-None kwargs are applied.
 
-    Requirements: 27.1, 27.2
+    Accepts any string or None for category (free-text, no constraint).
+
+    Requirements: 2.3
     """
     result = await db.execute(
-        select(ServiceCatalogue).where(
-            ServiceCatalogue.id == service_id,
-            ServiceCatalogue.org_id == org_id,
+        select(ItemsCatalogue).where(
+            ItemsCatalogue.id == item_id,
+            ItemsCatalogue.org_id == org_id,
         )
     )
-    service = result.scalar_one_or_none()
-    if service is None:
-        raise ValueError("Service not found")
+    item = result.scalar_one_or_none()
+    if item is None:
+        raise ValueError("Item not found")
 
     allowed_fields = {"name", "description", "default_price", "is_gst_exempt", "category", "is_active"}
-    valid_categories = {"warrant", "service", "repair", "diagnostic"}
     before_value = {}
     updated_fields = []
 
@@ -176,51 +185,60 @@ async def update_service(
                     raise ValueError("Invalid price format")
                 if value < 0:
                     raise ValueError("Price cannot be negative")
-            if field == "category" and value not in valid_categories:
-                raise ValueError(f"Invalid category. Must be one of: {', '.join(sorted(valid_categories))}")
 
-            before_value[field] = str(getattr(service, field)) if field == "default_price" else getattr(service, field)
-            setattr(service, field, value)
+            before_value[field] = str(getattr(item, field)) if field == "default_price" else getattr(item, field)
+            setattr(item, field, value)
             updated_fields.append(field)
 
     if not updated_fields:
-        return _service_to_dict(service)
+        return _item_to_dict(item)
 
     await db.flush()
+    await db.refresh(item)
 
     await write_audit_log(
         session=db,
         org_id=org_id,
         user_id=user_id,
-        action="catalogue.service.updated",
-        entity_type="service_catalogue",
-        entity_id=service.id,
+        action="catalogue.item.updated",
+        entity_type="items_catalogue",
+        entity_id=item.id,
         before_value=before_value,
         after_value={f: str(kwargs[f]) if f == "default_price" else kwargs[f] for f in updated_fields},
         ip_address=ip_address,
     )
 
-    return _service_to_dict(service)
+    return _item_to_dict(item)
 
 
-async def get_service(
+async def get_item(
     db: AsyncSession,
     *,
     org_id: uuid.UUID,
-    service_id: uuid.UUID,
+    item_id: uuid.UUID,
 ) -> dict:
-    """Retrieve a single service by ID within the organisation."""
+    """Retrieve a single item by ID within the organisation."""
     result = await db.execute(
-        select(ServiceCatalogue).where(
-            ServiceCatalogue.id == service_id,
-            ServiceCatalogue.org_id == org_id,
+        select(ItemsCatalogue).where(
+            ItemsCatalogue.id == item_id,
+            ItemsCatalogue.org_id == org_id,
         )
     )
-    service = result.scalar_one_or_none()
-    if service is None:
-        raise ValueError("Service not found")
+    item = result.scalar_one_or_none()
+    if item is None:
+        raise ValueError("Item not found")
 
-    return _service_to_dict(service)
+    return _item_to_dict(item)
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible aliases — other modules (router, bookings, tests) still
+# import the old names until they are updated in later tasks.
+# ---------------------------------------------------------------------------
+list_services = list_items
+create_service = create_item
+update_service = update_item
+get_service = get_item
 
 
 # ===========================================================================

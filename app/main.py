@@ -165,6 +165,18 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # ------------------------------------------------------------------
+    # Ensure all ORM models are imported so SQLAlchemy can resolve
+    # string-based relationship references (e.g. "Organisation" in
+    # FleetAccount.organisation).  Without this, lazy mapper resolution
+    # fails with InvalidRequestError when a relationship is first
+    # accessed via selectinload.
+    # ------------------------------------------------------------------
+    from app.modules.admin import models as _admin_models  # noqa: F401
+    from app.modules.customers import models as _customer_models  # noqa: F401
+    from app.modules.job_cards import models as _job_card_models  # noqa: F401
+    from app.modules.staff import models as _staff_models  # noqa: F401
+
     # --- V1 Routers (existing, unchanged) ---
     from app.modules.auth.router import router as auth_router
     from app.modules.admin.router import router as admin_router

@@ -73,6 +73,8 @@ async def record_cash_payment_endpoint(
 ):
     """Record a cash payment. Updates invoice status to Paid or Partially Paid.
 
+    After recording, sends an updated invoice email to the customer.
+
     Requirements: 24.1, 24.2, 24.3
     """
     org_uuid, user_uuid, ip_address = _extract_org_context(request)
@@ -92,9 +94,37 @@ async def record_cash_payment_endpoint(
             notes=payload.notes,
             ip_address=ip_address,
         )
-        return result
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    # Commit the payment so the fresh email session sees updated balances
+    await db.commit()
+
+    # Send updated invoice email using a fresh session
+    # (RLS context is lost after the commit above)
+    try:
+        from app.core.database import async_session_factory, _set_rls_org_id
+        from app.modules.invoices.service import email_invoice
+
+        async with async_session_factory() as fresh_session:
+            async with fresh_session.begin():
+                await _set_rls_org_id(fresh_session, str(org_uuid))
+                await email_invoice(
+                    fresh_session,
+                    org_id=org_uuid,
+                    invoice_id=payload.invoice_id,
+                )
+        logger.info(
+            "Payment receipt email sent for invoice %s", payload.invoice_id
+        )
+    except Exception as email_exc:
+        # Payment was recorded successfully — don't fail the request if email fails
+        logger.warning(
+            "Payment recorded but email failed for invoice %s: %s",
+            payload.invoice_id, email_exc,
+        )
+
+    return result
 
 
 @router.post(

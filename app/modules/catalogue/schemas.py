@@ -113,6 +113,102 @@ class ServiceUpdateResponse(BaseModel):
 
 
 # ===========================================================================
+# Items Catalogue schemas — Requirements: 7.3, 7.4, 7.5
+# ===========================================================================
+
+
+class ItemCreateRequest(BaseModel):
+    """POST /api/v1/catalogue/items request body.
+
+    Requirements: 7.3
+    """
+
+    name: str = Field(
+        ..., min_length=1, max_length=255, description="Item name"
+    )
+    description: Optional[str] = Field(
+        None, max_length=5000, description="Item description"
+    )
+    default_price: str = Field(
+        ..., description="Default price ex-GST as decimal string (e.g. '85.00')"
+    )
+    is_gst_exempt: bool = Field(
+        False, description="True if GST does not apply to this item"
+    )
+    category: Optional[str] = Field(
+        None, max_length=100, description="Free-text category"
+    )
+    is_active: bool = Field(True, description="Whether the item is active")
+
+
+class ItemUpdateRequest(BaseModel):
+    """PUT /api/v1/catalogue/items/{id} request body.
+
+    All fields optional — only provided fields are updated.
+    Requirements: 7.4
+    """
+
+    name: Optional[str] = Field(
+        None, min_length=1, max_length=255, description="Item name"
+    )
+    description: Optional[str] = Field(
+        None, max_length=5000, description="Item description"
+    )
+    default_price: Optional[str] = Field(
+        None, description="Default price ex-GST as decimal string"
+    )
+    is_gst_exempt: Optional[bool] = Field(
+        None, description="True if GST does not apply"
+    )
+    category: Optional[str] = Field(
+        None, max_length=100, description="Free-text category"
+    )
+    is_active: Optional[bool] = Field(
+        None, description="Active/inactive toggle"
+    )
+
+
+class ItemResponse(BaseModel):
+    """Single item catalogue entry in API responses.
+
+    Requirements: 7.5
+    """
+
+    id: str = Field(..., description="Item UUID")
+    name: str = Field(..., description="Item name")
+    description: Optional[str] = Field(None, description="Item description")
+    default_price: str = Field(..., description="Default price ex-GST")
+    is_gst_exempt: bool = Field(False, description="GST exemption flag")
+    category: Optional[str] = Field(None, description="Free-text category")
+    is_active: bool = Field(True, description="Active/inactive status")
+    created_at: str = Field(..., description="ISO 8601 creation timestamp")
+    updated_at: str = Field(..., description="ISO 8601 last update timestamp")
+
+
+class ItemListResponse(BaseModel):
+    """GET /api/v1/catalogue/items response."""
+
+    items: list[ItemResponse] = Field(
+        default_factory=list, description="List of items"
+    )
+    total: int = Field(0, description="Total number of results")
+
+
+class ItemCreateResponse(BaseModel):
+    """POST /api/v1/catalogue/items response."""
+
+    message: str
+    item: ItemResponse
+
+
+class ItemUpdateResponse(BaseModel):
+    """PUT /api/v1/catalogue/items/{id} response."""
+
+    message: str
+    item: ItemResponse
+
+
+# ===========================================================================
 # Parts Catalogue schemas — Requirements: 28.1, 28.2
 # ===========================================================================
 

@@ -297,26 +297,9 @@ class TestProcessWofRegoRemindersTask:
 # ---------------------------------------------------------------------------
 
 
-class TestCeleryBeatScheduleWofRego:
-    """Verify the Celery Beat schedule includes WOF/rego reminders."""
+class TestWofRegoBeatSchedule:
+    """Verify the WOF/rego reminder task is importable."""
 
-    def test_beat_schedule_includes_wof_rego_reminders(self):
-        from app.tasks import celery_app
-
-        schedule = celery_app.conf.beat_schedule
-        assert "process-wof-rego-reminders" in schedule
-        entry = schedule["process-wof-rego-reminders"]
-        assert (
-            entry["task"]
-            == "app.tasks.notifications.process_wof_rego_reminders_task"
-        )
-
-    def test_beat_schedule_runs_daily_at_2am(self):
-        from celery.schedules import crontab
-        from app.tasks import celery_app
-
-        entry = celery_app.conf.beat_schedule["process-wof-rego-reminders"]
-        sched = entry["schedule"]
-        assert isinstance(sched, crontab)
-        assert sched.hour == {2}
-        assert sched.minute == {0}
+    def test_wof_rego_task_importable(self):
+        from app.tasks.notifications import process_wof_rego_reminders_task
+        assert callable(process_wof_rego_reminders_task)

@@ -94,7 +94,11 @@
       <tbody>
         {% for item in quote.line_items %}
         <tr>
-          <td>{{ item.description }}</td>
+          <td>
+            {% set desc_parts = item.description.split('\n') if item.description else [''] %}
+            {{ desc_parts[0] }}
+            {% if desc_parts | length > 1 %}<div style="font-size:9pt; color:#666; margin-top:2px;">{{ desc_parts[1:] | join('<br>') }}</div>{% endif %}
+          </td>
           <td class="text-center">{% if item.item_type == 'labour' %}{{ item.hours or '' }}{% else %}{{ item.quantity }}{% endif %}</td>
           <td class="text-right">${% if item.item_type == 'labour' %}{{ "%.2f" | format(item.hourly_rate or 0) }}{% else %}{{ "%.2f" | format(item.unit_price) }}{% endif %}</td>
           <td class="text-center">{% if item.is_gst_exempt %}Exempt{% else %}✓{% endif %}</td>

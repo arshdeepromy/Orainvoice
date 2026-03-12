@@ -229,6 +229,7 @@ async def create_invoice(
     vehicle_year: int | None = None,
     vehicle_odometer: int | None = None,
     global_vehicle_id: uuid.UUID | None = None,
+    vehicle_service_due_date: date | None = None,
     branch_id: uuid.UUID | None = None,
     status: str = "draft",
     line_items_data: list[dict] | None = None,
@@ -241,6 +242,7 @@ async def create_invoice(
     discount_value: Decimal | None = None,
     currency: str = "NZD",
     exchange_rate_to_nzd: Decimal | None = None,
+    terms_and_conditions: str | None = None,
     ip_address: str | None = None,
 ) -> dict:
     """Create a new invoice (draft or issued).
@@ -353,7 +355,12 @@ async def create_invoice(
         balance_due=totals["balance_due"],
         notes_internal=notes_internal,
         notes_customer=notes_customer,
-        invoice_data_json={"payment_terms": payment_terms} if payment_terms else {},
+        invoice_data_json={
+            k: v for k, v in {
+                "payment_terms": payment_terms,
+                "terms_and_conditions": terms_and_conditions,
+            }.items() if v
+        },
         created_by=user_id,
     )
     db.add(invoice)
@@ -459,6 +466,16 @@ async def create_invoice(
             notes=f"Invoice {invoice_number or 'draft'}",
         )
 
+    # Update service due date on the vehicle if provided
+    if vehicle_service_due_date and global_vehicle_id:
+        from app.modules.admin.models import GlobalVehicle
+        gv_result = await db.execute(
+            select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
+        )
+        gv = gv_result.scalar_one_or_none()
+        if gv:
+            gv.service_due_date = vehicle_service_due_date
+
     return _invoice_to_dict(invoice, created_line_items)
 
 
@@ -500,6 +517,7 @@ def _invoice_to_dict(invoice: Invoice, line_items: list[LineItem]) -> dict:
         "created_at": invoice.created_at,
         "updated_at": invoice.updated_at,
         "payment_terms": (invoice.invoice_data_json or {}).get("payment_terms"),
+        "terms_and_conditions": (invoice.invoice_data_json or {}).get("terms_and_conditions"),
     }
 
 
@@ -757,7 +775,7 @@ async def delete_line_item(
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "draft": {"issued", "voided"},
     "issued": {"partially_paid", "paid", "overdue", "voided"},
-    "partially_paid": {"paid", "overdue", "voided"},
+    "partially_paid": {"partially_paid", "paid", "overdue", "voided"},
     "overdue": {"partially_paid", "paid", "voided"},
     "paid": {"voided"},
     # voided is a terminal state — no transitions out
@@ -1007,6 +1025,7 @@ async def get_invoice(
                 "year": gv.year,
                 "wof_expiry": gv.wof_expiry.isoformat() if getattr(gv, "wof_expiry", None) else None,
                 "odometer": getattr(gv, "odometer_last_recorded", None),
+                "service_due_date": gv.service_due_date.isoformat() if getattr(gv, "service_due_date", None) else None,
             }
 
     # Include payments
@@ -1377,6 +1396,18 @@ async def update_invoice(
             applied[field] = str(value) if value is not None else None
 
     await db.flush()
+
+    # Update service due date on the vehicle if provided
+    vehicle_service_due_date = updates.get("vehicle_service_due_date")
+    global_vehicle_id = updates.get("global_vehicle_id")
+    if vehicle_service_due_date and global_vehicle_id:
+        from app.modules.admin.models import GlobalVehicle
+        gv_result = await db.execute(
+            select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
+        )
+        gv = gv_result.scalar_one_or_none()
+        if gv:
+            gv.service_due_date = vehicle_service_due_date
 
     # Recalculate totals if discount changed
     if "discount_type" in applied or "discount_value" in applied:
@@ -2670,7 +2701,8 @@ async def generate_invoice_pdf(
 
     gst_percentage = settings.get("gst_percentage", 15)
     payment_terms = settings.get("payment_terms_text", "")
-    terms_and_conditions = settings.get("terms_and_conditions", "")
+    # Per-invoice terms_and_conditions take priority over org-level default
+    terms_and_conditions = invoice_dict.get("terms_and_conditions") or settings.get("terms_and_conditions", "")
     currency_symbol = get_currency_symbol(invoice_dict.get("currency", "NZD"))
 
     # Fetch customer -------------------------------------------------------

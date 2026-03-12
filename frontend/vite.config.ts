@@ -11,16 +11,17 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
+    allowedHosts: true,
+    hmr: {
+      // HMR goes through Cloudflare tunnel → nginx → Vite
+      clientPort: 443,
+      protocol: 'wss',
+      host: 'invoice.oraflows.co.nz',
+    },
     watch: {
       usePolling: true,
       interval: 1000,
     },
-    proxy: {
-      '/api': {
-        target: process.env.VITE_API_URL || 'http://localhost:8000',
-        changeOrigin: true,
-        cookieDomainRewrite: '',
-      },
-    },
+    // No proxy — nginx handles API routing
   },
 })

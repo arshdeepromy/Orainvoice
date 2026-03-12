@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models for catalogue-scoped tables.
 
 Tables:
-- service_catalogue: configurable services per organisation (RLS enabled)
+- items_catalogue: organisation-scoped items catalogue (RLS enabled)
 - parts_catalogue: pre-loaded parts per organisation (RLS enabled)
 - labour_rates: named hourly rates per organisation (RLS enabled)
 """
@@ -14,7 +14,6 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
-    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -29,10 +28,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
 
-class ServiceCatalogue(Base):
-    """Organisation-scoped service catalogue entry."""
+class ItemsCatalogue(Base):
+    """Organisation-scoped items catalogue entry."""
 
-    __tablename__ = "service_catalogue"
+    __tablename__ = "items_catalogue"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -49,7 +48,7 @@ class ServiceCatalogue(Base):
     is_gst_exempt: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
-    category: Mapped[str] = mapped_column(String(50), nullable=False)
+    category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="true"
     )
@@ -63,15 +62,13 @@ class ServiceCatalogue(Base):
         onupdate=func.now(),
     )
 
-    __table_args__ = (
-        CheckConstraint(
-            "category IN ('warrant','service','repair','diagnostic')",
-            name="ck_service_catalogue_category",
-        ),
-    )
-
     # Relationships
-    organisation = relationship("Organisation", backref="service_catalogue_items")
+    organisation = relationship("Organisation", backref="items_catalogue_entries")
+
+
+# Backward-compatible alias — other modules still import ServiceCatalogue
+# until they are updated in later tasks.
+ServiceCatalogue = ItemsCatalogue
 
 
 class PartsCatalogue(Base):

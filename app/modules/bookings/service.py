@@ -1,14 +1,17 @@
 """Business logic for Booking module — CRUD, calendar view data, and conversion.
 
-Requirements: 64.1, 64.2, 64.3, 64.4, 64.5
+Matches the actual DB schema from migration 0038 + 0081 + 0082.
+DB columns: customer_name, customer_email, customer_phone, staff_id,
+start_time, end_time, confirmation_token, converted_job_id, converted_invoice_id.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
-from sqlalchemy import select, func as sa_func, and_
+from sqlalchemy import select, func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import logging
@@ -19,9 +22,11 @@ from app.modules.customers.models import Customer
 
 logger = logging.getLogger(__name__)
 
+_CONVERTIBLE_STATUSES = {"scheduled", "confirmed", "pending"}
 
 # Valid status transitions
 VALID_TRANSITIONS: dict[str, set[str]] = {
+    "pending": {"scheduled", "confirmed", "cancelled"},
     "scheduled": {"confirmed", "cancelled", "no_show"},
     "confirmed": {"completed", "cancelled", "no_show"},
     "completed": set(),
@@ -31,7 +36,6 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
 
 
 def _validate_status_transition(current: str, target: str) -> None:
-    """Validate a booking status transition."""
     allowed = VALID_TRANSITIONS.get(current, set())
     if target not in allowed:
         raise ValueError(
@@ -39,33 +43,151 @@ def _validate_status_transition(current: str, target: str) -> None:
         )
 
 
-def _booking_to_dict(booking: Booking, customer_name: str | None = None) -> dict:
+def _booking_to_dict(booking: Booking) -> dict:
     """Convert a Booking to a serialisable dict."""
+    duration = int((booking.end_time - booking.start_time).total_seconds() / 60) if booking.end_time and booking.start_time else 60
     return {
         "id": booking.id,
         "org_id": booking.org_id,
-        "customer_id": booking.customer_id,
-        "customer_name": customer_name,
+        "customer_name": booking.customer_name,
+        "customer_email": booking.customer_email,
+        "customer_phone": booking.customer_phone,
         "vehicle_rego": booking.vehicle_rego,
-        "branch_id": booking.branch_id,
+        "staff_id": booking.staff_id,
         "service_type": booking.service_type,
         "service_catalogue_id": booking.service_catalogue_id,
         "service_price": booking.service_price,
-        "scheduled_at": booking.scheduled_at,
-        "duration_minutes": booking.duration_minutes,
+        "scheduled_at": booking.start_time,
+        "start_time": booking.start_time,
+        "end_time": booking.end_time,
+        "duration_minutes": duration,
         "notes": booking.notes,
         "status": booking.status,
-        "reminder_sent": booking.reminder_sent,
+        "confirmation_token": booking.confirmation_token,
+        "converted_job_id": booking.converted_job_id,
+        "converted_invoice_id": booking.converted_invoice_id,
         "send_email_confirmation": booking.send_email_confirmation,
         "send_sms_confirmation": booking.send_sms_confirmation,
         "reminder_offset_hours": booking.reminder_offset_hours,
         "reminder_scheduled_at": booking.reminder_scheduled_at,
         "reminder_cancelled": booking.reminder_cancelled,
-        "assigned_to": booking.assigned_to,
-        "created_by": booking.created_by,
         "created_at": booking.created_at,
         "updated_at": booking.updated_at,
     }
+
+
+DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+async def _check_staff_availability(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    start_time: datetime,
+    end_time: datetime,
+) -> None:
+    """If the staff module is enabled, verify at least one active staff member
+    is available during the booking window.  Raises ValueError if nobody is
+    available.  Does nothing when the staff module is disabled.
+
+    Availability is determined by:
+    1. ``availability_schedule`` (JSONB weekday map with start/end times), or
+    2. ``shift_start`` / ``shift_end`` (simple daily window), or
+    3. If a staff member has neither configured they are treated as always
+       available (no restriction).
+
+    Times are converted to the organisation's local timezone before comparison,
+    since staff schedules are defined in local time.
+    """
+    from app.core.modules import ModuleService
+
+    svc = ModuleService(db)
+    staff_enabled = await svc.is_enabled(str(org_id), "staff")
+    if not staff_enabled:
+        return  # no restriction when staff module is off
+
+    from app.modules.staff.models import StaffMember
+
+    result = await db.execute(
+        select(StaffMember).where(
+            StaffMember.org_id == org_id,
+            StaffMember.is_active.is_(True),
+        )
+    )
+    staff_list = list(result.scalars().all())
+
+    if not staff_list:
+        # No staff configured at all — allow booking (org hasn't set up staff yet)
+        return
+
+    # Convert UTC times to org local timezone for comparison with staff schedules
+    from zoneinfo import ZoneInfo
+    from sqlalchemy import text as sa_text
+
+    org_tz_result = await db.execute(
+        sa_text("SELECT timezone FROM organisations WHERE id = :oid"),
+        {"oid": str(org_id)},
+    )
+    org_tz_name = org_tz_result.scalar_one_or_none()
+    if org_tz_name:
+        try:
+            local_tz = ZoneInfo(org_tz_name)
+            local_start = start_time.astimezone(local_tz)
+            local_end = end_time.astimezone(local_tz)
+        except (KeyError, Exception):
+            # Unknown timezone — fall back to UTC
+            local_start = start_time
+            local_end = end_time
+    else:
+        local_start = start_time
+        local_end = end_time
+
+    booking_day = DAY_NAMES[local_start.weekday()]
+    booking_start_mins = local_start.hour * 60 + local_start.minute
+    booking_end_mins = local_end.hour * 60 + local_end.minute
+    # Handle overnight bookings (end next day)
+    if booking_end_mins <= booking_start_mins:
+        booking_end_mins = 24 * 60
+
+    for member in staff_list:
+        schedule = member.availability_schedule or {}
+
+        if schedule:
+            # Weekday-specific schedule is configured — it's authoritative
+            day_schedule = schedule.get(booking_day)
+            if not day_schedule or not isinstance(day_schedule, dict):
+                continue  # this member doesn't work on this day
+            try:
+                sh, sm = map(int, day_schedule.get("start", "09:00").split(":"))
+                eh, em = map(int, day_schedule.get("end", "17:00").split(":"))
+                avail_start = sh * 60 + sm
+                avail_end = eh * 60 + em
+                if booking_start_mins >= avail_start and booking_end_mins <= avail_end:
+                    return  # at least one staff member covers this window
+            except (ValueError, AttributeError):
+                pass
+            continue
+
+        # No availability_schedule — fall back to shift_start / shift_end
+        if member.shift_start and member.shift_end:
+            try:
+                sh, sm = map(int, member.shift_start.split(":"))
+                eh, em = map(int, member.shift_end.split(":"))
+                avail_start = sh * 60 + sm
+                avail_end = eh * 60 + em
+                if booking_start_mins >= avail_start and booking_end_mins <= avail_end:
+                    return  # covered (shift doesn't specify days, so any day is OK)
+            except (ValueError, AttributeError):
+                pass
+            continue
+
+        # No schedule and no shift configured — treat as always available
+        return
+
+    # Nobody covers the window
+    raise ValueError(
+        "No staff available during the selected time. "
+        "Please choose a time within working hours."
+    )
 
 
 async def create_booking(
@@ -88,32 +210,31 @@ async def create_booking(
     reminder_offset_hours: float | None = None,
     ip_address: str | None = None,
 ) -> dict:
-    """Create a new booking in 'scheduled' status.
-
-    Requirements: 64.2, 64.3, 4.4, 4.5, 4.6, 5.5, 5.8, 5.9
-    """
-    # Backward compat: if send_confirmation is true and
-    # send_email_confirmation was not explicitly provided, treat as
-    # send_email_confirmation = True (Req 4.4)
+    """Create a new booking."""
     if send_email_confirmation is None:
         send_email_confirmation = send_confirmation
 
-    # Gate vehicle rego behind vehicles module (Req 2.5, 2.6)
+    # Calculate times early so we can validate availability
+    start_time = scheduled_at
+    end_time = scheduled_at + timedelta(minutes=duration_minutes)
+
+    # Staff availability check (only when staff module is enabled)
+    await _check_staff_availability(db, org_id, start_time, end_time)
+
+    # Vehicle rego module gating: clear vehicle_rego when vehicles module is disabled
     if vehicle_rego is not None:
         from app.core.modules import ModuleService
         module_svc = ModuleService(db)
-        if not await module_svc.is_enabled(str(org_id), "vehicles"):
+        vehicles_enabled = await module_svc.is_enabled(str(org_id), "vehicles")
+        if not vehicles_enabled:
             vehicle_rego = None
 
-    # Service catalogue linkage (Req 3.2, 3.8, 3.9)
+    # Service catalogue linkage
     service_price = None
     if service_catalogue_id is not None:
-        from app.modules.catalogue.models import ServiceCatalogue
-
+        from app.modules.catalogue.models import ItemsCatalogue
         cat_result = await db.execute(
-            select(ServiceCatalogue).where(
-                ServiceCatalogue.id == service_catalogue_id,
-            )
+            select(ItemsCatalogue).where(ItemsCatalogue.id == service_catalogue_id)
         )
         catalogue = cat_result.scalar_one_or_none()
         if catalogue is None:
@@ -125,12 +246,9 @@ async def create_booking(
         service_type = catalogue.name
         service_price = catalogue.default_price
 
-    # Validate customer exists and belongs to org
+    # Validate customer
     cust_result = await db.execute(
-        select(Customer).where(
-            Customer.id == customer_id,
-            Customer.org_id == org_id,
-        )
+        select(Customer).where(Customer.id == customer_id, Customer.org_id == org_id)
     )
     customer = cust_result.scalar_one_or_none()
     if customer is None:
@@ -138,157 +256,116 @@ async def create_booking(
 
     customer_name = f"{customer.first_name} {customer.last_name}".strip()
 
-    # Gate SMS behind org subscription plan (Req 4.5)
-    effective_send_sms = send_sms_confirmation
-    if send_sms_confirmation:
-        from app.modules.admin.models import Organisation, SubscriptionPlan
-        org_result = await db.execute(
-            select(Organisation).where(Organisation.id == org_id)
-        )
-        org_row = org_result.scalar_one_or_none()
-        sms_allowed = False
-        if org_row and org_row.plan_id:
-            plan_result = await db.execute(
-                select(SubscriptionPlan).where(SubscriptionPlan.id == org_row.plan_id)
-            )
-            plan_row = plan_result.scalar_one_or_none()
-            sms_allowed = plan_row.sms_included if plan_row else False
-        if not sms_allowed:
-            logger.warning(
-                "SMS confirmation requested for org %s but plan does not include SMS — skipping",
-                org_id,
-            )
-            effective_send_sms = False
-
-    # Reminder scheduling (Req 5.5, 5.8, 5.9)
+    # Reminder scheduling
     reminder_scheduled_at = None
     if reminder_offset_hours is not None:
         reminder_scheduled_at = scheduled_at - timedelta(hours=reminder_offset_hours)
         if reminder_scheduled_at <= datetime.now(timezone.utc):
-            logger.warning(
-                "Reminder time %s is in the past for booking scheduled at %s — skipping reminder",
-                reminder_scheduled_at,
-                scheduled_at,
-            )
+            logger.warning("Reminder time %s is in the past — skipping", reminder_scheduled_at)
             reminder_scheduled_at = None
 
+    now = datetime.now(timezone.utc)
     booking = Booking(
         org_id=org_id,
-        customer_id=customer_id,
+        customer_name=customer_name,
+        customer_email=customer.email,
+        customer_phone=customer.phone,
         vehicle_rego=vehicle_rego,
-        branch_id=branch_id,
+        staff_id=assigned_to,
         service_type=service_type,
         service_catalogue_id=service_catalogue_id,
         service_price=service_price,
-        scheduled_at=scheduled_at,
-        duration_minutes=duration_minutes,
+        start_time=start_time,
+        end_time=end_time,
         notes=notes,
         status="scheduled",
-        assigned_to=assigned_to,
-        created_by=user_id,
         send_email_confirmation=send_email_confirmation,
-        send_sms_confirmation=effective_send_sms,
+        send_sms_confirmation=send_sms_confirmation,
         reminder_offset_hours=reminder_offset_hours,
         reminder_scheduled_at=reminder_scheduled_at,
+        created_at=now,
+        updated_at=now,
     )
     db.add(booking)
     await db.flush()
 
     # Audit log
     await write_audit_log(
-        session=db,
-        org_id=org_id,
-        user_id=user_id,
-        action="booking.created",
-        entity_type="booking",
-        entity_id=booking.id,
-        after_value={
-            "status": "scheduled",
-            "customer_id": str(customer_id),
-            "vehicle_rego": vehicle_rego,
-            "service_type": service_type,
-            "scheduled_at": str(scheduled_at),
-            "duration_minutes": duration_minutes,
-            "send_confirmation": send_confirmation,
-            "send_email_confirmation": send_email_confirmation,
-            "send_sms_confirmation": effective_send_sms,
-            "reminder_offset_hours": reminder_offset_hours,
-            "reminder_scheduled_at": str(reminder_scheduled_at) if reminder_scheduled_at else None,
-        },
+        session=db, org_id=org_id, user_id=user_id,
+        action="booking.created", entity_type="booking", entity_id=booking.id,
+        after_value={"status": "scheduled", "customer_name": customer_name, "service_type": service_type},
         ip_address=ip_address,
     )
 
-    # --- Notification dispatch (Req 4.4, 4.5, 4.6) ---
-    # Failures must NOT roll back the booking — log and continue.
+    # --- Send confirmation email ---
+    confirmation_sent = False
     if send_email_confirmation and customer.email:
         try:
-            from app.modules.notifications.service import log_email_sent
-            from app.tasks.notifications import send_email_task
-
-            log_entry = await log_email_sent(
+            confirmation_sent = await _send_booking_confirmation_email(
                 db,
                 org_id=org_id,
-                recipient=customer.email,
-                template_type="booking_confirmation",
-                subject=f"Booking confirmation — {service_type or 'your appointment'}",
-                status="queued",
-                channel="email",
+                customer=customer,
+                service_type=service_type,
+                start_time=start_time,
+                duration_minutes=duration_minutes,
+                vehicle_rego=vehicle_rego,
+                notes=notes,
             )
-            send_email_task.delay(
-                str(org_id),
-                log_entry["id"],
-                customer.email,
-                customer_name,
-                f"Booking confirmation — {service_type or 'your appointment'}",
-                "",  # html_body — rendered by template system
-                "",  # text_body
-                None,
-                None,
-                "booking_confirmation",
-            )
+            if confirmation_sent:
+                logger.info(
+                    "Booking confirmation email sent: org=%s, booking=%s, to=%s",
+                    org_id, booking.id, customer.email,
+                )
         except Exception:
-            logger.exception(
-                "Failed to dispatch email confirmation for booking %s",
-                booking.id,
+            logger.error(
+                "Failed to send booking confirmation email: org=%s, booking=%s",
+                org_id, booking.id, exc_info=True,
             )
 
-    if effective_send_sms and customer.phone:
+    # --- Send confirmation SMS ---
+    sms_sent = False
+    if send_sms_confirmation and customer.phone:
         try:
             from app.modules.notifications.service import log_sms_sent
             from app.tasks.notifications import send_sms_task
-            from app.modules.admin.service import increment_sms_usage
+
+            formatted_date = start_time.strftime("%d/%m/%Y %I:%M %p")
+            sms_body = (
+                f"Hi {customer.first_name}, your booking for "
+                f"{service_type or 'an appointment'} on {formatted_date} "
+                f"has been confirmed."
+            )
 
             sms_log = await log_sms_sent(
                 db,
                 org_id=org_id,
                 recipient=customer.phone,
                 template_type="booking_confirmation",
-                body=f"Booking confirmed for {service_type or 'your appointment'} on {scheduled_at.strftime('%d/%m/%Y %H:%M')}.",
+                body=sms_body,
                 status="queued",
             )
-            send_sms_task.delay(
+
+            await send_sms_task(
                 str(org_id),
                 sms_log["id"],
                 customer.phone,
-                f"Booking confirmed for {service_type or 'your appointment'} on {scheduled_at.strftime('%d/%m/%Y %H:%M')}.",
+                sms_body,
                 None,
                 "booking_confirmation",
             )
-            # Best-effort SMS usage tracking
-            try:
-                await increment_sms_usage(db, org_id)
-            except Exception:
-                logger.warning(
-                    "Failed to increment SMS usage for org %s", org_id
-                )
+            sms_sent = True
+            logger.info(
+                "Booking confirmation SMS queued: org=%s, booking=%s, to=%s",
+                org_id, booking.id, customer.phone,
+            )
         except Exception:
-            logger.exception(
-                "Failed to dispatch SMS confirmation for booking %s",
-                booking.id,
+            logger.error(
+                "Failed to queue booking confirmation SMS: org=%s, booking=%s",
+                org_id, booking.id, exc_info=True,
             )
 
-    result = _booking_to_dict(booking, customer_name)
-    result["confirmation_sent"] = send_email_confirmation or effective_send_sms
+    result = _booking_to_dict(booking)
+    result["confirmation_sent"] = confirmation_sent or sms_sent
     return result
 
 
@@ -298,48 +375,32 @@ async def get_booking(
     org_id: uuid.UUID,
     booking_id: uuid.UUID,
 ) -> dict:
-    """Retrieve a single booking by ID within an organisation."""
+    """Retrieve a single booking by ID."""
     result = await db.execute(
-        select(Booking, Customer.first_name, Customer.last_name)
-        .join(Customer, Booking.customer_id == Customer.id, isouter=True)
-        .where(Booking.id == booking_id, Booking.org_id == org_id)
+        select(Booking).where(Booking.id == booking_id, Booking.org_id == org_id)
     )
-    row = result.first()
-    if row is None:
+    booking = result.scalar_one_or_none()
+    if booking is None:
         raise ValueError("Booking not found in this organisation")
-
-    booking = row[0]
-    first = row[1] or ""
-    last = row[2] or ""
-    customer_name = f"{first} {last}".strip() or None
-
-    return _booking_to_dict(booking, customer_name)
+    return _booking_to_dict(booking)
 
 
-def _get_calendar_range(
-    view: str,
-    date_param: datetime | None = None,
-) -> tuple[datetime, datetime]:
-    """Calculate start/end datetime for a calendar view.
-
-    Requirements: 64.1
-    """
+def _get_calendar_range(view: str, date_param: datetime | None) -> tuple[datetime, datetime]:
+    """Return (start, end) datetimes for a calendar view."""
     now = date_param or datetime.now(timezone.utc)
     if view == "day":
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=1)
-    elif view == "week":
-        # Start on Monday
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        start = start - timedelta(days=start.weekday())
-        end = start + timedelta(days=7)
-    else:  # month
+    elif view == "month":
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        # End of month: go to next month
         if start.month == 12:
             end = start.replace(year=start.year + 1, month=1)
         else:
             end = start.replace(month=start.month + 1)
+    else:  # week
+        start = now - timedelta(days=now.weekday())
+        start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=7)
     return start, end
 
 
@@ -352,64 +413,27 @@ async def list_bookings(
     status: str | None = None,
     branch_id: uuid.UUID | None = None,
 ) -> dict:
-    """List bookings for a calendar view (day/week/month).
-
-    Requirements: 64.1
-    """
+    """List bookings for a calendar view."""
     start, end = _get_calendar_range(view, date_param)
 
     filters = [
         Booking.org_id == org_id,
-        Booking.scheduled_at >= start,
-        Booking.scheduled_at < end,
+        Booking.start_time >= start,
+        Booking.start_time < end,
     ]
-
     if status:
         filters.append(Booking.status == status)
-    if branch_id:
-        filters.append(Booking.branch_id == branch_id)
 
-    # Count
-    count_q = (
-        select(sa_func.count(Booking.id))
-        .join(Customer, Booking.customer_id == Customer.id, isouter=True)
-        .where(*filters)
-    )
-    total_result = await db.execute(count_q)
-    total = total_result.scalar() or 0
+    count_q = select(sa_func.count(Booking.id)).where(*filters)
+    total = (await db.execute(count_q)).scalar() or 0
 
-    # Data
-    data_q = (
-        select(
-            Booking.id,
-            Customer.first_name,
-            Customer.last_name,
-            Booking.vehicle_rego,
-            Booking.service_type,
-            Booking.scheduled_at,
-            Booking.duration_minutes,
-            Booking.status,
-        )
-        .join(Customer, Booking.customer_id == Customer.id, isouter=True)
-        .where(*filters)
-        .order_by(Booking.scheduled_at.asc())
-    )
+    data_q = select(Booking).where(*filters).order_by(Booking.start_time.asc())
     rows = await db.execute(data_q)
 
     bookings = []
-    for row in rows:
-        first = row.first_name or ""
-        last = row.last_name or ""
-        customer_name = f"{first} {last}".strip() or None
-        bookings.append({
-            "id": row.id,
-            "customer_name": customer_name,
-            "vehicle_rego": row.vehicle_rego,
-            "service_type": row.service_type,
-            "scheduled_at": row.scheduled_at,
-            "duration_minutes": row.duration_minutes,
-            "status": row.status,
-        })
+    for (booking,) in rows:
+        d = _booking_to_dict(booking)
+        bookings.append(d)
 
     return {
         "bookings": bookings,
@@ -429,85 +453,62 @@ async def update_booking(
     updates: dict,
     ip_address: str | None = None,
 ) -> dict:
-    """Update a booking with status validation.
-
-    Scheduled/confirmed bookings allow full edits.
-    Completed/cancelled/no_show bookings only allow notes updates.
-
-    Requirements: 64.2
-    """
+    """Update a booking with status validation."""
     result = await db.execute(
-        select(Booking).where(
-            Booking.id == booking_id,
-            Booking.org_id == org_id,
-        )
+        select(Booking).where(Booking.id == booking_id, Booking.org_id == org_id)
     )
     booking = result.scalar_one_or_none()
     if booking is None:
         raise ValueError("Booking not found in this organisation")
 
-    before_value = {
-        "status": booking.status,
-        "customer_id": str(booking.customer_id) if booking.customer_id else None,
-        "vehicle_rego": booking.vehicle_rego,
-        "scheduled_at": str(booking.scheduled_at),
-        "notes": booking.notes,
-    }
+    before_value = {"status": booking.status, "notes": booking.notes}
 
     # Handle status transition
     new_status = updates.get("status")
     if new_status and new_status != booking.status:
         _validate_status_transition(booking.status, new_status)
         booking.status = new_status
+        if new_status == "cancelled" and booking.reminder_scheduled_at and not booking.reminder_cancelled:
+            booking.reminder_cancelled = True
 
-        # Cancel pending reminder when booking is cancelled
-        if new_status == "cancelled":
-            if booking.reminder_scheduled_at is not None and not booking.reminder_cancelled:
-                booking.reminder_cancelled = True
-
-    # Scheduled/confirmed bookings allow structural edits
-    if booking.status in ("scheduled", "confirmed"):
-        for field in ("customer_id", "vehicle_rego", "branch_id",
-                       "service_type", "scheduled_at", "duration_minutes",
-                       "notes", "assigned_to"):
-            if field in updates and updates[field] is not None:
-                setattr(booking, field, updates[field])
+    # Editable fields for active bookings
+    if booking.status in ("scheduled", "confirmed", "pending"):
+        field_map = {
+            "service_type": "service_type",
+            "vehicle_rego": "vehicle_rego",
+            "notes": "notes",
+            "staff_id": "staff_id",
+            "assigned_to": "staff_id",
+        }
+        for key, col in field_map.items():
+            if key in updates and updates[key] is not None:
+                setattr(booking, col, updates[key])
+        # Handle scheduled_at + duration_minutes → start_time/end_time
+        if "scheduled_at" in updates:
+            new_start = updates["scheduled_at"]
+            dur = updates.get("duration_minutes", 60)
+            new_end = new_start + timedelta(minutes=dur)
+            await _check_staff_availability(db, org_id, new_start, new_end)
+            booking.start_time = new_start
+            booking.end_time = new_end
+        elif "duration_minutes" in updates:
+            new_end = booking.start_time + timedelta(minutes=updates["duration_minutes"])
+            await _check_staff_availability(db, org_id, booking.start_time, new_end)
+            booking.end_time = new_end
     elif new_status is None:
-        # Terminal statuses only allow notes updates
         if "notes" in updates:
             booking.notes = updates["notes"]
 
     await db.flush()
 
-    # Get customer name for response
-    cust_result = await db.execute(
-        select(Customer).where(Customer.id == booking.customer_id)
-    )
-    customer = cust_result.scalar_one_or_none()
-    customer_name = None
-    if customer:
-        customer_name = f"{customer.first_name} {customer.last_name}".strip()
-
-    after_value = {
-        "status": booking.status,
-        "customer_id": str(booking.customer_id) if booking.customer_id else None,
-        "vehicle_rego": booking.vehicle_rego,
-        "scheduled_at": str(booking.scheduled_at),
-        "notes": booking.notes,
-    }
+    after_value = {"status": booking.status, "notes": booking.notes}
     await write_audit_log(
-        session=db,
-        org_id=org_id,
-        user_id=user_id,
-        action="booking.updated",
-        entity_type="booking",
-        entity_id=booking.id,
-        before_value=before_value,
-        after_value=after_value,
-        ip_address=ip_address,
+        session=db, org_id=org_id, user_id=user_id,
+        action="booking.updated", entity_type="booking", entity_id=booking.id,
+        before_value=before_value, after_value=after_value, ip_address=ip_address,
     )
 
-    return _booking_to_dict(booking, customer_name)
+    return _booking_to_dict(booking)
 
 
 async def delete_booking(
@@ -518,55 +519,26 @@ async def delete_booking(
     booking_id: uuid.UUID,
     ip_address: str | None = None,
 ) -> dict:
-    """Cancel a booking (soft delete via status change to 'cancelled').
-
-    Requirements: 64.2
-    """
+    """Soft-delete (cancel) a booking."""
     result = await db.execute(
-        select(Booking).where(
-            Booking.id == booking_id,
-            Booking.org_id == org_id,
-        )
+        select(Booking).where(Booking.id == booking_id, Booking.org_id == org_id)
     )
     booking = result.scalar_one_or_none()
     if booking is None:
         raise ValueError("Booking not found in this organisation")
 
-    if booking.status in ("completed", "cancelled", "no_show"):
-        raise ValueError(
-            f"Cannot cancel a booking with status '{booking.status}'"
-        )
-
-    old_status = booking.status
     booking.status = "cancelled"
-
-    # Cancel pending reminder if one is scheduled
-    if booking.reminder_scheduled_at is not None and not booking.reminder_cancelled:
+    if booking.reminder_scheduled_at and not booking.reminder_cancelled:
         booking.reminder_cancelled = True
-
     await db.flush()
 
     await write_audit_log(
-        session=db,
-        org_id=org_id,
-        user_id=user_id,
-        action="booking.cancelled",
-        entity_type="booking",
-        entity_id=booking.id,
-        before_value={"status": old_status},
-        after_value={"status": "cancelled"},
-        ip_address=ip_address,
+        session=db, org_id=org_id, user_id=user_id,
+        action="booking.deleted", entity_type="booking", entity_id=booking.id,
+        after_value={"status": "cancelled"}, ip_address=ip_address,
     )
 
     return {"id": booking.id, "status": "cancelled", "message": "Booking cancelled"}
-
-
-# ---------------------------------------------------------------------------
-# Booking conversion — Requirement 64.5
-# ---------------------------------------------------------------------------
-
-# Statuses that allow conversion
-_CONVERTIBLE_STATUSES = {"scheduled", "confirmed"}
 
 
 async def convert_booking_to_job_card(
@@ -575,73 +547,94 @@ async def convert_booking_to_job_card(
     org_id: uuid.UUID,
     user_id: uuid.UUID,
     booking_id: uuid.UUID,
+    assigned_to: uuid.UUID | None = None,
     ip_address: str | None = None,
 ) -> dict:
-    """Convert a booking to a Job Card pre-filled with appointment details.
-
-    Only scheduled or confirmed bookings may be converted.
-    The booking status transitions to 'completed' after conversion.
-
-    Requirements: 64.5
-    """
+    """Convert a booking to a Job Card."""
     from app.modules.job_cards.service import create_job_card
 
     result = await db.execute(
-        select(Booking).where(
-            Booking.id == booking_id,
-            Booking.org_id == org_id,
-        )
+        select(Booking).where(Booking.id == booking_id, Booking.org_id == org_id)
     )
     booking = result.scalar_one_or_none()
     if booking is None:
         raise ValueError("Booking not found in this organisation")
-
     if booking.status not in _CONVERTIBLE_STATUSES:
-        raise ValueError(
-            f"Only scheduled or confirmed bookings can be converted, "
-            f"current status is '{booking.status}'"
-        )
+        raise ValueError(f"Cannot convert booking with status '{booking.status}'")
 
-    if booking.customer_id is None:
-        raise ValueError("Booking must have a customer to convert")
+    # If no explicit assignee, try to resolve the caller's staff member ID
+    if assigned_to is None:
+        from app.modules.staff.models import StaffMember
+        staff_result = await db.execute(
+            select(StaffMember.id).where(
+                StaffMember.user_id == user_id,
+                StaffMember.org_id == org_id,
+                StaffMember.is_active.is_(True),
+            )
+        )
+        caller_staff_id = staff_result.scalar_one_or_none()
+        if caller_staff_id is not None:
+            assigned_to = caller_staff_id
+
+    # Look up customer by name/email to get customer_id
+    customer_id = await _resolve_customer_id(db, org_id, booking)
+    if customer_id is None:
+        raise ValueError("Cannot find matching customer for this booking")
+
+    # Build line_items_data from booking's catalogue reference
+    line_items_data: list[dict] = []
+    if booking.service_catalogue_id is not None:
+        from app.modules.catalogue.models import ItemsCatalogue
+        cat_result = await db.execute(
+            select(ItemsCatalogue).where(
+                ItemsCatalogue.id == booking.service_catalogue_id
+            )
+        )
+        cat_item = cat_result.scalar_one_or_none()
+        if cat_item is not None and cat_item.is_active:
+            line_items_data.append({
+                "item_type": "service",
+                "catalogue_item_id": cat_item.id,
+                "description": cat_item.name,
+                "quantity": Decimal("1"),
+                "unit_price": cat_item.default_price,
+            })
+        else:
+            # Catalogue item missing or inactive — fall back to booking snapshot
+            if booking.service_price is not None:
+                line_items_data.append({
+                    "item_type": "service",
+                    "catalogue_item_id": None,
+                    "description": booking.service_type or "Service",
+                    "quantity": Decimal("1"),
+                    "unit_price": booking.service_price,
+                })
 
     job_card = await create_job_card(
-        db,
-        org_id=org_id,
-        user_id=user_id,
-        customer_id=booking.customer_id,
+        db, org_id=org_id, user_id=user_id,
+        customer_id=customer_id,
         vehicle_rego=booking.vehicle_rego,
         description=booking.service_type,
         notes=booking.notes,
+        assigned_to=assigned_to,
+        line_items_data=line_items_data,
         ip_address=ip_address,
     )
 
-    # Transition booking to completed
     old_status = booking.status
-    booking.status = "completed"
+    booking.status = "confirmed"
+    booking.converted_job_id = job_card["id"]
     await db.flush()
 
     await write_audit_log(
-        session=db,
-        org_id=org_id,
-        user_id=user_id,
-        action="booking.converted_to_job_card",
-        entity_type="booking",
-        entity_id=booking.id,
+        session=db, org_id=org_id, user_id=user_id,
+        action="booking.converted_to_job_card", entity_type="booking", entity_id=booking.id,
         before_value={"status": old_status},
-        after_value={
-            "status": "completed",
-            "job_card_id": str(job_card["id"]),
-        },
+        after_value={"status": "confirmed", "job_card_id": str(job_card["id"])},
         ip_address=ip_address,
     )
 
-    return {
-        "booking_id": booking.id,
-        "target": "job_card",
-        "created_id": job_card["id"],
-        "message": "Booking converted to job card",
-    }
+    return {"booking_id": booking.id, "target": "job_card", "created_id": job_card["id"], "message": "Booking converted to job card"}
 
 
 async def convert_booking_to_invoice(
@@ -652,68 +645,186 @@ async def convert_booking_to_invoice(
     booking_id: uuid.UUID,
     ip_address: str | None = None,
 ) -> dict:
-    """Convert a booking to a Draft invoice pre-filled with appointment details.
-
-    Only scheduled or confirmed bookings may be converted.
-    The booking status transitions to 'completed' after conversion.
-
-    Requirements: 64.5
-    """
+    """Convert a booking to a Draft invoice."""
     from app.modules.invoices.service import create_invoice
 
     result = await db.execute(
-        select(Booking).where(
-            Booking.id == booking_id,
-            Booking.org_id == org_id,
-        )
+        select(Booking).where(Booking.id == booking_id, Booking.org_id == org_id)
     )
     booking = result.scalar_one_or_none()
     if booking is None:
         raise ValueError("Booking not found in this organisation")
-
     if booking.status not in _CONVERTIBLE_STATUSES:
-        raise ValueError(
-            f"Only scheduled or confirmed bookings can be converted, "
-            f"current status is '{booking.status}'"
-        )
+        raise ValueError(f"Cannot convert booking with status '{booking.status}'")
 
-    if booking.customer_id is None:
-        raise ValueError("Booking must have a customer to convert")
+    customer_id = await _resolve_customer_id(db, org_id, booking)
+    if customer_id is None:
+        raise ValueError("Cannot find matching customer for this booking")
 
     invoice = await create_invoice(
-        db,
-        org_id=org_id,
-        user_id=user_id,
-        customer_id=booking.customer_id,
-        vehicle_rego=booking.vehicle_rego,
+        db, org_id=org_id, user_id=user_id,
+        customer_id=customer_id,
         status="draft",
         notes_internal=booking.notes,
         ip_address=ip_address,
     )
 
-    # Transition booking to completed
     old_status = booking.status
     booking.status = "completed"
+    booking.converted_invoice_id = invoice["id"]
     await db.flush()
 
     await write_audit_log(
-        session=db,
-        org_id=org_id,
-        user_id=user_id,
-        action="booking.converted_to_invoice",
-        entity_type="booking",
-        entity_id=booking.id,
+        session=db, org_id=org_id, user_id=user_id,
+        action="booking.converted_to_invoice", entity_type="booking", entity_id=booking.id,
         before_value={"status": old_status},
-        after_value={
-            "status": "completed",
-            "invoice_id": str(invoice["id"]),
-        },
+        after_value={"status": "completed", "invoice_id": str(invoice["id"])},
         ip_address=ip_address,
     )
 
-    return {
-        "booking_id": booking.id,
-        "target": "invoice",
-        "created_id": invoice["id"],
-        "message": "Booking converted to draft invoice",
-    }
+    return {"booking_id": booking.id, "target": "invoice", "created_id": invoice["id"], "message": "Booking converted to draft invoice"}
+
+
+async def _resolve_customer_id(db: AsyncSession, org_id: uuid.UUID, booking: Booking) -> uuid.UUID | None:
+    """Try to find the customer_id from booking's customer_name/email."""
+    if booking.customer_email:
+        result = await db.execute(
+            select(Customer.id).where(
+                Customer.org_id == org_id,
+                Customer.email == booking.customer_email,
+            ).limit(1)
+        )
+        cid = result.scalar_one_or_none()
+        if cid:
+            return cid
+    # Fallback: match by name
+    if booking.customer_name:
+        parts = booking.customer_name.split(" ", 1)
+        first = parts[0]
+        last = parts[1] if len(parts) > 1 else ""
+        result = await db.execute(
+            select(Customer.id).where(
+                Customer.org_id == org_id,
+                Customer.first_name == first,
+                Customer.last_name == last,
+            ).limit(1)
+        )
+        cid = result.scalar_one_or_none()
+        if cid:
+            return cid
+    return None
+
+
+async def _send_booking_confirmation_email(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    customer,
+    service_type: str | None,
+    start_time: datetime,
+    duration_minutes: int,
+    vehicle_rego: str | None,
+    notes: str | None,
+) -> bool:
+    """Send booking confirmation email via the configured EmailProvider (SMTP).
+
+    Uses the same EmailProvider priority-failover pattern as invoice and quote
+    emails. Returns True if the email was sent successfully, False otherwise.
+    """
+    import json as _json
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    from app.core.encryption import envelope_decrypt_str
+    from app.modules.admin.models import EmailProvider, Organisation
+
+    # Resolve org name for the From header
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    org_name = org.name if org else "Workshop"
+
+    # Find active email providers ordered by priority
+    provider_result = await db.execute(
+        select(EmailProvider)
+        .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
+        .order_by(EmailProvider.priority)
+    )
+    providers = list(provider_result.scalars().all())
+
+    if not providers:
+        logger.warning("No active email provider configured — skipping booking confirmation email")
+        return False
+
+    formatted_date = start_time.strftime("%A %d %B %Y at %I:%M %p")
+    subject = f"Booking Confirmation — {service_type or 'Appointment'} on {formatted_date}"
+
+    body = (
+        f"Hi {customer.first_name},\n\n"
+        f"Your booking has been confirmed:\n\n"
+        f"Service: {service_type or 'Appointment'}\n"
+        f"Date & Time: {formatted_date}\n"
+        f"Duration: {duration_minutes} minutes\n"
+    )
+    if vehicle_rego:
+        body += f"Vehicle: {vehicle_rego}\n"
+    if notes:
+        body += f"Notes: {notes}\n"
+    body += (
+        f"\nIf you need to reschedule or cancel, please contact us.\n\n"
+        f"Kind regards,\n{org_name}\n"
+    )
+
+    recipient = customer.email
+
+    def _build_message(from_name: str, from_email: str) -> MIMEMultipart:
+        msg = MIMEMultipart("mixed")
+        msg["From"] = f"{from_name} <{from_email}>"
+        msg["To"] = recipient
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain"))
+        return msg
+
+    last_error = None
+    for provider in providers:
+        try:
+            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
+            credentials = _json.loads(creds_json)
+
+            smtp_host = provider.smtp_host
+            smtp_port = provider.smtp_port or 587
+            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
+            username = credentials.get("username") or credentials.get("api_key", "")
+            password = credentials.get("password") or credentials.get("api_key", "")
+
+            config = provider.config or {}
+            from_email = config.get("from_email") or username
+            from_name = config.get("from_name") or org_name
+
+            msg = _build_message(from_name, from_email)
+
+            if smtp_encryption == "ssl":
+                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+            else:
+                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+                if smtp_encryption == "tls":
+                    server.starttls()
+
+            if username and password:
+                server.login(username, password)
+
+            server.sendmail(from_email, recipient, msg.as_string())
+            server.quit()
+            return True
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "Email provider %s failed for booking confirmation: %s",
+                provider.provider_key, e,
+            )
+            continue
+
+    logger.error("All email providers failed for booking confirmation. Last error: %s", last_error)
+    return False

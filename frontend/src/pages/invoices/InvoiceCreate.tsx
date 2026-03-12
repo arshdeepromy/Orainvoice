@@ -58,6 +58,8 @@ interface Vehicle {
   registration_expiry: string | null
   odometer?: number | null
   newOdometer?: number | null
+  service_due_date?: string | null
+  newServiceDueDate?: string | null
 }
 
 interface CatalogueItem {
@@ -85,6 +87,8 @@ interface LineItem {
   key: string
   item_id?: string
   description: string
+  line_description?: string
+  original_description?: string
   quantity: number
   rate: number
   tax_id?: string
@@ -111,6 +115,7 @@ const PAYMENT_TERMS_OPTIONS = [
   { value: 'net_45', label: 'Net 45' },
   { value: 'net_60', label: 'Net 60' },
   { value: 'net_90', label: 'Net 90' },
+  { value: 'custom', label: 'Custom' },
 ]
 
 const DEFAULT_TAX_RATES: TaxRate[] = [
@@ -121,12 +126,6 @@ const DEFAULT_TAX_RATES: TaxRate[] = [
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
-
-function generateInvoiceNumber(): string {
-  const prefix = 'INV-'
-  const timestamp = Date.now().toString(36).toUpperCase()
-  return `${prefix}${timestamp}`
-}
 
 function formatNZD(amount: number): string {
   return new Intl.NumberFormat('en-NZ', {
@@ -213,10 +212,39 @@ function CustomerSearch({
     setLoading(true)
     try {
       const res = await apiClient.get<{ customers: Customer[]; total: number } | Customer[]>('/customers', { 
-        params: { search: q, ...(includeVehicles ? { include_vehicles: true } : {}) } 
+        params: { q: q, ...(includeVehicles ? { include_vehicles: true } : {}) } 
       })
       const customers = Array.isArray(res.data) ? res.data : (res.data?.customers || [])
-      setResults(customers)
+      // Client-side sequential character matching — letters must appear in order
+      const term = q.toLowerCase()
+      const matchesSequence = (haystack: string, needle: string): boolean => {
+        let ni = 0
+        const h = haystack.toLowerCase()
+        for (let i = 0; i < h.length && ni < needle.length; i++) {
+          if (h[i] === needle[ni]) ni++
+        }
+        return ni === needle.length
+      }
+      const filtered = customers.filter((c) => {
+        const firstName = (c.first_name || '').toLowerCase()
+        const lastName = (c.last_name || '').toLowerCase()
+        const displayName = (c.display_name || '').toLowerCase()
+        const phone = (c.phone || '').toLowerCase()
+        const company = (c.company_name || '').toLowerCase()
+        // Check rego from linked vehicles
+        const regoMatch = (c.linked_vehicles || []).some((v: LinkedVehicle) =>
+          matchesSequence(v.rego || '', term)
+        )
+        return (
+          matchesSequence(firstName, term) ||
+          matchesSequence(lastName, term) ||
+          matchesSequence(displayName, term) ||
+          matchesSequence(phone, term) ||
+          matchesSequence(company, term) ||
+          regoMatch
+        )
+      })
+      setResults(filtered)
     } catch {
       setResults([])
     } finally {
@@ -339,6 +367,7 @@ function ItemTableRow({
   taxRates,
   onChange,
   onRemove,
+  onItemCreated,
 }: {
   item: LineItem
   index: number
@@ -346,9 +375,21 @@ function ItemTableRow({
   taxRates: TaxRate[]
   onChange: (index: number, updated: LineItem) => void
   onRemove: (index: number) => void
+  onItemCreated: (ci: CatalogueItem) => void
 }) {
   const [showItemDropdown, setShowItemDropdown] = useState(false)
   const [itemSearch, setItemSearch] = useState('')
+  const [showInlineForm, setShowInlineForm] = useState(false)
+  const [inlineType, setInlineType] = useState<'goods' | 'service'>('goods')
+  const [inlineName, setInlineName] = useState('')
+  const [inlineUnit, setInlineUnit] = useState('')
+  const [inlinePrice, setInlinePrice] = useState('')
+  const [inlineDescription, setInlineDescription] = useState('')
+  const [inlineGstExempt, setInlineGstExempt] = useState(false)
+  const [inlineSaving, setInlineSaving] = useState(false)
+  const [inlineError, setInlineError] = useState('')
+  const [descUpdating, setDescUpdating] = useState(false)
+  const [descUpdated, setDescUpdated] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -371,12 +412,15 @@ function ItemTableRow({
     update({
       item_id: catalogueItem.id,
       description: catalogueItem.name,
+      line_description: catalogueItem.description || '',
+      original_description: catalogueItem.description || '',
       rate: catalogueItem.default_price,
       tax_rate: catalogueItem.gst_applicable ? 15 : 0,
       tax_id: catalogueItem.gst_applicable ? 'gst_15' : 'gst_0',
     })
     setShowItemDropdown(false)
     setItemSearch('')
+    setDescUpdated(false)
   }
 
   const handleTaxChange = (taxId: string) => {
@@ -389,8 +433,54 @@ function ItemTableRow({
     (ci.sku && ci.sku.toLowerCase().includes(itemSearch.toLowerCase()))
   )
 
+  const handleInlineItemSubmit = async () => {
+    if (!inlineName.trim()) { setInlineError('Name is required.'); return }
+    if (!inlinePrice.trim() || isNaN(Number(inlinePrice))) { setInlineError('Valid selling price is required.'); return }
+    setInlineSaving(true)
+    setInlineError('')
+    try {
+      const res = await apiClient.post<{ item: { id: string; name: string; default_price: string; is_gst_exempt: boolean; category: string | null; description: string | null } }>('/catalogue/items', {
+        name: inlineName.trim(),
+        default_price: inlinePrice.trim(),
+        is_gst_exempt: inlineGstExempt,
+        description: inlineDescription.trim() || null,
+        category: inlineUnit.trim() || null,
+      })
+      const created = res.data.item
+      const mapped: CatalogueItem = {
+        id: created.id,
+        name: created.name,
+        default_price: Number(created.default_price),
+        gst_applicable: !created.is_gst_exempt,
+        category: created.category || undefined,
+      }
+      onItemCreated(mapped)
+      handleItemSelect(mapped)
+      setShowInlineForm(false)
+      setInlineName(''); setInlinePrice(''); setInlineDescription(''); setInlineUnit('')
+    } catch (err: any) {
+      setInlineError(err?.response?.data?.detail || 'Failed to create item.')
+    } finally {
+      setInlineSaving(false)
+    }
+  }
+
+  const descriptionChanged = item.item_id && item.line_description !== undefined && item.line_description !== (item.original_description || '')
+
+  const handleUpdateDescriptionPermanently = async () => {
+    if (!item.item_id || !item.line_description) return
+    setDescUpdating(true)
+    try {
+      await apiClient.put(`/catalogue/items/${item.item_id}`, { description: item.line_description.trim() })
+      update({ original_description: item.line_description })
+      setDescUpdated(true)
+      setTimeout(() => setDescUpdated(false), 3000)
+    } catch { /* silent */ }
+    finally { setDescUpdating(false) }
+  }
+
   return (
-    <tr className="border-b border-gray-100 hover:bg-gray-50">
+    <tr className="border-b border-gray-100 hover:bg-gray-50 align-top">
       {/* Item Details */}
       <td className="py-3 px-2">
         <div ref={containerRef} className="relative">
@@ -402,6 +492,31 @@ function ItemTableRow({
             placeholder="Type or click to select an item"
             className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
+          {item.item_id && (
+            <div className="mt-1">
+              <textarea
+                value={item.line_description || ''}
+                onChange={(e) => { update({ line_description: e.target.value }); setDescUpdated(false) }}
+                placeholder="Item description"
+                rows={2}
+                className="w-full rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-400 resize-y"
+              />
+              {descUpdated ? (
+                <span className="text-[10px] text-green-600 flex items-center gap-1">
+                  <svg className="w-3 h-3 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                  Updated
+                </span>
+              ) : descriptionChanged ? (
+                <span className="text-[10px] text-red-500">
+                  Description changed —{' '}
+                  <button type="button" disabled={descUpdating} onClick={handleUpdateDescriptionPermanently}
+                    className="text-blue-600 hover:underline font-medium disabled:opacity-50">
+                    {descUpdating ? 'Updating…' : 'Update permanently'}
+                  </button>
+                </span>
+              ) : null}
+            </div>
+          )}
           {showItemDropdown && (
             <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
               {filteredItems.slice(0, 10).map((ci) => (
@@ -419,6 +534,57 @@ function ItemTableRow({
               {filteredItems.length === 0 && (
                 <div className="px-3 py-2 text-sm text-gray-500">No items found</div>
               )}
+              <button type="button"
+                onClick={() => { setShowInlineForm(true); setInlineName(itemSearch.trim()); setShowItemDropdown(false) }}
+                className="w-full px-3 py-2 text-left text-sm text-blue-600 font-medium hover:bg-blue-50">
+                + Add new item
+              </button>
+            </div>
+          )}
+          {showInlineForm && (
+            <div className="mt-2 rounded-md border border-gray-200 bg-gray-50 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-gray-900">New Item</h4>
+                <button type="button" onClick={() => setShowInlineForm(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
+              </div>
+              <hr className="border-gray-200" />
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Item name *</label>
+                <input type="text" value={inlineName} onChange={(e) => setInlineName(e.target.value)}
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Description</label>
+                <textarea value={inlineDescription} onChange={(e) => setInlineDescription(e.target.value)} rows={3} placeholder="Optional item description"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Default price (ex-GST) *</label>
+                  <input type="number" min="0" step="0.01" value={inlinePrice} onChange={(e) => setInlinePrice(e.target.value)} placeholder="e.g. 85.00"
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Category</label>
+                  <input type="text" value={inlineUnit} onChange={(e) => setInlineUnit(e.target.value)} placeholder="e.g. Plumbing, Electrical"
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input type="checkbox" checked={inlineGstExempt} onChange={(e) => setInlineGstExempt(e.target.checked)} className="rounded border-gray-300" />
+                GST exempt
+              </label>
+              {inlineError && <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{inlineError}</div>}
+              <div className="flex justify-end gap-2">
+                <button type="button" disabled={inlineSaving} onClick={() => setShowInlineForm(false)}
+                  className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100">
+                  Cancel
+                </button>
+                <button type="button" disabled={inlineSaving} onClick={handleInlineItemSubmit}
+                  className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+                  {inlineSaving ? 'Saving…' : 'Create Item'}
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -494,7 +660,7 @@ export default function InvoiceCreate() {
   // Invoice header fields
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [vehicles, setVehicles] = useState<Vehicle[]>([])
-  const [invoiceNumber, setInvoiceNumber] = useState(() => generateInvoiceNumber())
+  const [invoiceNumber, setInvoiceNumber] = useState('')
   const [orderNumber, setOrderNumber] = useState('')
   const [invoiceDate, setInvoiceDate] = useState(() => formatDate(new Date()))
   const [terms, setTerms] = useState('due_on_receipt')
@@ -504,6 +670,61 @@ export default function InvoiceCreate() {
   
   // GST from org settings
   const gstNumber = settings?.gst?.gst_number || ''
+
+  // Auto-fill linked vehicles when customer is selected
+  useEffect(() => {
+    if (!customer || !vehiclesEnabled || vehicles.length > 0) return
+    // If customer already has linked_vehicles from search results, use those
+    if (customer.linked_vehicles && customer.linked_vehicles.length > 0) {
+      setVehicles(customer.linked_vehicles.map(v => ({
+        id: v.id,
+        rego: v.rego,
+        make: v.make || '',
+        model: v.model || '',
+        year: v.year,
+        colour: v.colour || '',
+        body_type: '',
+        fuel_type: '',
+        engine_size: '',
+        wof_expiry: null,
+        registration_expiry: null,
+        odometer: null,
+      })))
+      return
+    }
+    // Otherwise fetch linked vehicles from API
+    let cancelled = false
+    async function fetchLinkedVehicles() {
+      try {
+        const res = await apiClient.get('/customers', {
+          params: { q: customer!.email || `${customer!.first_name} ${customer!.last_name}`, include_vehicles: true, limit: 1 }
+        })
+        if (cancelled) return
+        const customers = Array.isArray(res.data) ? res.data : (res.data?.customers || [])
+        const match = customers.find((c: Customer) => c.id === customer!.id)
+        if (match?.linked_vehicles && match.linked_vehicles.length > 0) {
+          setVehicles(match.linked_vehicles.map((v: LinkedVehicle) => ({
+            id: v.id,
+            rego: v.rego,
+            make: v.make || '',
+            model: v.model || '',
+            year: v.year,
+            colour: v.colour || '',
+            body_type: '',
+            fuel_type: '',
+            engine_size: '',
+            wof_expiry: null,
+            registration_expiry: null,
+            odometer: null,
+          })))
+        }
+      } catch {
+        // Non-blocking
+      }
+    }
+    fetchLinkedVehicles()
+    return () => { cancelled = true }
+  }, [customer, vehiclesEnabled])
   
   // Line items
   const [lineItems, setLineItems] = useState<LineItem[]>([newLineItem()])
@@ -522,7 +743,7 @@ export default function InvoiceCreate() {
   const [attachments, setAttachments] = useState<File[]>([])
   
   // Payment gateway
-  const [paymentGateway, setPaymentGateway] = useState('stripe')
+  const [paymentGateway, setPaymentGateway] = useState('cash')
   
   // Make recurring
   const [makeRecurring, setMakeRecurring] = useState(false)
@@ -566,6 +787,7 @@ export default function InvoiceCreate() {
             wof_expiry: null,
             registration_expiry: null,
             odometer: inv.vehicle_odometer || null,
+            service_due_date: inv.vehicle?.service_due_date || null,
           }])
         }
         if (inv.invoice_number) setInvoiceNumber(inv.invoice_number)
@@ -604,14 +826,22 @@ export default function InvoiceCreate() {
     async function load() {
       try {
         const [itemsRes, salespeopleRes] = await Promise.all([
-          apiClient.get<CatalogueItem[] | { services: CatalogueItem[] }>('/catalogue/services', { params: { active: true } }).catch(() => ({ data: [] })),
+          apiClient.get<CatalogueItem[] | { items: CatalogueItem[] }>('/catalogue/items', { params: { active_only: true } }).catch(() => ({ data: [] })),
           apiClient.get<{ salespeople: Salesperson[] }>('/org/salespeople').catch(() => ({ data: { salespeople: [] } })),
         ])
         if (!cancelled) {
           // Handle both array and object response formats
           const items = itemsRes.data
-          const itemsArray = Array.isArray(items) ? items : (items?.services || [])
-          setCatalogueItems(itemsArray)
+          const rawItems = Array.isArray(items) ? items : ((items as any)?.items || [])
+          setCatalogueItems(rawItems.map((item: any) => ({
+            id: item.id,
+            name: item.name,
+            description: item.description ?? undefined,
+            default_price: typeof item.default_price === 'string' ? parseFloat(item.default_price) : (item.default_price ?? 0),
+            gst_applicable: item.gst_applicable ?? (item.is_gst_exempt === false),
+            category: item.category ?? undefined,
+            sku: item.sku ?? undefined,
+          })))
           // Set salespeople from API
           const salespeopleData = salespeopleRes.data
           const salespeopleArray = Array.isArray(salespeopleData) ? salespeopleData : (salespeopleData?.salespeople || [])
@@ -627,7 +857,9 @@ export default function InvoiceCreate() {
 
   // Update due date when terms or invoice date changes
   useEffect(() => {
-    setDueDate(calculateDueDate(invoiceDate, terms))
+    if (terms !== 'custom') {
+      setDueDate(calculateDueDate(invoiceDate, terms))
+    }
   }, [invoiceDate, terms])
 
   // Update terms and conditions from settings
@@ -694,6 +926,7 @@ export default function InvoiceCreate() {
       vehicle_year: vehicles[0]?.year,
       vehicle_odometer: vehicles[0]?.newOdometer ?? vehicles[0]?.odometer ?? undefined,
       global_vehicle_id: vehicles[0]?.id,
+      vehicle_service_due_date: vehicles[0]?.newServiceDueDate ?? vehicles[0]?.service_due_date ?? undefined,
       vehicles: vehicles.map(v => ({
         id: v.id,
         rego: v.rego,
@@ -703,7 +936,7 @@ export default function InvoiceCreate() {
         odometer: v.newOdometer ?? v.odometer ?? undefined,
       })),
     } : {}),
-    invoice_number: invoiceNumber,
+    invoice_number: isEditMode ? invoiceNumber : undefined,
     order_number: orderNumber || undefined,
     issue_date: invoiceDate,
     due_date: dueDate,
@@ -722,7 +955,7 @@ export default function InvoiceCreate() {
     is_recurring: makeRecurring,
     line_items: lineItems.filter(item => item.description.trim()).map(item => ({
       item_id: item.item_id,
-      description: item.description,
+      description: item.line_description ? `${item.description}\n${item.line_description}` : item.description,
       quantity: item.quantity,
       rate: item.rate,
       tax_id: item.tax_id,
@@ -854,7 +1087,10 @@ export default function InvoiceCreate() {
             <div className="space-y-4">
               <CustomerSearch
                 selectedCustomer={customer}
-                onSelect={setCustomer}
+                onSelect={(c) => {
+                  setCustomer(c)
+                  if (!c) setVehicles([])
+                }}
                 includeVehicles={vehiclesEnabled}
                 onVehicleAutoSelect={vehiclesEnabled ? (v) => {
                   // Only auto-select if no vehicles are currently selected
@@ -915,6 +1151,23 @@ export default function InvoiceCreate() {
                         />
                         <span className="text-xs text-gray-400">Kms</span>
                       </div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <label className="text-xs text-gray-500 whitespace-nowrap">Service Due:</label>
+                        <input
+                          type="date"
+                          value={v.newServiceDueDate ?? v.service_due_date ?? ''}
+                          onChange={(e) => {
+                            const val = e.target.value || null
+                            setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newServiceDueDate: val } : veh))
+                          }}
+                          className="w-40 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        {v.service_due_date && !v.newServiceDueDate && (
+                          <span className="text-xs text-gray-400">
+                            Current: {new Date(v.service_due_date).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <button
                       type="button"
@@ -967,6 +1220,8 @@ export default function InvoiceCreate() {
                   label="Invoice#"
                   value={invoiceNumber}
                   onChange={(e) => setInvoiceNumber(e.target.value)}
+                  placeholder="Auto-generated on issue"
+                  disabled={!isEditMode}
                 />
                 <Input
                   label="Order Number"
@@ -976,7 +1231,7 @@ export default function InvoiceCreate() {
                 />
               </div>
               
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-2 gap-4">
                 <Input
                   label="Invoice Date"
                   type="date"
@@ -989,11 +1244,13 @@ export default function InvoiceCreate() {
                   value={terms}
                   onChange={(e) => setTerms(e.target.value)}
                 />
+              </div>
+              <div>
                 <Input
                   label="Due Date"
                   type="date"
                   value={dueDate}
-                  onChange={(e) => setDueDate(e.target.value)}
+                  onChange={(e) => { setDueDate(e.target.value); setTerms('custom') }}
                 />
               </div>
               
@@ -1049,6 +1306,7 @@ export default function InvoiceCreate() {
                       taxRates={taxRates}
                       onChange={updateLineItem}
                       onRemove={removeLineItem}
+                      onItemCreated={(ci) => setCatalogueItems(prev => [...prev, ci])}
                     />
                   ))}
                 </tbody>
@@ -1078,18 +1336,18 @@ export default function InvoiceCreate() {
               <div className="flex items-center justify-between gap-3">
                 <span className="text-sm text-gray-600">Discount</span>
                 <div className="flex items-center gap-2">
-                  <div className="inline-flex rounded-md border border-gray-300 overflow-hidden">
+                  <div className="inline-flex rounded-md border border-gray-300">
                     <button
                       type="button"
                       onClick={() => setDiscountType('percentage')}
-                      className={`min-w-[36px] px-2.5 py-1.5 text-sm font-medium text-center transition-colors ${discountType === 'percentage' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                      className={`min-w-[40px] px-3 py-1.5 text-sm font-semibold text-center rounded-l-md transition-colors ${discountType === 'percentage' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
                     >
                       %
                     </button>
                     <button
                       type="button"
                       onClick={() => setDiscountType('fixed')}
-                      className={`min-w-[36px] px-2.5 py-1.5 text-sm font-medium text-center border-l border-gray-300 transition-colors ${discountType === 'fixed' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                      className={`min-w-[40px] px-3 py-1.5 text-sm font-semibold text-center rounded-r-md border-l border-gray-300 transition-colors ${discountType === 'fixed' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
                     >
                       $
                     </button>
@@ -1202,20 +1460,31 @@ export default function InvoiceCreate() {
             )}
           </div>
 
-          {/* Payment Gateway */}
+          {/* Payment Method */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Payment Gateway</label>
-            <div className="flex items-center gap-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Payment Method</label>
+            <div className="flex flex-wrap items-center gap-4">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
                   name="paymentGateway"
-                  value="stripe"
-                  checked={paymentGateway === 'stripe'}
+                  value="cash"
+                  checked={paymentGateway === 'cash'}
                   onChange={(e) => setPaymentGateway(e.target.value)}
                   className="h-4 w-4 text-blue-600 focus:ring-blue-500"
                 />
-                <span className="text-sm text-gray-700">Stripe</span>
+                <span className="text-sm text-gray-700">Cash</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="paymentGateway"
+                  value="eftpos"
+                  checked={paymentGateway === 'eftpos'}
+                  onChange={(e) => setPaymentGateway(e.target.value)}
+                  className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-700">EFTPOS</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -1227,6 +1496,17 @@ export default function InvoiceCreate() {
                   className="h-4 w-4 text-blue-600 focus:ring-blue-500"
                 />
                 <span className="text-sm text-gray-700">Bank Transfer</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="paymentGateway"
+                  value="stripe"
+                  checked={paymentGateway === 'stripe'}
+                  onChange={(e) => setPaymentGateway(e.target.value)}
+                  className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-700">Stripe</span>
               </label>
             </div>
           </div>
@@ -1277,6 +1557,7 @@ export default function InvoiceCreate() {
             className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           >
             <option value="cash">Cash</option>
+            <option value="eftpos">EFTPOS</option>
             <option value="bank_transfer">Bank Transfer</option>
             <option value="card">Card</option>
             <option value="cheque">Cheque</option>

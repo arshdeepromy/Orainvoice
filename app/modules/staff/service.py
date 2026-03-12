@@ -59,6 +59,9 @@ class StaffService:
         payload: StaffMemberCreate,
     ) -> StaffMember:
         """Create a new staff member."""
+        # Check for duplicates within the same org
+        await self._check_duplicates(org_id, payload.email, payload.phone, payload.employee_id)
+
         first = payload.first_name.strip()
         last = (payload.last_name or "").strip()
         full_name = f"{first} {last}".strip()
@@ -84,6 +87,35 @@ class StaffService:
         self.db.add(staff)
         await self.db.flush()
         return staff
+    async def _check_duplicates(
+        self,
+        org_id: uuid.UUID,
+        email: str | None,
+        phone: str | None,
+        employee_id: str | None,
+        exclude_id: uuid.UUID | None = None,
+    ) -> None:
+        """Raise ValueError if email, phone, or employee_id already exists for another active staff member."""
+        conflicts: list[str] = []
+        for field_name, value in [("email", email), ("phone", phone), ("employee_id", employee_id)]:
+            if not value or not value.strip():
+                continue
+            col = getattr(StaffMember, field_name)
+            stmt = select(StaffMember.id).where(
+                StaffMember.org_id == org_id,
+                col == value.strip(),
+                StaffMember.is_active.is_(True),
+            )
+            if exclude_id:
+                stmt = stmt.where(StaffMember.id != exclude_id)
+            result = await self.db.execute(stmt.limit(1))
+            if result.scalar_one_or_none() is not None:
+                label = field_name.replace("_", " ").title()
+                conflicts.append(f"{label} '{value.strip()}' is already in use by another staff member")
+        if conflicts:
+            raise ValueError("; ".join(conflicts))
+
+
 
     async def get_staff(
         self, org_id: uuid.UUID, staff_id: uuid.UUID,
@@ -103,6 +135,14 @@ class StaffService:
         if staff is None:
             return None
         update_data = payload.model_dump(exclude_unset=True)
+        # Check for duplicates, excluding the current staff member
+        await self._check_duplicates(
+            org_id,
+            update_data.get("email", staff.email),
+            update_data.get("phone", staff.phone),
+            update_data.get("employee_id", staff.employee_id),
+            exclude_id=staff_id,
+        )
         for field, value in update_data.items():
             setattr(staff, field, value)
         # Keep legacy 'name' field in sync

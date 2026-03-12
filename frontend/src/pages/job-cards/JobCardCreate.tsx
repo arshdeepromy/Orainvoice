@@ -85,9 +85,30 @@ function CustomerSearch({
     if (q.length < 2) { setResults([]); return }
     setLoading(true)
     try {
-      const res = await apiClient.get<{ customers: Customer[]; total: number } | Customer[]>('/customers', { params: { search: q } })
+      const res = await apiClient.get<{ customers: Customer[]; total: number } | Customer[]>('/customers', { params: { q: q } })
       const customers = Array.isArray(res.data) ? res.data : (res.data?.customers || [])
-      setResults(customers)
+      const term = q.toLowerCase()
+      const matchesSequence = (haystack: string, needle: string): boolean => {
+        let ni = 0
+        const h = haystack.toLowerCase()
+        for (let i = 0; i < h.length && ni < needle.length; i++) {
+          if (h[i] === needle[ni]) ni++
+        }
+        return ni === needle.length
+      }
+      const filtered = customers.filter((c: Customer) => {
+        const firstName = (c.first_name || '').toLowerCase()
+        const lastName = (c.last_name || '').toLowerCase()
+        const displayName = (c.display_name || '').toLowerCase()
+        const phone = (c.phone || '').toLowerCase()
+        return (
+          matchesSequence(firstName, term) ||
+          matchesSequence(lastName, term) ||
+          matchesSequence(displayName, term) ||
+          matchesSequence(phone, term)
+        )
+      })
+      setResults(filtered)
     } catch { setResults([]) }
     finally { setLoading(false) }
   }, [])

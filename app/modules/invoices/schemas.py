@@ -21,6 +21,7 @@ class ItemType(str, Enum):
 
 class InvoiceStatus(str, Enum):
     draft = "draft"
+    sent = "sent"
     issued = "issued"
     partially_paid = "partially_paid"
     paid = "paid"
@@ -78,7 +79,7 @@ class VehicleItem(BaseModel):
 class InvoiceCreateRequest(BaseModel):
     """Request body for POST /api/v1/invoices."""
 
-    model_config = {"extra": "ignore"}  # Ignore extra fields from frontend
+    model_config = {"extra": "ignore", "populate_by_name": True}  # Accept both field name and alias
 
     customer_id: uuid.UUID
     vehicle_rego: str | None = None
@@ -90,6 +91,10 @@ class InvoiceCreateRequest(BaseModel):
         default=None, 
         description="Global vehicle UUID - if provided, auto-links customer to vehicle"
     )
+    vehicle_service_due_date: date | None = Field(
+        default=None,
+        description="Next service due date — saved to the vehicle record"
+    )
     vehicles: list[VehicleItem] | None = Field(
         default=None,
         description="List of vehicles associated with this invoice"
@@ -98,7 +103,8 @@ class InvoiceCreateRequest(BaseModel):
     status: InvoiceStatus = InvoiceStatus.draft
     line_items: list[LineItemCreate] = Field(default_factory=list)
     notes_internal: str | None = None
-    notes_customer: str | None = None
+    notes_customer: str | None = Field(default=None, alias="customer_notes")
+    terms_and_conditions: str | None = None
     issue_date: date | None = Field(default=None, description="Invoice date (defaults to today)")
     due_date: date | None = None
     payment_terms: str | None = Field(default=None, description="Payment terms e.g. due_on_receipt, net_15, net_30")
@@ -317,9 +323,13 @@ class UpdateInvoiceRequest(BaseModel):
     vehicle_model: str | None = None
     vehicle_year: int | None = None
     vehicle_odometer: int | None = None
+    global_vehicle_id: uuid.UUID | None = None
+    vehicle_service_due_date: date | None = None
     branch_id: uuid.UUID | None = None
+    status: InvoiceStatus | None = None
     notes_internal: str | None = None
-    notes_customer: str | None = None
+    notes_customer: str | None = Field(default=None, alias="customer_notes")
+    terms_and_conditions: str | None = None
     due_date: date | None = None
     discount_type: str | None = Field(default=None, pattern=r"^(percentage|fixed)$")
     discount_value: Decimal | None = Field(default=None, ge=0)

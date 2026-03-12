@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useTenant } from '@/contexts/TenantContext'
 import { useModules } from '@/contexts/ModuleContext'
@@ -34,6 +34,7 @@ const navItems: NavItem[] = [
   { to: '/jobs', label: 'Jobs', icon: JobCardsIcon, module: 'jobs', flagKey: 'jobs' },
   { to: '/bookings', label: 'Bookings', icon: BookingsIcon, module: 'bookings', flagKey: 'bookings' },
   { to: '/inventory', label: 'Inventory', icon: InventoryIcon, module: 'inventory', flagKey: 'inventory' },
+  { to: '/items', label: 'Items', icon: CatalogueIcon },
   { to: '/catalogue', label: 'Catalogue', icon: CatalogueIcon, module: 'catalogue' },
   { to: '/staff', label: 'Staff', icon: StaffIcon, module: 'staff', flagKey: 'staff' },
   { to: '/projects', label: 'Projects', icon: ProjectsIcon, module: 'projects', flagKey: 'projects' },
@@ -71,9 +72,11 @@ const quickActions: QuickAction[] = [
 export function OrgLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const userMenuRef = useRef<HTMLDivElement>(null)
   const { settings } = useTenant()
   const { isEnabled } = useModules()
-  const { isGlobalAdmin } = useAuth()
+  const { isGlobalAdmin, user, logout } = useAuth()
   const { flags } = useFeatureFlags()
   const navigate = useNavigate()
   const branding = settings?.branding
@@ -117,6 +120,24 @@ export function OrgLayout() {
     setQuickActionsOpen(false)
     navigate(path)
   }
+
+  const handleLogout = async () => {
+    setUserMenuOpen(false)
+    await logout()
+    navigate('/login')
+  }
+
+  // Close user menu on outside click
+  useEffect(() => {
+    if (!userMenuOpen) return
+    const handler = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setUserMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [userMenuOpen])
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
@@ -208,7 +229,7 @@ export function OrgLayout() {
       </aside>
 
       {/* Main content area */}
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex flex-1 flex-col overflow-hidden min-h-0">
         {/* Header */}
         <header
           className="flex h-16 items-center gap-4 border-b border-gray-200 bg-white px-4"
@@ -300,12 +321,47 @@ export function OrgLayout() {
           </button>
 
           {/* User menu */}
-          <button
-            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full bg-gray-200 text-sm font-medium text-gray-700 hover:bg-gray-300"
-            aria-label="User menu"
-          >
-            U
-          </button>
+          <div className="relative" ref={userMenuRef}>
+            <button
+              onClick={() => setUserMenuOpen(!userMenuOpen)}
+              className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full bg-gray-200 text-sm font-medium text-gray-700 hover:bg-gray-300"
+              aria-label="User menu"
+              aria-expanded={userMenuOpen}
+              aria-haspopup="true"
+            >
+              {(user?.name ?? 'U').charAt(0).toUpperCase()}
+            </button>
+
+            {userMenuOpen && (
+              <div className="absolute right-0 z-20 mt-2 w-56 rounded-lg border border-gray-200 bg-white shadow-lg">
+                <div className="border-b border-gray-100 px-4 py-3">
+                  <p className="text-sm font-medium text-gray-900 truncate">{user?.name ?? 'User'}</p>
+                  <p className="text-xs text-gray-500 truncate">{user?.email}</p>
+                </div>
+                <div className="py-1">
+                  <button
+                    onClick={() => { setUserMenuOpen(false); navigate('/settings') }}
+                    className="flex w-full items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors min-h-[44px]"
+                  >
+                    <svg className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                    Settings
+                  </button>
+                  <button
+                    onClick={handleLogout}
+                    className="flex w-full items-center gap-3 px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors min-h-[44px]"
+                  >
+                    <svg className="h-4 w-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                    </svg>
+                    Sign out
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </header>
 
         {/* Page content */}
@@ -320,7 +376,7 @@ export function OrgLayout() {
             </button>
           </div>
         )}
-        <main className="flex-1 overflow-y-auto p-4 lg:p-6" role="main">
+        <main className="flex-1 overflow-y-auto p-4 lg:p-6 min-h-0" role="main">
           <Outlet />
         </main>
       </div>

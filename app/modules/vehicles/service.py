@@ -745,6 +745,7 @@ async def get_vehicle_profile(
         "engine_size": vehicle.engine_size,
         "seats": vehicle.num_seats,
         "odometer": vehicle.odometer_last_recorded,
+        "service_due_date": vehicle.service_due_date.isoformat() if vehicle.service_due_date else None,
         "last_pulled_at": vehicle.last_pulled_at.isoformat() if vehicle.last_pulled_at else None,
         "wof_expiry": wof_indicator,
         "rego_expiry": rego_indicator,
@@ -803,6 +804,7 @@ async def search_vehicles(
             "colour": v.colour,
             "lookup_type": v.lookup_type,
             "odometer": v.odometer_last_recorded,
+            "service_due_date": v.service_due_date.isoformat() if v.service_due_date else None,
             "linked_customers": [],
         }
         
@@ -832,6 +834,100 @@ async def search_vehicles(
     
     logger.info(f"search_vehicles returning: {results}")
     return results
+
+
+async def list_org_vehicles(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> dict:
+    """List all vehicles associated with an org via customer_vehicles links.
+
+    Returns paginated results with linked customer info, sorted by most
+    recently linked first.
+    """
+    from sqlalchemy import func as sa_func, distinct
+    from sqlalchemy.orm import aliased
+    from app.modules.customers.models import Customer
+    from app.modules.vehicles.models import CustomerVehicle
+
+    # Base query: distinct global vehicles linked to this org
+    base = (
+        select(GlobalVehicle)
+        .join(CustomerVehicle, CustomerVehicle.global_vehicle_id == GlobalVehicle.id)
+        .where(CustomerVehicle.org_id == org_id)
+    )
+
+    if search:
+        search_upper = search.upper().strip()
+        base = base.where(
+            GlobalVehicle.rego.ilike(f"%{search_upper}%")
+            | GlobalVehicle.make.ilike(f"%{search}%")
+            | GlobalVehicle.model.ilike(f"%{search}%")
+        )
+
+    base = base.distinct()
+
+    # Count
+    count_stmt = select(sa_func.count()).select_from(base.subquery())
+    total = (await db.execute(count_stmt)).scalar() or 0
+
+    # Paginate
+    offset = (page - 1) * page_size
+    vehicles_stmt = base.order_by(GlobalVehicle.last_pulled_at.desc()).offset(offset).limit(page_size)
+    vehicles = (await db.execute(vehicles_stmt)).scalars().all()
+
+    items = []
+    for v in vehicles:
+        # Fetch linked customers for this vehicle in this org
+        links_result = await db.execute(
+            select(Customer)
+            .join(CustomerVehicle, CustomerVehicle.customer_id == Customer.id)
+            .where(
+                CustomerVehicle.global_vehicle_id == v.id,
+                CustomerVehicle.org_id == org_id,
+            )
+        )
+        customers = [
+            {
+                "id": str(c.id),
+                "first_name": c.first_name,
+                "last_name": c.last_name,
+                "email": c.email,
+                "phone": c.phone,
+            }
+            for c in links_result.scalars().all()
+        ]
+
+        wof = _compute_expiry_indicator(v.wof_expiry)
+        rego_exp = _compute_expiry_indicator(v.registration_expiry)
+
+        items.append({
+            "id": str(v.id),
+            "rego": v.rego,
+            "make": v.make,
+            "model": v.model,
+            "year": v.year,
+            "colour": v.colour,
+            "body_type": v.body_type,
+            "fuel_type": v.fuel_type,
+            "wof_indicator": wof["indicator"],
+            "wof_expiry_date": wof["date"],
+            "rego_indicator": rego_exp["indicator"],
+            "rego_expiry_date": rego_exp["date"],
+            "service_due_date": v.service_due_date.isoformat() if v.service_due_date else None,
+            "linked_customers": customers,
+        })
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 async def lookup_vehicle_with_abcd_fallback(

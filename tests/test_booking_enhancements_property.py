@@ -232,7 +232,8 @@ class TestVehicleRegoModuleGating:
         # -- Mock ModuleService.is_enabled --
         with patch("app.core.modules.ModuleService") as MockModuleServiceCls, \
              patch("app.modules.bookings.service.Booking", side_effect=fake_booking_init), \
-             patch("app.modules.bookings.service.write_audit_log", new_callable=AsyncMock):
+             patch("app.modules.bookings.service.write_audit_log", new_callable=AsyncMock), \
+             patch("app.modules.bookings.service._check_staff_availability", new_callable=AsyncMock):
             mock_module_svc = AsyncMock()
             mock_module_svc.is_enabled = AsyncMock(return_value=module_enabled)
             MockModuleServiceCls.return_value = mock_module_svc
@@ -359,7 +360,8 @@ class TestServiceCatalogueLinkage:
         mock_db.add = lambda obj: None
 
         with patch("app.modules.bookings.service.Booking", side_effect=fake_booking_init), \
-             patch("app.modules.bookings.service.write_audit_log", new_callable=AsyncMock):
+             patch("app.modules.bookings.service.write_audit_log", new_callable=AsyncMock), \
+             patch("app.modules.bookings.service._check_staff_availability", new_callable=AsyncMock):
 
             result = await create_booking(
                 mock_db,
@@ -412,6 +414,9 @@ class TestNotificationChannelDispatch:
         """Dispatched notification channels exactly match confirmation flags.
 
         **Validates: Requirements 4.4, 4.5, 4.6**
+
+        Email confirmation uses inline SMTP via _send_booking_confirmation_email
+        (same pattern as invoice/quote emails). SMS uses Celery tasks.
         """
         from app.modules.bookings.service import create_booking
 
@@ -426,33 +431,11 @@ class TestNotificationChannelDispatch:
         mock_customer.email = "test@example.com"
         mock_customer.phone = "+6421000000"
 
-        # -- Mock Organisation + SubscriptionPlan for SMS plan check --
-        mock_org = MagicMock()
-        mock_org.plan_id = uuid.uuid4()
-
-        mock_plan = MagicMock()
-        mock_plan.sms_included = True  # Allow SMS so flag matching is testable
-
-        # db.execute call order depends on flags:
-        #   1) Customer lookup (always)
-        #   2) If send_sms: Organisation lookup, then SubscriptionPlan lookup
-        # Build side_effect list accordingly.
         customer_result = MagicMock()
         customer_result.scalar_one_or_none.return_value = mock_customer
 
-        org_result = MagicMock()
-        org_result.scalar_one_or_none.return_value = mock_org
-
-        plan_result = MagicMock()
-        plan_result.scalar_one_or_none.return_value = mock_plan
-
-        if send_sms:
-            execute_side_effects = [customer_result, org_result, plan_result]
-        else:
-            execute_side_effects = [customer_result]
-
         mock_db = AsyncMock()
-        mock_db.execute = AsyncMock(side_effect=execute_side_effects)
+        mock_db.execute = AsyncMock(return_value=customer_result)
         mock_db.flush = AsyncMock()
 
         # Capture Booking constructor kwargs
@@ -482,24 +465,19 @@ class TestNotificationChannelDispatch:
 
         mock_db.add = lambda obj: None
 
-        # -- Patch notification functions --
-        mock_log_email = AsyncMock(return_value={"id": str(uuid.uuid4())})
-        mock_send_email_task = MagicMock()
-        mock_send_email_task.delay = MagicMock()
+        # -- Patch email (inline SMTP) and SMS (Celery) notification paths --
+        mock_send_confirmation_email = AsyncMock(return_value=True)
 
         mock_log_sms = AsyncMock(return_value={"id": str(uuid.uuid4())})
         mock_send_sms_task = MagicMock()
         mock_send_sms_task.delay = MagicMock()
 
-        mock_increment_sms = AsyncMock()
-
         with patch("app.modules.bookings.service.Booking", side_effect=fake_booking_init), \
              patch("app.modules.bookings.service.write_audit_log", new_callable=AsyncMock), \
-             patch("app.modules.notifications.service.log_email_sent", mock_log_email), \
-             patch("app.tasks.notifications.send_email_task", mock_send_email_task), \
+             patch("app.modules.bookings.service._check_staff_availability", new_callable=AsyncMock), \
+             patch("app.modules.bookings.service._send_booking_confirmation_email", mock_send_confirmation_email), \
              patch("app.modules.notifications.service.log_sms_sent", mock_log_sms), \
-             patch("app.tasks.notifications.send_sms_task", mock_send_sms_task), \
-             patch("app.modules.admin.service.increment_sms_usage", mock_increment_sms):
+             patch("app.tasks.notifications.send_sms_task", mock_send_sms_task):
 
             await create_booking(
                 mock_db,
@@ -513,13 +491,13 @@ class TestNotificationChannelDispatch:
             )
 
         # -- Assertions: channels triggered must exactly match flags --
+        # Email: inline SMTP via _send_booking_confirmation_email
         if send_email:
-            mock_log_email.assert_called_once()
-            mock_send_email_task.delay.assert_called_once()
+            mock_send_confirmation_email.assert_called_once()
         else:
-            mock_log_email.assert_not_called()
-            mock_send_email_task.delay.assert_not_called()
+            mock_send_confirmation_email.assert_not_called()
 
+        # SMS: Celery task via send_sms_task.delay
         if send_sms:
             mock_log_sms.assert_called_once()
             mock_send_sms_task.delay.assert_called_once()
@@ -529,8 +507,7 @@ class TestNotificationChannelDispatch:
 
         # When both flags are false, no notifications at all
         if not send_email and not send_sms:
-            mock_log_email.assert_not_called()
-            mock_send_email_task.delay.assert_not_called()
+            mock_send_confirmation_email.assert_not_called()
             mock_log_sms.assert_not_called()
             mock_send_sms_task.delay.assert_not_called()
 
@@ -626,7 +603,8 @@ class TestReminderScheduling:
         mock_db.add = lambda obj: None
 
         with patch("app.modules.bookings.service.Booking", side_effect=fake_booking_init), \
-             patch("app.modules.bookings.service.write_audit_log", new_callable=AsyncMock):
+             patch("app.modules.bookings.service.write_audit_log", new_callable=AsyncMock), \
+             patch("app.modules.bookings.service._check_staff_availability", new_callable=AsyncMock):
 
             result = await create_booking(
                 mock_db,
@@ -697,32 +675,11 @@ class TestReminderChannelMatching:
         mock_customer.email = "test@example.com"
         mock_customer.phone = "+6421000000"
 
-        # -- Mock Organisation + SubscriptionPlan for SMS plan check --
-        mock_org = MagicMock()
-        mock_org.plan_id = uuid.uuid4()
-
-        mock_plan = MagicMock()
-        mock_plan.sms_included = True  # Allow SMS so channel flags pass through
-
-        # db.execute call order:
-        #   1) Customer lookup (always)
-        #   2) If send_sms: Organisation lookup, then SubscriptionPlan lookup
         customer_result = MagicMock()
         customer_result.scalar_one_or_none.return_value = mock_customer
 
-        org_result = MagicMock()
-        org_result.scalar_one_or_none.return_value = mock_org
-
-        plan_result = MagicMock()
-        plan_result.scalar_one_or_none.return_value = mock_plan
-
-        if send_sms:
-            execute_side_effects = [customer_result, org_result, plan_result]
-        else:
-            execute_side_effects = [customer_result]
-
         mock_db = AsyncMock()
-        mock_db.execute = AsyncMock(side_effect=execute_side_effects)
+        mock_db.execute = AsyncMock(return_value=customer_result)
         mock_db.flush = AsyncMock()
 
         # Capture kwargs passed to the Booking constructor
@@ -752,24 +709,19 @@ class TestReminderChannelMatching:
 
         mock_db.add = lambda obj: None
 
-        # -- Patch notification functions to avoid side effects --
-        mock_log_email = AsyncMock(return_value={"id": str(uuid.uuid4())})
-        mock_send_email_task = MagicMock()
-        mock_send_email_task.delay = MagicMock()
+        # -- Patch email (inline SMTP) and SMS (Celery) notification paths --
+        mock_send_confirmation_email = AsyncMock(return_value=True)
 
         mock_log_sms = AsyncMock(return_value={"id": str(uuid.uuid4())})
         mock_send_sms_task = MagicMock()
         mock_send_sms_task.delay = MagicMock()
 
-        mock_increment_sms = AsyncMock()
-
         with patch("app.modules.bookings.service.Booking", side_effect=fake_booking_init), \
              patch("app.modules.bookings.service.write_audit_log", new_callable=AsyncMock), \
-             patch("app.modules.notifications.service.log_email_sent", mock_log_email), \
-             patch("app.tasks.notifications.send_email_task", mock_send_email_task), \
+             patch("app.modules.bookings.service._check_staff_availability", new_callable=AsyncMock), \
+             patch("app.modules.bookings.service._send_booking_confirmation_email", mock_send_confirmation_email), \
              patch("app.modules.notifications.service.log_sms_sent", mock_log_sms), \
-             patch("app.tasks.notifications.send_sms_task", mock_send_sms_task), \
-             patch("app.modules.admin.service.increment_sms_usage", mock_increment_sms):
+             patch("app.tasks.notifications.send_sms_task", mock_send_sms_task):
 
             result = await create_booking(
                 mock_db,
@@ -997,7 +949,8 @@ class TestReminderSentAtMostOnce:
             mock_db.execute = AsyncMock(side_effect=[booking_result, customer_result])
             mock_db.flush = AsyncMock()
 
-            with patch("app.modules.bookings.service.write_audit_log", new_callable=AsyncMock):
+            with patch("app.modules.bookings.service.write_audit_log", new_callable=AsyncMock), \
+                 patch("app.modules.bookings.service._check_staff_availability", new_callable=AsyncMock):
                 await update_booking(
                     mock_db,
                     org_id=org_id,

@@ -191,7 +191,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   const statusStyle = STATUS_STYLES[quote.status] || STATUS_STYLES.draft
   const lineItems = quote.line_items || []
   const canSend = quote.status === 'draft'
-  const canConvert = quote.status === 'sent' || quote.status === 'accepted'
+  const canConvert = (quote.status === 'sent' || quote.status === 'accepted') && !quote.converted_invoice_id
   const canRequote = quote.status === 'sent'
   const canDelete = ['draft', 'declined', 'expired'].includes(quote.status)
 
@@ -343,7 +343,12 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
                 ) : (
                   lineItems.map((item, idx) => (
                     <tr key={item.id || idx} className="border-b border-gray-100">
-                      <td className="py-2.5 px-2 text-gray-900">{item.description}</td>
+                      <td className="py-2.5 px-2 text-gray-900">
+                        <div>{item.description?.split('\n')[0]}</div>
+                        {item.description?.includes('\n') && (
+                          <div className="text-xs text-gray-500 mt-0.5 whitespace-pre-line">{item.description.split('\n').slice(1).join('\n')}</div>
+                        )}
+                      </td>
                       <td className="py-2.5 px-2 text-center text-gray-700">
                         {item.item_type === 'labour' ? (item.hours || '—') : item.quantity}
                       </td>

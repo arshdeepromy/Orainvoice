@@ -68,6 +68,10 @@ class SmsProviderCredentialsResponse(BaseModel):
 class SmsProviderTestRequest(BaseModel):
     """POST /api/v2/admin/sms-providers/{provider_key}/test."""
     to_number: str = Field(..., min_length=1, description="Phone number to test (E.164)")
+    message: str = Field(
+        default="Hello from OraInvoice! This is a test SMS.",
+        description="Custom message text to send",
+    )
 
 
 class SmsProviderTestResponse(BaseModel):

@@ -77,17 +77,34 @@ class JobCardItemResponse(BaseModel):
     sort_order: int
 
 
+class CustomerSummary(BaseModel):
+    """Embedded customer info returned with a job card."""
+
+    first_name: str
+    last_name: str
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+
+
 class JobCardResponse(BaseModel):
     """Response schema for a job card."""
 
     id: uuid.UUID
     org_id: uuid.UUID
     customer_id: uuid.UUID
+    customer: CustomerSummary | None = None
     vehicle_rego: str | None = None
     status: str
     description: str | None = None
     notes: str | None = None
+    assigned_to: uuid.UUID | None = None
+    assigned_to_name: str | None = None
     line_items: list[JobCardItemResponse] = Field(default_factory=list)
+    time_entries: list[dict] = Field(default_factory=list)
+    active_timer: dict | None = None
+    total_time_seconds: int = 0
+    is_timer_active: bool = False
     created_by: uuid.UUID
     created_at: datetime
     updated_at: datetime
@@ -108,6 +125,8 @@ class JobCardSearchResult(BaseModel):
     vehicle_rego: str | None = None
     status: str
     description: str | None = None
+    assigned_to: str | None = None
+    assigned_to_name: str | None = None
     created_at: datetime
 
 
@@ -150,3 +169,61 @@ class JobCardCombineResponse(BaseModel):
     invoice_id: uuid.UUID
     invoice_status: str
     message: str
+
+
+class TimeEntryResponse(BaseModel):
+    """Response schema for a single time entry.
+
+    Requirements: 7.1, 7.2
+    """
+
+    id: uuid.UUID
+    org_id: uuid.UUID
+    job_card_id: uuid.UUID
+    user_id: uuid.UUID
+    started_at: datetime
+    stopped_at: datetime | None = None
+    duration_minutes: int | None = None
+    hourly_rate: Decimal | None = None
+    notes: str | None = None
+    created_at: datetime
+
+
+class TimerStatusResponse(BaseModel):
+    """Response schema for GET /job-cards/{id}/timer.
+
+    Requirements: 7.5
+    """
+
+    entries: list[TimeEntryResponse]
+    is_active: bool
+
+
+class CompleteJobResponse(BaseModel):
+    """Response after completing a job and creating a draft invoice.
+
+    Requirements: 6.3, 6.4
+    """
+
+    job_card_id: uuid.UUID
+    invoice_id: uuid.UUID
+
+
+class AssignJobRequest(BaseModel):
+    """Request body for PUT /job-cards/{id}/assign.
+
+    Requirements: 8.5, 8.6, 8.7
+    """
+
+    new_assignee_id: uuid.UUID
+    takeover_note: str | None = None
+
+
+class AssignJobResponse(BaseModel):
+    """Response after assigning/reassigning a job card.
+
+    Requirements: 8.6
+    """
+
+    job_card: JobCardResponse
+

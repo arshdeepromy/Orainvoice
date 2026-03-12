@@ -997,7 +997,7 @@ async def stripe_subscription_webhook(
         if invoice_pdf:
             from app.tasks.subscriptions import send_invoice_email_task
 
-            send_invoice_email_task.delay(
+            await send_invoice_email_task(
                 org_id=str(org.id),
                 invoice_pdf_url=invoice_pdf,
                 amount_paid=webhook_result.get("amount_paid", 0),
@@ -1026,7 +1026,7 @@ async def stripe_subscription_webhook(
         # Send dunning email (Req 42.4)
         from app.tasks.subscriptions import send_dunning_email_task
 
-        send_dunning_email_task.delay(
+        await send_dunning_email_task(
             org_id=str(org.id),
             attempt_count=attempt_count,
         )

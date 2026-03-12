@@ -52,6 +52,8 @@ interface LineItem {
   key: string
   item_id?: string
   description: string
+  line_description?: string
+  original_description?: string
   quantity: number
   rate: number
   tax_id: string
@@ -145,9 +147,31 @@ function CustomerSearch({
     if (q.length < 2) { setResults([]); return }
     setLoading(true)
     try {
-      const res = await apiClient.get('/customers', { params: { search: q } })
+      const res = await apiClient.get('/customers', { params: { q: q } })
       const data = res.data as any
-      setResults(Array.isArray(data) ? data : (data?.customers ?? []))
+      const customers = Array.isArray(data) ? data : (data?.customers ?? [])
+      const term = q.toLowerCase()
+      const matchesSequence = (haystack: string, needle: string): boolean => {
+        let ni = 0
+        const h = haystack.toLowerCase()
+        for (let i = 0; i < h.length && ni < needle.length; i++) {
+          if (h[i] === needle[ni]) ni++
+        }
+        return ni === needle.length
+      }
+      const filtered = customers.filter((c: any) => {
+        const firstName = (c.first_name || '').toLowerCase()
+        const lastName = (c.last_name || '').toLowerCase()
+        const displayName = (c.display_name || '').toLowerCase()
+        const phone = (c.phone || '').toLowerCase()
+        return (
+          matchesSequence(firstName, term) ||
+          matchesSequence(lastName, term) ||
+          matchesSequence(displayName, term) ||
+          matchesSequence(phone, term)
+        )
+      })
+      setResults(filtered)
     } catch { setResults([]) }
     finally { setLoading(false) }
   }, [])
@@ -215,6 +239,7 @@ function ItemTableRow({
   taxRates,
   onChange,
   onRemove,
+  onItemCreated,
 }: {
   item: LineItem
   index: number
@@ -222,9 +247,21 @@ function ItemTableRow({
   taxRates: TaxRate[]
   onChange: (index: number, updated: LineItem) => void
   onRemove: (index: number) => void
+  onItemCreated: (ci: CatalogueItem) => void
 }) {
   const [showItemDropdown, setShowItemDropdown] = useState(false)
   const [itemSearch, setItemSearch] = useState('')
+  const [showInlineForm, setShowInlineForm] = useState(false)
+  const [inlineType, setInlineType] = useState<'goods' | 'service'>('goods')
+  const [inlineName, setInlineName] = useState('')
+  const [inlineUnit, setInlineUnit] = useState('')
+  const [inlinePrice, setInlinePrice] = useState('')
+  const [inlineDescription, setInlineDescription] = useState('')
+  const [inlineGstExempt, setInlineGstExempt] = useState(false)
+  const [inlineSaving, setInlineSaving] = useState(false)
+  const [inlineError, setInlineError] = useState('')
+  const [descUpdating, setDescUpdating] = useState(false)
+  const [descUpdated, setDescUpdated] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -245,12 +282,15 @@ function ItemTableRow({
     update({
       item_id: ci.id,
       description: ci.name,
+      line_description: ci.description || '',
+      original_description: ci.description || '',
       rate: ci.default_price,
       tax_rate: ci.gst_applicable ? 15 : 0,
       tax_id: ci.gst_applicable ? 'gst_15' : 'gst_0',
     })
     setShowItemDropdown(false)
     setItemSearch('')
+    setDescUpdated(false)
   }
 
   const handleTaxChange = (taxId: string) => {
@@ -263,8 +303,54 @@ function ItemTableRow({
     (ci.sku && ci.sku.toLowerCase().includes(itemSearch.toLowerCase()))
   )
 
+  const handleInlineItemSubmit = async () => {
+    if (!inlineName.trim()) { setInlineError('Name is required.'); return }
+    if (!inlinePrice.trim() || isNaN(Number(inlinePrice))) { setInlineError('Valid selling price is required.'); return }
+    setInlineSaving(true)
+    setInlineError('')
+    try {
+      const res = await apiClient.post<{ item: { id: string; name: string; default_price: string; is_gst_exempt: boolean; category: string | null; description: string | null } }>('/catalogue/items', {
+        name: inlineName.trim(),
+        default_price: inlinePrice.trim(),
+        is_gst_exempt: inlineGstExempt,
+        description: inlineDescription.trim() || null,
+        category: inlineUnit.trim() || null,
+      })
+      const created = res.data.item
+      const mapped: CatalogueItem = {
+        id: created.id,
+        name: created.name,
+        default_price: Number(created.default_price),
+        gst_applicable: !created.is_gst_exempt,
+        category: created.category || undefined,
+      }
+      onItemCreated(mapped)
+      handleItemSelect(mapped)
+      setShowInlineForm(false)
+      setInlineName(''); setInlinePrice(''); setInlineDescription(''); setInlineUnit('')
+    } catch (err: any) {
+      setInlineError(err?.response?.data?.detail || 'Failed to create item.')
+    } finally {
+      setInlineSaving(false)
+    }
+  }
+
+  const descriptionChanged = item.item_id && item.line_description !== undefined && item.line_description !== (item.original_description || '')
+
+  const handleUpdateDescriptionPermanently = async () => {
+    if (!item.item_id || !item.line_description) return
+    setDescUpdating(true)
+    try {
+      await apiClient.put(`/catalogue/items/${item.item_id}`, { description: item.line_description.trim() })
+      update({ original_description: item.line_description })
+      setDescUpdated(true)
+      setTimeout(() => setDescUpdated(false), 3000)
+    } catch { /* silent */ }
+    finally { setDescUpdating(false) }
+  }
+
   return (
-    <tr className="border-b border-gray-100 hover:bg-gray-50">
+    <tr className="border-b border-gray-100 hover:bg-gray-50 align-top">
       <td className="py-3 px-2">
         <div ref={containerRef} className="relative">
           <input type="text" value={item.description}
@@ -272,6 +358,31 @@ function ItemTableRow({
             onFocus={() => setShowItemDropdown(true)}
             placeholder="Type or click to select an item"
             className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          {item.item_id && (
+            <div className="mt-1">
+              <textarea
+                value={item.line_description || ''}
+                onChange={(e) => { update({ line_description: e.target.value }); setDescUpdated(false) }}
+                placeholder="Item description"
+                rows={2}
+                className="w-full rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-400 resize-y"
+              />
+              {descUpdated ? (
+                <span className="text-[10px] text-green-600 flex items-center gap-1">
+                  <svg className="w-3 h-3 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                  Updated
+                </span>
+              ) : descriptionChanged ? (
+                <span className="text-[10px] text-red-500">
+                  Description changed —{' '}
+                  <button type="button" disabled={descUpdating} onClick={handleUpdateDescriptionPermanently}
+                    className="text-blue-600 hover:underline font-medium disabled:opacity-50">
+                    {descUpdating ? 'Updating…' : 'Update permanently'}
+                  </button>
+                </span>
+              ) : null}
+            </div>
+          )}
           {showItemDropdown && (
             <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
               {filteredItems.slice(0, 10).map((ci) => (
@@ -285,6 +396,57 @@ function ItemTableRow({
               {filteredItems.length === 0 && (
                 <div className="px-3 py-2 text-sm text-gray-500">No items found</div>
               )}
+              <button type="button"
+                onClick={() => { setShowInlineForm(true); setInlineName(itemSearch.trim()); setShowItemDropdown(false) }}
+                className="w-full px-3 py-2 text-left text-sm text-blue-600 font-medium hover:bg-blue-50">
+                + Add new item
+              </button>
+            </div>
+          )}
+          {showInlineForm && (
+            <div className="mt-2 rounded-md border border-gray-200 bg-gray-50 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-gray-900">New Item</h4>
+                <button type="button" onClick={() => setShowInlineForm(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
+              </div>
+              <hr className="border-gray-200" />
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Item name *</label>
+                <input type="text" value={inlineName} onChange={(e) => setInlineName(e.target.value)}
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Description</label>
+                <textarea value={inlineDescription} onChange={(e) => setInlineDescription(e.target.value)} rows={3} placeholder="Optional item description"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Default price (ex-GST) *</label>
+                  <input type="number" min="0" step="0.01" value={inlinePrice} onChange={(e) => setInlinePrice(e.target.value)} placeholder="e.g. 85.00"
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Category</label>
+                  <input type="text" value={inlineUnit} onChange={(e) => setInlineUnit(e.target.value)} placeholder="e.g. Plumbing, Electrical"
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input type="checkbox" checked={inlineGstExempt} onChange={(e) => setInlineGstExempt(e.target.checked)} className="rounded border-gray-300" />
+                GST exempt
+              </label>
+              {inlineError && <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{inlineError}</div>}
+              <div className="flex justify-end gap-2">
+                <button type="button" disabled={inlineSaving} onClick={() => setShowInlineForm(false)}
+                  className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100">
+                  Cancel
+                </button>
+                <button type="button" disabled={inlineSaving} onClick={handleInlineItemSubmit}
+                  className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+                  {inlineSaving ? 'Saving…' : 'Create Item'}
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -445,9 +607,18 @@ export default function QuoteCreate() {
     let cancelled = false
     async function load() {
       try {
-        const res = await apiClient.get('/catalogue/services', { params: { active: true } })
+        const res = await apiClient.get('/catalogue/items', { params: { active_only: true } })
         const data = res.data as any
-        if (!cancelled) setCatalogueItems(Array.isArray(data) ? data : (data?.services || []))
+        const rawItems = Array.isArray(data) ? data : (data?.items || [])
+        if (!cancelled) setCatalogueItems(rawItems.map((item: any) => ({
+          id: item.id,
+          name: item.name,
+          description: item.description ?? undefined,
+          default_price: typeof item.default_price === 'string' ? parseFloat(item.default_price) : (item.default_price ?? 0),
+          gst_applicable: item.gst_applicable ?? (item.is_gst_exempt === false),
+          category: item.category ?? undefined,
+          sku: item.sku ?? undefined,
+        })))
       } catch { /* non-blocking */ }
     }
     load()
@@ -524,7 +695,7 @@ export default function QuoteCreate() {
     adjustment: adjustment,
     line_items: lineItems.filter(item => item.description.trim()).map((item, i) => ({
       item_type: 'service',
-      description: item.description,
+      description: item.line_description ? `${item.description}\n${item.line_description}` : item.description,
       quantity: item.quantity,
       unit_price: item.rate,
       is_gst_exempt: item.tax_rate === 0,
@@ -708,6 +879,7 @@ export default function QuoteCreate() {
                       taxRates={taxRates}
                       onChange={updateLineItem}
                       onRemove={removeLineItem}
+                      onItemCreated={(ci) => setCatalogueItems(prev => [...prev, ci])}
                     />
                   ))}
                 </tbody>
@@ -731,13 +903,13 @@ export default function QuoteCreate() {
               <div className="flex items-center justify-between gap-3">
                 <span className="text-sm text-gray-600">Discount</span>
                 <div className="flex items-center gap-2">
-                  <div className="inline-flex rounded-md border border-gray-300 overflow-hidden">
+                  <div className="inline-flex rounded-md border border-gray-300">
                     <button type="button" onClick={() => setDiscountType('percentage')}
-                      className={`min-w-[36px] px-2.5 py-1.5 text-sm font-medium text-center transition-colors ${discountType === 'percentage' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                      className={`min-w-[40px] px-3 py-1.5 text-sm font-semibold text-center rounded-l-md transition-colors ${discountType === 'percentage' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
                       %
                     </button>
                     <button type="button" onClick={() => setDiscountType('fixed')}
-                      className={`min-w-[36px] px-2.5 py-1.5 text-sm font-medium text-center border-l border-gray-300 transition-colors ${discountType === 'fixed' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                      className={`min-w-[40px] px-3 py-1.5 text-sm font-semibold text-center rounded-r-md border-l border-gray-300 transition-colors ${discountType === 'fixed' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
                       $
                     </button>
                   </div>

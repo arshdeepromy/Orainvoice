@@ -9,14 +9,6 @@ services:
       - ./alembic:/app/alembic:delegated
       - ./tests:/app/tests:delegated
 
-  celery-worker:
-    environment:
-      - PYTHONUNBUFFERED=1
-
-  celery-beat:
-    environment:
-      - PYTHONUNBUFFERED=1
-
   frontend:
     volumes:
       - ./frontend/src:/app/src:delegated

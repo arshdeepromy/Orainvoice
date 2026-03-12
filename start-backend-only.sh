@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Start only backend services (API, DB, Redis, Celery)
+# Start only backend services (API, DB, Redis)
 # Works on both Apple Silicon (ARM64) and Intel/AMD (x86_64)
 set -e
 
@@ -22,8 +22,8 @@ sleep 5
 # Run migrations
 docker-compose -f docker-compose.yml -f docker-compose.dev.yml run --rm app alembic upgrade head
 
-# Start app and celery
-docker-compose -f docker-compose.yml -f docker-compose.dev.yml up app celery-worker celery-beat
+# Start app
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml up app
 
 echo ""
 echo "✅ Backend running at http://localhost:8080"

@@ -56,7 +56,7 @@ async def dispatch_webhook_event(
         try:
             from app.tasks.webhooks import deliver_webhook
 
-            deliver_webhook.delay(
+            await deliver_webhook(
                 webhook_id=str(webhook.id),
                 event_type=event_type,
                 payload=payload,

@@ -2,6 +2,9 @@
 
 Tables:
 - bookings: appointment / booking records per organisation (RLS enabled)
+
+The actual DB schema was created by migration 0038 (drop+recreate) and
+enhanced by migration 0081 (new columns).
 """
 
 from __future__ import annotations
@@ -13,7 +16,6 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
-    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -23,13 +25,16 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
 
 class Booking(Base):
-    """Organisation-scoped appointment / booking record."""
+    """Organisation-scoped appointment / booking record.
+
+    Matches the actual DB schema from migration 0038 + 0081 + 0082.
+    """
 
     __tablename__ = "bookings"
 
@@ -42,36 +47,50 @@ class Booking(Base):
     org_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False
     )
-    customer_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("customers.id"), nullable=True
+    # Customer info (stored directly, not FK)
+    customer_name: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    customer_email: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    customer_phone: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )
+    staff_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("staff_members.id"), nullable=True
     )
     vehicle_rego: Mapped[str | None] = mapped_column(
         String(20), nullable=True
     )
-    branch_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("branches.id"), nullable=True
-    )
     service_type: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )
+    start_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    end_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="pending"
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confirmation_token: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    converted_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    converted_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    # Columns from migration 0081
     service_catalogue_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("service_catalogue.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("items_catalogue.id"), nullable=True
     )
     service_price: Mapped[Decimal | None] = mapped_column(
         Numeric(10, 2), nullable=True
-    )
-    scheduled_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    duration_minutes: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default="60"
-    )
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(
-        String(20), nullable=False, server_default="scheduled"
-    )
-    reminder_sent: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default="false"
     )
     send_email_confirmation: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
@@ -88,12 +107,6 @@ class Booking(Base):
     reminder_cancelled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
-    assigned_to: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
-    )
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -105,11 +118,5 @@ class Booking(Base):
     )
 
     __table_args__ = (
-        CheckConstraint(
-            "status IN ('scheduled','confirmed','completed','cancelled','no_show')",
-            name="ck_bookings_status",
-        ),
         {"extend_existing": True},
     )
-
-    # Relationships removed — V2 model is authoritative for this table

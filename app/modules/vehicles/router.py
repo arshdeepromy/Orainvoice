@@ -42,6 +42,7 @@ from app.modules.vehicles.service import (
     get_odometer_history,
     get_vehicle_profile,
     link_vehicle_to_customer,
+    list_org_vehicles,
     lookup_vehicle,
     lookup_vehicle_with_abcd_fallback,
     record_odometer_reading,
@@ -64,6 +65,32 @@ def _extract_org_context(request: Request) -> tuple[uuid.UUID | None, uuid.UUID 
     except (ValueError, TypeError):
         return None, None, ip_address
     return org_uuid, user_uuid, ip_address
+
+
+@router.get(
+    "",
+    summary="List org vehicles with linked customers",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def list_vehicles(
+    request: Request,
+    search: str | None = Query(None, description="Search by rego, make, or model"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List all vehicles linked to the org via customer-vehicle associations.
+
+    Returns paginated results with linked customer info.
+    """
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    result = await list_org_vehicles(
+        db, org_id=org_uuid, search=search, page=page, page_size=page_size
+    )
+    return result
 
 
 @router.get(

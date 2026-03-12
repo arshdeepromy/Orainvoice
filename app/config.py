@@ -18,10 +18,6 @@ class Settings(BaseSettings):
     # --- Redis ---
     redis_url: str = "redis://localhost:6379/0"
 
-    # --- Celery ---
-    celery_broker_url: str = "redis://localhost:6379/1"
-    celery_result_backend: str = "redis://localhost:6379/2"
-
     # --- JWT / Auth ---
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
@@ -93,7 +89,7 @@ class Settings(BaseSettings):
     )
 
     # --- CORS ---
-    cors_origins: list[str] = ["http://localhost:5173"]
+    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000", "http://localhost:80", "http://localhost", "https://invoice.oraflows.co.nz"]
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

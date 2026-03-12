@@ -1,3 +1,4 @@
 export { default as BookingCalendarPage } from './BookingCalendarPage'
 export { default as BookingCalendar } from './BookingCalendar'
 export { default as BookingForm } from './BookingForm'
+export { default as BookingListPanel } from './BookingListPanel'

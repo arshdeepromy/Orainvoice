@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import apiClient from '../../api/client'
 import { Button, Input, Select, Modal, Spinner } from '../../components/ui'
 import { ModuleGate } from '../../components/common/ModuleGate'
+import { useModules } from '../../contexts/ModuleContext'
 import { VehicleLiveSearch } from '../../components/vehicles/VehicleLiveSearch'
 import type { BookingSearchResult } from './BookingCalendar'
 import {
@@ -43,12 +44,22 @@ interface ServiceCatalogueOption {
   is_active: boolean
 }
 
+interface LinkedVehicleOption {
+  id: string
+  rego: string
+  make: string | null
+  model: string | null
+  year: number | null
+  colour: string | null
+}
+
 interface CustomerOption {
   id: string
   first_name: string
   last_name: string
   email: string | null
   phone: string | null
+  linked_vehicles?: LinkedVehicleOption[]
 }
 
 interface BookingFormProps {
@@ -105,6 +116,8 @@ function nowLocalStr(): string {
  */
 export default function BookingForm({ open, onClose, onSaved, editBooking }: BookingFormProps) {
   const isEdit = !!editBooking
+  const { isEnabled } = useModules()
+  const vehiclesEnabled = isEnabled('vehicles')
 
   /* Form state */
   const [customerId, setCustomerId] = useState('')
@@ -136,7 +149,9 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
   const [showInlineServiceForm, setShowInlineServiceForm] = useState(false)
   const [inlineServiceName, setInlineServiceName] = useState('')
   const [inlineServicePrice, setInlineServicePrice] = useState('')
-  const [inlineServiceCategory, setInlineServiceCategory] = useState('service')
+  const [inlineServiceCategory, setInlineServiceCategory] = useState('')
+  const [inlineServiceDescription, setInlineServiceDescription] = useState('')
+  const [inlineServiceGstExempt, setInlineServiceGstExempt] = useState(false)
   const [inlineServiceError, setInlineServiceError] = useState('')
   const [savingInlineService, setSavingInlineService] = useState(false)
 
@@ -165,11 +180,33 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
           setCustomerId(b.customer_id ?? '')
           setCustomerSearch(b.customer_name ?? '')
           setVehicleRego(b.vehicle_rego ?? '')
-          setSelectedVehicle(
-            b.vehicle_rego
-              ? { id: '', rego: b.vehicle_rego, make: '', model: '', year: null, colour: '', body_type: '', fuel_type: '', engine_size: '', wof_expiry: null, registration_expiry: null }
-              : null
-          )
+          // Look up full vehicle details if rego is present
+          if (b.vehicle_rego) {
+            apiClient.get<{ results: Array<{ id: string; rego: string; make: string | null; model: string | null; year: number | null; colour: string | null; odometer?: number | null }> }>(
+              '/vehicles/search', { params: { q: b.vehicle_rego } }
+            ).then((vRes) => {
+              const match = (vRes.data.results || []).find(v => v.rego === b.vehicle_rego)
+              if (match) {
+                setSelectedVehicle({
+                  id: match.id, rego: match.rego, make: match.make ?? '', model: match.model ?? '',
+                  year: match.year, colour: match.colour ?? '', body_type: '', fuel_type: '',
+                  engine_size: '', wof_expiry: null, registration_expiry: null, odometer: match.odometer ?? null,
+                })
+              } else {
+                setSelectedVehicle({
+                  id: '', rego: b.vehicle_rego, make: '', model: '', year: null, colour: '',
+                  body_type: '', fuel_type: '', engine_size: '', wof_expiry: null, registration_expiry: null,
+                })
+              }
+            }).catch(() => {
+              setSelectedVehicle({
+                id: '', rego: b.vehicle_rego!, make: '', model: '', year: null, colour: '',
+                body_type: '', fuel_type: '', engine_size: '', wof_expiry: null, registration_expiry: null,
+              })
+            })
+          } else {
+            setSelectedVehicle(null)
+          }
           setServiceType(b.service_type ?? '')
           setServiceSearch(b.service_type ?? '')
           setServiceCatalogueId(b.service_catalogue_id ?? null)
@@ -197,7 +234,9 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
       setShowInlineServiceForm(false)
       setInlineServiceName('')
       setInlineServicePrice('')
-      setInlineServiceCategory('service')
+      setInlineServiceCategory('')
+      setInlineServiceDescription('')
+      setInlineServiceGstExempt(false)
       setInlineServiceError('')
       setScheduledAt(nowLocalStr())
       setDurationMinutes('60')
@@ -243,11 +282,13 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
       setShowCustomerDropdown(false)
       return
     }
+    // Don't re-search if a customer is already selected (user just picked one)
+    if (customerId) return
     const timer = setTimeout(async () => {
       setSearchingCustomers(true)
       try {
         const res = await apiClient.get<{ items?: CustomerOption[]; results?: CustomerOption[]; customers?: CustomerOption[] }>('/customers', {
-          params: { search: customerSearch, page_size: 8 },
+          params: { search: customerSearch, page_size: 8, ...(vehiclesEnabled ? { include_vehicles: true } : {}) },
         })
         const items = res.data.items ?? res.data.results ?? res.data.customers ?? []
         setCustomerResults(items)
@@ -259,7 +300,7 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
       }
     }, 300)
     return () => clearTimeout(timer)
-  }, [customerSearch])
+  }, [customerSearch, customerId])
 
   /* Service catalogue search */
   useEffect(() => {
@@ -268,13 +309,15 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
       setShowServiceDropdown(false)
       return
     }
+    // Don't re-search if a service is already selected (user just picked one)
+    if (serviceCatalogueId) return
     const timer = setTimeout(async () => {
       setSearchingServices(true)
       try {
-        const res = await apiClient.get<{ services?: ServiceCatalogueOption[] }>('/catalogue/services', {
+        const res = await apiClient.get<{ items?: ServiceCatalogueOption[] }>('/catalogue/items', {
           params: { active_only: true, limit: 10 },
         })
-        const items = res.data.services ?? []
+        const items = res.data.items ?? []
         // Client-side filter by search query
         const query = serviceSearch.trim().toLowerCase()
         const filtered = items.filter((s) => s.name.toLowerCase().includes(query))
@@ -287,7 +330,7 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
       }
     }, 300)
     return () => clearTimeout(timer)
-  }, [serviceSearch])
+  }, [serviceSearch, serviceCatalogueId])
 
   /* Submit inline customer form */
   const handleInlineCustomerSubmit = async (e: React.FormEvent) => {
@@ -321,7 +364,7 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
   const handleInlineServiceSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!inlineServiceName.trim()) {
-      setInlineServiceError('Service name is required.')
+      setInlineServiceError('Item name is required.')
       return
     }
     if (!inlineServicePrice.trim() || isNaN(parseFloat(inlineServicePrice))) {
@@ -331,12 +374,14 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
     setSavingInlineService(true)
     setInlineServiceError('')
     try {
-      const res = await apiClient.post<{ service: ServiceCatalogueOption }>('/catalogue/services', {
+      const res = await apiClient.post<{ item: ServiceCatalogueOption }>('/catalogue/items', {
         name: inlineServiceName.trim(),
         default_price: inlineServicePrice.trim(),
-        category: inlineServiceCategory,
+        category: inlineServiceCategory || null,
+        description: inlineServiceDescription.trim() || null,
+        is_gst_exempt: inlineServiceGstExempt,
       })
-      const created = res.data.service
+      const created = res.data.item
       setServiceCatalogueId(created.id)
       setServiceType(created.name)
       setServicePrice(created.default_price)
@@ -344,7 +389,7 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
       setShowInlineServiceForm(false)
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      setInlineServiceError(detail ?? 'Failed to create service.')
+      setInlineServiceError(detail ?? 'Failed to create item.')
     } finally {
       setSavingInlineService(false)
     }
@@ -416,8 +461,10 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
               placeholder="Search by name, phone, or email…"
               value={customerSearch}
               onChange={(e) => {
-                setCustomerSearch(e.target.value)
-                if (!e.target.value.trim()) setCustomerId('')
+                const val = e.target.value
+                setCustomerSearch(val)
+                // Clear selection when user edits the field so search can re-trigger
+                if (customerId) setCustomerId('')
               }}
               onFocus={() => { if (customerResults.length > 0 || customerSearch.trim().length >= 2) setShowCustomerDropdown(true) }}
               aria-label="Search customer"
@@ -446,6 +493,16 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
                       setCustomerSearch(`${c.first_name} ${c.last_name}`)
                       setShowCustomerDropdown(false)
                       setShowInlineCustomerForm(false)
+                      // Auto-fill first linked vehicle
+                      if (vehiclesEnabled && c.linked_vehicles && c.linked_vehicles.length > 0 && !selectedVehicle) {
+                        const v = c.linked_vehicles[0]
+                        setSelectedVehicle({
+                          id: v.id, rego: v.rego, make: v.make ?? '', model: v.model ?? '',
+                          year: v.year, colour: v.colour ?? '', body_type: '', fuel_type: '',
+                          engine_size: '', wof_expiry: null, registration_expiry: null,
+                        })
+                        setVehicleRego(v.rego)
+                      }
                     }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
@@ -453,13 +510,37 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
                         setCustomerSearch(`${c.first_name} ${c.last_name}`)
                         setShowCustomerDropdown(false)
                         setShowInlineCustomerForm(false)
+                        if (vehiclesEnabled && c.linked_vehicles && c.linked_vehicles.length > 0 && !selectedVehicle) {
+                          const v = c.linked_vehicles[0]
+                          setSelectedVehicle({
+                            id: v.id, rego: v.rego, make: v.make ?? '', model: v.model ?? '',
+                            year: v.year, colour: v.colour ?? '', body_type: '', fuel_type: '',
+                            engine_size: '', wof_expiry: null, registration_expiry: null,
+                          })
+                          setVehicleRego(v.rego)
+                        }
                       }
                     }}
                     tabIndex={0}
                   >
-                    <span className="font-medium">{c.first_name} {c.last_name}</span>
-                    {c.phone && <span className="ml-2 text-gray-500">{c.phone}</span>}
-                    {c.email && <span className="ml-2 text-gray-400">{c.email}</span>}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="font-medium">{c.first_name} {c.last_name}</span>
+                        {c.phone && <span className="ml-2 text-gray-500">{c.phone}</span>}
+                        {c.email && <span className="ml-2 text-gray-400">{c.email}</span>}
+                      </div>
+                      {c.linked_vehicles && c.linked_vehicles.length > 0 && (
+                        <span className="text-xs text-blue-600 bg-blue-50 px-2 py-0.5 rounded ml-2 shrink-0">
+                          {c.linked_vehicles.length} vehicle{c.linked_vehicles.length > 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </div>
+                    {c.linked_vehicles && c.linked_vehicles.length > 0 && (
+                      <div className="mt-0.5 text-xs text-gray-500">
+                        {c.linked_vehicles.slice(0, 2).map(v => v.rego).join(', ')}
+                        {c.linked_vehicles.length > 2 && ` +${c.linked_vehicles.length - 2} more`}
+                      </div>
+                    )}
                   </li>
                 ))}
                 {shouldShowAddNewOption(customerSearch, customerResults.length) && (
@@ -557,25 +638,33 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
                 setSelectedVehicle(v)
                 setVehicleRego(v?.rego ?? '')
               }}
+              onCustomerAutoSelect={(c) => {
+                if (!customerId) {
+                  setCustomerId(c.id)
+                  setCustomerSearch(`${c.first_name} ${c.last_name}`)
+                }
+              }}
             />
           </ModuleGate>
 
           {/* Service type (catalogue typeahead) */}
           <div className="relative">
             <Input
-              label="Service Type"
-              placeholder="Search services…"
+              label="Item"
+              placeholder="Search items…"
               value={serviceSearch}
               onChange={(e) => {
-                setServiceSearch(e.target.value)
-                if (!e.target.value.trim()) {
-                  setServiceType('')
+                const val = e.target.value
+                setServiceSearch(val)
+                // Clear selection when user edits the field so search can re-trigger
+                if (serviceCatalogueId) {
                   setServiceCatalogueId(null)
+                  setServiceType('')
                   setServicePrice(null)
                 }
               }}
               onFocus={() => { if (serviceResults.length > 0 || serviceSearch.trim().length >= 2) setShowServiceDropdown(true) }}
-              aria-label="Search service"
+              aria-label="Search item"
               aria-expanded={showServiceDropdown}
               aria-autocomplete="list"
               role="combobox"
@@ -644,7 +733,7 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
                     }}
                     tabIndex={0}
                   >
-                    + Add new service
+                    + Add new item
                   </li>
                 )}
               </ul>
@@ -654,45 +743,55 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
           {/* Inline service form */}
           {showInlineServiceForm && (
             <div className="rounded-md border border-gray-200 bg-gray-50 p-4 space-y-3" data-testid="inline-service-form">
-              <h4 className="text-sm font-medium text-gray-700">New Service</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Input
-                  label="Service Name *"
-                  value={inlineServiceName}
-                  onChange={(e) => setInlineServiceName(e.target.value)}
-                  aria-label="Service name"
-                />
-                <Input
-                  label="Default Price *"
-                  value={inlineServicePrice}
-                  onChange={(e) => setInlineServicePrice(e.target.value)}
-                  aria-label="Service default price"
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-gray-900">New Item</h4>
+                <button type="button" onClick={() => setShowInlineServiceForm(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
+              </div>
+              <hr className="border-gray-200" />
+              <Input
+                label="Item name *"
+                value={inlineServiceName}
+                onChange={(e) => setInlineServiceName(e.target.value)}
+                aria-label="Item name"
+              />
+              <div>
+                <label htmlFor="inline-service-desc" className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                <textarea
+                  id="inline-service-desc"
+                  value={inlineServiceDescription}
+                  onChange={(e) => setInlineServiceDescription(e.target.value)}
+                  rows={3}
+                  placeholder="Optional item description"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
-              <Select
-                label="Category"
-                options={[
-                  { value: 'service', label: 'Service' },
-                  { value: 'repair', label: 'Repair' },
-                  { value: 'warrant', label: 'Warrant' },
-                  { value: 'diagnostic', label: 'Diagnostic' },
-                ]}
-                value={inlineServiceCategory}
-                onChange={(e) => setInlineServiceCategory(e.target.value)}
-              />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Input
+                  label="Default price (ex-GST) *"
+                  type="number"
+                  placeholder="e.g. 85.00"
+                  value={inlineServicePrice}
+                  onChange={(e) => setInlineServicePrice(e.target.value)}
+                  aria-label="Item default price"
+                />
+                <Input
+                  label="Category"
+                  placeholder="e.g. Plumbing, Electrical"
+                  value={inlineServiceCategory}
+                  onChange={(e) => setInlineServiceCategory(e.target.value)}
+                  aria-label="Item category"
+                />
+              </div>
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input type="checkbox" checked={inlineServiceGstExempt} onChange={(e) => setInlineServiceGstExempt(e.target.checked)} className="rounded border-gray-300" />
+                GST exempt
+              </label>
               {inlineServiceError && (
                 <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
                   {inlineServiceError}
                 </div>
               )}
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  disabled={savingInlineService}
-                  onClick={handleInlineServiceSubmit}
-                >
-                  {savingInlineService ? 'Saving…' : 'Create Service'}
-                </Button>
+              <div className="flex justify-end gap-2">
                 <Button
                   type="button"
                   variant="secondary"
@@ -700,6 +799,13 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
                   onClick={() => setShowInlineServiceForm(false)}
                 >
                   Cancel
+                </Button>
+                <Button
+                  type="button"
+                  disabled={savingInlineService}
+                  onClick={handleInlineServiceSubmit}
+                >
+                  {savingInlineService ? 'Saving…' : 'Create Item'}
                 </Button>
               </div>
             </div>

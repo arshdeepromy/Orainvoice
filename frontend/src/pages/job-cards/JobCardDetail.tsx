@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Modal } from '../../components/ui'
 
@@ -19,19 +19,6 @@ interface Customer {
   address?: string
 }
 
-interface Vehicle {
-  rego: string
-  make: string
-  model: string
-  year: number | null
-  colour: string
-  body_type: string
-  fuel_type: string
-  engine_size: string
-  wof_expiry: string | null
-  registration_expiry: string | null
-}
-
 interface JobCardItem {
   id: string
   description: string
@@ -41,7 +28,7 @@ interface TimeEntry {
   id: string
   started_at: string
   stopped_at: string | null
-  duration_seconds: number | null
+  duration_minutes: number | null
   user_name: string
 }
 
@@ -49,14 +36,17 @@ interface JobCardDetailData {
   id: string
   job_card_number: string | null
   status: JobCardStatus
-  customer: Customer
-  vehicle: Vehicle | null
+  customer: Customer | null
+  vehicle_rego: string | null
   description: string
   notes: string
+  assigned_to: string | null
+  assigned_to_name: string | null
   items: JobCardItem[]
   time_entries: TimeEntry[]
   total_time_seconds: number
   active_timer: TimeEntry | null
+  is_timer_active: boolean
   invoice_id: string | null
   created_at: string
   updated_at: string
@@ -137,6 +127,7 @@ function useElapsedTimer(activeTimer: TimeEntry | null): number {
 
 export default function JobCardDetail() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
 
   const [jobCard, setJobCard] = useState<JobCardDetailData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -160,8 +151,28 @@ export default function JobCardDetail() {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<JobCardDetailData>(`/job-cards/${id}`)
-      setJobCard(res.data)
+      const res = await apiClient.get(`/job-cards/${id}`)
+      const data = res.data as Record<string, unknown>
+
+      // Normalise: backend returns `line_items` but component expects `items`
+      const items = (data.items ?? data.line_items ?? []) as JobCardItem[]
+      const time_entries = (data.time_entries ?? []) as TimeEntry[]
+      const active_timer = (data.active_timer ?? null) as TimeEntry | null
+      const total_time_seconds = (data.total_time_seconds ?? 0) as number
+
+      setJobCard({
+        ...data,
+        items,
+        time_entries,
+        active_timer,
+        total_time_seconds,
+        job_card_number: (data.job_card_number ?? null) as string | null,
+        invoice_id: (data.invoice_id ?? null) as string | null,
+        assigned_to: (data.assigned_to ?? null) as string | null,
+        assigned_to_name: (data.assigned_to_name ?? null) as string | null,
+        is_timer_active: (data.is_timer_active ?? false) as boolean,
+        vehicle_rego: (data.vehicle_rego ?? null) as string | null,
+      } as JobCardDetailData)
     } catch {
       setError('Failed to load job card. Please try again.')
     } finally {
@@ -177,11 +188,19 @@ export default function JobCardDetail() {
     setTransitioning(true)
     setActionMessage('')
     try {
-      await apiClient.put(`/job-cards/${jobCard.id}`, { status: newStatus })
-      fetchJobCard()
-      setActionMessage(`Status updated to ${STATUS_CONFIG[newStatus].label}.`)
+      if (newStatus === 'completed') {
+        const res = await apiClient.post(`/job-cards/${jobCard.id}/complete`)
+        const data = res.data as { job_card_id: string; invoice_id: string }
+        setActionMessage('Job completed and invoice created.')
+        navigate(`/invoices/${data.invoice_id}`)
+      } else {
+        await apiClient.put(`/job-cards/${jobCard.id}`, { status: newStatus })
+        fetchJobCard()
+        setActionMessage(`Status updated to ${STATUS_CONFIG[newStatus].label}.`)
+      }
     } catch {
       setActionMessage('Failed to update status.')
+      fetchJobCard()
     } finally {
       setTransitioning(false)
     }
@@ -224,9 +243,10 @@ export default function JobCardDetail() {
     setConverting(true)
     setActionMessage('')
     try {
-      const res = await apiClient.post<{ id: string }>(`/job-cards/${jobCard.id}/convert`)
+      const res = await apiClient.post(`/job-cards/${jobCard.id}/convert`)
+      const data = res.data as { invoice_id: string }
       setConvertModalOpen(false)
-      window.location.href = `/invoices/${res.data.id}`
+      navigate(`/invoices/${data.invoice_id}`)
     } catch {
       setActionMessage('Failed to convert to invoice.')
       setConvertModalOpen(false)
@@ -256,9 +276,11 @@ export default function JobCardDetail() {
   const statusCfg = STATUS_CONFIG[jobCard.status] ?? STATUS_CONFIG.open
   const nextTransition = NEXT_STATUS[jobCard.status]
   const canConvert = jobCard.status === 'completed'
-  const isTimerActive = !!jobCard.active_timer && !jobCard.active_timer.stopped_at
+  const isTimerActive = jobCard.is_timer_active || (!!jobCard.active_timer && !jobCard.active_timer.stopped_at)
   const canTimer = jobCard.status === 'open' || jobCard.status === 'in_progress'
-  const totalTimeDisplay = jobCard.total_time_seconds + (isTimerActive ? timerElapsed : 0)
+  const totalTimeDisplay = (jobCard.total_time_seconds ?? 0) + (isTimerActive ? timerElapsed : 0)
+  const items = jobCard.items ?? []
+  const timeEntries = jobCard.time_entries ?? []
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
@@ -304,31 +326,35 @@ export default function JobCardDetail() {
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 mb-6">
         <section className="rounded-lg border border-gray-200 p-4">
           <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Customer</h2>
-          <p className="font-medium text-gray-900">
-            {jobCard.customer.first_name} {jobCard.customer.last_name}
-          </p>
-          {jobCard.customer.email && <p className="text-sm text-gray-600">{jobCard.customer.email}</p>}
-          {jobCard.customer.phone && <p className="text-sm text-gray-600">{jobCard.customer.phone}</p>}
-          {jobCard.customer.address && <p className="text-sm text-gray-600 mt-1">{jobCard.customer.address}</p>}
+          {jobCard.customer ? (
+            <>
+              <p className="font-medium text-gray-900">
+                {jobCard.customer.first_name} {jobCard.customer.last_name}
+              </p>
+              {jobCard.customer.email && <p className="text-sm text-gray-600">{jobCard.customer.email}</p>}
+              {jobCard.customer.phone && <p className="text-sm text-gray-600">{jobCard.customer.phone}</p>}
+              {jobCard.customer.address && <p className="text-sm text-gray-600 mt-1">{jobCard.customer.address}</p>}
+            </>
+          ) : (
+            <p className="text-sm text-gray-500">Customer details not available</p>
+          )}
         </section>
 
         <section className="rounded-lg border border-gray-200 p-4">
           <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Vehicle</h2>
-          {jobCard.vehicle ? (
-            <>
-              <p className="font-medium text-gray-900 font-mono">{jobCard.vehicle.rego}</p>
-              <p className="text-sm text-gray-700">
-                {jobCard.vehicle.year} {jobCard.vehicle.make} {jobCard.vehicle.model}
-              </p>
-              {jobCard.vehicle.colour && (
-                <p className="text-sm text-gray-600">{jobCard.vehicle.colour} · {jobCard.vehicle.body_type}</p>
-              )}
-            </>
+          {jobCard.vehicle_rego ? (
+            <p className="font-medium text-gray-900 font-mono">{jobCard.vehicle_rego}</p>
           ) : (
             <p className="text-sm text-gray-500">No vehicle linked</p>
           )}
         </section>
       </div>
+
+      {/* Assigned To */}
+      <section className="mb-6">
+        <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Assigned To</h2>
+        <p className="text-sm text-gray-900">{jobCard.assigned_to_name ?? 'Unassigned'}</p>
+      </section>
 
       {/* Description */}
       {jobCard.description && (
@@ -343,11 +369,11 @@ export default function JobCardDetail() {
       {/* Work Items */}
       <section className="mb-6">
         <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">Work to be Performed</h2>
-        {jobCard.items.length === 0 ? (
+        {items.length === 0 ? (
           <p className="text-sm text-gray-500">No work items listed.</p>
         ) : (
           <div className="rounded-lg border border-gray-200 divide-y divide-gray-200">
-            {jobCard.items.map((item, index) => (
+            {items.map((item, index) => (
               <div key={item.id} className="flex items-start gap-3 px-4 py-3">
                 <span className="flex-shrink-0 mt-0.5 h-5 w-5 rounded-full bg-blue-100 text-blue-700 text-xs font-medium flex items-center justify-center">
                   {index + 1}
@@ -390,7 +416,7 @@ export default function JobCardDetail() {
           </div>
         </div>
 
-        {jobCard.time_entries.length === 0 && !isTimerActive ? (
+        {timeEntries.length === 0 && !isTimerActive ? (
           <p className="text-sm text-gray-500">No time entries recorded.</p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-gray-200">
@@ -405,7 +431,7 @@ export default function JobCardDetail() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {jobCard.time_entries.map((entry) => (
+                {timeEntries.map((entry) => (
                   <tr key={entry.id} className={!entry.stopped_at ? 'bg-red-50' : ''}>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">{formatDateTime(entry.started_at)}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">
@@ -417,7 +443,7 @@ export default function JobCardDetail() {
                       )}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums">
-                      {entry.duration_seconds != null ? formatDuration(entry.duration_seconds) : formatDuration(timerElapsed)}
+                      {entry.duration_minutes != null ? formatDuration(entry.duration_minutes * 60) : formatDuration(timerElapsed)}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{entry.user_name}</td>
                   </tr>

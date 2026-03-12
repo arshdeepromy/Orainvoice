@@ -82,6 +82,24 @@ export default function StaffList() {
 
   // Work schedule for modal
   const [schedule, setSchedule] = useState<WeekSchedule>({ ...DEFAULT_SCHEDULE })
+
+  // Inline duplicate warnings
+  const [dupWarnings, setDupWarnings] = useState<Record<string, string | undefined>>({})
+  const dupTimers = useState<Record<string, ReturnType<typeof setTimeout>>>({})[0]
+
+  const checkDuplicate = (field: 'email' | 'phone' | 'employee_id', value: string) => {
+    if (dupTimers[field]) clearTimeout(dupTimers[field])
+    if (!value.trim()) { setDupWarnings((w: Record<string, string | undefined>) => ({ ...w, [field]: undefined })); return }
+    dupTimers[field] = setTimeout(async () => {
+      try {
+        const params: Record<string, string> = { field, value: value.trim() }
+        if (editingId) params.exclude_id = editingId
+        const res = await apiClient.get('/staff/check-duplicate', { baseURL: '/api/v2', params })
+        const data = res.data as any
+        setDupWarnings((w: Record<string, string | undefined>) => ({ ...w, [field]: data.duplicate ? data.message : undefined }))
+      } catch { /* non-blocking */ }
+    }, 400)
+  }
   const fetchStaff = useCallback(async () => {
     setLoading(true)
     try {
@@ -119,6 +137,7 @@ export default function StaffList() {
     setForm({ ...emptyForm })
     setSchedule({ ...DEFAULT_SCHEDULE })
     setFormError('')
+    setDupWarnings({})
     setShowModal(true)
   }
 
@@ -141,6 +160,7 @@ export default function StaffList() {
       ? { ...member.availability_schedule }
       : { ...DEFAULT_SCHEDULE })
     setFormError('')
+    setDupWarnings({})
     setShowModal(true)
   }
 
@@ -347,21 +367,24 @@ export default function StaffList() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                  <input type="email" value={form.email} onChange={(e) => setForm(f => ({ ...f, email: e.target.value }))}
+                  <input type="email" value={form.email} onChange={(e) => { setForm(f => ({ ...f, email: e.target.value })); checkDuplicate('email', e.target.value) }}
                     className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  {dupWarnings.email && <p className="text-xs text-red-500 mt-0.5">{dupWarnings.email}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
-                  <input type="tel" value={form.phone} onChange={(e) => setForm(f => ({ ...f, phone: e.target.value }))}
+                  <input type="tel" value={form.phone} onChange={(e) => { setForm(f => ({ ...f, phone: e.target.value })); checkDuplicate('phone', e.target.value) }}
                     className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  {dupWarnings.phone && <p className="text-xs text-red-500 mt-0.5">{dupWarnings.phone}</p>}
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Employee ID</label>
-                  <input type="text" value={form.employee_id} onChange={(e) => setForm(f => ({ ...f, employee_id: e.target.value }))}
+                  <input type="text" value={form.employee_id} onChange={(e) => { setForm(f => ({ ...f, employee_id: e.target.value })); checkDuplicate('employee_id', e.target.value) }}
                     placeholder="e.g. EMP-001"
                     className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  {dupWarnings.employee_id && <p className="text-xs text-red-500 mt-0.5">{dupWarnings.employee_id}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Position</label>

@@ -51,7 +51,8 @@ const CREDENTIAL_FIELDS: Record<string, { label: string; placeholder: string; ty
   twilio_verify: [
     { label: 'Account SID', placeholder: 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' },
     { label: 'Auth Token', placeholder: 'Your Twilio auth token', type: 'password' },
-    { label: 'Verify Service SID', placeholder: 'VAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' },
+    { label: 'From Number', placeholder: '+1234567890 (Twilio phone number)' },
+    { label: 'Verify Service SID', placeholder: 'VAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (optional if From Number set)' },
   ],
   firebase_phone_auth: [
     { label: 'Project ID', placeholder: 'my-firebase-project' },
@@ -118,19 +119,44 @@ function ProviderCard({
   onToggleActive,
   onSetDefault,
   onSaveCredentials,
+  onTestProvider,
   saving,
 }: {
   provider: SmsProvider
   onToggleActive: (key: string, active: boolean) => void
   onSetDefault: (key: string) => void
   onSaveCredentials: (key: string, creds: Record<string, string>) => void
+  onTestProvider: (key: string, toNumber: string, message: string) => Promise<void>
   saving: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
   const [creds, setCreds] = useState<Record<string, string>>({})
+  const [credsLoaded, setCredsLoaded] = useState(false)
+  const [testNumber, setTestNumber] = useState('')
+  const [testMessage, setTestMessage] = useState('Hello from OraInvoice! This is a test SMS.')
+  const [testing, setTesting] = useState(false)
   const fields = CREDENTIAL_FIELDS[provider.provider_key] ?? []
 
   const iconEl = PROVIDER_ICONS[provider.icon ?? ''] ?? PROVIDER_ICONS.phone
+
+  // Load saved credentials when expanding
+  useEffect(() => {
+    if (!expanded || credsLoaded || !provider.credentials_set) return
+    let cancelled = false
+    async function loadCreds() {
+      try {
+        const res = await apiClient.get(`/api/v2/admin/sms-providers/${provider.provider_key}/credentials`)
+        if (!cancelled && res.data?.credentials) {
+          setCreds(res.data.credentials)
+          setCredsLoaded(true)
+        }
+      } catch {
+        // Non-blocking
+      }
+    }
+    loadCreds()
+    return () => { cancelled = true }
+  }, [expanded, credsLoaded, provider.credentials_set, provider.provider_key])
 
   return (
     <div
@@ -256,6 +282,54 @@ function ProviderCard({
                   </Button>
                 </div>
               </div>
+
+              {/* Test SMS */}
+              {provider.credentials_set && (
+                <div className="border-t border-gray-200 pt-4">
+                  <h4 className="text-sm font-medium text-gray-700 mb-3">Test Connection</h4>
+                  {provider.provider_key === 'firebase_phone_auth' && (
+                    <p className="text-xs text-amber-600 mb-3">
+                      Firebase Phone Auth validates credentials only. To send actual SMS messages, configure Twilio or AWS SNS.
+                    </p>
+                  )}
+                  <div className="space-y-3">
+                    <div className="flex items-end gap-3">
+                      <div className="flex-1 max-w-xs">
+                        <Input
+                          label="Phone number (E.164)"
+                          placeholder="+6421234567"
+                          value={testNumber}
+                          onChange={(e) => setTestNumber(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    {provider.provider_key !== 'firebase_phone_auth' && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Message</label>
+                        <textarea
+                          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                          rows={3}
+                          placeholder="Enter test message..."
+                          value={testMessage}
+                          onChange={(e) => setTestMessage(e.target.value)}
+                        />
+                      </div>
+                    )}
+                    <Button
+                      onClick={async () => {
+                        setTesting(true)
+                        try { await onTestProvider(provider.provider_key, testNumber, testMessage) }
+                        finally { setTesting(false) }
+                      }}
+                      loading={testing}
+                      variant="secondary"
+                      className="w-full sm:w-auto"
+                    >
+                      {provider.provider_key === 'firebase_phone_auth' ? 'Verify Credentials' : 'Send Test SMS'}
+                    </Button>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -332,6 +406,26 @@ export function SmsProviders() {
     }
   }
 
+  async function handleTestProvider(key: string, toNumber: string, message: string) {
+    if (!toNumber.trim()) {
+      addToast('error', 'Please enter a phone number')
+      return
+    }
+    try {
+      const res = await apiClient.post(`/api/v2/admin/sms-providers/${key}/test`, {
+        to_number: toNumber.trim(),
+        message: message.trim() || 'Hello from OraInvoice! This is a test SMS.',
+      })
+      if (res.data.success) {
+        addToast('success', res.data.message)
+      } else {
+        addToast('error', res.data.message || 'Test failed')
+      }
+    } catch {
+      addToast('error', 'Failed to send test message')
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex justify-center py-12">
@@ -393,6 +487,7 @@ export function SmsProviders() {
             onToggleActive={handleToggleActive}
             onSetDefault={handleSetDefault}
             onSaveCredentials={handleSaveCredentials}
+            onTestProvider={handleTestProvider}
             saving={saving}
           />
         ))}

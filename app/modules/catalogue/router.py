@@ -14,6 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.modules.auth.rbac import require_role
 from app.modules.catalogue.schemas import (
+    ItemCreateRequest,
+    ItemCreateResponse,
+    ItemListResponse,
+    ItemResponse,
+    ItemUpdateRequest,
+    ItemUpdateResponse,
     LabourRateCreateRequest,
     LabourRateCreateResponse,
     LabourRateListResponse,
@@ -30,14 +36,13 @@ from app.modules.catalogue.schemas import (
     ServiceUpdateResponse,
 )
 from app.modules.catalogue.service import (
+    create_item,
     create_labour_rate,
     create_part,
-    create_service,
-    get_service,
+    list_items,
     list_labour_rates,
     list_parts,
-    list_services,
-    update_service,
+    update_item,
 )
 
 router = APIRouter()
@@ -54,6 +59,238 @@ def _extract_org_context(request: Request) -> tuple[uuid.UUID | None, uuid.UUID 
     except (ValueError, TypeError):
         return None, None, ip_address
     return org_uuid, user_uuid, ip_address
+
+
+# ===========================================================================
+# Items Catalogue endpoints — Requirements: 2.1, 2.2, 2.3, 2.4, 2.8, 2.9
+# ===========================================================================
+
+
+@router.get(
+    "/items",
+    response_model=ItemListResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="List items catalogue entries",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def list_items_endpoint(
+    request: Request,
+    active_only: bool = Query(False, description="Return only active items"),
+    category: str | None = Query(None, description="Filter by category"),
+    search: str | None = Query(None, description="Search items by name (case-insensitive)"),
+    limit: int = Query(100, ge=1, le=500, description="Max results"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List items catalogue entries for the organisation.
+
+    Supports filtering by active status, category, and name search.
+
+    Requirements: 2.1, 2.5
+    """
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    result = await list_items(
+        db,
+        org_id=org_uuid,
+        active_only=active_only,
+        category=category,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+
+    return ItemListResponse(
+        items=[ItemResponse(**i) for i in result["items"]],
+        total=result["total"],
+    )
+
+
+@router.post(
+    "/items",
+    response_model=ItemCreateResponse,
+    status_code=201,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    summary="Create an items catalogue entry",
+    dependencies=[require_role("org_admin")],
+)
+async def create_item_endpoint(
+    payload: ItemCreateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a new item in the organisation's catalogue.
+
+    Requirements: 2.2
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        item_data = await create_item(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid or uuid.uuid4(),
+            name=payload.name,
+            description=payload.description,
+            default_price=payload.default_price,
+            is_gst_exempt=payload.is_gst_exempt,
+            category=payload.category,
+            is_active=payload.is_active,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    return ItemCreateResponse(
+        message="Item created",
+        item=ItemResponse(**item_data),
+    )
+
+
+@router.put(
+    "/items/{item_id}",
+    response_model=ItemUpdateResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Item not found"},
+    },
+    summary="Update an items catalogue entry",
+    dependencies=[require_role("org_admin")],
+)
+async def update_item_endpoint(
+    item_id: str,
+    payload: ItemUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update an existing items catalogue entry. Only provided fields
+    are changed.
+
+    Requirements: 2.3
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        item_uuid = uuid.UUID(item_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid item ID format"},
+        )
+
+    update_kwargs = {
+        k: v for k, v in payload.model_dump().items() if v is not None
+    }
+
+    try:
+        item_data = await update_item(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid or uuid.uuid4(),
+            item_id=item_uuid,
+            ip_address=ip_address,
+            **update_kwargs,
+        )
+    except ValueError as exc:
+        error_msg = str(exc)
+        status = 404 if "not found" in error_msg.lower() else 400
+        return JSONResponse(
+            status_code=status,
+            content={"detail": error_msg},
+        )
+
+    return ItemUpdateResponse(
+        message="Item updated",
+        item=ItemResponse(**item_data),
+    )
+
+
+@router.delete(
+    "/items/{item_id}",
+    status_code=200,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Item not found"},
+    },
+    summary="Soft-delete an items catalogue entry",
+    dependencies=[require_role("org_admin")],
+)
+async def delete_item_endpoint(
+    item_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Soft-delete an item by setting is_active to false.
+
+    Requirements: 2.4
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        item_uuid = uuid.UUID(item_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid item ID format"},
+        )
+
+    try:
+        item_data = await update_item(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid or uuid.uuid4(),
+            item_id=item_uuid,
+            ip_address=ip_address,
+            is_active=False,
+        )
+    except ValueError as exc:
+        error_msg = str(exc)
+        status = 404 if "not found" in error_msg.lower() else 400
+        return JSONResponse(
+            status_code=status,
+            content={"detail": error_msg},
+        )
+
+    return {"message": "Item deactivated", "item": ItemResponse(**item_data).model_dump()}
+
+
+# ===========================================================================
+# Legacy Service endpoints — backward compatibility
+# ===========================================================================
 
 
 @router.get(
@@ -74,14 +311,12 @@ async def list_services_endpoint(
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """List service catalogue entries for the organisation.
+    """Legacy proxy — list service catalogue entries for the organisation.
 
-    When ``active_only`` is True, inactive services are hidden — used by
-    invoice creation to show only available services (Req 27.2).
-    All services (including inactive) are returned by default for
-    catalogue management and historical display.
+    Proxies to ``list_items()`` and returns the result using the legacy
+    ``ServiceListResponse`` schema (key ``services`` instead of ``items``).
 
-    Requirements: 27.1, 27.2
+    Requirements: 2.6
     """
     org_uuid, _, _ = _extract_org_context(request)
     if not org_uuid:
@@ -90,7 +325,7 @@ async def list_services_endpoint(
             content={"detail": "Organisation context required"},
         )
 
-    result = await list_services(
+    result = await list_items(
         db,
         org_id=org_uuid,
         active_only=active_only,
@@ -100,7 +335,7 @@ async def list_services_endpoint(
     )
 
     return ServiceListResponse(
-        services=[ServiceResponse(**s) for s in result["services"]],
+        services=[ServiceResponse(**s) for s in result["items"]],
         total=result["total"],
     )
 
@@ -122,9 +357,12 @@ async def create_service_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Create a new service in the organisation's catalogue.
+    """Legacy proxy — create a new service in the organisation's catalogue.
 
-    Requirements: 27.1
+    Proxies to ``create_item()`` and returns the result using the legacy
+    ``ServiceCreateResponse`` schema.
+
+    Requirements: 2.7
     """
     org_uuid, user_uuid, ip_address = _extract_org_context(request)
     if not org_uuid:
@@ -134,7 +372,7 @@ async def create_service_endpoint(
         )
 
     try:
-        service_data = await create_service(
+        item_data = await create_item(
             db,
             org_id=org_uuid,
             user_id=user_uuid or uuid.uuid4(),
@@ -154,7 +392,7 @@ async def create_service_endpoint(
 
     return ServiceCreateResponse(
         message="Service created",
-        service=ServiceResponse(**service_data),
+        service=ServiceResponse(**item_data),
     )
 
 
@@ -176,11 +414,12 @@ async def update_service_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Update an existing service catalogue entry. Only provided fields
-    are changed. Use the ``is_active`` toggle to deactivate a service
-    (Req 27.2 — hidden from invoice creation but retained for history).
+    """Legacy proxy — update an existing service catalogue entry.
 
-    Requirements: 27.1, 27.2
+    Proxies to ``update_item()`` and returns the result using the legacy
+    ``ServiceUpdateResponse`` schema.
+
+    Requirements: 2.7
     """
     org_uuid, user_uuid, ip_address = _extract_org_context(request)
     if not org_uuid:
@@ -202,11 +441,11 @@ async def update_service_endpoint(
     }
 
     try:
-        service_data = await update_service(
+        item_data = await update_item(
             db,
             org_id=org_uuid,
             user_id=user_uuid or uuid.uuid4(),
-            service_id=svc_uuid,
+            item_id=svc_uuid,
             ip_address=ip_address,
             **update_kwargs,
         )
@@ -220,7 +459,7 @@ async def update_service_endpoint(
 
     return ServiceUpdateResponse(
         message="Service updated",
-        service=ServiceResponse(**service_data),
+        service=ServiceResponse(**item_data),
     )
 
 

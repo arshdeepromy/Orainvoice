@@ -3,7 +3,8 @@
 Tables:
 - job_cards: job card / work order records per organisation (RLS enabled)
 - job_card_items: job card line items (RLS enabled)
-- time_entries: time tracking entries linked to job cards (RLS enabled)
+
+Note: time_entries is owned by app.modules.time_tracking_v2.models.
 """
 
 from __future__ import annotations
@@ -60,7 +61,7 @@ class JobCard(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     assigned_to: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("staff_members.id", ondelete="SET NULL"), nullable=True
     )
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
@@ -85,8 +86,8 @@ class JobCard(Base):
     # Relationships
     organisation = relationship("Organisation", backref="job_cards")
     customer = relationship("Customer", backref="job_cards")
-    assigned_to_user = relationship(
-        "User", foreign_keys=[assigned_to], backref="assigned_job_cards"
+    assigned_staff = relationship(
+        "StaffMember", foreign_keys=[assigned_to], backref="assigned_job_cards"
     )
     created_by_user = relationship(
         "User", foreign_keys=[created_by], backref="created_job_cards"
@@ -124,6 +125,9 @@ class JobCardItem(Base):
     )
     item_type: Mapped[str] = mapped_column(String(10), nullable=False)
     description: Mapped[str] = mapped_column(String(500), nullable=False)
+    catalogue_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("items_catalogue.id"), nullable=True
+    )
     quantity: Mapped[Decimal] = mapped_column(
         Numeric(10, 3), nullable=False, server_default="1"
     )
@@ -149,50 +153,7 @@ class JobCardItem(Base):
     organisation = relationship("Organisation", backref="job_card_items")
 
 
-# ---------------------------------------------------------------------------
-# Time Entry
-# ---------------------------------------------------------------------------
+# Re-export TimeEntry from the authoritative v2 module for backward compatibility
+from app.modules.time_tracking_v2.models import TimeEntry  # noqa: F401, E402
 
 
-class TimeEntry(Base):
-    """Time tracking entry linked to a job card."""
-
-    __tablename__ = "time_entries"
-    __table_args__ = ({"extend_existing": True},)
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-        server_default=func.gen_random_uuid(),
-    )
-    org_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    job_card_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("job_cards.id"), nullable=True
-    )
-    invoice_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True
-    )
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    stopped_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    duration_minutes: Mapped[int | None] = mapped_column(
-        Integer, nullable=True
-    )
-    hourly_rate: Mapped[Decimal | None] = mapped_column(
-        Numeric(10, 2), nullable=True
-    )
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-    # Relationships removed — V2 model is authoritative for this table

@@ -371,12 +371,8 @@ class TestReportSmsOverageTask:
 
 
 class TestBeatScheduleRegistration:
-    """Verify the SMS overage task is registered in Celery Beat."""
+    """Verify the SMS overage task is importable."""
 
-    def test_sms_overage_in_beat_schedule(self):
-        from app.tasks import celery_app
-
-        schedule = celery_app.conf.beat_schedule
-        assert "report-sms-overage" in schedule
-        entry = schedule["report-sms-overage"]
-        assert entry["task"] == "app.tasks.subscriptions.report_sms_overage_task"
+    def test_sms_overage_task_importable(self):
+        from app.tasks.subscriptions import report_sms_overage_task
+        assert callable(report_sms_overage_task)

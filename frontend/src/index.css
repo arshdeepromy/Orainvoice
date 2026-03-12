@@ -5,6 +5,13 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Prevent double-scroll: lock html/body/root to viewport,
+   let OrgLayout's <main> be the sole scroll container. */
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+
 /* Global form element styling */
 @layer base {
   select {

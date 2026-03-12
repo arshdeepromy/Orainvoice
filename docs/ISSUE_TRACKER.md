@@ -1787,3 +1787,376 @@ Affected endpoints: POST (create), PUT (update), DELETE (deactivate), POST assig
 - `frontend/src/pages/staff/StaffDetail.tsx` (work schedule section)
 
 **Related Issues**: ISSUE-043, ISSUE-044, ISSUE-045
+
+---
+
+### ISSUE-047: Discount toggle button shows garbled character for dollar sign
+
+- **Date**: 2026-03-11
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: The discount type toggle button (% / $) in InvoiceCreate and QuoteCreate pages shows a garbled or special character instead of a clean dollar sign. The `%` button renders correctly but the `$` button appears broken.
+
+**Root Cause**: The parent container `div` had `overflow-hidden` which was clipping the `$` glyph. The dollar sign character has ascenders (the vertical stroke extends above the S) that go beyond the normal text line-height bounds. Combined with a tight `min-w-[36px]` and `px-2.5` padding, the glyph was being visually clipped on the right side, making it appear garbled or as a special character.
+
+**Fix Applied**:
+1. Removed `overflow-hidden` from the parent `inline-flex` container — this was the primary cause of clipping. Used `rounded-l-md` / `rounded-r-md` on individual buttons instead for border radius
+2. Increased minimum button width from `min-w-[36px]` to `min-w-[40px]` and padding from `px-2.5` to `px-3` to give the glyph more breathing room
+3. Bumped font weight to `font-semibold` for better legibility
+4. Reverted to plain `$` and `%` characters (no need for Unicode escapes or font-mono once overflow-hidden is removed)
+
+**Files Changed**:
+- `frontend/src/pages/invoices/InvoiceCreate.tsx`
+- `frontend/src/pages/quotes/QuoteCreate.tsx`
+
+**Similar Bugs Found & Fixed**: Same toggle pattern in QuoteCreate.tsx — fixed both. Scanned entire frontend for other `$` toggle buttons — DiscountRules.tsx uses `$` in text labels (not narrow buttons), no fix needed.
+
+**Related Issues**: ISSUE-028 (InvoiceCreate redesign introduced this toggle)
+
+
+---
+
+### ISSUE-048: Record Payment does not send updated invoice email to customer
+
+- **Date**: 2026-03-11
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When clicking "Record Payment" on an invoice, the payment is recorded and the invoice status updates correctly (to paid or partially_paid), but no email is sent to the customer with the updated invoice showing the payment.
+
+**Root Cause**: The `record_cash_payment_endpoint` in `app/modules/payments/router.py` calls `record_cash_payment()` which records the payment and updates the invoice status, but never triggers an email send. The `email_invoice()` function exists in `app/modules/invoices/service.py` and handles PDF generation + SMTP sending, but it's not called after payment recording.
+
+**Fix Applied**: Added email sending after payment recording in `record_cash_payment_endpoint`. Uses a fresh session (`async_session_factory()`) with RLS context set, since the original session's transaction is already committed by the time we need to send the email (same pattern as ISSUE-005). The email is wrapped in a try/except so a failed email doesn't fail the payment response — the payment is the critical operation, the email is best-effort.
+
+**Files Changed**:
+- `app/modules/payments/router.py` — Added post-payment email via `email_invoice()` with fresh session
+
+**Similar Bugs Found & Fixed**: The Stripe webhook handler (`handle_stripe_webhook`) already has a best-effort email, but it uses the old `brevo.send_email` (plain text, no PDF attachment). This should be upgraded to use `email_invoice()` in a future pass for consistency.
+
+**Related Issues**: ISSUE-005 (fresh session needed after commit for email), ISSUE-037 (InvoiceList Record Payment modal)
+
+
+---
+
+### ISSUE-049: Record Payment returns 400 on second partial payment — missing partially_paid → partially_paid transition
+
+- **Date**: 2026-03-11
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Recording a second partial payment on an invoice returns 400 Bad Request. The payment is still committed to the database (INSERT + UPDATE + COMMIT all succeed in logs) but the frontend shows "Failed to record payment" because it receives the 400 response.
+
+**Root Cause**: The `VALID_TRANSITIONS` state machine in `app/modules/invoices/service.py` did not include `partially_paid → partially_paid` as a valid transition. When an invoice is already `partially_paid` and another partial payment is made (not enough to fully pay), the new status is still `partially_paid`. The `_validate_transition()` function raises `ValueError("Invalid status transition: partially_paid → partially_paid")` which the router catches and returns as 400. However, the `session.begin()` context manager still auto-commits the transaction on exit, so the payment INSERT and invoice UPDATE are committed despite the 400 response — causing a data inconsistency where the payment exists in the DB but the frontend thinks it failed.
+
+**Fix Applied**: Added `"partially_paid"` to the allowed transitions from `partially_paid` in `VALID_TRANSITIONS`. Multiple partial payments on the same invoice is a normal workflow.
+
+**Files Changed**:
+- `app/modules/invoices/service.py` — Added `partially_paid → partially_paid` to VALID_TRANSITIONS
+
+**Similar Bugs Found & Fixed**: The `overdue` status already correctly allows `overdue → partially_paid`. No other missing self-transitions found.
+
+**Related Issues**: ISSUE-048 (Record Payment email feature), ISSUE-024 (same class of bug — transaction commits despite error)
+
+
+---
+
+### ISSUE-050: BookingForm search dropdowns reopen after selecting a customer or service item
+
+- **Date**: 2026-03-11
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When searching and selecting a customer or service item in the BookingForm modal, the dropdown closes momentarily but then reopens with search results, forcing the user to click/select again to dismiss it.
+
+**Root Cause**: The search `useEffect` hooks for both customer and service catalogue run on every change to the search text. When a user selects an option, the `onClick` handler correctly sets `setShowCustomerDropdown(false)` / `setShowServiceDropdown(false)`, but then also sets the search text to the selected name (e.g. `setCustomerSearch('Arshdeep Singh')`). This triggers the search `useEffect` after 300ms, which re-runs the API search and sets `setShowCustomerDropdown(true)` again — reopening the dropdown.
+
+**Fix Applied**:
+1. Added `if (customerId) return` guard to the customer search `useEffect` — skips search when a customer is already selected (was partially applied in previous session)
+2. Added `if (serviceCatalogueId) return` guard to the service catalogue search `useEffect` — same fix for service items
+3. Changed customer `Input` `onChange` to always clear `customerId` when user types (not just on empty), so search re-enables if they want to change their selection
+4. Changed service `Input` `onChange` to always clear `serviceCatalogueId`, `serviceType`, and `servicePrice` when user types, so search re-enables for changing selection
+5. Added `customerId` and `serviceCatalogueId` to their respective `useEffect` dependency arrays
+
+**Files Changed**:
+- `frontend/src/pages/bookings/BookingForm.tsx` — Fixed customer and service search useEffects and onChange handlers
+
+**Similar Bugs Found & Fixed**: Checked `VehicleLiveSearch` component — uses a different pattern (component unmounts search input when vehicle is selected, showing a summary view instead), so not affected. Checked `InvoiceCreate`, `QuoteCreate`, and `RecurringInvoices` customer search — `RecurringInvoices` uses `selectedCustomer` object to gate dropdown display (`!selectedCustomer`), already protected. `InvoiceCreate` and `QuoteCreate` use different search patterns not affected by this bug.
+
+**Related Issues**: N/A
+
+
+---
+
+### ISSUE-051: Double scrolling on all pages — page content scrolls then entire app scrolls
+
+- **Date**: 2026-03-11
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: ISSUE-039 (partial fix)
+
+**Symptoms**: On any page where content is taller than the sidebar (e.g. Bookings with calendar + list), the page can be scrolled within the `<main>` area, but then the entire app/body also scrolls, creating a "double scroll" effect with empty space at the bottom.
+
+**Root Cause**: Two issues working together:
+
+1. **Missing `min-h-0` on flex column children**: The OrgLayout (and AdminLayout) use a flex column layout: root `h-screen overflow-hidden` → content area `flex flex-1 flex-col overflow-hidden` → `<main flex-1 overflow-y-auto>`. In CSS flexbox column layouts, `flex-1` sets `flex: 1 1 0%` but the default `min-height: auto` prevents the element from shrinking below its content size. When page content is tall, `<main>` grows beyond the available space, pushing the content area div beyond `h-screen`. The `overflow-hidden` clips visually but the document height still increases.
+
+2. **No height/overflow constraint on html/body/#root**: The `html`, `body`, and `#root` elements had no `height: 100%` or `overflow: hidden`, so the browser's own scrollbar could appear when the document height exceeded the viewport (due to issue #1).
+
+**Fix Applied**:
+1. Added `min-h-0` to the main content area div (`flex flex-1 flex-col overflow-hidden min-h-0`) in both OrgLayout and AdminLayout — this allows the flex child to shrink below its content size
+2. Added `min-h-0` to the `<main>` element (`flex-1 overflow-y-auto p-4 lg:p-6 min-h-0`) — belt-and-suspenders for the nested flex child
+3. Added global CSS rule `html, body, #root { height: 100%; overflow: hidden; }` in `index.css` — prevents the browser from ever showing its own scrollbar on the document
+
+**Files Changed**:
+- `frontend/src/layouts/OrgLayout.tsx` — Added `min-h-0` to content area div and `<main>`
+- `frontend/src/layouts/AdminLayout.tsx` — Same fix
+- `frontend/src/index.css` — Added `html, body, #root { height: 100%; overflow: hidden; }`
+
+**Similar Bugs Found & Fixed**: AdminLayout had the same pattern — fixed both. Auth pages (Login, Signup, etc.) use `min-h-screen` but they're standalone pages outside OrgLayout, so they're not affected.
+
+**Related Issues**: ISSUE-039 (original broken scrolling fix — addressed page-level viewport heights but missed the flexbox `min-h-0` root cause)
+
+
+---
+
+### ISSUE-052: Create Job from Booking fails with FK violation — staff_member.id passed as assigned_to instead of user_id
+
+- **Date**: 2026-03-11
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Clicking "Create Job" on a booking in the BookingListPanel returns 503 Service Unavailable. The job card is not created.
+
+**Root Cause**: The `JobCreationModal` uses `StaffPicker` to select a staff member for assignment. `StaffPicker` fetches from `/api/v2/staff` which returns `staff_members.id` as the `id` field. This ID is sent as `assigned_to` in the POST body to `/bookings/{id}/convert?target=job_card`. The `convert_booking_to_job_card` function passes this directly to `create_job_card`, which inserts it into `job_cards.assigned_to`. However, `job_cards.assigned_to` has a foreign key constraint (`fk_job_cards_assigned_to`) referencing `users.id`, not `staff_members.id`. Since staff member IDs are different from user IDs, the FK constraint fails with `ForeignKeyViolationError`.
+
+**Fix Applied**: Added staff_member.id → user_id resolution in `convert_booking_to_job_card`:
+1. When `assigned_to` is provided, first look up `StaffMember.user_id` where `StaffMember.id == assigned_to`
+2. If the staff member has a linked `user_id`, use that for the job card assignment
+3. If not found as a staff member, check if it's already a valid `users.id` (backward compatibility)
+4. If neither, pass `None` as `assigned_to` (graceful degradation — job card still created, just unassigned)
+5. Also added `vehicle_rego=booking.vehicle_rego` to the `create_job_card` call which was missing
+
+**Files Changed**:
+- `app/modules/bookings/service.py` — Added staff→user ID resolution in `convert_booking_to_job_card`, added vehicle_rego passthrough
+
+**Similar Bugs Found & Fixed**: The `BookingCalendarPage` also has a `handleConvert` function that calls the same endpoint but without a body (no `assigned_to`), so it's not affected. The `JobsPage` direct job creation uses `user_id` directly from auth context, not staff picker, so not affected.
+
+**Related Issues**: N/A
+
+
+---
+
+### ISSUE-053: Job Cards list shows missing data — no rego, no assigned staff, wrong field mapping
+
+- **Date**: 2026-03-11
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Job Cards list page shows "—" for rego and has no column for assigned staff. The "Job Card #" column always shows "—" because no such field exists on the model. When a job is created from a booking, the vehicle rego and assigned staff are not visible in the list.
+
+**Root Cause**: Multiple frontend issues in `JobCardList.tsx`:
+1. The `JobCardSummary` interface used `rego` but the backend returns `vehicle_rego` — field name mismatch
+2. No `assigned_to_name` field in the interface, and no "Assigned To" column in the table
+3. The `job_card_number` column was displayed but no such field exists on the `job_cards` DB table — always null
+4. Frontend sent `page`/`page_size` params but backend expects `limit`/`offset`
+
+**Fix Applied**:
+1. Added `vehicle_rego` and `assigned_to_name` fields to the `JobCardSummary` interface
+2. Replaced the "Job Card #" column with "Assigned To" column showing `assigned_to_name`
+3. Fixed rego display to use `vehicle_rego` (with fallback to `rego` for backward compat)
+4. Fixed pagination params to send `limit`/`offset` instead of `page`/`page_size`
+
+**Files Changed**:
+- `frontend/src/pages/job-cards/JobCardList.tsx` — Fixed interface, table columns, field mapping, and pagination params
+
+**Similar Bugs Found & Fixed**: The backend `list_job_cards` service already joins `StaffMember` to resolve `assigned_to_name` and returns `vehicle_rego` — no backend changes needed.
+
+**Related Issues**: ISSUE-052 (Create Job from Booking FK violation — fixed in same session)
+
+
+---
+
+### ISSUE-054: Job Card detail page missing most information — incomplete data mapping and minimal UI
+
+- **Date**: 2026-03-11
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Clicking a job card in the list opens the detail page, but most information is missing: line items only show description (no type, qty, price, totals), time entries show wrong duration field (`duration_seconds` vs backend's `duration_minutes`), no cancel/complete actions, no editable assignee, no toast feedback.
+
+**Root Cause**: The `JobCardDetail.tsx` component had several issues:
+1. `JobCardItem` interface only had `id` and `description` — missing `item_type`, `quantity`, `unit_price`, `line_total`, `is_completed`, `sort_order`
+2. `TimeEntry` interface used `duration_seconds` but backend returns `duration_minutes`
+3. `TimeEntry` interface had `user_name` but backend doesn't return that field
+4. Work items section only showed numbered descriptions — no pricing table
+5. No cancel job action, no complete & invoice action
+6. Assigned to section was read-only with no way to change assignee
+7. Used `actionMessage` string instead of proper toast notifications
+
+**Fix Applied**: Rewrote `JobCardDetail.tsx` with:
+1. Full `JobCardItem` interface matching backend `JobCardItemResponse` schema
+2. Fixed `TimeEntry` interface to use `duration_minutes` from backend
+3. Line items now shown in a proper table with type badge, qty, unit price, line total, and subtotal footer
+4. Added "Complete & Invoice" and "Cancel Job" action buttons for active jobs
+5. Added editable assignee section with `StaffPicker` integration
+6. Added proper toast notifications via `useToast`/`ToastContainer`
+7. Added money/quantity formatting helpers
+
+**Files Changed**:
+- `frontend/src/pages/job-cards/JobCardDetail.tsx` — Complete rewrite with full data display
+
+**Related Issues**: ISSUE-053
+
+
+---
+
+### ISSUE-055: Create Job from Booking — success animation and no-refresh UX
+
+- **Date**: 2026-03-11
+- **Severity**: low
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When creating a job from a booking, the modal closes immediately and the booking list row updates, but there's no clear visual success feedback. User wanted an animated success indicator without page refresh.
+
+**Fix Applied**: Enhanced `JobCreationModal` to show a brief animated success screen (green checkmark with SVG stroke animation) for 1.2 seconds before closing the modal and updating the booking row in-place. No page refresh occurs — the `BookingListPanel.markConverted` method updates the row with a green flash.
+
+**Files Changed**:
+- `frontend/src/pages/bookings/JobCreationModal.tsx` — Added success animation state and animated checkmark display
+
+
+---
+
+### ISSUE-056: create_job_card stores users.id or invalid ID as assigned_to — no staff member resolution
+
+- **Date**: 2026-03-11
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: developer
+- **Regression of**: N/A
+
+**Symptoms**: Job cards created with an `assigned_to` value that is a `users.id` (instead of `staff_members.id`) would have the wrong FK stored, causing the `list_job_cards` join on `StaffMember.id == JobCard.assigned_to` to fail — resulting in null `assigned_to_name` in the list view.
+
+**Root Cause**: The `create_job_card` function stored the `assigned_to` parameter directly without verifying it's a valid `staff_members.id`. While the booking conversion flow already resolved to `staff_members.id`, other callers (e.g. direct API calls) could pass a `users.id`.
+
+**Fix Applied**: Added staff member ID resolution in `create_job_card`:
+1. First check if `assigned_to` is a valid `staff_members.id` in the org
+2. If not, try resolving as `users.id` → `staff_members.id`
+3. If neither resolves, set `assigned_to` to `None` (graceful degradation)
+
+**Files Changed**:
+- `app/modules/job_cards/service.py` — Added staff member ID resolution in `create_job_card`
+
+**Related Issues**: ISSUE-052, ISSUE-053
+
+
+---
+
+### ISSUE-057: greenlet_spawn error on update_job_card / assign_job — updated_at lazy refresh
+
+- **Date**: 2026-03-11
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: developer
+- **Regression of**: N/A
+
+**Symptoms**: PUT `/api/v1/job-cards/{id}` (status transition or assignment) returns 503 with `greenlet_spawn has not been called` error. The status change is rolled back.
+
+**Root Cause**: The `JobCard.updated_at` column has `onupdate=func.now()`, which causes SQLAlchemy to expire the attribute after `db.flush()`. When `_job_card_to_dict` subsequently accesses `job_card.updated_at`, SQLAlchemy attempts a synchronous lazy-load refresh in an async context, triggering the greenlet error. The `selectinload(JobCard.customer)` fix from ISSUE-053 resolved the customer relationship lazy-load but not the column-level expiry.
+
+**Fix Applied**: Added `await db.refresh(job_card)` after `db.flush()` in three functions:
+1. `update_job_card` — after status/field changes and audit log
+2. `assign_job` — after assignment change
+3. `create_job_card` — after initial creation (server-generated `created_at`/`updated_at`)
+
+**Files Changed**:
+- `app/modules/job_cards/service.py` — Added `db.refresh(job_card)` in `update_job_card`, `assign_job`, `create_job_card`
+
+---
+
+### ISSUE-058: create_job_card customer lazy-load fragility
+
+- **Date**: 2026-03-11
+- **Severity**: low
+- **Status**: resolved
+- **Reporter**: developer
+- **Regression of**: N/A
+
+**Symptoms**: Potential `greenlet_spawn` error when creating a job card if the customer relationship isn't in the SQLAlchemy identity map.
+
+**Root Cause**: `create_job_card` queries the `Customer` separately, creates a new `JobCard`, then calls `_job_card_to_dict` which accesses `job_card.customer`. The customer might not be populated on the new ORM instance.
+
+**Fix Applied**: Explicitly set `job_card.customer = customer` after creating the `JobCard` instance, before `db.add()`.
+
+**Files Changed**:
+- `app/modules/job_cards/service.py` — Added explicit customer relationship assignment in `create_job_card`
+
+---
+
+### ISSUE-059: Mark Complete button uses wrong endpoint (PUT instead of POST /complete)
+
+- **Date**: 2026-03-11
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: developer
+- **Regression of**: N/A
+
+**Symptoms**: "Mark Complete" button on job card detail page sends a PUT with `{ status: "completed" }` instead of using the POST `/complete` endpoint that also stops the timer and creates a draft invoice.
+
+**Root Cause**: Frontend `JobCardDetail.tsx` used a generic `handleStatusTransition` for all status changes, including "Mark Complete". The dedicated `/complete` endpoint was never called.
+
+**Fix Applied**: Rewrote `JobCardDetail.tsx`:
+- "Mark Complete" now opens a confirmation modal and calls POST `/job-cards/{id}/complete`
+- On success, navigates to the created invoice
+- "Start Work" (Open → In Progress) still uses PUT
+- Updated TypeScript interfaces to match backend response (`line_items` with full pricing, `duration_minutes` not `duration_seconds`, `notes` instead of `user_name` on time entries)
+- Added line items table with grand total
+- Time entries show `duration_minutes * 60` for proper formatting
+
+**Files Changed**:
+- `frontend/src/pages/job-cards/JobCardDetail.tsx` — Full rewrite with correct API calls and data model
+
+**Related Issues**: ISSUE-056, ISSUE-057
+
+
+---
+
+### ISSUE-060: Customer search shows all results instead of filtering by sequential character match
+
+- **Date**: 2026-03-11
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Typing "har" in the Customer Name search on InvoiceCreate shows customers that don't match (e.g. "Mr. Arshdeep Singh" alongside "Mr. Harjap Singh"). The search should only show customers where the typed characters appear in sequence in the first name, last name, phone number, or car rego.
+
+**Root Cause**: The client-side filter used `.includes(term)` which is a simple substring match. This matched any customer where the search term appeared as a contiguous substring anywhere in the concatenated display name, email, or phone. It did not perform sequential character matching across individual fields (first name, last name, rego, phone). The backend `ILIKE '%term%'` also returns broad results, but the client-side filter was meant to be the precision layer.
+
+**Fix Applied**: Replaced `.includes(term)` substring matching with a sequential character matching algorithm (`matchesSequence`) that checks if all characters in the search term appear in order within each field individually. The function iterates through the haystack and advances through the needle only when characters match in sequence. Fields checked: first_name, last_name, display_name, phone, company_name, and linked vehicle regos.
+
+**Files Changed**:
+- `frontend/src/pages/invoices/InvoiceCreate.tsx` — Updated CustomerSearch filter with matchesSequence
+- `frontend/src/pages/quotes/QuoteCreate.tsx` — Same fix applied to customer search filter
+- `frontend/src/pages/job-cards/JobCardCreate.tsx` — Same fix applied to customer search filter
+
+**Similar Bugs Found & Fixed**: Same `.includes(term)` pattern existed in QuoteCreate and JobCardCreate — fixed all three.
+
+**Related Issues**: ISSUE-028 (InvoiceCreate redesign), ISSUE-027 (customer creation modal)

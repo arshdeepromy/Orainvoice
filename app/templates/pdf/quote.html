@@ -115,7 +115,9 @@
       {% for item in quote.line_items %}
       <tr style="border-bottom:1px solid #eee;">
         <td style="padding:5px 4px;">
-          {{ item.description }}
+          {% set desc_parts = item.description.split('\n') if item.description else [''] %}
+          {{ desc_parts[0] }}
+          {% if desc_parts | length > 1 %}<br><span style="color:#666; font-size:8pt;">{{ desc_parts[1:] | join('<br>') }}</span>{% endif %}
           {% if item.warranty_note %}<br><span style="color:#666; font-size:8pt; font-style:italic;">Warranty: {{ item.warranty_note }}</span>{% endif %}
         </td>
         <td style="text-align:center; padding:5px 4px;">

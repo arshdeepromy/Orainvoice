@@ -13,7 +13,8 @@ from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
-from app.modules.job_cards.models import JobCard, JobCardItem, TimeEntry
+from app.modules.job_cards.models import JobCard, JobCardItem
+from app.modules.time_tracking_v2.models import TimeEntry
 from app.modules.catalogue.models import LabourRate
 
 
@@ -50,8 +51,8 @@ async def start_timer(
             and_(
                 TimeEntry.org_id == org_id,
                 TimeEntry.user_id == user_id,
-                TimeEntry.job_card_id == job_card_id,
-                TimeEntry.stopped_at.is_(None),
+                TimeEntry.job_id == job_card_id,
+                TimeEntry.end_time.is_(None),
             )
         )
     )
@@ -65,9 +66,9 @@ async def start_timer(
     entry = TimeEntry(
         org_id=org_id,
         user_id=user_id,
-        job_card_id=job_card_id,
-        started_at=now,
-        notes=notes,
+        job_id=job_card_id,
+        start_time=now,
+        description=notes,
     )
     db.add(entry)
     await db.flush()
@@ -108,8 +109,8 @@ async def stop_timer(
             and_(
                 TimeEntry.org_id == org_id,
                 TimeEntry.user_id == user_id,
-                TimeEntry.job_card_id == job_card_id,
-                TimeEntry.stopped_at.is_(None),
+                TimeEntry.job_id == job_card_id,
+                TimeEntry.end_time.is_(None),
             )
         )
     )
@@ -118,13 +119,13 @@ async def stop_timer(
         raise ValueError("No active timer found for this user on this job card")
 
     now = datetime.now(timezone.utc)
-    duration_seconds = int((now - entry.started_at).total_seconds())
+    duration_seconds = int((now - entry.start_time).total_seconds())
     duration_minutes = max(1, round(duration_seconds / 60))
 
-    entry.stopped_at = now
+    entry.end_time = now
     entry.duration_minutes = duration_minutes
     if notes is not None:
-        entry.notes = notes
+        entry.description = notes
 
     await db.flush()
 
@@ -161,10 +162,10 @@ async def get_time_entries(
         .where(
             and_(
                 TimeEntry.org_id == org_id,
-                TimeEntry.job_card_id == job_card_id,
+                TimeEntry.job_id == job_card_id,
             )
         )
-        .order_by(TimeEntry.started_at.desc())
+        .order_by(TimeEntry.start_time.desc())
     )
     entries = result.scalars().all()
     return [_time_entry_to_dict(e) for e in entries]
@@ -192,7 +193,7 @@ async def add_time_as_labour_line_item(
             and_(
                 TimeEntry.id == time_entry_id,
                 TimeEntry.org_id == org_id,
-                TimeEntry.job_card_id == job_card_id,
+                TimeEntry.job_id == job_card_id,
             )
         )
     )
@@ -200,7 +201,7 @@ async def add_time_as_labour_line_item(
     if not entry:
         raise ValueError("Time entry not found")
 
-    if entry.stopped_at is None:
+    if entry.end_time is None:
         raise ValueError("Cannot add an active timer as a line item — stop it first")
 
     if entry.duration_minutes is None or entry.duration_minutes <= 0:
@@ -305,9 +306,9 @@ async def get_employee_hours_report(
         .where(
             and_(
                 TimeEntry.org_id == org_id,
-                TimeEntry.stopped_at.isnot(None),
-                TimeEntry.started_at >= start_date,
-                TimeEntry.started_at <= end_date,
+                TimeEntry.end_time.isnot(None),
+                TimeEntry.start_time >= start_date,
+                TimeEntry.start_time <= end_date,
             )
         )
         .group_by(TimeEntry.user_id)
@@ -346,12 +347,12 @@ def _time_entry_to_dict(entry: TimeEntry) -> dict:
     """Convert a TimeEntry ORM instance to a plain dict."""
     return {
         "id": entry.id,
-        "job_card_id": entry.job_card_id,
+        "job_card_id": entry.job_id,
         "user_id": entry.user_id,
-        "started_at": entry.started_at,
-        "stopped_at": entry.stopped_at,
+        "started_at": entry.start_time,
+        "stopped_at": entry.end_time,
         "duration_minutes": entry.duration_minutes,
         "hourly_rate": entry.hourly_rate,
-        "notes": entry.notes,
+        "notes": entry.description,
         "created_at": entry.created_at,
     }

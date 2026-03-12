@@ -14,10 +14,13 @@ from app.modules.sms_providers.schemas import (
     SmsProviderCredentialsRequest,
     SmsProviderCredentialsResponse,
     SmsProviderListResponse,
+    SmsProviderTestRequest,
+    SmsProviderTestResponse,
     SmsProviderUpdateRequest,
     SmsProviderUpdateResponse,
 )
 from app.modules.sms_providers.service import (
+    get_provider_credentials,
     list_sms_providers,
     save_provider_credentials,
     update_sms_provider,
@@ -103,3 +106,57 @@ async def put_credentials(
         message=f"Credentials saved for '{provider_key}'",
         credentials_set=True,
     )
+
+
+@router.get(
+    "/{provider_key}/credentials",
+    summary="Get saved credentials (masked)",
+    dependencies=[require_role("global_admin")],
+)
+async def get_credentials(
+    provider_key: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return saved credentials with sensitive values masked."""
+    creds = await get_provider_credentials(db, provider_key)
+    if creds is None:
+        return {"credentials": {}, "credentials_set": False}
+
+    # Mask sensitive values — show first 4 chars + asterisks
+    masked = {}
+    for key, val in creds.items():
+        val_str = str(val)
+        if len(val_str) <= 4:
+            masked[key] = val_str
+        else:
+            masked[key] = val_str[:4] + "•" * min(len(val_str) - 4, 12)
+    return {"credentials": masked, "credentials_set": True}
+
+
+@router.post(
+    "/{provider_key}/test",
+    response_model=SmsProviderTestResponse,
+    summary="Send a test SMS via provider",
+    dependencies=[require_role("global_admin")],
+)
+async def test_provider(
+    provider_key: str,
+    payload: SmsProviderTestRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Send a test SMS message to verify provider configuration."""
+    from app.modules.sms_providers.service import test_sms_provider
+
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    result = await test_sms_provider(
+        db,
+        provider_key=provider_key,
+        to_number=payload.to_number,
+        message=payload.message,
+        admin_user_id=uuid.UUID(user_id) if user_id else None,
+        ip_address=ip_address,
+    )
+    return SmsProviderTestResponse(**result)

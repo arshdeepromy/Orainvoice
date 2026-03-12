@@ -1,9 +1,13 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo, useRef } from 'react'
 import apiClient from '../../api/client'
 import { useToast } from '../../components/ui'
 import BookingCalendar from './BookingCalendar'
+import type { BookingSearchResult, CalendarView } from './BookingCalendar'
 import BookingForm from './BookingForm'
-import type { BookingSearchResult } from './BookingCalendar'
+import BookingListPanel from './BookingListPanel'
+import type { BookingListItem } from './BookingListPanel'
+import type { BookingListPanelHandle } from './BookingListPanel'
+import JobCreationModal from './JobCreationModal'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -30,9 +34,38 @@ export default function BookingCalendarPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [editBooking, setEditBooking] = useState<BookingSearchResult | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [calendarView, setCalendarView] = useState<CalendarView>('week')
+  const [calendarDate, setCalendarDate] = useState(new Date())
+  const [jobModalBooking, setJobModalBooking] = useState<BookingListItem | null>(null)
   const { addToast } = useToast()
+  const listPanelRef = useRef<BookingListPanelHandle>(null)
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  /** Compute the start/end dates for the current calendar view. */
+  const { startDate, endDate } = useMemo(() => {
+    const d = calendarDate
+    if (calendarView === 'day') {
+      const s = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+      const e = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999)
+      return { startDate: s, endDate: e }
+    }
+    if (calendarView === 'week') {
+      const day = d.getDay()
+      const diff = day === 0 ? -6 : 1 - day // Monday start
+      const ws = new Date(d)
+      ws.setDate(ws.getDate() + diff)
+      ws.setHours(0, 0, 0, 0)
+      const we = new Date(ws)
+      we.setDate(we.getDate() + 6)
+      we.setHours(23, 59, 59, 999)
+      return { startDate: ws, endDate: we }
+    }
+    // month
+    const s = new Date(d.getFullYear(), d.getMonth(), 1)
+    const e = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999)
+    return { startDate: s, endDate: e }
+  }, [calendarView, calendarDate])
 
   const handleCreate = () => {
     setEditBooking(null)
@@ -76,6 +109,19 @@ export default function BookingCalendarPage() {
         onEditBooking={handleEdit}
         onConvertBooking={handleConvert}
         refreshKey={refreshKey}
+        onViewChange={setCalendarView}
+        onDateChange={setCalendarDate}
+      />
+
+      <BookingListPanel
+        ref={listPanelRef}
+        startDate={startDate}
+        endDate={endDate}
+        calendarDate={calendarDate}
+        view={calendarView}
+        refreshKey={refreshKey}
+        onRefresh={refresh}
+        onCreateJob={(booking) => setJobModalBooking(booking)}
       />
 
       <BookingForm
@@ -84,6 +130,20 @@ export default function BookingCalendarPage() {
         onSaved={handleSaved}
         editBooking={editBooking}
       />
+
+      {jobModalBooking && (
+        <JobCreationModal
+          booking={jobModalBooking}
+          isOpen={!!jobModalBooking}
+          onClose={() => setJobModalBooking(null)}
+          onSuccess={(jobCardId) => {
+            const bookingId = jobModalBooking.id
+            setJobModalBooking(null)
+            // Update the row in-place with a green flash instead of full refresh
+            listPanelRef.current?.markConverted(bookingId, jobCardId)
+          }}
+        />
+      )}
     </div>
   )
 }

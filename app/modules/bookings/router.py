@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.modules.auth.rbac import require_role
 from app.modules.bookings.schemas import (
+    BookingConvertBody,
     BookingConvertResponse,
     BookingConvertTarget,
     BookingCreate,
@@ -123,7 +124,7 @@ async def create_booking_endpoint(
 )
 async def list_bookings_endpoint(
     request: Request,
-    view: str = Query(default="week", regex="^(day|week|month)$", description="Calendar view type"),
+    view: str = Query(default="week", pattern="^(day|week|month)$", description="Calendar view type"),
     date: datetime | None = Query(default=None, description="Reference date for the view"),
     status: str | None = Query(default=None, description="Filter by booking status"),
     branch_id: uuid.UUID | None = Query(default=None, description="Filter by branch"),
@@ -223,9 +224,8 @@ async def update_booking_endpoint(
     updates: dict = {}
     if payload.status is not None:
         updates["status"] = payload.status.value
-    for field in ("customer_id", "vehicle_rego", "branch_id",
-                   "service_type", "scheduled_at", "duration_minutes",
-                   "notes", "assigned_to"):
+    for field in ("service_type", "vehicle_rego", "scheduled_at", "duration_minutes",
+                   "notes", "staff_id"):
         val = getattr(payload, field, None)
         if val is not None:
             updates[field] = val
@@ -265,6 +265,7 @@ async def convert_booking_endpoint(
     target: BookingConvertTarget = Query(
         ..., description="Conversion target: 'job_card' or 'invoice'"
     ),
+    body: BookingConvertBody | None = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     """One-click conversion of a booking to a Job Card or Draft invoice.
@@ -272,7 +273,10 @@ async def convert_booking_endpoint(
     Pre-fills the created entity with appointment details (customer, vehicle,
     service type, notes). Transitions the booking to 'completed'.
 
-    Requirements: 64.5
+    When target is 'job_card', an optional JSON body may include
+    ``assigned_to`` to set the job card assignee.
+
+    Requirements: 64.5, 3.6
     """
     org_uuid, user_uuid, ip_address = _extract_org_context(request)
     if not org_uuid or not user_uuid:
@@ -283,11 +287,13 @@ async def convert_booking_endpoint(
 
     try:
         if target == BookingConvertTarget.job_card:
+            assigned_to = body.assigned_to if body else None
             result = await convert_booking_to_job_card(
                 db,
                 org_id=org_uuid,
                 user_id=user_uuid,
                 booking_id=booking_id,
+                assigned_to=assigned_to,
                 ip_address=ip_address,
             )
         else:

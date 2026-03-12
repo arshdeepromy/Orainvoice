@@ -47,8 +47,6 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-workshoppro}
       REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,51 +86,28 @@ services:
       - app
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
 
-  # --- Celery Worker ---
-  celery-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  # --- Nginx Reverse Proxy ---
+  nginx:
+    image: nginx:alpine
     restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-workshoppro}
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend/dist:/app/dist:ro
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    command: >
-      celery -A app.tasks worker
-      --loglevel=info
-      --queues=notifications,pdf_generation,reports,integrations,scheduled_jobs
-      --concurrency=4
+      - app
+      - frontend
 
-  # --- Celery Beat (Scheduler) ---
-  celery-beat:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  # --- Cloudflare Tunnel (bypasses Colima SSH port forwarding) ---
+  cloudflared:
+    image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    env_file:
-      - .env
+    command: tunnel run
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-workshoppro}
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    command: >
-      celery -A app.tasks beat
-      --loglevel=info
+      - nginx
 
 volumes:
   pgdata:

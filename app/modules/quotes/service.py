@@ -954,6 +954,13 @@ async def convert_quote_to_invoice(
             "Only sent or accepted quotes can be converted to invoices."
         )
 
+    # Prevent duplicate conversion
+    if quote_dict.get("converted_invoice_id"):
+        raise ValueError(
+            "This quote has already been converted to an invoice. "
+            "Delete the existing invoice first to convert again."
+        )
+
     # Build line items data for invoice creation
     invoice_line_items = []
     for li in quote_dict.get("line_items", []):
@@ -985,18 +992,19 @@ async def convert_quote_to_invoice(
         ip_address=ip_address,
     )
 
-    # Update quote status to accepted if it was sent
-    if quote_dict["status"] == "sent":
-        result = await db.execute(
-            select(Quote).where(
-                Quote.id == quote_id,
-                Quote.org_id == org_id,
-            )
+    # Update quote status to accepted if it was sent, and store converted invoice ID
+    result = await db.execute(
+        select(Quote).where(
+            Quote.id == quote_id,
+            Quote.org_id == org_id,
         )
-        quote_obj = result.scalar_one_or_none()
-        if quote_obj is not None:
+    )
+    quote_obj = result.scalar_one_or_none()
+    if quote_obj is not None:
+        if quote_obj.status == "sent":
             quote_obj.status = "accepted"
-            await db.flush()
+        quote_obj.converted_invoice_id = invoice_dict["id"]
+        await db.flush()
 
     # Audit log
     await write_audit_log(

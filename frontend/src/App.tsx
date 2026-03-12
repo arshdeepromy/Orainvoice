@@ -85,12 +85,16 @@ const SetupWizard = lazy(() => import('@/pages/setup/SetupWizard').then(m => ({ 
 const JobList = lazy(() => import('@/pages/jobs/JobList'))
 const JobDetail = lazy(() => import('@/pages/jobs/JobDetail'))
 const JobBoard = lazy(() => import('@/pages/jobs/JobBoard'))
+const JobsPage = lazy(() => import('@/pages/jobs/JobsPage'))
 
 /* Portal pages (public, token-based) */
 const PortalPage = lazy(() => import('@/pages/portal/PortalPage').then(m => ({ default: m.PortalPage })))
 
 /* Catalogue pages */
 const CataloguePage = lazy(() => import('@/pages/catalogue/CataloguePage'))
+
+/* Items page */
+const ItemsPage = lazy(() => import('@/pages/items/ItemsPage'))
 
 /* Onboarding */
 const OnboardingWizard = lazy(() => import('@/pages/onboarding/OnboardingWizard').then(m => ({ default: m.OnboardingWizard })))
@@ -360,9 +364,12 @@ function AppRoutes() {
           <Route path="/setup" element={<Suspense fallback={<LazyFallback />}><SetupWizard /></Suspense>} />
 
           {/* Jobs v2 */}
-          <Route path="/jobs" element={<Suspense fallback={<LazyFallback />}><JobList /></Suspense>} />
+          <Route path="/jobs" element={<Suspense fallback={<LazyFallback />}><JobsPage /></Suspense>} />
           <Route path="/jobs/board" element={<Suspense fallback={<LazyFallback />}><JobBoard /></Suspense>} />
           <Route path="/jobs/:id" element={<Suspense fallback={<LazyFallback />}><JobDetailRoute /></Suspense>} />
+
+          {/* Items */}
+          <Route path="/items" element={<Suspense fallback={<LazyFallback />}><ItemsPage /></Suspense>} />
 
           {/* Catalogue */}
           <Route path="/catalogue" element={<Suspense fallback={<LazyFallback />}><CataloguePage /></Suspense>} />

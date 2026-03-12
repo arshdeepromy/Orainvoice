@@ -14,6 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.modules.auth.rbac import require_role
 from app.modules.job_cards.schemas import (
+    AssignJobRequest,
+    AssignJobResponse,
+    CompleteJobResponse,
     JobCardCombineRequest,
     JobCardCombineResponse,
     JobCardConvertResponse,
@@ -24,13 +27,20 @@ from app.modules.job_cards.schemas import (
     JobCardResponse,
     JobCardSearchResult,
     JobCardUpdate,
+    TimeEntryResponse,
+    TimerStatusResponse,
 )
 from app.modules.job_cards.service import (
+    assign_job,
     combine_job_cards_to_invoice,
+    complete_job,
     convert_job_card_to_invoice,
     create_job_card,
     get_job_card,
+    get_timer_entries,
     list_job_cards,
+    start_timer,
+    stop_timer,
     update_job_card,
 )
 
@@ -242,11 +252,24 @@ async def get_job_card_endpoint(
         result = await get_job_card(db, org_id=org_uuid, job_card_id=job_card_id)
     except ValueError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Error loading job card: {exc}"},
+        )
 
-    return JobCardResponse(
-        **{k: v for k, v in result.items() if k != "line_items"},
-        line_items=[JobCardItemResponse(**li) for li in result["line_items"]],
-    )
+    # Separate line_items for schema conversion; pass everything else through
+    line_items_raw = result.pop("line_items", [])
+    try:
+        return JobCardResponse(
+            **result,
+            line_items=[JobCardItemResponse(**li) for li in line_items_raw],
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Error serializing job card: {exc}"},
+        )
 
 
 @router.put(
@@ -370,3 +393,269 @@ async def convert_job_card_endpoint(
     await db.commit()
 
     return JobCardConvertResponse(**result)
+
+
+@router.post(
+    "/{job_card_id}/timer/start",
+    response_model=TimeEntryResponse,
+    status_code=201,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Not assigned to this job"},
+        404: {"description": "Job card not found"},
+        409: {"description": "Timer already running"},
+    },
+    summary="Start a timer on a job card",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def start_timer_endpoint(
+    job_card_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a new time entry with started_at set to the current server timestamp.
+
+    Requirements: 7.1, 7.3, 7.6
+    """
+    org_uuid, user_uuid, _ = _extract_org_context(request)
+    if not org_uuid or not user_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    role = getattr(request.state, "role", None)
+
+    try:
+        result = await start_timer(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            job_card_id=job_card_id,
+            role=role or "",
+        )
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+    except ValueError as exc:
+        error_msg = str(exc)
+        if "already running" in error_msg.lower():
+            status_code = 409
+        elif "not found" in error_msg.lower():
+            status_code = 404
+        else:
+            status_code = 400
+        return JSONResponse(status_code=status_code, content={"detail": error_msg})
+
+    return TimeEntryResponse(**result)
+
+
+@router.post(
+    "/{job_card_id}/timer/stop",
+    response_model=TimeEntryResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Not assigned to this job"},
+        404: {"description": "No active timer or job card not found"},
+    },
+    summary="Stop the active timer on a job card",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def stop_timer_endpoint(
+    job_card_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Stop the active time entry, setting stopped_at and calculating duration_minutes.
+
+    Requirements: 7.2, 7.4, 7.6
+    """
+    org_uuid, user_uuid, _ = _extract_org_context(request)
+    if not org_uuid or not user_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    role = getattr(request.state, "role", None)
+
+    try:
+        result = await stop_timer(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            job_card_id=job_card_id,
+            role=role or "",
+        )
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+    except ValueError as exc:
+        error_msg = str(exc)
+        if "no active timer" in error_msg.lower():
+            status_code = 404
+        elif "not found" in error_msg.lower():
+            status_code = 404
+        else:
+            status_code = 400
+        return JSONResponse(status_code=status_code, content={"detail": error_msg})
+
+    return TimeEntryResponse(**result)
+
+
+@router.get(
+    "/{job_card_id}/timer",
+    response_model=TimerStatusResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="Get all time entries for a job card",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def get_timer_entries_endpoint(
+    job_card_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return all time entries for a job card with an active timer flag.
+
+    Requirements: 7.5, 7.6
+    """
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    result = await get_timer_entries(
+        db,
+        org_id=org_uuid,
+        job_card_id=job_card_id,
+    )
+
+    return TimerStatusResponse(
+        entries=[TimeEntryResponse(**e) for e in result["entries"]],
+        is_active=result["is_active"],
+    )
+
+@router.post(
+    "/{job_card_id}/complete",
+    response_model=CompleteJobResponse,
+    responses={
+        400: {"description": "Invalid status transition"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        404: {"description": "Job card not found"},
+        500: {"description": "Invoice creation failed"},
+    },
+    summary="Complete a job and create a draft invoice",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def complete_job_endpoint(
+    job_card_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Stop any active timer, mark job as completed, and auto-create a draft invoice.
+
+    Requirements: 6.3, 8.5
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid or not user_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    role = getattr(request.state, "role", None)
+
+    try:
+        result = await complete_job(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            job_card_id=job_card_id,
+            role=role or "",
+            ip_address=ip_address,
+        )
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+    except ValueError as exc:
+        error_msg = str(exc)
+        if "not found" in error_msg.lower():
+            status_code = 404
+        else:
+            status_code = 400
+        return JSONResponse(status_code=status_code, content={"detail": error_msg})
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Invoice creation failed: {exc}"},
+        )
+
+    return CompleteJobResponse(**result)
+
+
+@router.put(
+    "/{job_card_id}/assign",
+    response_model=AssignJobResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Not allowed to assign to another user"},
+        404: {"description": "Job card not found"},
+    },
+    summary="Assign or reassign a job card",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def assign_job_endpoint(
+    job_card_id: uuid.UUID,
+    payload: AssignJobRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Assign or reassign a job card to a staff member.
+
+    Non-admin users can only assign to themselves. Admins can assign to any
+    active staff member. An optional takeover_note records the reassignment
+    reason with the previous assignee's name and timestamp.
+
+    Requirements: 8.5, 8.6, 8.7, 8.8
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid or not user_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    role = getattr(request.state, "role", None)
+
+    try:
+        result = await assign_job(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            job_card_id=job_card_id,
+            role=role or "",
+            new_assignee_id=payload.new_assignee_id,
+            takeover_note=payload.takeover_note,
+        )
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+    except ValueError as exc:
+        error_msg = str(exc)
+        if "not found" in error_msg.lower():
+            status_code = 404
+        else:
+            status_code = 400
+        return JSONResponse(status_code=status_code, content={"detail": error_msg})
+
+    jc_resp = JobCardResponse(
+        **{k: v for k, v in result.items() if k != "line_items"},
+        line_items=[JobCardItemResponse(**li) for li in result["line_items"]],
+    )
+
+    return AssignJobResponse(job_card=jc_resp)
+
+

@@ -6,7 +6,7 @@ import { Button, Select, Badge, Spinner } from '../../components/ui'
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type CalendarView = 'day' | 'week' | 'month'
+export type CalendarView = 'day' | 'week' | 'month'
 type BookingStatus = 'scheduled' | 'confirmed' | 'completed' | 'cancelled' | 'no_show'
 type BadgeVariant = 'success' | 'warning' | 'error' | 'info' | 'neutral'
 
@@ -33,6 +33,8 @@ interface BookingCalendarProps {
   onEditBooking: (booking: BookingSearchResult) => void
   onConvertBooking: (booking: BookingSearchResult, target: 'job_card' | 'invoice') => void
   refreshKey: number
+  onViewChange?: (view: CalendarView) => void
+  onDateChange?: (date: Date) => void
 }
 
 /* ------------------------------------------------------------------ */
@@ -121,7 +123,7 @@ function getBookingsForSlot(bookings: BookingSearchResult[], date: Date, hour: n
  *
  * Requirements: 64.1
  */
-export default function BookingCalendar({ onCreateBooking, onEditBooking, onConvertBooking, refreshKey }: BookingCalendarProps) {
+export default function BookingCalendar({ onCreateBooking, onEditBooking, onConvertBooking, refreshKey, onViewChange, onDateChange }: BookingCalendarProps) {
   const [view, setView] = useState<CalendarView>('week')
   const [currentDate, setCurrentDate] = useState(new Date())
   const [statusFilter, setStatusFilter] = useState('')
@@ -149,6 +151,10 @@ export default function BookingCalendar({ onCreateBooking, onEditBooking, onConv
   }, [view, currentDate, statusFilter])
 
   useEffect(() => { fetchBookings() }, [fetchBookings, refreshKey])
+
+  /* Notify parent of view/date changes */
+  useEffect(() => { onViewChange?.(view) }, [view, onViewChange])
+  useEffect(() => { onDateChange?.(currentDate) }, [currentDate, onDateChange])
 
   /* Navigation */
   const navigate = (direction: -1 | 1) => {

@@ -80,27 +80,8 @@ class TestComplianceExpiryReminders:
         result = await svc.check_expiry(ORG_ID, days_ahead=30)
         assert len(result) == 0
 
-    def test_celery_task_callable(self) -> None:
+    def test_task_callable(self) -> None:
         """The check_compliance_expiry_task is importable and callable."""
         from app.tasks.scheduled import check_compliance_expiry_task
 
         assert callable(check_compliance_expiry_task)
-
-    @patch("app.tasks.scheduled._run_async")
-    def test_celery_task_returns_result(self, mock_run_async: MagicMock) -> None:
-        """The Celery task returns the result from the async function."""
-        from app.tasks.scheduled import check_compliance_expiry_task
-
-        mock_run_async.return_value = {"reminders_sent": 3, "errors": 0}
-        result = check_compliance_expiry_task()
-        assert result["reminders_sent"] == 3
-        assert result["errors"] == 0
-
-    @patch("app.tasks.scheduled._run_async")
-    def test_celery_task_handles_error(self, mock_run_async: MagicMock) -> None:
-        """The Celery task handles exceptions gracefully."""
-        from app.tasks.scheduled import check_compliance_expiry_task
-
-        mock_run_async.side_effect = RuntimeError("DB connection failed")
-        result = check_compliance_expiry_task()
-        assert "error" in result

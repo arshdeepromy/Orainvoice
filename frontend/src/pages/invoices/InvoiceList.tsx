@@ -156,6 +156,16 @@ function formatDate(dateStr: string | null | undefined): string {
   return new Intl.DateTimeFormat('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(dateStr))
 }
 
+const PAYMENT_TERMS_LABELS: Record<string, string> = {
+  due_on_receipt: 'Due on Receipt', net_7: 'Net 7', net_15: 'Net 15',
+  net_30: 'Net 30', net_45: 'Net 45', net_60: 'Net 60', net_90: 'Net 90',
+}
+
+function formatPaymentTerms(terms: string | null | undefined): string {
+  if (!terms) return 'Due on Receipt'
+  return PAYMENT_TERMS_LABELS[terms] || terms.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
+
 function formatDateShort(dateStr: string | null | undefined): string {
   if (!dateStr) return '—'
   return new Intl.DateTimeFormat('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(dateStr))
@@ -1007,7 +1017,7 @@ export default function InvoiceList() {
                           </div>
                           <div className="flex justify-between">
                             <dt className="text-gray-500">Terms :</dt>
-                            <dd className="text-gray-900">{invoice.payment_terms || 'Due on Receipt'}</dd>
+                            <dd className="text-gray-900">{formatPaymentTerms(invoice.payment_terms)}</dd>
                           </div>
                           <div className="flex justify-between">
                             <dt className="text-gray-500">Due Date :</dt>
@@ -1073,7 +1083,10 @@ export default function InvoiceList() {
                           <tr key={item.id} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
                             <td className="px-4 py-3 text-sm text-gray-500">{idx + 1}</td>
                             <td className="px-4 py-3 text-sm text-gray-900">
-                              {item.description}
+                              <div>{item.description?.split('\n')[0]}</div>
+                              {item.description?.includes('\n') && (
+                                <div className="text-xs text-gray-500 mt-0.5 whitespace-pre-line">{item.description.split('\n').slice(1).join('\n')}</div>
+                              )}
                               {item.part_number && <span className="text-xs text-gray-400 ml-2">#{item.part_number}</span>}
                               {item.warranty_note && (
                                 <p className="text-xs text-blue-500 mt-0.5">Warranty: {item.warranty_note}</p>
@@ -1297,6 +1310,7 @@ export default function InvoiceList() {
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="cash">Cash</option>
+              <option value="eftpos">EFTPOS</option>
               <option value="bank_transfer">Bank Transfer</option>
               <option value="card">Card</option>
               <option value="cheque">Cheque</option>

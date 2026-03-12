@@ -403,13 +403,8 @@ class TestConvertTrialToActive:
 
 
 class TestCeleryBeatSchedule:
-    """Verify the trial expiry task is registered in Celery Beat."""
+    """Verify the trial expiry task is importable."""
 
-    def test_beat_schedule_includes_trial_check(self):
-        from app.tasks import celery_app
-
-        schedule = celery_app.conf.beat_schedule
-        assert "check-trial-expiry" in schedule
-        entry = schedule["check-trial-expiry"]
-        assert entry["task"] == "app.tasks.subscriptions.check_trial_expiry_task"
-        assert entry["schedule"] == 3600.0  # Every hour
+    def test_trial_expiry_task_importable(self):
+        from app.tasks.subscriptions import check_trial_expiry_task
+        assert callable(check_trial_expiry_task)

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class BookingStatus(str, Enum):
+    pending = "pending"
     scheduled = "scheduled"
     confirmed = "confirmed"
     completed = "completed"
@@ -58,15 +59,13 @@ class BookingCreate(BaseModel):
 class BookingUpdate(BaseModel):
     """Request body for PUT /api/v1/bookings/{id}."""
 
-    customer_id: uuid.UUID | None = None
-    vehicle_rego: str | None = None
-    branch_id: uuid.UUID | None = None
     service_type: str | None = None
+    vehicle_rego: str | None = None
     scheduled_at: datetime | None = None
     duration_minutes: int | None = Field(default=None, ge=15, le=480)
     notes: str | None = None
     status: BookingStatus | None = None
-    assigned_to: uuid.UUID | None = None
+    staff_id: uuid.UUID | None = None
 
 
 class BookingResponse(BaseModel):
@@ -74,25 +73,28 @@ class BookingResponse(BaseModel):
 
     id: uuid.UUID
     org_id: uuid.UUID
-    customer_id: uuid.UUID | None = None
     customer_name: str | None = None
+    customer_email: str | None = None
+    customer_phone: str | None = None
     vehicle_rego: str | None = None
-    branch_id: uuid.UUID | None = None
+    staff_id: uuid.UUID | None = None
     service_type: str | None = None
     service_catalogue_id: uuid.UUID | None = None
     service_price: Decimal | None = None
-    scheduled_at: datetime
-    duration_minutes: int
+    scheduled_at: datetime | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    duration_minutes: int = 60
     notes: str | None = None
     status: str
-    reminder_sent: bool
+    confirmation_token: str | None = None
+    converted_job_id: uuid.UUID | None = None
+    converted_invoice_id: uuid.UUID | None = None
     send_email_confirmation: bool = False
     send_sms_confirmation: bool = False
     reminder_offset_hours: float | None = None
     reminder_scheduled_at: datetime | None = None
     reminder_cancelled: bool = False
-    assigned_to: uuid.UUID | None = None
-    created_by: uuid.UUID
     created_at: datetime
     updated_at: datetime
 
@@ -112,9 +114,14 @@ class BookingSearchResult(BaseModel):
     customer_name: str | None = None
     vehicle_rego: str | None = None
     service_type: str | None = None
-    scheduled_at: datetime
-    duration_minutes: int
+    scheduled_at: datetime | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    duration_minutes: int = 60
     status: str
+    staff_id: uuid.UUID | None = None
+    notes: str | None = None
+    converted_job_id: uuid.UUID | None = None
 
 
 class BookingListResponse(BaseModel):
@@ -132,6 +139,18 @@ class BookingConvertTarget(str, Enum):
 
     job_card = "job_card"
     invoice = "invoice"
+
+
+class BookingConvertBody(BaseModel):
+    """Optional JSON body for POST /bookings/{id}/convert.
+
+    Allows the caller to specify an assignee when converting a booking
+    to a job card.
+
+    Requirements: 3.6
+    """
+
+    assigned_to: uuid.UUID | None = None
 
 
 class BookingConvertResponse(BaseModel):

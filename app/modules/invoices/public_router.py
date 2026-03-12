@@ -122,7 +122,8 @@ async def view_shared_invoice(
 
     gst_percentage = settings.get("gst_percentage", 15)
     payment_terms = settings.get("payment_terms_text", "")
-    terms_and_conditions = settings.get("terms_and_conditions", "")
+    # Per-invoice terms_and_conditions take priority over org-level default
+    terms_and_conditions = invoice_dict.get("terms_and_conditions") or settings.get("terms_and_conditions", "")
     currency_symbol = get_currency_symbol(invoice_dict.get("currency", "NZD"))
 
     # Render the shared invoice HTML template

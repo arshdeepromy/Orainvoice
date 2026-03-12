@@ -990,9 +990,9 @@ async def process_overdue_reminders(db: AsyncSession) -> dict[str, Any]:
                         status="queued",
                         channel="email",
                     )
-                    # Enqueue Celery task
+                    # Enqueue email task
                     from app.tasks.notifications import send_email_task
-                    send_email_task.delay(
+                    await send_email_task(
                         str(org_id),
                         log_entry["id"],
                         customer.email,
@@ -1034,7 +1034,7 @@ async def process_overdue_reminders(db: AsyncSession) -> dict[str, Any]:
                         status="queued",
                     )
                     from app.tasks.notifications import send_sms_task
-                    send_sms_task.delay(
+                    await send_sms_task(
                         str(org_id),
                         sms_log["id"],
                         customer.phone,
@@ -1289,7 +1289,7 @@ async def process_wof_rego_reminders(db: AsyncSession) -> dict[str, Any]:
                     )
                     from app.tasks.notifications import send_email_task
 
-                    send_email_task.delay(
+                    await send_email_task(
                         str(org_id),
                         log_entry["id"],
                         customer.email,
@@ -1321,7 +1321,7 @@ async def process_wof_rego_reminders(db: AsyncSession) -> dict[str, Any]:
                     )
                     from app.tasks.notifications import send_sms_task
 
-                    send_sms_task.delay(
+                    await send_sms_task(
                         str(org_id),
                         sms_log["id"],
                         customer.phone,

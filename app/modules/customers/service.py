@@ -116,10 +116,12 @@ async def search_customers(
 
     if query and query.strip():
         search_term = query.strip()
-        # Use ILIKE for flexible matching on name, email, phone
+        # Use ILIKE for flexible matching on name, display_name, company, email, phone
         like_pattern = f"%{search_term}%"
         search_condition = or_(
             func.concat(Customer.first_name, " ", Customer.last_name).ilike(like_pattern),
+            Customer.display_name.ilike(like_pattern),
+            Customer.company_name.ilike(like_pattern),
             Customer.email.ilike(like_pattern),
             Customer.phone.ilike(like_pattern),
         )
@@ -145,6 +147,7 @@ async def search_customers(
         # Check for exact match (name matches exactly)
         has_exact_match = any(
             f"{c.first_name} {c.last_name}".lower() == search_term.lower()
+            or (c.display_name and c.display_name.lower() == search_term.lower())
             or (c.email and c.email.lower() == search_term.lower())
             or (c.phone and c.phone == search_term)
             for c in customers

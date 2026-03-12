@@ -155,7 +155,7 @@ export function AdminLayout() {
       </aside>
 
       {/* Main content area */}
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex flex-1 flex-col overflow-hidden min-h-0">
         {/* Header */}
         <header
           className="flex h-16 items-center gap-4 border-b border-gray-200 bg-white px-4"
@@ -191,7 +191,7 @@ export function AdminLayout() {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto p-4 lg:p-6" role="main">
+        <main className="flex-1 overflow-y-auto p-4 lg:p-6 min-h-0" role="main">
           <Outlet />
         </main>
       </div>

@@ -61,6 +61,31 @@ async def _enrich_reporting_to(db: AsyncSession, staff: StaffMember) -> dict:
             data["reporting_to_name"] = f"{row[0] or ''} {row[1] or ''}".strip()
     return data
 
+@router.get("/check-duplicate")
+async def check_staff_duplicate(
+    request: Request,
+    field: str = Query(..., pattern="^(email|phone|employee_id)$"),
+    value: str = Query(..., min_length=1),
+    exclude_id: UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Check if a staff field value is already in use (real-time validation)."""
+    org_id = _get_org_id(request)
+    col = getattr(StaffMember, field)
+    stmt = select(StaffMember.id).where(
+        StaffMember.org_id == org_id,
+        col == value.strip(),
+        StaffMember.is_active.is_(True),
+    )
+    if exclude_id:
+        stmt = stmt.where(StaffMember.id != exclude_id)
+    result = await db.execute(stmt.limit(1))
+    exists = result.scalar_one_or_none() is not None
+    label = field.replace("_", " ").title()
+    return {"duplicate": exists, "message": f"{label} already in use" if exists else ""}
+
+
+
 
 # ---------------------------------------------------------------------------
 # Reports (must be before /{staff_id} to avoid path conflict)
@@ -147,7 +172,10 @@ async def create_staff(
 ):
     org_id = _get_org_id(request)
     svc = StaffService(db)
-    staff = await svc.create_staff(org_id, payload)
+    try:
+        staff = await svc.create_staff(org_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     await db.flush()
     await db.refresh(staff)
     enriched = await _enrich_reporting_to(db, staff)
@@ -178,7 +206,10 @@ async def update_staff(
 ):
     org_id = _get_org_id(request)
     svc = StaffService(db)
-    staff = await svc.update_staff(org_id, staff_id, payload)
+    try:
+        staff = await svc.update_staff(org_id, staff_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     if staff is None:
         raise HTTPException(status_code=404, detail="Staff member not found")
     await db.flush()

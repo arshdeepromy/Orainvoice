@@ -15,6 +15,7 @@ interface Vehicle {
   wof_expiry: string | null
   registration_expiry: string | null
   odometer?: number | null
+  service_due_date?: string | null
 }
 
 interface LinkedCustomer {
@@ -37,6 +38,7 @@ interface SearchResult {
   colour: string | null
   lookup_type: string | null
   odometer?: number | null
+  service_due_date?: string | null
   linked_customers?: LinkedCustomer[]
 }
 
@@ -128,6 +130,7 @@ export function VehicleLiveSearch({ vehicle, onVehicleFound, onCustomerAutoSelec
       wof_expiry: null,
       registration_expiry: null,
       odometer: result.odometer ?? null,
+      service_due_date: result.service_due_date ?? null,
     }
     onVehicleFound(fullVehicle)
     setQuery(result.rego)

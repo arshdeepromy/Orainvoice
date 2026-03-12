@@ -131,6 +131,10 @@ async def create_invoice_endpoint(
         for li in payload.line_items
     ]
 
+    # "sent" means create as issued then auto-email the PDF
+    should_email = payload.status.value == "sent"
+    effective_status = "issued" if should_email else payload.status.value
+
     try:
         result = await create_invoice(
             db,
@@ -143,8 +147,9 @@ async def create_invoice_endpoint(
             vehicle_year=payload.vehicle_year,
             vehicle_odometer=payload.vehicle_odometer,
             global_vehicle_id=payload.global_vehicle_id,
+            vehicle_service_due_date=payload.vehicle_service_due_date,
             branch_id=payload.branch_id,
-            status=payload.status.value,
+            status=effective_status,
             line_items_data=line_items_data,
             notes_internal=payload.notes_internal,
             notes_customer=payload.notes_customer,
@@ -155,10 +160,32 @@ async def create_invoice_endpoint(
             discount_value=payload.discount_value,
             currency=payload.currency,
             exchange_rate_to_nzd=payload.exchange_rate_to_nzd,
+            terms_and_conditions=payload.terms_and_conditions,
             ip_address=ip_address,
         )
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    # Commit so the invoice exists before emailing
+    await db.commit()
+
+    # Auto-email the invoice PDF when status was "sent"
+    email_status = None
+    if should_email:
+        try:
+            from app.core.database import async_session_factory, _set_rls_org_id
+            from app.modules.invoices.service import email_invoice
+            invoice_uuid = result["id"] if isinstance(result["id"], uuid.UUID) else uuid.UUID(str(result["id"]))
+            # Use a fresh session — the original is closed after commit
+            async with async_session_factory() as email_db:
+                async with email_db.begin():
+                    await _set_rls_org_id(email_db, str(org_uuid))
+                    email_result = await email_invoice(email_db, org_id=org_uuid, invoice_id=invoice_uuid)
+            email_status = email_result.get("status", "sent")
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("Auto-email failed for invoice %s: %s", result.get("id"), exc)
+            email_status = "email_failed"
 
     invoice_resp = InvoiceResponse(
         **{
@@ -169,7 +196,12 @@ async def create_invoice_endpoint(
         line_items=[LineItemResponse(**li) for li in result["line_items"]],
     )
 
-    status_label = "Draft saved" if payload.status.value == "draft" else "Invoice issued"
+    if should_email:
+        status_label = "Invoice issued and emailed" if email_status != "email_failed" else "Invoice issued (email failed)"
+    elif payload.status.value == "draft":
+        status_label = "Draft saved"
+    else:
+        status_label = "Invoice issued"
     return InvoiceCreateResponse(
         invoice=invoice_resp,
         message=f"{status_label} successfully",
@@ -435,6 +467,7 @@ async def update_invoice_endpoint(
 
     Invoice numbers are system-assigned and immutable once set.
     Only draft invoices allow structural edits.
+    If status is 'sent', the invoice is issued and emailed automatically.
 
     Requirements: 23.2, 23.3
     """
@@ -445,7 +478,10 @@ async def update_invoice_endpoint(
             content={"detail": "Organisation context required"},
         )
 
+    should_email = payload.status and payload.status.value == "sent"
     updates = payload.model_dump(exclude_unset=True)
+    # Don't pass 'sent' status to the service — it only knows draft/issued
+    updates.pop("status", None)
 
     try:
         result = await update_invoice(
@@ -459,14 +495,41 @@ async def update_invoice_endpoint(
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    # If "sent", issue the invoice then email it
+    if should_email:
+        try:
+            result = await issue_invoice(
+                db,
+                org_id=org_uuid,
+                user_id=user_uuid,
+                invoice_id=invoice_id,
+                ip_address=ip_address,
+            )
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+        await db.commit()
+
+        try:
+            from app.core.database import async_session_factory, _set_rls_org_id
+            from app.modules.invoices.service import email_invoice
+            async with async_session_factory() as email_db:
+                async with email_db.begin():
+                    await _set_rls_org_id(email_db, str(org_uuid))
+                    await email_invoice(email_db, org_id=org_uuid, invoice_id=invoice_id)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("Auto-email failed for invoice %s: %s", invoice_id, exc)
+
     invoice_resp = InvoiceResponse(
         **{k: v for k, v in result.items() if k != "line_items"},
         line_items=[LineItemResponse(**li) for li in result["line_items"]],
     )
 
+    msg = "Invoice issued and emailed successfully" if should_email else "Invoice updated successfully"
     return UpdateInvoiceResponse(
         invoice=invoice_resp,
-        message="Invoice updated successfully",
+        message=msg,
     )
 
 
