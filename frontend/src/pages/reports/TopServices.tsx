@@ -94,7 +94,7 @@ export default function TopServices() {
                   </tr>
                 ) : (
                   data.services.map((s, i) => (
-                    <tr key={s.service_name} className="hover:bg-gray-50">
+                    <tr key={`${s.service_name}-${i}`} className="hover:bg-gray-50">
                       <td className="px-4 py-3 text-sm text-gray-500">{i + 1}</td>
                       <td className="px-4 py-3 text-sm text-gray-900">{s.service_name}</td>
                       <td className="px-4 py-3 text-sm text-gray-700 text-right">{s.count}</td>

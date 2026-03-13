@@ -18,6 +18,32 @@ Role:     global_admin
 
 ---
 
+## Demo Org Admin Account
+
+A demo org_admin account with all modules enabled for testing org-level features:
+
+```
+Email:    demo@orainvoice.com
+Password: demo123
+Role:     org_admin
+```
+
+- **Organisation**: Demo Workshop
+- **Plan**: Demo Plan (private — not shown during registration)
+- **Modules**: All 35 modules enabled
+- **Auto-sync**: On every app startup, any new modules added to module_registry are automatically enabled for this org
+
+### Seeding
+```bash
+# Seed both accounts at once
+docker compose exec app python scripts/seed_all_dev.py
+
+# Or seed demo org admin only
+docker compose exec app python scripts/seed_demo_org_admin.py
+```
+
+---
+
 ## Account Details
 
 - **Organisation**: OraInvoice Dev Org

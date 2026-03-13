@@ -76,6 +76,28 @@ def get_all_dependencies(module_slug: str) -> list[str]:
     return list(visited)
 
 
+def get_all_dependents(module_slug: str) -> list[str]:
+    """Return the full transitive list of modules that depend on *module_slug*.
+
+    Walks the DEPENDENCY_GRAPH in reverse: if module A lists B as a dependency,
+    then B's dependents include A.
+    """
+    # Build reverse graph
+    reverse: dict[str, list[str]] = {}
+    for mod, deps in DEPENDENCY_GRAPH.items():
+        for dep in deps:
+            reverse.setdefault(dep, []).append(mod)
+
+    visited: set[str] = set()
+    stack = list(reverse.get(module_slug, []))
+    while stack:
+        dep = stack.pop()
+        if dep not in visited:
+            visited.add(dep)
+            stack.extend(reverse.get(dep, []))
+    return list(visited)
+
+
 class ModuleService:
     """Manages module enablement per organisation with Redis caching."""
 
@@ -140,9 +162,17 @@ class ModuleService:
         return dependents
 
     async def force_disable_module(self, org_id: str, module_slug: str) -> None:
-        """Actually disable a module (after user confirmation)."""
+        """Actually disable a module and all its transitive dependents."""
         if module_slug in CORE_MODULES:
             return
+
+        # Disable all transitive dependents first
+        all_dependents = get_all_dependents(module_slug)
+        for dep in all_dependents:
+            if dep not in CORE_MODULES and await self.is_enabled(org_id, dep):
+                await self._set_enabled(org_id, dep, False, None)
+
+        # Disable the module itself
         await self._set_enabled(org_id, module_slug, False, None)
         await self._invalidate_cache(org_id)
 
@@ -237,6 +267,7 @@ class ModuleService:
                 "category": mod.category,
                 "is_core": is_core,
                 "dependencies": deps if isinstance(deps, list) else [],
+                "dependents": get_all_dependents(mod.slug),
                 "status": mod.status,
                 "is_enabled": is_enabled,
                 "in_plan": in_plan,

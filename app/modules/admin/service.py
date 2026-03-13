@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.config import settings
-from app.modules.admin.models import AuditLog, Organisation, SmsPackagePurchase, SubscriptionPlan
+from app.modules.admin.models import AuditLog, Organisation, SmsPackagePurchase, SmsVerificationProvider, SubscriptionPlan
 from app.modules.auth.models import User
 
 logger = logging.getLogger(__name__)
@@ -216,6 +216,7 @@ async def _send_org_admin_invitation_email(
 
 # Default per-lookup overage cost when not configured in integration_configs
 _DEFAULT_CARJAM_PER_LOOKUP_COST_NZD = 0.15
+_DEFAULT_CARJAM_ABCD_PER_LOOKUP_COST_NZD = 0.05
 
 
 async def get_carjam_per_lookup_cost(db: AsyncSession) -> float:
@@ -241,6 +242,30 @@ async def get_carjam_per_lookup_cost(db: AsyncSession) -> float:
     except (json.JSONDecodeError, ValueError, KeyError) as exc:
         logger.warning("Failed to read Carjam per-lookup cost from integration_configs; using default: %s", exc)
         return _DEFAULT_CARJAM_PER_LOOKUP_COST_NZD
+
+
+async def get_carjam_abcd_per_lookup_cost(db: AsyncSession) -> float:
+    """Return the ABCD per-lookup cost from integration_configs.
+
+    Falls back to the default (0.05) if not configured.
+    """
+    from app.modules.admin.models import IntegrationConfig
+    from app.core.encryption import envelope_decrypt_str
+
+    result = await db.execute(
+        select(IntegrationConfig).where(IntegrationConfig.name == "carjam")
+    )
+    config = result.scalar_one_or_none()
+    if config is None:
+        return _DEFAULT_CARJAM_ABCD_PER_LOOKUP_COST_NZD
+
+    try:
+        decrypted = envelope_decrypt_str(config.config_encrypted)
+        data = json.loads(decrypted)
+        return float(data.get("abcd_per_lookup_cost_nzd", _DEFAULT_CARJAM_ABCD_PER_LOOKUP_COST_NZD))
+    except (json.JSONDecodeError, ValueError, KeyError) as exc:
+        logger.warning("Failed to read Carjam ABCD per-lookup cost; using default: %s", exc)
+        return _DEFAULT_CARJAM_ABCD_PER_LOOKUP_COST_NZD
 
 
 def compute_carjam_overage(total_lookups: int, included: int) -> int:
@@ -939,60 +964,54 @@ async def send_test_sms(
     db: AsyncSession,
     *,
     to_number: str,
+    custom_message: str | None = None,
     admin_user_id: uuid.UUID,
     ip_address: str | None = None,
 ) -> dict:
-    """Send a test SMS to verify Twilio config.
+    """Send a test SMS to verify SMS provider config.
 
+    Resolves the active Connexus provider, decrypts credentials, and sends
+    a test message via ConnexusSmsClient.
     Requirement 36.1.
     """
-    from app.integrations.twilio_sms import get_sms_client, SmsMessage
+    from app.core.encryption import envelope_decrypt_str
+    from app.integrations.connexus_sms import ConnexusConfig, ConnexusSmsClient
+    from app.integrations.sms_types import SmsMessage
+    from sqlalchemy import select as sa_select
 
-    client = await get_sms_client(db)
-    if client is None:
+    stmt = sa_select(SmsVerificationProvider).where(
+        SmsVerificationProvider.provider_key == "connexus",
+        SmsVerificationProvider.is_active == True,
+    )
+    result = await db.execute(stmt)
+    provider = result.scalar_one_or_none()
+
+    if provider is None or not provider.credentials_encrypted:
         return {
             "success": False,
-            "message": "Twilio configuration not found. Please configure SMS settings first.",
-            "error": "No Twilio config",
+            "message": "Connexus SMS provider not configured or not active",
+            "error": "Connexus SMS provider not configured or active",
         }
 
-    message = SmsMessage(
-        to_number=to_number,
-        body="WorkshopPro NZ — Test SMS. Your Twilio configuration is working correctly.",
-    )
+    creds = json.loads(envelope_decrypt_str(provider.credentials_encrypted))
+    config = ConnexusConfig.from_dict(creds)
+    client = ConnexusSmsClient(config)
 
-    result = await client.send(message)
+    test_body = custom_message or "BudgetFlow test SMS — Connexus integration verified."
+    sms = SmsMessage(to_number=to_number, body=test_body)
+    send_result = await client.send(sms)
 
-    if result.success:
-        from app.modules.admin.models import IntegrationConfig
-
-        config_result = await db.execute(
-            select(IntegrationConfig).where(IntegrationConfig.name == "twilio")
-        )
-        config_row = config_result.scalar_one_or_none()
-        if config_row is not None:
-            config_row.is_verified = True
-            await db.flush()
-
-        await write_audit_log(
-            session=db,
-            org_id=None,
-            user_id=admin_user_id,
-            action="admin.twilio_test_sms_sent",
-            entity_type="integration_config",
-            entity_id=None,
-            after_value={
-                "recipient": to_number,
-                "success": True,
-                "ip_address": ip_address,
-            },
-            ip_address=ip_address,
-        )
+    if send_result.success:
+        return {
+            "success": True,
+            "message": f"Test SMS sent to {to_number}",
+            "message_sid": send_result.message_sid,
+        }
 
     return {
-        "success": result.success,
-        "message": "Test SMS sent successfully" if result.success else "Test SMS failed",
-        "error": result.error,
+        "success": False,
+        "message": "Failed to send test SMS",
+        "error": send_result.error or "Unknown SMS send error",
     }
 
 
@@ -1007,6 +1026,7 @@ async def save_carjam_config(
     api_key: str | None = None,
     endpoint_url: str | None = None,
     per_lookup_cost_nzd: float | None = None,
+    abcd_per_lookup_cost_nzd: float | None = None,
     global_rate_limit_per_minute: int | None = None,
     updated_by: uuid.UUID,
     ip_address: str | None = None,
@@ -1035,6 +1055,7 @@ async def save_carjam_config(
             "api_key": "",
             "endpoint_url": "https://www.carjam.co.nz",
             "per_lookup_cost_nzd": 0.50,
+            "abcd_per_lookup_cost_nzd": 0.05,
             "global_rate_limit_per_minute": 60,
         }
 
@@ -1045,6 +1066,8 @@ async def save_carjam_config(
         current_data["endpoint_url"] = endpoint_url
     if per_lookup_cost_nzd is not None:
         current_data["per_lookup_cost_nzd"] = per_lookup_cost_nzd
+    if abcd_per_lookup_cost_nzd is not None:
+        current_data["abcd_per_lookup_cost_nzd"] = abcd_per_lookup_cost_nzd
     if global_rate_limit_per_minute is not None:
         current_data["global_rate_limit_per_minute"] = global_rate_limit_per_minute
 
@@ -1075,6 +1098,8 @@ async def save_carjam_config(
         audit_data["endpoint_url"] = endpoint_url
     if per_lookup_cost_nzd is not None:
         audit_data["per_lookup_cost_nzd"] = per_lookup_cost_nzd
+    if abcd_per_lookup_cost_nzd is not None:
+        audit_data["abcd_per_lookup_cost_nzd"] = abcd_per_lookup_cost_nzd
     if global_rate_limit_per_minute is not None:
         audit_data["global_rate_limit_per_minute"] = global_rate_limit_per_minute
 
@@ -1092,6 +1117,7 @@ async def save_carjam_config(
     return {
         "endpoint_url": current_data["endpoint_url"],
         "per_lookup_cost_nzd": current_data["per_lookup_cost_nzd"],
+        "abcd_per_lookup_cost_nzd": current_data.get("abcd_per_lookup_cost_nzd", 0.05),
         "global_rate_limit_per_minute": current_data["global_rate_limit_per_minute"],
         "api_key_last4": current_data["api_key"][-4:] if len(current_data["api_key"]) >= 4 else current_data["api_key"],
         "is_verified": False,
@@ -1357,7 +1383,7 @@ async def test_stripe_connection(
 
 # Maps integration name → list of fields safe to return (non-secret)
 _SAFE_FIELDS: dict[str, list[str]] = {
-    "carjam": ["endpoint_url", "per_lookup_cost_nzd", "global_rate_limit_per_minute"],
+    "carjam": ["endpoint_url", "per_lookup_cost_nzd", "abcd_per_lookup_cost_nzd", "global_rate_limit_per_minute"],
     "stripe": ["webhook_endpoint"],
     "smtp": ["provider", "domain", "from_email", "from_name", "reply_to", "host", "port"],
     "twilio": ["sender_number"],
@@ -2129,10 +2155,27 @@ async def list_organisations(
     Requirement 47.1.
     """
     from sqlalchemy import func as sa_func, or_
+    from app.modules.auth.models import User
 
-    # Base query joining plan for plan_name
-    base_q = select(Organisation, SubscriptionPlan.name.label("plan_name")).join(
-        SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id
+    # Subquery: most recent last_login_at per org
+    last_login_sq = (
+        select(
+            User.org_id,
+            sa_func.max(User.last_login_at).label("last_login_at"),
+        )
+        .group_by(User.org_id)
+        .subquery()
+    )
+
+    # Base query joining plan for plan_name and last_login subquery
+    base_q = (
+        select(
+            Organisation,
+            SubscriptionPlan.name.label("plan_name"),
+            last_login_sq.c.last_login_at.label("last_login_at"),
+        )
+        .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
+        .outerjoin(last_login_sq, Organisation.id == last_login_sq.c.org_id)
     )
 
     # Filters
@@ -2170,7 +2213,7 @@ async def list_organisations(
     rows = result.all()
 
     organisations = []
-    for org, plan_name in rows:
+    for org, plan_name, last_login_at in rows:
         organisations.append({
             "id": str(org.id),
             "name": org.name,
@@ -2180,6 +2223,7 @@ async def list_organisations(
             "storage_quota_gb": org.storage_quota_gb,
             "storage_used_bytes": org.storage_used_bytes,
             "carjam_lookups_this_month": org.carjam_lookups_this_month,
+            "last_login_at": last_login_at.isoformat() if last_login_at else None,
             "created_at": org.created_at,
             "updated_at": org.updated_at,
         })
@@ -3719,4 +3763,248 @@ async def toggle_user_active(
         "user_id": str(user.id),
         "email": user.email,
         "is_active": user.is_active,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Integration Cost Dashboard (Global Admin)
+# ---------------------------------------------------------------------------
+
+
+async def get_integration_cost_dashboard(
+    db: AsyncSession,
+    *,
+    period: str = "monthly",
+) -> dict:
+    """Aggregate cost/usage data for all integrations.
+
+    Returns a dict with carjam, sms, smtp, stripe cards.
+    """
+    from datetime import datetime, timezone, timedelta, date
+    from sqlalchemy import func as sa_func, text as sa_text
+    from app.modules.admin.models import IntegrationConfig
+
+    now = datetime.now(timezone.utc)
+
+    if period == "daily":
+        period_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == "weekly":
+        period_start = now - timedelta(days=7)
+    else:
+        period_start = date(now.year, now.month, 1)
+        period_start = datetime.combine(period_start, datetime.min.time(), tzinfo=timezone.utc)
+
+    # --- CarJam ---
+    per_lookup_cost = await get_carjam_per_lookup_cost(db)
+    abcd_per_lookup_cost = await get_carjam_abcd_per_lookup_cost(db)
+
+    carjam_stmt = select(
+        sa_func.coalesce(sa_func.sum(Organisation.carjam_lookups_this_month), 0),
+    ).where(Organisation.status != "deleted")
+    carjam_result = await db.execute(carjam_stmt)
+    total_carjam_lookups = int(carjam_result.scalar() or 0)
+
+    # Breakdown by lookup type from audit log
+    abcd_count_result = await db.execute(
+        sa_text(
+            "SELECT COUNT(*) FROM audit_log "
+            "WHERE action IN ('vehicle.carjam_abcd_lookup') "
+            "AND created_at >= :start"
+        ),
+        {"start": period_start},
+    )
+    abcd_count = int(abcd_count_result.scalar() or 0)
+
+    basic_count_result = await db.execute(
+        sa_text(
+            "SELECT COUNT(*) FROM audit_log "
+            "WHERE action IN ('vehicle.carjam_basic_lookup', 'vehicle.carjam_lookup') "
+            "AND created_at >= :start"
+        ),
+        {"start": period_start},
+    )
+    basic_count = int(basic_count_result.scalar() or 0)
+
+    refresh_count_result = await db.execute(
+        sa_text(
+            "SELECT COUNT(*) FROM audit_log "
+            "WHERE action = 'vehicle.refresh' "
+            "AND created_at >= :start"
+        ),
+        {"start": period_start},
+    )
+    refresh_count = int(refresh_count_result.scalar() or 0)
+
+    carjam_total_cost = round(abcd_count * abcd_per_lookup_cost + basic_count * per_lookup_cost, 2)
+
+    # CarJam integration status
+    carjam_config = await get_integration_config(db, name="carjam")
+    carjam_status = "healthy" if carjam_config and carjam_config.get("is_verified") else (
+        "not_configured" if not carjam_config or not carjam_config.get("fields") else "down"
+    )
+
+    carjam_card = {
+        "name": "Carjam",
+        "status": carjam_status,
+        "total_cost_nzd": carjam_total_cost,
+        "total_usage": total_carjam_lookups,
+        "usage_label": "lookups",
+        "breakdown": {
+            "abcd_lookups": abcd_count,
+            "abcd_cost_nzd": round(abcd_count * abcd_per_lookup_cost, 2),
+            "abcd_per_lookup_nzd": abcd_per_lookup_cost,
+            "basic_lookups": basic_count,
+            "basic_cost_nzd": round(basic_count * per_lookup_cost, 2),
+            "basic_per_lookup_nzd": per_lookup_cost,
+            "refreshes": refresh_count,
+        },
+        "last_checked": carjam_config.get("updated_at") if carjam_config else None,
+    }
+
+    # --- SMS (Connexus) ---
+    sms_stmt = select(
+        sa_func.coalesce(sa_func.sum(Organisation.sms_sent_this_month), 0),
+    ).where(Organisation.status != "deleted")
+    sms_result = await db.execute(sms_stmt)
+    total_sms_sent = int(sms_result.scalar() or 0)
+
+    # Get SMS per-message cost from provider config (sms_verification_providers.config)
+    from app.modules.admin.models import SmsVerificationProvider
+    sms_provider_result = await db.execute(
+        select(SmsVerificationProvider).where(
+            SmsVerificationProvider.is_active.is_(True),
+            SmsVerificationProvider.is_default.is_(True),
+        )
+    )
+    default_sms_provider = sms_provider_result.scalar_one_or_none()
+    sms_per_msg_cost = 0.0
+    if default_sms_provider and default_sms_provider.config:
+        sms_per_msg_cost = float(default_sms_provider.config.get("per_sms_cost_nzd", 0))
+
+    total_sms_cost = round(total_sms_sent * sms_per_msg_cost, 2)
+
+    # Connexus balance
+    sms_balance = None
+    sms_currency = None
+    # Determine SMS status from sms_verification_providers (where Connexus is configured)
+    sms_status = "not_configured"
+    sms_last_checked = None
+    if default_sms_provider:
+        sms_status = "healthy" if default_sms_provider.credentials_set else "down"
+        sms_last_checked = default_sms_provider.updated_at.isoformat() if default_sms_provider.updated_at else None
+    else:
+        # Check if any active provider exists even if not default
+        any_active_result = await db.execute(
+            select(SmsVerificationProvider).where(
+                SmsVerificationProvider.is_active.is_(True),
+                SmsVerificationProvider.credentials_set.is_(True),
+            )
+        )
+        any_active = any_active_result.scalar_one_or_none()
+        if any_active:
+            sms_status = "healthy"
+            sms_last_checked = any_active.updated_at.isoformat() if any_active.updated_at else None
+
+    sms_card = {
+        "name": "Connexus SMS",
+        "status": sms_status,
+        "total_cost_nzd": round(total_sms_cost, 2),
+        "total_usage": total_sms_sent,
+        "usage_label": "messages sent",
+        "breakdown": {
+            "total_sent_this_month": total_sms_sent,
+            "per_sms_cost_nzd": sms_per_msg_cost,
+        },
+        "balance": sms_balance,
+        "balance_currency": sms_currency,
+        "last_checked": sms_last_checked,
+    }
+
+    # --- SMTP ---
+    email_count_result = await db.execute(
+        sa_text(
+            "SELECT COUNT(*) FROM audit_log "
+            "WHERE action = 'invoice.email_sent' "
+            "AND created_at >= :start"
+        ),
+        {"start": period_start},
+    )
+    total_emails = int(email_count_result.scalar() or 0)
+
+    smtp_config = await get_integration_config(db, name="smtp")
+    smtp_status = "healthy" if smtp_config and smtp_config.get("is_verified") else (
+        "not_configured" if not smtp_config or not smtp_config.get("fields") else "down"
+    )
+    smtp_provider = "Unknown"
+    if smtp_config and smtp_config.get("fields"):
+        smtp_provider = smtp_config["fields"].get("provider", "smtp").capitalize()
+
+    smtp_card = {
+        "name": "SMTP",
+        "status": smtp_status,
+        "total_cost_nzd": 0.0,  # SMTP costs are typically bundled
+        "total_usage": total_emails,
+        "usage_label": "emails sent",
+        "breakdown": {
+            "provider": smtp_provider,
+            "emails_this_period": total_emails,
+        },
+        "last_checked": smtp_config.get("updated_at") if smtp_config else None,
+    }
+
+    # --- Stripe ---
+    payment_count_result = await db.execute(
+        sa_text(
+            "SELECT COUNT(*) FROM audit_log "
+            "WHERE action IN ('payment.stripe_link_generated', 'payment.stripe_webhook_received') "
+            "AND created_at >= :start"
+        ),
+        {"start": period_start},
+    )
+    total_stripe_txns = int(payment_count_result.scalar() or 0)
+
+    # Total payment volume from payments table
+    from app.modules.payments.models import Payment
+    payment_vol_result = await db.execute(
+        select(
+            sa_func.coalesce(sa_func.sum(Payment.amount), 0),
+            sa_func.count(Payment.id),
+        ).where(
+            Payment.created_at >= period_start,
+            Payment.method == "stripe",
+        )
+    )
+    vol_row = payment_vol_result.one()
+    total_volume = float(vol_row[0] or 0)
+    stripe_payment_count = int(vol_row[1] or 0)
+
+    # Estimate Stripe fees (2.9% + $0.30 per transaction for NZ)
+    estimated_stripe_fees = round(total_volume * 0.029 + stripe_payment_count * 0.30, 2)
+
+    stripe_config = await get_integration_config(db, name="stripe")
+    stripe_status = "healthy" if stripe_config and stripe_config.get("is_verified") else (
+        "not_configured" if not stripe_config or not stripe_config.get("fields") else "down"
+    )
+
+    stripe_card = {
+        "name": "Stripe",
+        "status": stripe_status,
+        "total_cost_nzd": estimated_stripe_fees,
+        "total_usage": stripe_payment_count,
+        "usage_label": "transactions",
+        "breakdown": {
+            "total_volume_nzd": round(total_volume, 2),
+            "payment_count": stripe_payment_count,
+            "estimated_fees_nzd": estimated_stripe_fees,
+            "fee_rate": "2.9% + $0.30",
+        },
+        "last_checked": stripe_config.get("updated_at") if stripe_config else None,
+    }
+
+    return {
+        "period": period,
+        "carjam": carjam_card,
+        "sms": sms_card,
+        "smtp": smtp_card,
+        "stripe": stripe_card,
     }

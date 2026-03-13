@@ -26,10 +26,10 @@ interface OrgAdminData {
     }>
   }
   storage?: {
-    storage_used_bytes: number
-    storage_quota_bytes: number
-    usage_percentage: number
-    alert_level: string
+    used_bytes: number
+    used_gb: number
+    quota_gb: number
+    usage_percent: number
   }
 }
 
@@ -75,9 +75,9 @@ export function OrgAdminDashboard() {
   if (error) return <AlertBanner variant="error">{error}</AlertBanner>
   if (!data) return null
 
-  const storageUsedGb = data.storage ? data.storage.storage_used_bytes / (1024 * 1024 * 1024) : 0
-  const storageQuotaGb = data.storage ? data.storage.storage_quota_bytes / (1024 * 1024 * 1024) : 0
-  const storagePercent = data.storage?.usage_percentage || 0
+  const storageUsedGb = data.storage ? data.storage.used_bytes / (1024 * 1024 * 1024) : 0
+  const storageQuotaGb = data.storage ? data.storage.quota_gb : 0
+  const storagePercent = data.storage?.usage_percent || 0
   const storageBarColor =
     storagePercent >= 90 ? 'bg-red-500' : storagePercent >= 80 ? 'bg-amber-500' : 'bg-blue-500'
 

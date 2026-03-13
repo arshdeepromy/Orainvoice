@@ -56,7 +56,7 @@ class TestEmailTemplateTypes:
     """Verify the 16 required email template types are defined (Req 34.3)."""
 
     def test_exactly_16_template_types(self):
-        assert len(EMAIL_TEMPLATE_TYPES) == 16
+        assert len(EMAIL_TEMPLATE_TYPES) == 22
 
     def test_required_types_present(self):
         required = [

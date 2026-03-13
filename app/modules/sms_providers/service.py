@@ -199,10 +199,8 @@ async def test_sms_provider(
     try:
         if provider_key == "firebase_phone_auth":
             result = await _test_firebase(creds)
-        elif provider_key == "twilio_verify":
-            result = await _test_twilio(creds, to_number, message)
-        elif provider_key == "aws_sns":
-            result = await _test_aws_sns(creds, to_number, message)
+        elif provider_key == "connexus":
+            result = await _test_connexus(creds, to_number, message)
         else:
             return {
                 "success": False,
@@ -289,137 +287,55 @@ async def _test_firebase(creds: dict) -> dict:
             "error": f"HTTP {resp.status_code}",
         }
 
+async def _test_connexus(creds: dict, to_number: str, message: str) -> dict:
+    """Test Connexus by checking balance as a connectivity test and optionally sending a test SMS."""
+    from app.integrations.connexus_sms import ConnexusConfig, ConnexusSmsClient
+    from app.integrations.sms_types import SmsMessage
 
-
-
-
-async def _test_twilio(creds: dict, to_number: str, message: str) -> dict:
-    """Test Twilio by sending an actual SMS message."""
-    import httpx
-
-    account_sid = creds.get("account_sid", "")
-    auth_token = creds.get("auth_token", "")
-    # For sending custom messages we need a from number or messaging service SID
-    from_number = creds.get("from_number", "")
-    messaging_service_sid = creds.get("messaging_service_sid", "")
-    verify_sid = creds.get("verify_service_sid", "")
-
-    if not all([account_sid, auth_token]):
-        return {
-            "success": False,
-            "message": "Twilio credentials incomplete (need account_sid and auth_token).",
-            "error": "Missing credentials",
-        }
-
-    # Prefer sending a real SMS via the Messages API if we have a from number
-    if from_number or messaging_service_sid:
-        url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
-        data: dict[str, str] = {"To": to_number, "Body": message}
-        if from_number:
-            data["From"] = from_number
-        else:
-            data["MessagingServiceSid"] = messaging_service_sid
-
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            resp = await http.post(url, auth=(account_sid, auth_token), data=data)
-
-        if resp.status_code == 201:
-            body = resp.json()
-            return {
-                "success": True,
-                "message": f"SMS sent to {to_number}. SID: {body.get('sid', 'N/A')}",
-                "error": None,
-            }
-        else:
-            body = resp.json()
-            return {
-                "success": False,
-                "message": f"Twilio error: {body.get('message', resp.status_code)}",
-                "error": str(resp.status_code),
-            }
-
-    # Fallback: use Verify API to send a verification code
-    if verify_sid:
-        url = f"https://verify.twilio.com/v2/Services/{verify_sid}/Verifications"
-        async with httpx.AsyncClient(timeout=10.0) as http:
-            resp = await http.post(
-                url,
-                auth=(account_sid, auth_token),
-                data={"To": to_number, "Channel": "sms"},
-            )
-
-        if resp.status_code == 201:
-            return {
-                "success": True,
-                "message": f"Verification code sent to {to_number} via Twilio Verify (custom message not supported with Verify API).",
-                "error": None,
-            }
-        else:
-            body = resp.json()
-            return {
-                "success": False,
-                "message": f"Twilio error: {body.get('message', resp.status_code)}",
-                "error": str(resp.status_code),
-            }
-
-    return {
-        "success": False,
-        "message": "Twilio credentials need either a 'from_number' (for SMS) or 'verify_service_sid' (for OTP codes).",
-        "error": "Missing from_number or verify_service_sid",
-    }
-
-
-
-
-async def _test_aws_sns(creds: dict, to_number: str, message: str) -> dict:
-    """Test AWS SNS by publishing a test SMS message."""
-    try:
-        import boto3
-    except ImportError:
-        return {
-            "success": False,
-            "message": "boto3 is not installed. Install it to use AWS SNS.",
-            "error": "Missing dependency",
-        }
-
-    access_key = creds.get("access_key_id", "")
-    secret_key = creds.get("secret_access_key", "")
-    region = creds.get("region", "ap-southeast-2")
+    client_id = creds.get("client_id", "")
+    client_secret = creds.get("client_secret", "")
     sender_id = creds.get("sender_id", "")
 
-    if not all([access_key, secret_key]):
+    if not all([client_id, client_secret]):
         return {
             "success": False,
-            "message": "AWS credentials incomplete (need access_key_id and secret_access_key).",
+            "message": "Connexus credentials incomplete (need client_id and client_secret).",
             "error": "Missing credentials",
         }
 
-    try:
-        client = boto3.client(
-            "sns",
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            region_name=region,
-        )
-        attrs: dict = {"AWS.SNS.SMS.SMSType": {"DataType": "String", "StringValue": "Transactional"}}
-        if sender_id:
-            attrs["AWS.SNS.SMS.SenderID"] = {"DataType": "String", "StringValue": sender_id}
+    config = ConnexusConfig.from_dict(creds)
+    client = ConnexusSmsClient(config)
 
-        resp = client.publish(
-            PhoneNumber=to_number,
-            Message=message,
-            MessageAttributes=attrs,
-        )
-        msg_id = resp.get("MessageId", "N/A")
-        return {
-            "success": True,
-            "message": f"SMS sent to {to_number} via AWS SNS. MessageId: {msg_id}",
-            "error": None,
-        }
-    except Exception as exc:
+    # First, check balance as a connectivity / auth test
+    balance_result = await client.check_balance()
+    if "error" in balance_result:
         return {
             "success": False,
-            "message": f"AWS SNS error: {exc}",
-            "error": str(exc),
+            "message": f"Connexus connectivity check failed: {balance_result['error']}",
+            "error": balance_result["error"],
         }
+
+    # Send a test SMS — sender_id may be empty (uses WebSMS shared shortcode)
+    sms = SmsMessage(to_number=to_number, body=message, from_number=sender_id or None)
+    send_result = await client.send(sms)
+
+    if send_result.success:
+        balance_info = f" (Account balance: {balance_result.get('balance', 'N/A')} {balance_result.get('currency', 'NZD')})"
+        return {
+            "success": True,
+            "message": f"SMS sent to {to_number} via Connexus. Message ID: {send_result.message_sid}{balance_info}",
+            "error": None,
+        }
+    else:
+        return {
+            "success": False,
+            "message": f"Connexus send failed: {send_result.error}",
+            "error": send_result.error,
+        }
+
+
+
+
+
+
 

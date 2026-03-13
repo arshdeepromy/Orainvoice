@@ -21,11 +21,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.modules.loyalty.schemas import (
     CustomerBalanceResponse,
+    LoyaltyAnalyticsResponse,
     LoyaltyConfigResponse,
     LoyaltyConfigUpdate,
     LoyaltyTierCreate,
     LoyaltyTierResponse,
     LoyaltyTransactionResponse,
+    PointsAdjustmentRequest,
     RedeemPointsRequest,
 )
 from app.modules.loyalty.service import LoyaltyService
@@ -141,6 +143,50 @@ async def redeem_points(
         txn = await svc.redeem_points(
             org_id, payload.customer_id, payload.points,
             reference_type=payload.reference_type, reference_id=payload.reference_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.commit()
+    await db.refresh(txn)
+    return LoyaltyTransactionResponse.model_validate(txn)
+
+
+# ------------------------------------------------------------------
+# Analytics
+# ------------------------------------------------------------------
+
+@router.get("/analytics", response_model=LoyaltyAnalyticsResponse, summary="Get loyalty analytics")
+async def get_analytics(request: Request, db: AsyncSession = Depends(get_db_session)):
+    org_id = _get_org_id(request)
+    svc = LoyaltyService(db)
+    analytics = await svc.get_analytics(org_id)
+    return analytics
+
+
+# ------------------------------------------------------------------
+# Manual points adjustment
+# ------------------------------------------------------------------
+
+@router.post(
+    "/customers/{customer_id}/adjust",
+    response_model=LoyaltyTransactionResponse,
+    summary="Manual points adjustment",
+)
+async def adjust_points(
+    customer_id: UUID,
+    payload: PointsAdjustmentRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    svc = LoyaltyService(db)
+    try:
+        txn = await svc._record_transaction(
+            org_id=org_id,
+            customer_id=customer_id,
+            transaction_type="manual_add" if payload.points > 0 else "manual_deduct",
+            points=payload.points,
+            reference_type="manual_adjustment",
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

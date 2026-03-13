@@ -16,7 +16,7 @@ from app.modules.admin.models import Organisation, SubscriptionPlan
 from app.modules.customers.models import Customer, FleetAccount
 from app.modules.invoices.models import CreditNote, Invoice, LineItem
 from app.modules.payments.models import Payment
-from app.modules.storage.service import calculate_org_storage, determine_alert_level
+from app.modules.storage.service import calculate_org_storage
 
 
 # ---------------------------------------------------------------------------
@@ -435,8 +435,14 @@ async def get_customer_statement(
 async def get_carjam_usage(
     db: AsyncSession,
     org_id: uuid.UUID,
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> dict:
-    """Carjam API usage for the organisation."""
+    """Carjam API usage for the organisation with daily breakdown."""
+    from app.modules.admin.models import AuditLog
+    from app.modules.admin.service import get_carjam_per_lookup_cost
+
+    # Get org plan info
     result = await db.execute(
         select(
             Organisation.carjam_lookups_this_month,
@@ -447,21 +453,63 @@ async def get_carjam_usage(
         .where(Organisation.id == org_id)
     )
     row = result.one_or_none()
+
     if not row:
         return {
-            "lookups_this_month": 0,
-            "lookups_included": 0,
+            "total_lookups": 0,
+            "included_in_plan": 0,
             "overage_lookups": 0,
-            "reset_at": None,
+            "overage_charge": 0.0,
+            "daily_breakdown": [],
         }
+
     lookups = row.carjam_lookups_this_month or 0
     included = row.carjam_lookups_included or 0
     overage = max(0, lookups - included)
+
+    # Get per-lookup cost for overage charge
+    per_lookup_cost = await get_carjam_per_lookup_cost(db)
+    overage_charge = round(overage * per_lookup_cost, 2)
+
+    # Daily breakdown from audit log
+    if not date_from:
+        now = datetime.now(timezone.utc)
+        date_from = date(now.year, now.month, 1)
+    if not date_to:
+        date_to = datetime.now(timezone.utc).date()
+
+    carjam_actions = [
+        "vehicle.refresh",
+        "vehicle.carjam_abcd_lookup",
+        "vehicle.carjam_basic_lookup",
+        "vehicle.carjam_lookup",
+    ]
+    daily_result = await db.execute(
+        select(
+            func.date(AuditLog.created_at).label("day"),
+            func.count().label("count"),
+        )
+        .where(
+            AuditLog.org_id == org_id,
+            AuditLog.action.in_(carjam_actions),
+            AuditLog.created_at >= datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc),
+            AuditLog.created_at <= datetime.combine(date_to, datetime.max.time(), tzinfo=timezone.utc),
+        )
+        .group_by(func.date(AuditLog.created_at))
+        .order_by(func.date(AuditLog.created_at))
+    )
+    daily_rows = daily_result.all()
+    daily_breakdown = [
+        {"date": str(r.day), "lookups": r.count}
+        for r in daily_rows
+    ]
+
     return {
-        "lookups_this_month": lookups,
-        "lookups_included": included,
+        "total_lookups": lookups,
+        "included_in_plan": included,
         "overage_lookups": overage,
-        "reset_at": row.carjam_lookups_reset_at,
+        "overage_charge": overage_charge,
+        "daily_breakdown": daily_breakdown,
     }
 
 
@@ -521,7 +569,9 @@ async def get_storage_usage(
     org_id: uuid.UUID,
 ) -> dict:
     """Storage usage for the organisation."""
-    used_bytes = await calculate_org_storage(db, org_id)
+    storage_result = await calculate_org_storage(db, org_id)
+    used_bytes = storage_result["total_bytes"]
+    breakdown = storage_result["breakdown"]
 
     # Get quota
     result = await db.execute(
@@ -530,12 +580,14 @@ async def get_storage_usage(
     quota_gb = result.scalar() or 1
     quota_bytes = quota_gb * 1_073_741_824  # 1 GB in bytes
     percentage = (used_bytes / quota_bytes * 100) if quota_bytes > 0 else 0.0
-    alert = determine_alert_level(percentage)
+    used_gb = round(used_bytes / 1_073_741_824, 4)
+
     return {
-        "storage_used_bytes": used_bytes,
-        "storage_quota_bytes": quota_bytes,
-        "usage_percentage": round(percentage, 2),
-        "alert_level": alert,
+        "used_bytes": used_bytes,
+        "used_gb": used_gb,
+        "quota_gb": quota_gb,
+        "usage_percent": round(percentage, 2),
+        "breakdown": breakdown,
     }
 
 

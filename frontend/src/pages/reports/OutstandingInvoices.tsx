@@ -128,11 +128,11 @@ export default function OutstandingInvoices() {
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right">{fmt(inv.total)}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-red-600 font-medium text-right">{fmt(inv.balance_due)}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">
-                        {new Date(inv.due_date).toLocaleDateString('en-NZ')}
+                        {inv.due_date ? new Date(inv.due_date).toLocaleDateString('en-NZ') : '—'}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm">
                         <Badge variant={inv.status === 'overdue' ? 'error' : 'warning'}>
-                          {inv.status.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                          {(inv.status ?? '').replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
                         </Badge>
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-right">

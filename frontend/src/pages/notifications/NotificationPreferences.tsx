@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import apiClient from '../../api/client'
 import { Spinner, Badge } from '../../components/ui'
+import { useModules } from '../../contexts/ModuleContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types — aligned to backend grouped response                        */
@@ -32,6 +33,7 @@ export default function NotificationPreferences() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState<string | null>(null)
+  const { isEnabled } = useModules()
 
   const fetchPrefs = useCallback(async () => {
     setLoading(true)
@@ -131,7 +133,13 @@ export default function NotificationPreferences() {
       )}
 
       <div className="space-y-8">
-        {categories.map((group) => (
+        {categories
+          .filter((group) => {
+            // Hide "Vehicle Reminders" when vehicles module is disabled
+            if (group.category === 'Vehicle Reminders' && !isEnabled('vehicles')) return false
+            return true
+          })
+          .map((group) => (
           <section key={group.category} aria-labelledby={`cat-${group.category}`}>
             <div className="mb-3">
               <h3 id={`cat-${group.category}`} className="text-lg font-medium text-gray-900">{group.category}</h3>

@@ -449,7 +449,7 @@ export function Organisations() {
         signup_date: o.created_at,
         storage_used_gb: Math.round((o.storage_used_bytes ?? 0) / (1024 * 1024 * 1024) * 10) / 10,
         storage_quota_gb: o.storage_quota_gb,
-        last_login: null,
+        last_login: o.last_login_at || null,
       })))
       setPlans(plansRes.data.plans)
     } catch {
@@ -697,7 +697,21 @@ export function Organisations() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-gray-900">Organisations</h1>
-        <Button onClick={() => setProvisionOpen(true)}>Provision new organisation</Button>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={async () => {
+            if (!confirm('Reset the Demo Workshop account? This will delete all demo data (invoices, customers, vehicles, SMS) and reset the password to demo123.')) return
+            try {
+              await apiClient.post('/admin/demo/reset')
+              addToast('success', 'Demo account reset successfully')
+              fetchData()
+            } catch {
+              addToast('error', 'Failed to reset demo account')
+            }
+          }}>
+            Reset Demo Account
+          </Button>
+          <Button onClick={() => setProvisionOpen(true)}>Provision new organisation</Button>
+        </div>
       </div>
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />

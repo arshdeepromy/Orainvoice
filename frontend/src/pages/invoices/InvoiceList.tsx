@@ -209,12 +209,91 @@ function getDueDateLabel(inv: InvoiceSummary): { text: string; className: string
 
 const PRINT_STYLES = `
 @media print {
+  /* Hide everything except the invoice preview */
   nav, aside, header, footer, [data-print-hide], .no-print { display: none !important; }
-  body { margin: 0; padding: 0; background: white !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  [data-print-content] { max-width: 100% !important; margin: 0 !important; padding: 20px !important; box-shadow: none !important; border: none !important; }
+
+  /* Reset page */
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    overflow: visible !important;
+    height: auto !important;
+    width: auto !important;
+  }
+
+  /* Break out of the app shell layout constraints */
+  .flex.h-screen, .flex.h-screen.overflow-hidden,
+  .flex-1.flex-col.overflow-hidden,
+  main.flex-1.overflow-y-auto,
+  .flex.h-full.overflow-hidden {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+    min-height: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  /* The right panel (data-print-content) — full width, no overflow */
+  [data-print-content] {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  /* The scrollable invoice area inside the panel */
+  [data-print-content] .overflow-y-auto {
+    overflow: visible !important;
+    height: auto !important;
+    padding: 10px 0 !important;
+  }
+
+  /* The invoice card — keep styling, remove shadow, fill width nicely */
+  [data-print-content] .max-w-3xl {
+    max-width: 100% !important;
+    margin: 0 auto !important;
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+  }
+
+  /* Preserve gradient backgrounds (blue header row, balance due bar) */
+  .bg-gradient-to-r,
+  [class*="from-blue-"], [class*="to-indigo-"],
+  [class*="bg-blue-"], [class*="bg-yellow-"],
+  [class*="bg-slate-"], [class*="bg-emerald-"],
+  [class*="bg-gray-50"] {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Keep text colours as designed */
+  .text-white { color: white !important; }
+
+  /* Tables don't break across pages */
   table { page-break-inside: avoid; }
   tr { page-break-inside: avoid; }
-  @page { margin: 15mm; size: A4; }
+
+  /* Hide payment history and credit notes cards below the invoice for cleaner print */
+  [data-print-content] .overflow-y-auto > .max-w-3xl.mt-4 {
+    display: none !important;
+  }
+
+  /* Page setup */
+  @page {
+    margin: 10mm;
+    size: A4;
+  }
 }
 `
 

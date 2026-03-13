@@ -473,7 +473,7 @@ export function ModuleConfiguration() {
   )
 
   const performToggle = useCallback(
-    async (mod: ModuleDefinition, newEnabled: boolean) => {
+    async (mod: ModuleDefinition, newEnabled: boolean, force = false) => {
       setTogglingSlug(mod.slug)
 
       // Optimistic update
@@ -495,7 +495,8 @@ export function ModuleConfiguration() {
 
       try {
         const action = newEnabled ? 'enable' : 'disable'
-        await apiClient.put(`/api/v2/modules/${mod.slug}/${action}`)
+        const query = force ? '?force=true' : ''
+        await apiClient.put(`/api/v2/modules/${mod.slug}/${action}${query}`)
         await refetchModuleContext()
         addToast('success', `${mod.name} ${newEnabled ? 'enabled' : 'disabled'}`)
       } catch {
@@ -511,7 +512,7 @@ export function ModuleConfiguration() {
 
   const handleCascadeConfirm = useCallback(() => {
     if (cascadeDialog.mod) {
-      performToggle(cascadeDialog.mod, false)
+      performToggle(cascadeDialog.mod, false, true)
     }
     setCascadeDialog({ open: false, mod: null, affected: [] })
   }, [cascadeDialog.mod, performToggle])

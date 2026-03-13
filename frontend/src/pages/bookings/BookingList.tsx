@@ -6,6 +6,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import apiClient from '@/api/client'
+import { Pagination, PageSizeSelect } from '@/components/ui'
 
 interface BookingItem {
   id: string
@@ -52,10 +53,10 @@ export default function BookingList() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
   const [statusFilter, setStatusFilter] = useState('')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
-  const pageSize = 20
 
   const fetchBookings = useCallback(async () => {
     setLoading(true)
@@ -78,7 +79,7 @@ export default function BookingList() {
     } finally {
       setLoading(false)
     }
-  }, [page, statusFilter, startDate, endDate])
+  }, [page, pageSize, statusFilter, startDate, endDate])
 
   useEffect(() => { fetchBookings() }, [fetchBookings])
 
@@ -199,25 +200,13 @@ export default function BookingList() {
           {/* Pagination */}
           {totalPages > 1 && (
             <div className="mt-4 flex items-center justify-between text-sm text-gray-600">
-              <span>Page {page} of {totalPages} ({total} bookings)</span>
-              <div className="flex gap-2">
-                <button
-                  disabled={page <= 1}
-                  onClick={() => setPage(page - 1)}
-                  className="rounded border px-3 py-1 disabled:opacity-50"
-                >
-                  Previous
-                </button>
-                <button
-                  disabled={page >= totalPages}
-                  onClick={() => setPage(page + 1)}
-                  className="rounded border px-3 py-1 disabled:opacity-50"
-                >
-                  Next
-                </button>
-              </div>
+              <span>Showing {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)} of {total} bookings</span>
+              <Pagination currentPage={page} totalPages={totalPages} onPageChange={setPage} />
             </div>
           )}
+          <div className="mt-3 flex justify-end">
+            <PageSizeSelect value={pageSize} onChange={(size) => { setPageSize(size); setPage(1) }} />
+          </div>
         </>
       )}
     </div>

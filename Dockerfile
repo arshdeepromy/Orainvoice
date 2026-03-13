@@ -18,6 +18,11 @@ RUN pip install --no-cache-dir --upgrade pip setuptools && pip install --no-cach
 
 COPY . .
 
+# Entrypoint runs migrations + optional dev seeding before starting the app
+COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
 EXPOSE 8000
 
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

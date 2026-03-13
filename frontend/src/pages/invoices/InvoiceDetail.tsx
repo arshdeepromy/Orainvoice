@@ -155,12 +155,26 @@ const PRINT_STYLES = `
   }
 
   /* Reset page layout */
-  body {
-    margin: 0;
-    padding: 0;
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
     background: white !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  /* Break out of app shell layout */
+  .flex.h-screen, .flex.h-screen.overflow-hidden,
+  .flex-1.flex-col.overflow-hidden,
+  main.flex-1.overflow-y-auto {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
   }
 
   /* Clean branded layout */
@@ -170,6 +184,8 @@ const PRINT_STYLES = `
     padding: 20px !important;
     box-shadow: none !important;
     border: none !important;
+    overflow: visible !important;
+    height: auto !important;
   }
 
   /* Ensure tables don't break across pages */
@@ -178,24 +194,14 @@ const PRINT_STYLES = `
 
   /* Status badge prints with background */
   .badge-print {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
 
   /* Page margins */
   @page {
-    margin: 15mm;
+    margin: 10mm;
     size: A4;
-  }
-
-  /* Ensure text is black for readability */
-  * {
-    color: #111 !important;
-  }
-
-  /* Keep badge colours */
-  [data-status-badge] {
-    color: inherit !important;
   }
 }
 `

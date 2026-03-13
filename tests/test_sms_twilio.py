@@ -248,8 +248,8 @@ class TestSmsNotificationSchemas:
     """SMS template and settings schema tests."""
 
     def test_sms_template_types_count(self):
-        """Req 36.4: exactly 4 SMS templates."""
-        assert len(SMS_TEMPLATE_TYPES) == 4
+        """Req 36.4: SMS templates."""
+        assert len(SMS_TEMPLATE_TYPES) == 10
 
     def test_sms_template_types_content(self):
         """Req 36.4: correct template types."""

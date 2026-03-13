@@ -21,6 +21,49 @@ from app.modules.admin.models import GlobalVehicle, Organisation
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Carjam config loader (reads GUI-configured integration_configs)
+# ---------------------------------------------------------------------------
+
+async def _load_carjam_client(db: AsyncSession, redis: Redis) -> CarjamClient:
+    """Build a CarjamClient using the GUI-configured integration settings.
+
+    Falls back to env-var defaults if no DB config exists.
+    """
+    from app.modules.admin.models import IntegrationConfig
+    from app.core.encryption import envelope_decrypt_str
+
+    config_result = await db.execute(
+        select(IntegrationConfig).where(IntegrationConfig.name == "carjam")
+    )
+    config_row = config_result.scalar_one_or_none()
+
+    if config_row:
+        try:
+            config_data = json.loads(envelope_decrypt_str(config_row.config_encrypted))
+            api_key = config_data.get("api_key", "")
+            base_url = config_data.get("endpoint_url", "https://www.carjam.co.nz")
+            rate_limit = config_data.get("global_rate_limit_per_minute", 60)
+
+            logger.info(
+                "Loaded Carjam config from DB: base_url=%s, has_api_key=%s, rate_limit=%d",
+                base_url, bool(api_key), rate_limit,
+            )
+            return CarjamClient(
+                redis=redis,
+                api_key=api_key,
+                base_url=base_url,
+                rate_limit=rate_limit,
+            )
+        except Exception as e:
+            logger.error("Failed to load Carjam config from DB: %s", e)
+            raise CarjamError("Failed to load Carjam configuration") from e
+
+    # No DB config — fall back to env-var defaults
+    logger.info("No Carjam DB config found, using env-var defaults")
+    return CarjamClient(redis=redis)
+
+
 def _parse_date(val: str | None) -> date | None:
     """Parse an ISO date string to a date object, returning None on failure."""
     if not val:
@@ -285,37 +328,8 @@ async def lookup_vehicle(
     # --- Step 2: Cache miss — call Carjam API (Req 14.3) ---
     logger.info("Vehicle cache miss for rego=%s — calling Carjam", rego)
 
-    # Load Carjam config from database
-    from app.modules.admin.service import get_integration_config
-    from app.core.encryption import envelope_decrypt_str
-    from app.modules.admin.models import IntegrationConfig
-    
-    config_result = await db.execute(
-        select(IntegrationConfig).where(IntegrationConfig.name == "carjam")
-    )
-    config_row = config_result.scalar_one_or_none()
-    
-    if not config_row:
-        raise CarjamError("Carjam integration not configured")
-    
     try:
-        config_data = json.loads(envelope_decrypt_str(config_row.config_encrypted))
-        api_key = config_data.get("api_key", "")
-        base_url = config_data.get("endpoint_url", "https://www.carjam.co.nz")
-        rate_limit = config_data.get("global_rate_limit_per_minute", 60)
-        
-        logger.info(f"Loaded Carjam config: base_url={base_url}, has_api_key={bool(api_key)}, rate_limit={rate_limit}")
-    except Exception as e:
-        logger.error(f"Failed to load Carjam config: {e}")
-        raise CarjamError("Failed to load Carjam configuration")
-
-    try:
-        client = CarjamClient(
-            redis=redis,
-            api_key=api_key,
-            base_url=base_url,
-            rate_limit=rate_limit,
-        )
+        client = await _load_carjam_client(db, redis)
         logger.info(f"CarjamClient created, calling lookup_vehicle for {rego}")
         carjam_data = await client.lookup_vehicle(rego)
         logger.info(f"Carjam API returned data: {carjam_data}")
@@ -384,9 +398,37 @@ async def refresh_vehicle(
 
     before_value = _global_vehicle_to_dict(existing, source="cache")
 
-    # Force Carjam re-fetch
-    client = CarjamClient(redis=redis)
-    carjam_data = await client.lookup_vehicle(existing.rego)
+    # Force Carjam re-fetch using ABCD-first strategy (using GUI-configured settings)
+    import asyncio
+    from app.integrations.carjam import CarjamNotFoundError as _NotFound
+
+    client = await _load_carjam_client(db, redis)
+    carjam_data = None
+    lookup_source = "basic"
+
+    # Step 1: Try ABCD (2 attempts with retry for async data fetch)
+    for attempt in range(2):
+        try:
+            logger.info("Refresh ABCD attempt %d for rego=%s", attempt + 1, existing.rego)
+            carjam_data = await client.lookup_vehicle_abcd(existing.rego, use_mvr=True)
+            lookup_source = "abcd"
+            break
+        except CarjamError as exc:
+            if str(exc) == "ABCD_FETCHING" and attempt < 1:
+                logger.info("ABCD data being fetched for %s, retrying in 1s", existing.rego)
+                await asyncio.sleep(1)
+                continue
+            logger.info("ABCD failed for %s: %s, falling back to Basic", existing.rego, exc)
+            break
+        except Exception as exc:
+            logger.error("ABCD error for %s: %s, falling back to Basic", existing.rego, exc)
+            break
+
+    # Step 2: Fallback to Basic if ABCD didn't return data
+    if carjam_data is None:
+        logger.info("Falling back to Basic API for refresh of %s", existing.rego)
+        carjam_data = await client.lookup_vehicle(existing.rego)
+        lookup_source = "basic"
 
     # Update the existing record
     now = datetime.now(timezone.utc)
@@ -405,7 +447,7 @@ async def refresh_vehicle(
         existing.odometer_last_recorded or 0,
     ) or None
     existing.last_pulled_at = now
-    existing.lookup_type = carjam_data.lookup_type
+    existing.lookup_type = lookup_source
 
     # Record CarJam odometer reading in history if available
     if carjam_data.odometer and carjam_data.odometer > 0:
@@ -446,7 +488,7 @@ async def refresh_vehicle(
         await db.flush()
 
     # Audit log
-    after_value = _global_vehicle_to_dict(existing, source="carjam")
+    after_value = _global_vehicle_to_dict(existing, source=lookup_source)
     await write_audit_log(
         session=db,
         org_id=org_id,
@@ -495,34 +537,111 @@ async def create_manual_vehicle(
     fuel_type: str | None = None,
     engine_size: str | None = None,
     num_seats: int | None = None,
+    vin: str | None = None,
+    chassis: str | None = None,
+    engine_no: str | None = None,
+    transmission: str | None = None,
+    country_of_origin: str | None = None,
+    number_of_owners: int | None = None,
+    vehicle_type: str | None = None,
+    submodel: str | None = None,
+    second_colour: str | None = None,
+    wof_expiry: str | None = None,
+    rego_expiry: str | None = None,
+    odometer: int | None = None,
     ip_address: str | None = None,
 ) -> dict:
-    """Create a manually entered vehicle in org_vehicles.
+    """Create a manually entered vehicle in global_vehicles.
 
-    The record is scoped to the organisation and marked as "manually entered".
-    It is NOT stored in the Global_Vehicle_DB.
+    Stores into the same table as CarJam vehicles with lookup_type='manual'
+    so data is seamless regardless of source. If a global_vehicles record
+    already exists for this rego, updates it instead.
 
     Requirements: 14.6, 14.7
     """
-    from app.modules.vehicles.models import OrgVehicle
-
     rego = rego.upper().strip()
+    now = datetime.now(timezone.utc)
 
-    new_vehicle = OrgVehicle(
-        org_id=org_id,
-        rego=rego,
-        make=make,
-        model=model,
-        year=year,
-        colour=colour,
-        body_type=body_type,
-        fuel_type=fuel_type,
-        engine_size=engine_size,
-        num_seats=num_seats,
-        is_manual_entry=True,
+    # Check if a global vehicle already exists for this rego
+    result = await db.execute(
+        select(GlobalVehicle).where(GlobalVehicle.rego == rego)
     )
-    db.add(new_vehicle)
-    await db.flush()
+    existing = result.scalar_one_or_none()
+
+    if existing is not None:
+        # Update existing record with manual data
+        if make is not None:
+            existing.make = make
+        if model is not None:
+            existing.model = model
+        if year is not None:
+            existing.year = year
+        if colour is not None:
+            existing.colour = colour
+        if body_type is not None:
+            existing.body_type = body_type
+        if fuel_type is not None:
+            existing.fuel_type = fuel_type
+        if engine_size is not None:
+            existing.engine_size = engine_size
+        if num_seats is not None:
+            existing.num_seats = num_seats
+        if vin is not None:
+            existing.vin = vin
+        if chassis is not None:
+            existing.chassis = chassis
+        if engine_no is not None:
+            existing.engine_no = engine_no
+        if transmission is not None:
+            existing.transmission = transmission
+        if country_of_origin is not None:
+            existing.country_of_origin = country_of_origin
+        if number_of_owners is not None:
+            existing.number_of_owners = number_of_owners
+        if vehicle_type is not None:
+            existing.vehicle_type = vehicle_type
+        if submodel is not None:
+            existing.submodel = submodel
+        if second_colour is not None:
+            existing.second_colour = second_colour
+        if wof_expiry is not None:
+            existing.wof_expiry = _parse_date(wof_expiry)
+        if rego_expiry is not None:
+            existing.registration_expiry = _parse_date(rego_expiry)
+        if odometer is not None:
+            existing.odometer_last_recorded = odometer
+        existing.last_pulled_at = now
+        await db.flush()
+        vehicle = existing
+    else:
+        # Create new global vehicle record
+        vehicle = GlobalVehicle(
+            rego=rego,
+            make=make,
+            model=model,
+            year=year,
+            colour=colour,
+            body_type=body_type,
+            fuel_type=fuel_type,
+            engine_size=engine_size,
+            num_seats=num_seats,
+            wof_expiry=_parse_date(wof_expiry),
+            registration_expiry=_parse_date(rego_expiry),
+            odometer_last_recorded=odometer,
+            last_pulled_at=now,
+            lookup_type="manual",
+            vin=vin,
+            chassis=chassis,
+            engine_no=engine_no,
+            transmission=transmission,
+            country_of_origin=country_of_origin,
+            number_of_owners=number_of_owners,
+            vehicle_type=vehicle_type,
+            submodel=submodel,
+            second_colour=second_colour,
+        )
+        db.add(vehicle)
+        await db.flush()
 
     # Audit log
     await write_audit_log(
@@ -530,14 +649,16 @@ async def create_manual_vehicle(
         org_id=org_id,
         user_id=user_id,
         action="vehicle.manual_entry",
-        entity_type="org_vehicle",
-        entity_id=new_vehicle.id,
+        entity_type="global_vehicle",
+        entity_id=vehicle.id,
         before_value=None,
         after_value={"rego": rego, "source": "manual"},
         ip_address=ip_address,
     )
 
-    return _org_vehicle_to_dict(new_vehicle)
+    await db.commit()
+
+    return _global_vehicle_to_dict(vehicle, source="manual")
 
 
 # ---------------------------------------------------------------------------
@@ -749,6 +870,17 @@ async def get_vehicle_profile(
         "last_pulled_at": vehicle.last_pulled_at.isoformat() if vehicle.last_pulled_at else None,
         "wof_expiry": wof_indicator,
         "rego_expiry": rego_indicator,
+        # Extended fields
+        "vin": vehicle.vin,
+        "chassis": vehicle.chassis,
+        "engine_no": vehicle.engine_no,
+        "transmission": vehicle.transmission,
+        "country_of_origin": vehicle.country_of_origin,
+        "number_of_owners": vehicle.number_of_owners,
+        "vehicle_type": vehicle.vehicle_type,
+        "submodel": vehicle.submodel,
+        "second_colour": vehicle.second_colour,
+        "lookup_type": vehicle.lookup_type,
         "linked_customers": linked_customers,
         "service_history": service_history,
     }
@@ -981,29 +1113,7 @@ async def lookup_vehicle_with_abcd_fallback(
         }
     
     # Load Carjam config
-    config_result = await db.execute(
-        select(IntegrationConfig).where(IntegrationConfig.name == "carjam")
-    )
-    config_row = config_result.scalar_one_or_none()
-    
-    if not config_row:
-        raise CarjamError("Carjam integration not configured")
-    
-    try:
-        config_data = json.loads(envelope_decrypt_str(config_row.config_encrypted))
-        api_key = config_data.get("api_key", "")
-        base_url = config_data.get("endpoint_url", "https://www.carjam.co.nz")
-        rate_limit = config_data.get("global_rate_limit_per_minute", 60)
-    except Exception as e:
-        logger.error(f"Failed to load Carjam config: {e}")
-        raise CarjamError("Failed to load Carjam configuration")
-    
-    client = CarjamClient(
-        redis=redis,
-        api_key=api_key,
-        base_url=base_url,
-        rate_limit=rate_limit,
-    )
+    client = await _load_carjam_client(db, redis)
     
     # Step 2: Try ABCD (2 attempts)
     abcd_attempts = 0

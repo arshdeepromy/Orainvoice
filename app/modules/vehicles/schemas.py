@@ -56,6 +56,9 @@ class VehicleLookupNotFoundResponse(BaseModel):
 class ManualVehicleCreate(BaseModel):
     """POST /api/v1/vehicles/manual request body.
 
+    Stores into global_vehicles (same as CarJam) with lookup_type='manual'
+    so data is seamless regardless of source.
+
     Requirements: 14.6, 14.7
     """
 
@@ -68,16 +71,31 @@ class ManualVehicleCreate(BaseModel):
     fuel_type: Optional[str] = Field(None, max_length=50, description="Fuel type")
     engine_size: Optional[str] = Field(None, max_length=50, description="Engine size")
     num_seats: Optional[int] = Field(None, ge=1, description="Number of seats")
+    # Extended fields (matching CarJam data model)
+    vin: Optional[str] = Field(None, max_length=17, description="Vehicle Identification Number")
+    chassis: Optional[str] = Field(None, max_length=50, description="Chassis number")
+    engine_no: Optional[str] = Field(None, max_length=50, description="Engine number")
+    transmission: Optional[str] = Field(None, max_length=100, description="Transmission type")
+    country_of_origin: Optional[str] = Field(None, max_length=50, description="Country of origin")
+    number_of_owners: Optional[int] = Field(None, ge=0, description="Number of previous owners")
+    vehicle_type: Optional[str] = Field(None, max_length=50, description="Vehicle type (e.g. Passenger, Commercial)")
+    submodel: Optional[str] = Field(None, max_length=150, description="Submodel / variant")
+    second_colour: Optional[str] = Field(None, max_length=50, description="Secondary colour")
+    wof_expiry: Optional[str] = Field(None, description="WOF expiry date (YYYY-MM-DD)")
+    rego_expiry: Optional[str] = Field(None, description="Registration expiry date (YYYY-MM-DD)")
+    odometer: Optional[int] = Field(None, ge=0, description="Current odometer reading (km)")
 
 
 class ManualVehicleResponse(BaseModel):
-    """Response for a manually entered vehicle (stored in org_vehicles).
+    """Response for a manually entered vehicle (stored in global_vehicles).
+
+    Returns the same shape as CarJam vehicles so the frontend treats them
+    identically.
 
     Requirements: 14.7
     """
 
-    id: str = Field(..., description="Org vehicle UUID")
-    org_id: str = Field(..., description="Organisation UUID")
+    id: str = Field(..., description="Global vehicle UUID")
     rego: str = Field(..., description="Registration number")
     make: Optional[str] = None
     model: Optional[str] = None
@@ -86,9 +104,22 @@ class ManualVehicleResponse(BaseModel):
     body_type: Optional[str] = None
     fuel_type: Optional[str] = None
     engine_size: Optional[str] = None
-    num_seats: Optional[int] = None
-    is_manual_entry: bool = Field(True, description="Always true for manual entries")
-    created_at: str = Field(..., description="ISO 8601 creation timestamp")
+    seats: Optional[int] = None
+    wof_expiry: Optional[str] = None
+    rego_expiry: Optional[str] = None
+    odometer: Optional[int] = None
+    vin: Optional[str] = None
+    chassis: Optional[str] = None
+    engine_no: Optional[str] = None
+    transmission: Optional[str] = None
+    country_of_origin: Optional[str] = None
+    number_of_owners: Optional[int] = None
+    vehicle_type: Optional[str] = None
+    submodel: Optional[str] = None
+    second_colour: Optional[str] = None
+    lookup_type: str = Field("manual", description="Always 'manual' for manual entries")
+    last_pulled_at: Optional[str] = Field(None, description="ISO 8601 creation timestamp")
+    source: str = Field("manual", description="Always 'manual' for manual entries")
 
 
 class VehicleRefreshResponse(BaseModel):
@@ -207,6 +238,17 @@ class VehicleProfileResponse(BaseModel):
     last_pulled_at: Optional[str] = None
     wof_expiry: ExpiryIndicator
     rego_expiry: ExpiryIndicator
+    # Extended fields
+    vin: Optional[str] = None
+    chassis: Optional[str] = None
+    engine_no: Optional[str] = None
+    transmission: Optional[str] = None
+    country_of_origin: Optional[str] = None
+    number_of_owners: Optional[int] = None
+    vehicle_type: Optional[str] = None
+    submodel: Optional[str] = None
+    second_colour: Optional[str] = None
+    lookup_type: Optional[str] = None
     linked_customers: list[LinkedCustomerSummary] = Field(default_factory=list)
     service_history: list[ServiceHistoryEntry] = Field(default_factory=list)
 

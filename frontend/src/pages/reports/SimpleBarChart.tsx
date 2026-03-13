@@ -23,10 +23,10 @@ export default function SimpleBarChart({ items, formatValue = (v) => String(v), 
   return (
     <div role="img" aria-label={title} className="space-y-2">
       <h3 className="sr-only">{title}</h3>
-      {items.map((item) => {
+      {items.map((item, idx) => {
         const pct = Math.round((item.value / max) * 100)
         return (
-          <div key={item.label} className="flex items-center gap-3">
+          <div key={`${item.label}-${idx}`} className="flex items-center gap-3">
             <span className="w-28 shrink-0 text-sm text-gray-700 truncate" title={item.label}>
               {item.label}
             </span>

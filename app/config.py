@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # --- Carjam ---
     carjam_api_key: str = ""
-    carjam_base_url: str = "https://api.carjam.co.nz"
+    carjam_base_url: str = "https://www.carjam.co.nz"
     carjam_global_rate_limit_per_minute: int = 60
 
     # --- Email (Brevo / SendGrid / SMTP) ---

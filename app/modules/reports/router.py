@@ -9,6 +9,7 @@ Requirements: 45.1, 45.2, 45.3, 45.4, 45.5, 45.6, 45.7, 66.4
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
@@ -290,6 +291,8 @@ async def customer_statement_report(
 async def carjam_usage_report(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    from_date: str | None = Query(None, alias="from"),
+    to_date: str | None = Query(None, alias="to"),
 ):
     """Carjam API usage for the organisation.
 
@@ -299,7 +302,10 @@ async def carjam_usage_report(
     if not org_id:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
 
-    data = await get_carjam_usage(db, org_id)
+    date_from = date.fromisoformat(from_date) if from_date else None
+    date_to = date.fromisoformat(to_date) if to_date else None
+
+    data = await get_carjam_usage(db, org_id, date_from=date_from, date_to=date_to)
     return CarjamUsageResponse(**data)
 
 

@@ -176,6 +176,7 @@ def create_app() -> FastAPI:
     from app.modules.customers import models as _customer_models  # noqa: F401
     from app.modules.job_cards import models as _job_card_models  # noqa: F401
     from app.modules.staff import models as _staff_models  # noqa: F401
+    from app.modules.sms_chat import models as _sms_chat_models  # noqa: F401
 
     # --- V1 Routers (existing, unchanged) ---
     from app.modules.auth.router import router as auth_router
@@ -448,6 +449,15 @@ def create_app() -> FastAPI:
     from app.modules.sms_providers.router import router as sms_providers_router
     app.include_router(sms_providers_router, prefix="/api/v2/admin/sms-providers", tags=["v2-admin-sms-providers"])
 
+    # --- SMS Chat (Connexus two-way SMS) ---
+    from app.modules.sms_chat.router_webhooks import router as sms_webhooks_router
+    from app.modules.sms_chat.router import router as sms_chat_router
+    from app.modules.sms_chat.router_admin import router as sms_chat_admin_router
+
+    app.include_router(sms_webhooks_router, tags=["v2-sms-webhooks"])
+    app.include_router(sms_chat_router, prefix="/api/v2", tags=["v2-sms-chat"])
+    app.include_router(sms_chat_admin_router, prefix="/api/v2", tags=["v2-admin-connexus"])
+
     # --- Email Providers ---
     from app.modules.email_providers.router import router as email_providers_router
     app.include_router(email_providers_router, prefix="/api/v2/admin/email-providers", tags=["v2-admin-email-providers"])
@@ -469,6 +479,11 @@ def create_app() -> FastAPI:
     async def _warm_caches() -> None:
         from app.core.cache_warming import warm_all_caches
         await warm_all_caches()
+
+    @app.on_event("startup")
+    async def _sync_demo_org() -> None:
+        from app.core.demo_org_sync import sync_demo_org_modules
+        await sync_demo_org_modules()
 
     return app
 

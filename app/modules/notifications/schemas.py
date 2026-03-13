@@ -27,6 +27,12 @@ EMAIL_TEMPLATE_TYPES: list[str] = [
     "subscription_payment_failed",
     "wof_expiry_reminder",
     "registration_expiry_reminder",
+    "service_due_reminder",
+    "booking_confirmation",
+    "booking_cancellation",
+    "quote_sent",
+    "quote_accepted",
+    "quote_expired",
     "user_invitation",
     "password_reset",
     "mfa_enrolment",
@@ -50,6 +56,12 @@ TEMPLATE_VARIABLES: list[dict[str, str]] = [
     {"name": "vehicle_make", "description": "Vehicle make"},
     {"name": "vehicle_model", "description": "Vehicle model"},
     {"name": "expiry_date", "description": "WOF or registration expiry date"},
+    {"name": "service_due_date", "description": "Next service due date"},
+    {"name": "booking_date", "description": "Booking date and time"},
+    {"name": "booking_service", "description": "Booked service type"},
+    {"name": "quote_number", "description": "Quote reference number"},
+    {"name": "quote_total", "description": "Quote total amount"},
+    {"name": "quote_valid_until", "description": "Quote expiry date"},
     {"name": "user_name", "description": "User's full name"},
     {"name": "reset_link", "description": "Password reset link URL"},
     {"name": "signup_link", "description": "User invitation signup link URL"},
@@ -66,25 +78,58 @@ SMS_TEMPLATE_TYPES: list[str] = [
     "payment_overdue_reminder",
     "wof_expiry_reminder",
     "registration_expiry_reminder",
+    "service_due_reminder",
+    "booking_confirmation",
+    "booking_cancellation",
+    "quote_sent",
+    "quote_accepted",
+    "quote_expired",
 ]
 
 # Default SMS body text for each template type (Req 36.4)
+# GSM-7 safe only (no smart quotes, em dashes, or emojis).
+# Keep templates short so they fit in a single 160-char SMS segment
+# after variable expansion.
 DEFAULT_SMS_BODIES: dict[str, str] = {
     "invoice_issued": (
         "Hi {{customer_first_name}}, invoice {{invoice_number}} "
-        "for {{total_due}} is ready. Pay here: {{payment_link}}"
+        "for {{total_due}} is ready. Pay online: {{payment_link}}"
     ),
     "payment_overdue_reminder": (
         "Hi {{customer_first_name}}, invoice {{invoice_number}} "
-        "is overdue. Amount: {{total_due}}. Please pay promptly."
+        "for {{total_due}} is overdue. Please pay now: {{payment_link}}"
     ),
     "wof_expiry_reminder": (
         "Hi {{customer_first_name}}, WOF for {{vehicle_rego}} "
-        "expires {{expiry_date}}. Book with {{org_name}} today."
+        "expires {{expiry_date}}. Call {{org_name}} to book."
     ),
     "registration_expiry_reminder": (
         "Hi {{customer_first_name}}, rego for {{vehicle_rego}} "
-        "expires {{expiry_date}}. Contact {{org_name}}."
+        "expires {{expiry_date}}. Call {{org_name}} to arrange."
+    ),
+    "service_due_reminder": (
+        "Hi {{customer_first_name}}, {{vehicle_rego}} is due for "
+        "a service on {{service_due_date}}. Call {{org_name}} to book."
+    ),
+    "booking_confirmation": (
+        "Hi {{customer_first_name}}, your {{booking_service}} "
+        "on {{booking_date}} is confirmed. - {{org_name}}"
+    ),
+    "booking_cancellation": (
+        "Hi {{customer_first_name}}, your {{booking_service}} "
+        "on {{booking_date}} has been cancelled. Call {{org_name}} to rebook."
+    ),
+    "quote_sent": (
+        "Hi {{customer_first_name}}, quote {{quote_number}} "
+        "for {{quote_total}} is ready. Valid until {{quote_valid_until}}."
+    ),
+    "quote_accepted": (
+        "Hi {{customer_first_name}}, quote {{quote_number}} "
+        "has been accepted. We will be in touch. - {{org_name}}"
+    ),
+    "quote_expired": (
+        "Hi {{customer_first_name}}, quote {{quote_number}} "
+        "has expired. Call {{org_name}} for a new quote."
     ),
 }
 
@@ -145,6 +190,36 @@ _DEFAULT_BODY_BLOCKS: dict[str, list[dict[str, Any]]] = {
         {"type": "header", "content": "Registration Expiry Reminder"},
         {"type": "text", "content": "Hi {{customer_first_name}}, the registration for {{vehicle_rego}} ({{vehicle_make}} {{vehicle_model}}) expires on {{expiry_date}}."},
     ],
+    "service_due_reminder": [
+        {"type": "header", "content": "Service Due Reminder"},
+        {"type": "text", "content": "Hi {{customer_first_name}}, your vehicle {{vehicle_rego}} ({{vehicle_make}} {{vehicle_model}}) is due for service on {{service_due_date}}."},
+        {"type": "text", "content": "Book your service with {{org_name}} to keep your vehicle in top condition."},
+    ],
+    "booking_confirmation": [
+        {"type": "header", "content": "Booking Confirmed"},
+        {"type": "text", "content": "Hi {{customer_first_name}}, your booking for {{booking_service}} on {{booking_date}} has been confirmed."},
+        {"type": "text", "content": "If you need to reschedule, please contact us at {{org_phone}}."},
+    ],
+    "booking_cancellation": [
+        {"type": "header", "content": "Booking Cancelled"},
+        {"type": "text", "content": "Hi {{customer_first_name}}, your booking for {{booking_service}} on {{booking_date}} has been cancelled."},
+        {"type": "text", "content": "Please contact {{org_name}} if you'd like to rebook."},
+    ],
+    "quote_sent": [
+        {"type": "header", "content": "Quote {{quote_number}}"},
+        {"type": "text", "content": "Hi {{customer_first_name}}, your quote is ready."},
+        {"type": "text", "content": "Total: {{quote_total}}. Valid until {{quote_valid_until}}."},
+    ],
+    "quote_accepted": [
+        {"type": "header", "content": "Quote Accepted"},
+        {"type": "text", "content": "Hi {{customer_first_name}}, thanks for accepting quote {{quote_number}}."},
+        {"type": "text", "content": "We'll be in touch shortly to arrange the work."},
+    ],
+    "quote_expired": [
+        {"type": "header", "content": "Quote Expired"},
+        {"type": "text", "content": "Hi {{customer_first_name}}, quote {{quote_number}} has expired."},
+        {"type": "text", "content": "Contact {{org_name}} if you'd like a new quote."},
+    ],
     "user_invitation": [
         {"type": "header", "content": "You're Invited"},
         {"type": "text", "content": "Hi {{user_name}}, you've been invited to join {{org_name}}."},
@@ -183,6 +258,12 @@ DEFAULT_SUBJECTS: dict[str, str] = {
     "subscription_payment_failed": "Subscription payment failed",
     "wof_expiry_reminder": "WOF expiry reminder for {{vehicle_rego}}",
     "registration_expiry_reminder": "Registration expiry reminder for {{vehicle_rego}}",
+    "service_due_reminder": "Service due reminder for {{vehicle_rego}}",
+    "booking_confirmation": "Booking confirmed — {{booking_service}} on {{booking_date}}",
+    "booking_cancellation": "Booking cancelled — {{booking_service}} on {{booking_date}}",
+    "quote_sent": "Quote {{quote_number}} from {{org_name}}",
+    "quote_accepted": "Quote {{quote_number}} accepted",
+    "quote_expired": "Quote {{quote_number}} has expired",
     "user_invitation": "You're invited to join {{org_name}}",
     "password_reset": "Password reset request",
     "mfa_enrolment": "MFA enrolment confirmation",
@@ -579,46 +660,6 @@ class NotificationPreferenceUpdateRequest(BaseModel):
     channel: Optional[Literal["email", "sms", "both"]] = Field(
         None, description="Delivery channel: email, sms, or both"
     )
-
-
-    # ---------------------------------------------------------------------------
-    # Bounce webhook schemas (Req 2.20 — Brevo & SendGrid bounce handling)
-    # ---------------------------------------------------------------------------
-
-
-    class BrevoBounceEvent(BaseModel):
-        """Single event in a Brevo bounce webhook payload."""
-
-        event: str = Field(..., description="Event type, e.g. 'hard_bounce', 'soft_bounce', 'blocked'")
-        email: str = Field(..., description="Bounced email address")
-        message_id: Optional[str] = Field(None, alias="message-id", description="Brevo message ID")
-        ts_event: Optional[int] = Field(None, description="Unix timestamp of the event")
-
-
-    class BrevoBounceWebhookRequest(BaseModel):
-        """POST /notifications/webhooks/brevo-bounce request body.
-
-        Brevo sends an array of events or a single event object.
-        """
-
-        events: Optional[list[BrevoBounceEvent]] = Field(
-            None, description="Array of bounce events (batch mode)"
-        )
-        # Single-event fallback fields
-        event: Optional[str] = Field(None, description="Event type for single-event mode")
-        email: Optional[str] = Field(None, description="Bounced email for single-event mode")
-
-        model_config = {"populate_by_name": True}
-
-
-    class SendGridBounceEvent(BaseModel):
-        """Single event in a SendGrid Event Webhook payload."""
-
-        event: str = Field(..., description="Event type, e.g. 'bounce', 'dropped', 'deferred'")
-        email: str = Field(..., description="Bounced email address")
-        sg_message_id: Optional[str] = Field(None, description="SendGrid message ID")
-        timestamp: Optional[int] = Field(None, description="Unix timestamp of the event")
-        reason: Optional[str] = Field(None, description="Bounce reason")
 
 
 # ---------------------------------------------------------------------------

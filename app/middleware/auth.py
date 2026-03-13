@@ -44,6 +44,8 @@ PUBLIC_PATHS: set[str] = {
     "/api/v2/auth/verify-captcha",
     "/api/v2/auth/verify-email",
     "/api/v2/payments/stripe/webhook",
+    "/api/webhooks/connexus/incoming",
+    "/api/webhooks/connexus/status",
 }
 
 # Prefixes that are public (e.g. customer portal tokens).

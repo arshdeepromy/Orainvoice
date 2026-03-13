@@ -133,7 +133,8 @@ export function VehicleLiveSearch({ vehicle, onVehicleFound, onCustomerAutoSelec
       service_due_date: result.service_due_date ?? null,
     }
     onVehicleFound(fullVehicle)
-    setQuery(result.rego)
+    setQuery('')
+    setResults([])
     setShowDropdown(false)
     
     // Auto-select first linked customer if available
@@ -164,7 +165,8 @@ export function VehicleLiveSearch({ vehicle, onVehicleFound, onCustomerAutoSelec
       
       if (res.data.success && res.data.vehicle) {
         onVehicleFound(res.data.vehicle)
-        setQuery(res.data.vehicle.rego)
+        setQuery('')
+        setResults([])
         setShowDropdown(false)
         setSyncMessage(res.data.message)
         

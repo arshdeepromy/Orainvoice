@@ -28,6 +28,11 @@ interface FallbackChainItem {
   priority: number
 }
 
+interface ConnexusBalance {
+  balance: number
+  currency: string
+}
+
 const PROVIDER_ICONS: Record<string, JSX.Element> = {
   phone: (
     <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
@@ -48,24 +53,19 @@ const PROVIDER_ICONS: Record<string, JSX.Element> = {
 }
 
 const CREDENTIAL_FIELDS: Record<string, { label: string; placeholder: string; type?: string }[]> = {
-  twilio_verify: [
-    { label: 'Account SID', placeholder: 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' },
-    { label: 'Auth Token', placeholder: 'Your Twilio auth token', type: 'password' },
-    { label: 'From Number', placeholder: '+1234567890 (Twilio phone number)' },
-    { label: 'Verify Service SID', placeholder: 'VAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (optional if From Number set)' },
-  ],
   firebase_phone_auth: [
     { label: 'Project ID', placeholder: 'my-firebase-project' },
     { label: 'API Key', placeholder: 'AIzaSy...', type: 'password' },
     { label: 'App ID', placeholder: '1:123456789:web:abcdef' },
   ],
-  aws_sns: [
-    { label: 'Access Key ID', placeholder: 'AKIA...' },
-    { label: 'Secret Access Key', placeholder: 'Your AWS secret key', type: 'password' },
-    { label: 'Region', placeholder: 'ap-southeast-2' },
-    { label: 'Sender ID', placeholder: 'MyApp' },
+  connexus: [
+    { label: 'Client ID', placeholder: 'cid_your_client_id' },
+    { label: 'Client Secret', placeholder: 'csk_your_client_secret', type: 'password' },
+    { label: 'Sender ID', placeholder: 'Leave blank for shared shortcode (optional)' },
   ],
 }
+
+const BALANCE_LOW_THRESHOLD = 10
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleString('en-NZ', {
@@ -114,6 +114,203 @@ function SmsSetupGuide({ guide }: { guide: string }) {
   )
 }
 
+function ConnexusSection({ provider, addToast }: { provider: SmsProvider; addToast: (type: 'success' | 'error', msg: string) => void }) {
+  const [balance, setBalance] = useState<ConnexusBalance | null>(null)
+  const [balanceError, setBalanceError] = useState<string | null>(null)
+  const [loadingBalance, setLoadingBalance] = useState(false)
+  const [configuringWebhooks, setConfiguringWebhooks] = useState(false)
+  const [copied, setCopied] = useState<string | null>(null)
+
+  const incomingWebhookUrl = `${window.location.origin}/api/webhooks/connexus/incoming`
+  const statusWebhookUrl = `${window.location.origin}/api/webhooks/connexus/status`
+
+  const fetchBalance = useCallback(async () => {
+    setLoadingBalance(true)
+    setBalanceError(null)
+    try {
+      const res = await apiClient.get('/api/v2/admin/integrations/connexus/balance')
+      if (res.data?.detail) {
+        setBalanceError(res.data.detail)
+      } else {
+        setBalance({ balance: res.data.balance, currency: res.data.currency })
+      }
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setBalanceError(msg || 'Failed to fetch balance')
+    } finally {
+      setLoadingBalance(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (provider.credentials_set) {
+      fetchBalance()
+    }
+  }, [provider.credentials_set, fetchBalance])
+
+  async function handleConfigureWebhooks() {
+    setConfiguringWebhooks(true)
+    try {
+      const res = await apiClient.post('/api/v2/admin/integrations/connexus/configure-webhooks', {
+        mo_webhook_url: incomingWebhookUrl,
+        dlr_webhook_url: statusWebhookUrl,
+      })
+      if (res.data?.detail) {
+        addToast('error', res.data.detail)
+      } else {
+        addToast('success', 'Webhook URLs configured successfully')
+      }
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      addToast('error', msg || 'Failed to configure webhooks')
+    } finally {
+      setConfiguringWebhooks(false)
+    }
+  }
+
+  function copyToClipboard(text: string, label: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(label)
+      setTimeout(() => setCopied(null), 2000)
+    })
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Balance display */}
+      <div className="border-t border-gray-200 pt-4">
+        <h4 className="text-sm font-medium text-gray-700 mb-3">Account Balance</h4>
+        {!provider.credentials_set && (
+          <AlertBanner variant="warning">
+            Save credentials first to check the Connexus account balance.
+          </AlertBanner>
+        )}
+        {provider.credentials_set && loadingBalance && (
+          <div className="flex items-center gap-2 text-sm text-gray-500">
+            <Spinner size="sm" /> Checking balance…
+          </div>
+        )}
+        {provider.credentials_set && balanceError && (
+          <AlertBanner variant="error">{balanceError}</AlertBanner>
+        )}
+        {provider.credentials_set && balance && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-2xl font-semibold text-gray-900">
+                ${balance.balance.toFixed(2)}
+              </span>
+              <span className="text-sm text-gray-500">{balance.currency}</span>
+              <button
+                onClick={fetchBalance}
+                className="ml-2 rounded p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+                title="Refresh balance"
+                aria-label="Refresh balance"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+            </div>
+            {balance.balance < BALANCE_LOW_THRESHOLD && (
+              <AlertBanner variant="warning">
+                Balance is below ${BALANCE_LOW_THRESHOLD.toFixed(2)}. Consider topping up your Connexus account to avoid SMS delivery interruptions.
+              </AlertBanner>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Webhook URLs */}
+      <div className="border-t border-gray-200 pt-4">
+        <h4 className="text-sm font-medium text-gray-700 mb-3">Webhook URLs</h4>
+        <p className="text-xs text-gray-500 mb-3">
+          Configure these URLs in your Connexus dashboard, or use the button below to set them automatically.
+        </p>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <label className="text-xs font-medium text-gray-600 w-28 shrink-0">Incoming SMS:</label>
+            <code className="flex-1 rounded bg-gray-100 px-3 py-1.5 text-xs text-gray-700 font-mono truncate">
+              {incomingWebhookUrl}
+            </code>
+            <button
+              onClick={() => copyToClipboard(incomingWebhookUrl, 'incoming')}
+              className="shrink-0 rounded px-2 py-1 text-xs text-indigo-600 hover:bg-indigo-50 transition-colors"
+              aria-label="Copy incoming webhook URL"
+            >
+              {copied === 'incoming' ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs font-medium text-gray-600 w-28 shrink-0">Delivery Status:</label>
+            <code className="flex-1 rounded bg-gray-100 px-3 py-1.5 text-xs text-gray-700 font-mono truncate">
+              {statusWebhookUrl}
+            </code>
+            <button
+              onClick={() => copyToClipboard(statusWebhookUrl, 'status')}
+              className="shrink-0 rounded px-2 py-1 text-xs text-indigo-600 hover:bg-indigo-50 transition-colors"
+              aria-label="Copy delivery status webhook URL"
+            >
+              {copied === 'status' ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+        </div>
+        <div className="mt-3">
+          <Button
+            onClick={handleConfigureWebhooks}
+            loading={configuringWebhooks}
+            variant="secondary"
+            className="w-full sm:w-auto"
+            disabled={!provider.credentials_set}
+          >
+            Configure Webhooks
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SmsCostConfig({ provider, addToast }: { provider: SmsProvider; addToast: (type: 'success' | 'error', msg: string) => void }) {
+  const [cost, setCost] = useState(String(provider.config?.per_sms_cost_nzd ?? ''))
+  const [saving, setSaving] = useState(false)
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const updated = { ...provider.config, per_sms_cost_nzd: cost ? parseFloat(cost) : 0 }
+      await apiClient.patch(`/api/v2/admin/sms-providers/${provider.provider_key}`, { config: updated })
+      addToast('success', 'Per-SMS cost saved')
+    } catch {
+      addToast('error', 'Failed to save per-SMS cost')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="border-t border-gray-200 pt-4">
+      <h4 className="text-sm font-medium text-gray-700 mb-3">Pricing</h4>
+      <div className="flex items-end gap-3">
+        <div className="max-w-xs">
+          <Input
+            label="Per-SMS cost (NZD)"
+            type="number"
+            placeholder="0.08"
+            value={cost}
+            onChange={(e) => setCost(e.target.value)}
+          />
+        </div>
+        <Button onClick={handleSave} loading={saving} variant="primary" className="mb-0.5">
+          Save
+        </Button>
+      </div>
+      <p className="mt-1 text-xs text-gray-400">
+        Cost per outbound SMS. Used for usage cost calculations on the dashboard.
+      </p>
+    </div>
+  )
+}
+
 function ProviderCard({
   provider,
   onToggleActive,
@@ -121,6 +318,7 @@ function ProviderCard({
   onSaveCredentials,
   onTestProvider,
   saving,
+  addToast,
 }: {
   provider: SmsProvider
   onToggleActive: (key: string, active: boolean) => void
@@ -128,6 +326,7 @@ function ProviderCard({
   onSaveCredentials: (key: string, creds: Record<string, string>) => void
   onTestProvider: (key: string, toNumber: string, message: string) => Promise<void>
   saving: boolean
+  addToast: (type: 'success' | 'error', msg: string) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const [creds, setCreds] = useState<Record<string, string>>({})
@@ -283,13 +482,21 @@ function ProviderCard({
                 </div>
               </div>
 
+              {/* Connexus-specific sections */}
+              {provider.provider_key === 'connexus' && (
+                <ConnexusSection provider={provider} addToast={addToast} />
+              )}
+
+              {/* Per-SMS cost config */}
+              <SmsCostConfig provider={provider} addToast={addToast} />
+
               {/* Test SMS */}
               {provider.credentials_set && (
                 <div className="border-t border-gray-200 pt-4">
                   <h4 className="text-sm font-medium text-gray-700 mb-3">Test Connection</h4>
                   {provider.provider_key === 'firebase_phone_auth' && (
                     <p className="text-xs text-amber-600 mb-3">
-                      Firebase Phone Auth validates credentials only. To send actual SMS messages, configure Twilio or AWS SNS.
+                      Firebase Phone Auth validates credentials only. To send actual SMS messages, configure Connexus.
                     </p>
                   )}
                   <div className="space-y-3">
@@ -489,6 +696,7 @@ export function SmsProviders() {
             onSaveCredentials={handleSaveCredentials}
             onTestProvider={handleTestProvider}
             saving={saving}
+            addToast={addToast}
           />
         ))}
       </div>

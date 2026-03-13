@@ -65,20 +65,19 @@ def determine_alert_level(percentage: float) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def calculate_org_storage(db: AsyncSession, org_id: uuid.UUID) -> int:
-    """Calculate total storage bytes for an organisation.
+async def calculate_org_storage(db: AsyncSession, org_id: uuid.UUID) -> dict:
+    """Calculate total storage bytes for an organisation with breakdown.
 
     Sums the byte-length of:
     - invoice_data_json (compressed invoice JSON) for all invoices
     - customer records (first_name, last_name, email, phone, address, notes)
     - org vehicle records (rego, make, model, colour, etc.)
-    - customer_vehicle link records
 
     Logos and branding assets are explicitly excluded (Req 29.1).
 
-    Returns the total storage in bytes.
+    Returns dict with total bytes and per-category breakdown.
     """
-    # Invoice JSON storage — pg_column_size gives on-disk size including TOAST
+    # Invoice JSON storage
     invoice_size_result = await db.execute(
         select(
             func.coalesce(
@@ -89,7 +88,7 @@ async def calculate_org_storage(db: AsyncSession, org_id: uuid.UUID) -> int:
     )
     invoice_bytes: int = invoice_size_result.scalar() or 0
 
-    # Customer records storage — approximate from text fields
+    # Customer records storage
     customer_size_result = await db.execute(
         select(
             func.coalesce(
@@ -126,7 +125,17 @@ async def calculate_org_storage(db: AsyncSession, org_id: uuid.UUID) -> int:
     )
     vehicle_bytes: int = vehicle_size_result.scalar() or 0
 
-    return invoice_bytes + customer_bytes + vehicle_bytes
+    total = invoice_bytes + customer_bytes + vehicle_bytes
+
+    breakdown = []
+    if invoice_bytes > 0:
+        breakdown.append({"category": "Invoices", "bytes": invoice_bytes})
+    if customer_bytes > 0:
+        breakdown.append({"category": "Customers", "bytes": customer_bytes})
+    if vehicle_bytes > 0:
+        breakdown.append({"category": "Vehicles", "bytes": vehicle_bytes})
+
+    return {"total_bytes": total, "breakdown": breakdown}
 
 
 async def check_storage_quota(
@@ -158,7 +167,8 @@ async def check_storage_quota(
     storage_quota_bytes = storage_quota_gb * BYTES_PER_GB
 
     # Calculate actual usage
-    storage_used_bytes = await calculate_org_storage(db, org_id)
+    storage_result = await calculate_org_storage(db, org_id)
+    storage_used_bytes = storage_result["total_bytes"]
 
     # Calculate percentage (avoid division by zero)
     if storage_quota_bytes > 0:

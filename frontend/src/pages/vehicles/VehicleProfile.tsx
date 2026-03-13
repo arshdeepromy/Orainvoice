@@ -51,6 +51,17 @@ interface VehicleProfileData {
   rego_expiry: ExpiryIndicator
   linked_customers: LinkedCustomer[]
   service_history: ServiceHistoryEntry[]
+  // Extended fields
+  vin: string | null
+  chassis: string | null
+  engine_no: string | null
+  transmission: string | null
+  country_of_origin: string | null
+  number_of_owners: number | null
+  vehicle_type: string | null
+  submodel: string | null
+  second_colour: string | null
+  lookup_type: string | null
 }
 
 /* ------------------------------------------------------------------ */
@@ -357,9 +368,14 @@ export default function VehicleProfilePage() {
       <section className="rounded-lg border border-gray-200 p-4 mb-6">
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider">Vehicle Details</h2>
-          {vehicle.last_pulled_at && (
-            <span className="text-xs text-gray-400">Last updated: {formatDate(vehicle.last_pulled_at)}</span>
-          )}
+          <div className="flex items-center gap-3">
+            {vehicle.lookup_type && (
+              <span className="text-xs text-gray-400">Source: {vehicle.lookup_type}</span>
+            )}
+            {vehicle.last_pulled_at && (
+              <span className="text-xs text-gray-400">Last updated: {formatDate(vehicle.last_pulled_at)}</span>
+            )}
+          </div>
         </div>
         <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 lg:grid-cols-4 text-sm">
           <div>
@@ -371,6 +387,10 @@ export default function VehicleProfilePage() {
             <dd className="text-gray-900">{vehicle.model || '—'}</dd>
           </div>
           <div>
+            <dt className="text-gray-500">Submodel</dt>
+            <dd className="text-gray-900">{vehicle.submodel || '—'}</dd>
+          </div>
+          <div>
             <dt className="text-gray-500">Year</dt>
             <dd className="text-gray-900">{vehicle.year ?? '—'}</dd>
           </div>
@@ -379,12 +399,24 @@ export default function VehicleProfilePage() {
             <dd className="text-gray-900">{vehicle.colour || '—'}</dd>
           </div>
           <div>
+            <dt className="text-gray-500">Second Colour</dt>
+            <dd className="text-gray-900">{vehicle.second_colour || '—'}</dd>
+          </div>
+          <div>
             <dt className="text-gray-500">Body Type</dt>
             <dd className="text-gray-900">{vehicle.body_type || '—'}</dd>
           </div>
           <div>
+            <dt className="text-gray-500">Vehicle Type</dt>
+            <dd className="text-gray-900">{vehicle.vehicle_type || '—'}</dd>
+          </div>
+          <div>
             <dt className="text-gray-500">Fuel Type</dt>
             <dd className="text-gray-900">{vehicle.fuel_type || '—'}</dd>
+          </div>
+          <div>
+            <dt className="text-gray-500">Transmission</dt>
+            <dd className="text-gray-900">{vehicle.transmission || '—'}</dd>
           </div>
           <div>
             <dt className="text-gray-500">Engine Size</dt>
@@ -400,8 +432,37 @@ export default function VehicleProfilePage() {
               {vehicle.odometer != null ? vehicle.odometer.toLocaleString('en-NZ') + ' km' : '—'}
             </dd>
           </div>
+          <div>
+            <dt className="text-gray-500">Country of Origin</dt>
+            <dd className="text-gray-900">{vehicle.country_of_origin || '—'}</dd>
+          </div>
+          <div>
+            <dt className="text-gray-500">Number of Owners</dt>
+            <dd className="text-gray-900">{vehicle.number_of_owners ?? '—'}</dd>
+          </div>
         </dl>
       </section>
+
+      {/* Identification */}
+      {(vehicle.vin || vehicle.chassis || vehicle.engine_no) && (
+        <section className="rounded-lg border border-gray-200 p-4 mb-6">
+          <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Identification</h2>
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 text-sm">
+            <div>
+              <dt className="text-gray-500">VIN</dt>
+              <dd className="text-gray-900 font-mono">{vehicle.vin || '—'}</dd>
+            </div>
+            <div>
+              <dt className="text-gray-500">Chassis</dt>
+              <dd className="text-gray-900 font-mono">{vehicle.chassis || '—'}</dd>
+            </div>
+            <div>
+              <dt className="text-gray-500">Engine Number</dt>
+              <dd className="text-gray-900 font-mono">{vehicle.engine_no || '—'}</dd>
+            </div>
+          </dl>
+        </section>
+      )}
 
       {/* Tabs: Customers, Odometer History, Service History */}
       <Tabs

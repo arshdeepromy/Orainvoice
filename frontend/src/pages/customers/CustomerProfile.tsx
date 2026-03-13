@@ -200,8 +200,9 @@ export default function CustomerProfilePage() {
       setNotifyOpen(false)
       setNotifySubject('')
       setNotifyMessage('')
-    } catch {
-      setNotifyError('Failed to send notification.')
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || 'Failed to send notification.'
+      setNotifyError(detail)
     } finally {
       setNotifying(false)
     }
@@ -324,7 +325,7 @@ export default function CustomerProfilePage() {
 
   if (error || !customer) {
     return (
-      <div className="mx-auto max-w-4xl px-4 py-6">
+      <div className="mx-auto max-w-7xl px-4 py-6">
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
           {error || 'Customer not found.'}
         </div>
@@ -427,7 +428,7 @@ export default function CustomerProfilePage() {
   )
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
         <div className="flex items-center gap-3">

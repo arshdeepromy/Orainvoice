@@ -250,9 +250,24 @@ class CarjamClient:
     ) -> None:
         self._redis = redis
         self._api_key = api_key or settings.carjam_api_key
-        self._base_url = (base_url or settings.carjam_base_url).rstrip("/")
+        self._base_url = self._normalize_base_url(
+            base_url or settings.carjam_base_url
+        )
         self._rate_limit = rate_limit or settings.carjam_global_rate_limit_per_minute
         self._timeout = timeout
+
+    @staticmethod
+    def _normalize_base_url(url: str) -> str:
+        """Normalize the CarJam base URL to the correct production domain.
+
+        Handles common misconfigurations like ``api.carjam.co.nz`` (which
+        301-redirects and drops query params) by rewriting to the canonical
+        ``www.carjam.co.nz`` domain.
+        """
+        url = url.rstrip("/")
+        # api.carjam.co.nz redirects to www.carjam.co.nz — fix it upfront
+        url = url.replace("://api.carjam.co.nz", "://www.carjam.co.nz")
+        return url
 
     # ------------------------------------------------------------------
     # Public API
@@ -301,9 +316,14 @@ class CarjamClient:
         logger.info(f"Carjam API call: URL={url}, params={params}")
 
         try:
-            async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=False) as http:
+            async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=True) as http:
                 response = await http.get(url, params=params)
-                logger.info(f"Carjam API response: status={response.status_code}, url={response.url}")
+                logger.info(
+                    "Carjam API response: status=%d, final_url=%s, history=%s",
+                    response.status_code,
+                    response.url,
+                    [r.status_code for r in response.history] if response.history else "no redirects",
+                )
         except httpx.TimeoutException:
             logger.error("Carjam API timeout for rego=%s", rego)
             raise CarjamError(f"Carjam API timed out for rego '{rego}'")
@@ -313,6 +333,7 @@ class CarjamClient:
 
         # --- Handle response status ---
         if response.status_code == 404:
+            logger.warning("Carjam 404 for rego=%s, final_url=%s", rego, response.url)
             raise CarjamNotFoundError(rego)
 
         if response.status_code == 429:
@@ -359,13 +380,24 @@ class CarjamClient:
             
             raise CarjamError(f"Carjam API error: {error_msg}")
 
-        # JSON format returns {'idh': {...}} directly (no 'message' wrapper)
-        if "idh" not in body:
+        # JSON format: may return {'message': {'idh': {...}}} or {'idh': {...}}
+        # Check both structures
+        if "message" in body and isinstance(body["message"], dict):
+            container = body["message"]
+        elif "idh" in body:
+            container = body
+        else:
+            logger.warning("Carjam response missing 'idh' for rego=%s, body keys=%s", rego, list(body.keys()) if isinstance(body, dict) else type(body))
             raise CarjamNotFoundError(rego)
         
-        idh_data = body["idh"]
+        if "idh" not in container:
+            logger.warning("Carjam container missing 'idh' for rego=%s, keys=%s", rego, list(container.keys()))
+            raise CarjamNotFoundError(rego)
+
+        idh_data = container["idh"]
         
         if "vehicle" not in idh_data:
+            logger.warning("Carjam 'idh' missing 'vehicle' for rego=%s, idh keys=%s", rego, list(idh_data.keys()) if isinstance(idh_data, dict) else type(idh_data))
             raise CarjamNotFoundError(rego)
 
         vehicle_data = idh_data["vehicle"]
@@ -427,7 +459,7 @@ class CarjamClient:
         logger.info(f"Carjam ABCD API call: URL={url}, plate={rego}, mvr={use_mvr}")
 
         try:
-            async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=False) as http:
+            async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=True) as http:
                 response = await http.get(url, params=params)
                 logger.info(f"Carjam ABCD API response: status={response.status_code}")
                 

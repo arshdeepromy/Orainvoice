@@ -86,3 +86,30 @@ class RedeemPointsRequest(BaseModel):
     points: int = Field(..., gt=0)
     reference_type: str | None = None
     reference_id: UUID | None = None
+
+
+# --- Analytics ---
+
+class TierMemberCount(BaseModel):
+    tier_name: str
+    count: int
+
+class TopCustomer(BaseModel):
+    customer_id: str
+    name: str
+    points: int
+
+class LoyaltyAnalyticsResponse(BaseModel):
+    total_active_members: int = 0
+    members_per_tier: list[TierMemberCount] = []
+    total_points_issued: int = 0
+    total_points_redeemed: int = 0
+    redemption_rate_pct: float = 0.0
+    top_customers: list[TopCustomer] = []
+
+
+# --- Manual Adjustment ---
+
+class PointsAdjustmentRequest(BaseModel):
+    points: int
+    reason: str = Field(..., min_length=1, max_length=500)

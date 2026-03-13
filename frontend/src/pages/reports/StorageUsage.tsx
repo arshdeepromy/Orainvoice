@@ -12,6 +12,7 @@ interface StorageData {
 }
 
 function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return '0 B'
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
@@ -74,20 +75,25 @@ export default function StorageUsage() {
           <div className="rounded-lg border border-gray-200 bg-white p-4 mb-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm font-medium text-gray-700">
-                {formatBytes(data.used_bytes)} of {data.quota_gb} GB used
+                {formatBytes(data.used_bytes ?? 0)} of {data.quota_gb ?? 0} GB used
               </p>
-              <p className="text-sm text-gray-500">{data.usage_percent}%</p>
+              <p className="text-sm text-gray-500">{data.usage_percent ?? 0}%</p>
             </div>
             <div className="h-4 bg-gray-100 rounded-full overflow-hidden">
               <div
-                className={`h-full rounded-full transition-all duration-300 ${usageColour(data.usage_percent)}`}
-                style={{ width: `${Math.min(data.usage_percent, 100)}%` }}
+                className={`h-full rounded-full transition-all duration-300 ${usageColour(data.usage_percent ?? 0)}`}
+                style={{ width: `${Math.min(data.usage_percent ?? 0, 100)}%` }}
                 role="progressbar"
-                aria-valuenow={data.usage_percent}
+                aria-valuenow={data.usage_percent ?? 0}
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-label="Storage usage"
               />
+            </div>
+            <div className="mt-3 text-xs text-gray-400 flex flex-wrap gap-x-4 gap-y-1">
+              <span>1,024 B = 1 KB</span>
+              <span>1,024 KB = 1 MB</span>
+              <span>1,024 MB = 1 GB</span>
             </div>
           </div>
 

@@ -570,6 +570,8 @@ async def notify_customer(
 
     Requirements: 12.2
     """
+    from app.modules.admin.models import Organisation
+
     # Fetch customer to get contact details
     result = await db.execute(
         select(Customer).where(
@@ -584,29 +586,136 @@ async def notify_customer(
     if customer.is_anonymised:
         raise ValueError("Cannot notify an anonymised customer")
 
+    # Fetch org for sender settings
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    org_name = org.name if org else "Workshop"
+
     recipient = None
 
     if channel == "email":
         if not customer.email:
             raise ValueError("Customer has no email address on file")
         recipient = customer.email
-        # Mock email sending — actual Brevo integration in Task 15.1
-        logger.info(
-            "Sending email to customer %s at %s (subject: %s)",
-            customer_id,
-            "[REDACTED]",
-            subject or "(no subject)",
+
+        import json as _json
+        import smtplib
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+
+        from app.core.encryption import envelope_decrypt_str
+        from app.modules.admin.models import EmailProvider
+
+        # Find active email provider
+        provider_result = await db.execute(
+            select(EmailProvider)
+            .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
+            .order_by(EmailProvider.priority)
         )
+        providers = list(provider_result.scalars().all())
+
+        if not providers:
+            raise ValueError(
+                "No active email provider configured. Set up an email provider in Admin > Email Providers."
+            )
+
+        customer_name = f"{customer.first_name or ''} {customer.last_name or ''}".strip()
+        email_subject = subject or f"Message from {org_name}"
+
+        # Build plain-text + HTML email
+        html_body = "".join(
+            f"<p>{line}</p>" if line.strip() else "<br/>"
+            for line in message.split("\n")
+        )
+
+        last_error = None
+        for provider in providers:
+            try:
+                creds_json = envelope_decrypt_str(provider.credentials_encrypted)
+                credentials = _json.loads(creds_json)
+
+                smtp_host = provider.smtp_host
+                smtp_port = provider.smtp_port or 587
+                smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
+                username = credentials.get("username") or credentials.get("api_key", "")
+                password = credentials.get("password") or credentials.get("api_key", "")
+
+                config = provider.config or {}
+                from_email = config.get("from_email") or username
+                from_name = config.get("from_name") or org_name
+
+                msg = MIMEMultipart("alternative")
+                msg["From"] = f"{from_name} <{from_email}>"
+                msg["To"] = f"{customer_name} <{customer.email}>" if customer_name else customer.email
+                msg["Subject"] = email_subject
+
+                msg.attach(MIMEText(message, "plain"))
+                msg.attach(MIMEText(html_body, "html"))
+
+                if smtp_encryption == "ssl":
+                    server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+                else:
+                    server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+                    if smtp_encryption == "tls":
+                        server.starttls()
+
+                if username and password:
+                    server.login(username, password)
+
+                server.sendmail(from_email, customer.email, msg.as_string())
+                server.quit()
+
+                logger.info(
+                    "Email sent to customer %s via %s",
+                    customer_id, provider.provider_key,
+                )
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning(
+                    "Email provider %s failed for customer %s: %s",
+                    provider.provider_key, customer_id, last_error,
+                )
+
+        if last_error:
+            raise ValueError(f"All email providers failed. Last error: {last_error}")
+
     elif channel == "sms":
         if not customer.phone:
             raise ValueError("Customer has no phone number on file")
         recipient = customer.phone
-        # Mock SMS sending — actual Twilio integration in Task 15.4
-        logger.info(
-            "Sending SMS to customer %s at %s",
-            customer_id,
-            "[REDACTED]",
+
+        from app.integrations.connexus_sms import ConnexusConfig, ConnexusSmsClient
+        from app.integrations.sms_types import SmsMessage as SmsMsg
+        from app.modules.admin.models import SmsVerificationProvider
+        from app.core.encryption import envelope_decrypt_str
+
+        # Load active SMS provider
+        sms_result = await db.execute(
+            select(SmsVerificationProvider).where(
+                SmsVerificationProvider.is_active.is_(True),
+            )
         )
+        sms_provider = sms_result.scalar_one_or_none()
+
+        if sms_provider and sms_provider.credentials_encrypted:
+            import json
+            creds_json = envelope_decrypt_str(sms_provider.credentials_encrypted)
+            creds = json.loads(creds_json)
+            config = ConnexusConfig.from_dict(creds)
+            client = ConnexusSmsClient(config)
+            sms_msg = SmsMsg(to_number=customer.phone, body=message)
+            sms_send = await client.send(sms_msg)
+
+            if not sms_send.success:
+                raise ValueError(sms_send.error or "SMS send failed")
+            logger.info("SMS sent to customer %s", customer_id)
+        else:
+            raise ValueError("SMS provider not configured. Set up an SMS provider in Admin > SMS Providers.")
+
     else:
         raise ValueError(f"Unsupported notification channel: {channel}")
 
@@ -624,7 +733,7 @@ async def notify_customer(
     )
 
     return {
-        "message": f"Notification queued via {channel}",
+        "message": f"Notification sent via {channel}",
         "channel": channel,
         "recipient": recipient,
     }

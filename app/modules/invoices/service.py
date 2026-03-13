@@ -809,35 +809,32 @@ def validate_tax_invoice_compliance(
 ) -> dict:
     """Validate that an invoice meets NZ IRD tax invoice requirements.
 
+    If the org has no GST number configured, this is treated as a regular
+    invoice (not a tax invoice) and GST-specific checks are skipped.
+
     Returns a dict with:
       - is_compliant: bool
       - is_high_value: bool (total > $1,000 NZD incl. GST)
       - issues: list of {field, message, requirement}
-      - document_label: "Tax Invoice"
+      - document_label: "Tax Invoice" or "Invoice"
 
     Requirements: 80.1, 80.2, 80.3
     """
     issues: list[dict] = []
+    is_gst_registered = bool(gst_number)
 
-    # Req 80.1 — mandatory fields on every tax invoice
+    # Basic checks for all invoices
     if not org_name:
         issues.append({
             "field": "supplier_name",
-            "message": "Supplier (organisation) name is required on tax invoices",
-            "requirement": "80.1",
-        })
-
-    if not gst_number:
-        issues.append({
-            "field": "gst_number",
-            "message": "Supplier GST number is required on tax invoices",
+            "message": "Supplier (organisation) name is required",
             "requirement": "80.1",
         })
 
     if invoice.issue_date is None:
         issues.append({
             "field": "issue_date",
-            "message": "Invoice date is required on tax invoices",
+            "message": "Invoice date is required",
             "requirement": "80.1",
         })
 
@@ -859,24 +856,23 @@ def validate_tax_invoice_compliance(
     if invoice.total is None:
         issues.append({
             "field": "total",
-            "message": "Total amount including GST is required",
+            "message": "Total amount is required",
             "requirement": "80.1",
         })
 
-    if invoice.gst_amount is None:
-        issues.append({
-            "field": "gst_amount",
-            "message": "GST amount is required on tax invoices",
-            "requirement": "80.1",
-        })
+    # GST-specific checks only when org is GST-registered
+    if is_gst_registered:
+        if invoice.gst_amount is None:
+            issues.append({
+                "field": "gst_amount",
+                "message": "GST amount is required on tax invoices",
+                "requirement": "80.1",
+            })
 
     # Req 80.2 — high-value invoices (>$1,000 NZD incl. GST) need buyer details
     is_high_value = (invoice.total or Decimal("0")) > NZ_HIGH_VALUE_THRESHOLD
 
-    if is_high_value:
-        # We need the customer record to check name and address.
-        # The invoice itself stores customer_id; the caller must supply
-        # customer_name and customer_address via the invoice's linked customer.
+    if is_high_value and is_gst_registered:
         customer = getattr(invoice, "_compliance_customer", None)
         customer_name = None
         customer_address = None
@@ -901,8 +897,9 @@ def validate_tax_invoice_compliance(
         "is_compliant": len(issues) == 0,
         "is_high_value": is_high_value,
         "issues": issues,
-        "document_label": "Tax Invoice",
+        "document_label": "Tax Invoice" if is_gst_registered else "Invoice",
     }
+
 
 
 def get_line_item_tax_details(

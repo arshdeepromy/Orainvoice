@@ -283,6 +283,18 @@ async def vehicle_manual_entry(
         fuel_type=body.fuel_type,
         engine_size=body.engine_size,
         num_seats=body.num_seats,
+        vin=body.vin,
+        chassis=body.chassis,
+        engine_no=body.engine_no,
+        transmission=body.transmission,
+        country_of_origin=body.country_of_origin,
+        number_of_owners=body.number_of_owners,
+        vehicle_type=body.vehicle_type,
+        submodel=body.submodel,
+        second_colour=body.second_colour,
+        wof_expiry=body.wof_expiry,
+        rego_expiry=body.rego_expiry,
+        odometer=body.odometer,
         ip_address=ip_address,
     )
 

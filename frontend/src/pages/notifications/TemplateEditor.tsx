@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import apiClient from '../../api/client'
 import { Button, Input, Spinner, Modal, Badge } from '../../components/ui'
+import { useModules } from '../../contexts/ModuleContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -18,7 +19,7 @@ interface NotificationTemplate {
   subject: string
   channel: 'email' | 'sms'
   body_blocks: TemplateBlock[]
-  body_text?: string
+  body?: string
   updated_at: string
 }
 
@@ -26,19 +27,39 @@ interface TemplatesResponse {
   templates: NotificationTemplate[]
 }
 
-const TEMPLATE_VARIABLES = [
+const TEMPLATE_VARIABLES_BASE = [
   { variable: '{{customer_first_name}}', description: 'Customer first name' },
   { variable: '{{customer_last_name}}', description: 'Customer last name' },
+  { variable: '{{customer_email}}', description: 'Customer email address' },
   { variable: '{{invoice_number}}', description: 'Invoice number' },
   { variable: '{{total_due}}', description: 'Total amount due' },
   { variable: '{{due_date}}', description: 'Invoice due date' },
   { variable: '{{payment_link}}', description: 'Stripe payment link' },
+  { variable: '{{org_name}}', description: 'Organisation name' },
+  { variable: '{{org_phone}}', description: 'Organisation phone' },
+  { variable: '{{org_email}}', description: 'Organisation email' },
+  { variable: '{{user_name}}', description: "User's full name" },
+  { variable: '{{reset_link}}', description: 'Password reset link' },
+  { variable: '{{signup_link}}', description: 'Invitation signup link' },
+]
+
+const TEMPLATE_VARIABLES_VEHICLE = [
   { variable: '{{vehicle_rego}}', description: 'Vehicle registration' },
-  { variable: '{{expiry_type}}', description: 'WOF or Registration' },
-  { variable: '{{expiry_date}}', description: 'Expiry date' },
-  { variable: '{{workshop_name}}', description: 'Workshop name' },
-  { variable: '{{workshop_phone}}', description: 'Workshop phone' },
-  { variable: '{{workshop_email}}', description: 'Workshop email' },
+  { variable: '{{vehicle_make}}', description: 'Vehicle make' },
+  { variable: '{{vehicle_model}}', description: 'Vehicle model' },
+  { variable: '{{expiry_date}}', description: 'WOF or rego expiry date' },
+  { variable: '{{service_due_date}}', description: 'Next service due date' },
+]
+
+const TEMPLATE_VARIABLES_BOOKING = [
+  { variable: '{{booking_date}}', description: 'Booking date and time' },
+  { variable: '{{booking_service}}', description: 'Booked service type' },
+]
+
+const TEMPLATE_VARIABLES_QUOTE = [
+  { variable: '{{quote_number}}', description: 'Quote reference number' },
+  { variable: '{{quote_total}}', description: 'Quote total amount' },
+  { variable: '{{quote_valid_until}}', description: 'Quote expiry date' },
 ]
 
 const BLOCK_TYPES = [
@@ -76,6 +97,15 @@ export default function TemplateEditor() {
   const [variablesOpen, setVariablesOpen] = useState(false)
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [channelFilter, setChannelFilter] = useState<'all' | 'email' | 'sms'>('all')
+  const { isEnabled } = useModules()
+
+  // Build template variables list — vehicle/booking/quote vars shown when their modules are enabled
+  const templateVariables = [
+    ...TEMPLATE_VARIABLES_BASE,
+    ...(isEnabled('vehicles') ? TEMPLATE_VARIABLES_VEHICLE : []),
+    ...(isEnabled('bookings') ? TEMPLATE_VARIABLES_BOOKING : []),
+    ...(isEnabled('quotes') ? TEMPLATE_VARIABLES_QUOTE : []),
+  ]
 
   const fetchTemplates = useCallback(async () => {
     setLoading(true)
@@ -100,8 +130,8 @@ export default function TemplateEditor() {
   const selectTemplate = (t: NotificationTemplate) => {
     setSelected(t)
     setEditSubject(t.subject)
-    setEditBlocks(t.body_blocks.map((b) => ({ ...b })))
-    setEditSmsText(t.body_text || '')
+    setEditBlocks((t.body_blocks || []).map((b) => ({ ...b })))
+    setEditSmsText(t.body || '')
   }
 
   const handleSave = async () => {
@@ -109,13 +139,13 @@ export default function TemplateEditor() {
     setSaving(true)
     setError('')
     try {
-      const body = selected.channel === 'sms'
-        ? { subject: editSubject, body_text: editSmsText }
+      const payload = selected.channel === 'sms'
+        ? { body: editSmsText }
         : { subject: editSubject, body_blocks: editBlocks }
       const endpoint = selected.channel === 'sms'
         ? `/notifications/sms-templates/${selected.template_type}`
         : `/notifications/templates/${selected.template_type}`
-      await apiClient.put(endpoint, body)
+      await apiClient.put(endpoint, payload)
       await fetchTemplates()
       setSelected(null)
     } catch {
@@ -172,7 +202,7 @@ export default function TemplateEditor() {
             {editSmsText || '(empty)'}
           </div>
           <p className={`mt-2 text-xs ${editSmsText.length > 160 ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
-            {editSmsText.length}/160 characters{editSmsText.length > 160 && ' — exceeds single SMS limit'}
+            {editSmsText.length}/160 characters{editSmsText.length > 160 && ' - exceeds single SMS limit'}
           </p>
         </div>
       )
@@ -202,9 +232,14 @@ export default function TemplateEditor() {
     )
   }
 
-  const filteredTemplates = templates.filter(
-    (t) => channelFilter === 'all' || t.channel === channelFilter,
-  )
+  const VEHICLE_TEMPLATE_TYPES = ['wof_expiry_reminder', 'registration_expiry_reminder']
+
+  const filteredTemplates = templates.filter((t) => {
+    if (channelFilter !== 'all' && t.channel !== channelFilter) return false
+    // Hide vehicle-related templates when vehicles module is disabled
+    if (!isEnabled('vehicles') && VEHICLE_TEMPLATE_TYPES.includes(t.template_type)) return false
+    return true
+  })
 
   if (loading) {
     return <div className="py-16"><Spinner label="Loading templates" /></div>
@@ -305,7 +340,10 @@ export default function TemplateEditor() {
                 />
                 <p className={`mt-1 text-xs ${editSmsText.length > 160 ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
                   {editSmsText.length}/160 characters
-                  {editSmsText.length > 160 && ' — exceeds single SMS segment'}
+                  {editSmsText.length > 160 && ' - exceeds single SMS segment'}
+                </p>
+                <p className="mt-1 text-xs text-gray-400">
+                  Standard text (GSM-7) allows 160 chars per SMS. Special characters or emojis reduce the limit to 70 chars.
                 </p>
               </div>
               <div className="flex justify-end gap-2">
@@ -415,7 +453,7 @@ export default function TemplateEditor() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 bg-white">
-              {TEMPLATE_VARIABLES.map((v) => (
+              {templateVariables.map((v) => (
                 <tr key={v.variable} className="hover:bg-gray-50">
                   <td className="whitespace-nowrap px-4 py-2 text-sm font-mono text-blue-700">{v.variable}</td>
                   <td className="px-4 py-2 text-sm text-gray-700">{v.description}</td>

@@ -207,6 +207,9 @@ class TwilioTestSmsRequest(BaseModel):
     to_number: str = Field(
         ..., min_length=1, description="Phone number to send test SMS to (E.164)"
     )
+    message: str | None = Field(
+        None, max_length=320, description="Custom message body (optional, defaults to test message)"
+    )
 
 
 class TwilioTestSmsResponse(BaseModel):
@@ -228,7 +231,10 @@ class CarjamConfigRequest(BaseModel):
     api_key: str | None = Field(None, min_length=1, description="Carjam API key (only send if changing)")
     endpoint_url: str | None = Field(None, min_length=1, description="Carjam API endpoint URL")
     per_lookup_cost_nzd: float | None = Field(
-        None, ge=0, description="Cost per Carjam lookup in NZD"
+        None, ge=0, description="Cost per basic Carjam lookup in NZD"
+    )
+    abcd_per_lookup_cost_nzd: float | None = Field(
+        None, ge=0, description="Cost per ABCD (lower-cost) Carjam lookup in NZD"
     )
     global_rate_limit_per_minute: int | None = Field(
         None, gt=0, description="Maximum Carjam API calls per minute (platform-wide)"
@@ -241,6 +247,7 @@ class CarjamConfigResponse(BaseModel):
     message: str
     endpoint_url: str
     per_lookup_cost_nzd: float
+    abcd_per_lookup_cost_nzd: float = 0.05
     global_rate_limit_per_minute: int
     api_key_last4: str = Field(
         ..., description="Last 4 chars of API key for display"
@@ -901,3 +908,32 @@ class AuditLogListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+# ---------------------------------------------------------------------------
+# Integration Cost Dashboard (Global Admin)
+# ---------------------------------------------------------------------------
+
+
+class IntegrationCostCard(BaseModel):
+    """Cost/usage summary for a single integration."""
+
+    name: str
+    status: str  # healthy | degraded | down | not_configured
+    total_cost_nzd: float = 0.0
+    total_usage: int = 0
+    usage_label: str = "requests"
+    breakdown: dict = Field(default_factory=dict)
+    balance: float | None = None
+    balance_currency: str | None = None
+    last_checked: str | None = None
+
+
+class IntegrationCostDashboardResponse(BaseModel):
+    """GET /api/v1/admin/dashboard/integration-costs — all integration costs."""
+
+    period: str  # "daily" | "weekly" | "monthly"
+    carjam: IntegrationCostCard
+    sms: IntegrationCostCard
+    smtp: IntegrationCostCard
+    stripe: IntegrationCostCard

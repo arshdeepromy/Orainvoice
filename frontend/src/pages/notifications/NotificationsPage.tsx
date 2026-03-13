@@ -1,4 +1,5 @@
 import { Tabs } from '../../components/ui'
+import { useModules } from '../../contexts/ModuleContext'
 import NotificationPreferences from './NotificationPreferences'
 import TemplateEditor from './TemplateEditor'
 import NotificationLog from './NotificationLog'
@@ -12,12 +13,17 @@ import WofRegoReminders from './WofRegoReminders'
  * Requirements: 34.1-34.3, 35.1-35.3, 36.3-36.6, 38.1-38.4, 39.1-39.4, 83.1-83.4
  */
 export default function NotificationsPage() {
+  const { isEnabled } = useModules()
+  const vehiclesEnabled = isEnabled('vehicles')
+
   const tabs = [
     { id: 'preferences', label: 'Preferences', content: <NotificationPreferences /> },
     { id: 'templates', label: 'Templates', content: <TemplateEditor /> },
     { id: 'log', label: 'Delivery Log', content: <NotificationLog /> },
     { id: 'overdue-rules', label: 'Overdue Rules', content: <OverdueRules /> },
-    { id: 'wof-rego', label: 'WOF / Rego Reminders', content: <WofRegoReminders /> },
+    ...(vehiclesEnabled
+      ? [{ id: 'wof-rego', label: 'WOF / Rego Reminders', content: <WofRegoReminders /> }]
+      : []),
   ]
 
   return (
@@ -27,3 +33,4 @@ export default function NotificationsPage() {
     </div>
   )
 }
+

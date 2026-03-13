@@ -521,8 +521,9 @@ async def update_invoice_endpoint(
             import logging
             logging.getLogger(__name__).exception("Auto-email failed for invoice %s: %s", invoice_id, exc)
 
+    _exclude = {"line_items", "tax_compliance", "line_item_tax_details"}
     invoice_resp = InvoiceResponse(
-        **{k: v for k, v in result.items() if k != "line_items"},
+        **{k: v for k, v in result.items() if k not in _exclude},
         line_items=[LineItemResponse(**li) for li in result["line_items"]],
     )
 
@@ -574,8 +575,9 @@ async def issue_invoice_endpoint(
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    _exclude = {"line_items", "tax_compliance", "line_item_tax_details"}
     invoice_resp = InvoiceResponse(
-        **{k: v for k, v in result.items() if k != "line_items"},
+        **{k: v for k, v in result.items() if k not in _exclude},
         line_items=[LineItemResponse(**li) for li in result["line_items"]],
     )
 

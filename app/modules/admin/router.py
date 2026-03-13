@@ -8,7 +8,7 @@ import logging
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from sqlalchemy import text, select
 
 from app.core.database import get_db_session
 from app.modules.admin.schemas import (
@@ -652,6 +652,7 @@ async def test_twilio_sms(
     test_result = await send_test_sms(
         db,
         to_number=payload.to_number,
+        custom_message=payload.message,
         admin_user_id=uuid.UUID(user_id) if user_id else uuid.uuid4(),
         ip_address=ip_address,
     )
@@ -977,6 +978,30 @@ async def get_carjam_cost(
     return CarjamCostReportResponse(**data)
 
 
+# ---------------------------------------------------------------------------
+# Integration Cost Dashboard
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/dashboard/integration-costs",
+    summary="Integration cost/usage dashboard for all integrations",
+    dependencies=[require_role("global_admin")],
+)
+async def integration_cost_dashboard(
+    db: AsyncSession = Depends(get_db_session),
+    period: str = "monthly",
+):
+    """Aggregated cost and usage data for CarJam, SMS, SMTP, and Stripe.
+
+    Query param ``period`` can be ``daily``, ``weekly``, or ``monthly``.
+    """
+    from app.modules.admin.service import get_integration_cost_dashboard
+
+    data = await get_integration_cost_dashboard(db, period=period)
+    return data
+
+
 @router.get(
     "/reports/churn",
     response_model=ChurnReportResponse,
@@ -1092,7 +1117,7 @@ async def list_integrations(
 
     Used by the Global Admin dashboard to show integration health at a glance.
     """
-    integration_names = ("carjam", "stripe", "smtp", "twilio")
+    integration_names = ("carjam", "stripe", "smtp")
     results = []
     for name in integration_names:
         config = await get_integration_config(db, name=name)
@@ -1101,6 +1126,29 @@ async def list_integrations(
             "status": "healthy" if config and config.get("is_verified") else "down",
             "last_checked": config.get("updated_at") if config else None,
         })
+
+    # Connexus SMS provider — stored in sms_verification_providers, not integration_configs
+    from app.modules.admin.models import SmsVerificationProvider
+    connexus_result = await db.execute(
+        select(SmsVerificationProvider).where(
+            SmsVerificationProvider.provider_key == "connexus",
+            SmsVerificationProvider.is_active == True,  # noqa: E712
+        )
+    )
+    connexus = connexus_result.scalar_one_or_none()
+    if connexus and connexus.credentials_set:
+        results.append({
+            "name": "Connexus SMS",
+            "status": "healthy",
+            "last_checked": connexus.updated_at.isoformat() if connexus.updated_at else None,
+        })
+    else:
+        results.append({
+            "name": "Connexus SMS",
+            "status": "down",
+            "last_checked": connexus.updated_at.isoformat() if connexus and connexus.updated_at else None,
+        })
+
     return results
 
 
@@ -1171,6 +1219,7 @@ async def configure_carjam(
             api_key=payload.api_key,
             endpoint_url=payload.endpoint_url,
             per_lookup_cost_nzd=payload.per_lookup_cost_nzd,
+            abcd_per_lookup_cost_nzd=payload.abcd_per_lookup_cost_nzd,
             global_rate_limit_per_minute=payload.global_rate_limit_per_minute,
             updated_by=uuid.UUID(user_id) if user_id else uuid.uuid4(),
             ip_address=ip_address,
@@ -2357,3 +2406,127 @@ async def update_user_status(
 
     return result
 
+
+# ── Demo Account Reset ──────────────────────────────────────────────
+
+@router.post(
+    "/demo/reset",
+    responses={
+        200: {"description": "Demo account reset successfully"},
+        400: {"description": "Not a development environment"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+    summary="Reset the demo organisation account",
+    dependencies=[require_role("global_admin")],
+)
+async def reset_demo_account(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Delete and re-seed the demo organisation (Demo Workshop).
+
+    Only available in development environments. Removes all data
+    belonging to the demo org and re-runs the seed script.
+    """
+    from app.config import settings as app_settings
+
+    if app_settings.environment != "development":
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Demo reset is only available in development environments"},
+        )
+
+    demo_email = "demo@orainvoice.com"
+    demo_org_name = "Demo Workshop"
+
+    try:
+        # Find the demo user and org
+        result = await db.execute(
+            text("SELECT id, org_id FROM users WHERE email = :email"),
+            {"email": demo_email},
+        )
+        row = result.first()
+        if not row:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Demo account not found"},
+            )
+
+        user_id = str(row[0])
+        org_id = str(row[1])
+
+        # Delete org data in dependency order
+        # Sessions, audit logs, tokens
+        await db.execute(text("DELETE FROM sessions WHERE user_id = CAST(:uid AS uuid)"), {"uid": user_id})
+        # audit_log may have DB-level DELETE restrictions — skip if so
+        try:
+            await db.execute(text("DELETE FROM audit_log WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
+        except Exception:
+            pass  # audit_log is append-only, DELETE may be revoked
+
+        # SMS data
+        await db.execute(text("""
+            DELETE FROM sms_messages WHERE conversation_id IN (
+                SELECT id FROM sms_conversations WHERE org_id = CAST(:oid AS uuid)
+            )
+        """), {"oid": org_id})
+        await db.execute(text("DELETE FROM sms_conversations WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
+
+        # Invoices and related
+        await db.execute(text("""
+            DELETE FROM line_items WHERE invoice_id IN (
+                SELECT id FROM invoices WHERE org_id = CAST(:oid AS uuid)
+            )
+        """), {"oid": org_id})
+        await db.execute(text("DELETE FROM invoices WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
+
+        # Payments
+        await db.execute(text("DELETE FROM payments WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
+
+        # Quotes
+        await db.execute(text("""
+            DELETE FROM quote_line_items WHERE quote_id IN (
+                SELECT id FROM quotes WHERE org_id = CAST(:oid AS uuid)
+            )
+        """), {"oid": org_id})
+        await db.execute(text("DELETE FROM quotes WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
+
+        # Vehicles and customer-vehicle links (before customers)
+        await db.execute(text("""
+            DELETE FROM customer_vehicles WHERE vehicle_id IN (
+                SELECT id FROM org_vehicles WHERE org_id = CAST(:oid AS uuid)
+            )
+        """), {"oid": org_id})
+        await db.execute(text("DELETE FROM org_vehicles WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
+
+        # Customers (after invoices, quotes, customer_vehicles)
+        await db.execute(text("DELETE FROM customers WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
+
+        # Org modules and feature flag overrides stay (they get re-synced)
+        # Reset user password and clear login timestamps
+        from app.modules.auth.password import hash_password
+        pw_hash = hash_password("demo123")
+        await db.execute(
+            text("""
+                UPDATE users SET password_hash = :pw, last_login_at = NULL,
+                    failed_login_attempts = 0, locked_until = NULL
+                WHERE id = CAST(:uid AS uuid)
+            """),
+            {"pw": pw_hash, "uid": user_id},
+        )
+
+        await db.commit()
+
+        # Re-sync modules and flags
+        from app.core.demo_org_sync import sync_demo_org_modules
+        await sync_demo_org_modules()
+
+        logger.info("Demo account reset by admin %s", getattr(request.state, "user_id", "unknown"))
+
+        return {"detail": "Demo account reset successfully", "org_name": demo_org_name, "email": demo_email}
+
+    except Exception as exc:
+        await db.rollback()
+        logger.error("Demo reset failed: %s", exc)
+        return JSONResponse(status_code=500, content={"detail": f"Reset failed: {exc}"})

@@ -37,6 +37,26 @@ interface BillingIssue {
   created_at: string
 }
 
+interface IntegrationCostCard {
+  name: string
+  status: string
+  total_cost_nzd: number
+  total_usage: number
+  usage_label: string
+  breakdown: Record<string, unknown>
+  balance?: number | null
+  balance_currency?: string | null
+  last_checked?: string | null
+}
+
+interface IntegrationCosts {
+  period: string
+  carjam: IntegrationCostCard
+  sms: IntegrationCostCard
+  smtp: IntegrationCostCard
+  stripe: IntegrationCostCard
+}
+
 type Row = Record<string, unknown>
 
 const billingColumns: Column<Row>[] = [
@@ -77,11 +97,12 @@ async function safeFetch<T>(url: string, fallback: T, params?: Record<string, un
 export function GlobalAdminDashboard() {
   const [data, setData] = useState<GlobalAdminData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [integrationCosts, setIntegrationCosts] = useState<IntegrationCosts | null>(null)
+  const [costPeriod, setCostPeriod] = useState<'daily' | 'weekly' | 'monthly'>('monthly')
 
   useEffect(() => {
     let cancelled = false
     async function fetchDashboard() {
-      // Each call is independent — failures don't block others
       const [analyticsOverview, mrrData, errorDashboard, integrations, billing] =
         await Promise.all([
           safeFetch<{ total_orgs?: number; active_orgs?: number; mrr?: number; churn_rate?: number }>(
@@ -101,7 +122,6 @@ export function GlobalAdminDashboard() {
 
       if (cancelled) return
 
-      // Parse error counts from the dashboard endpoint's by_severity array
       const errorCounts = { ...defaultErrorCounts }
       if (errorDashboard.by_severity && Array.isArray(errorDashboard.by_severity)) {
         for (const item of errorDashboard.by_severity) {
@@ -124,10 +144,25 @@ export function GlobalAdminDashboard() {
       setIsLoading(false)
     }
     fetchDashboard()
-    // Refresh every 60 seconds
     const interval = setInterval(fetchDashboard, 60_000)
     return () => { cancelled = true; clearInterval(interval) }
   }, [])
+
+  // Fetch integration costs separately (with period filter)
+  useEffect(() => {
+    let cancelled = false
+    async function fetchCosts() {
+      const costs = await safeFetch<IntegrationCosts>(
+        '/admin/dashboard/integration-costs',
+        null as unknown as IntegrationCosts,
+        { period: costPeriod },
+      )
+      if (!cancelled && costs) setIntegrationCosts(costs)
+    }
+    fetchCosts()
+    const interval = setInterval(fetchCosts, 60_000)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [costPeriod])
 
   if (isLoading) return <Spinner size="lg" label="Loading admin dashboard" className="py-20" />
   if (!data) return null
@@ -227,6 +262,36 @@ export function GlobalAdminDashboard() {
           caption="Organisations with billing issues"
         />
       </section>
+
+      {/* Integration Costs */}
+      {integrationCosts && (
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-medium text-gray-900">Integration Costs &amp; Usage</h2>
+            <div className="flex gap-1">
+              {(['daily', 'weekly', 'monthly'] as const).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setCostPeriod(p)}
+                  className={`px-3 py-1 text-xs rounded-md capitalize ${
+                    costPeriod === p
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <IntegrationCostCardView card={integrationCosts.carjam} />
+            <IntegrationCostCardView card={integrationCosts.sms} />
+            <IntegrationCostCardView card={integrationCosts.smtp} />
+            <IntegrationCostCardView card={integrationCosts.stripe} />
+          </div>
+        </section>
+      )}
     </div>
   )
 }
@@ -283,6 +348,75 @@ function SeverityCard({
     <div className={`rounded-lg border p-4 ${bgColor}`}>
       <p className={`text-sm font-medium ${textColor}`}>{label}</p>
       <p className={`mt-1 text-xl font-semibold ${textColor}`}>{count}</p>
+    </div>
+  )
+}
+
+
+const statusColors: Record<string, { bg: string; text: string; badge: 'success' | 'warning' | 'error' }> = {
+  healthy: { bg: 'border-green-200', text: 'text-green-700', badge: 'success' },
+  degraded: { bg: 'border-amber-200', text: 'text-amber-700', badge: 'warning' },
+  down: { bg: 'border-red-200', text: 'text-red-700', badge: 'error' },
+  not_configured: { bg: 'border-gray-200', text: 'text-gray-400', badge: 'warning' },
+}
+
+function IntegrationCostCardView({ card }: { card: IntegrationCostCard }) {
+  const colors = statusColors[card.status] || statusColors.not_configured
+  const fmt = (v: number) => `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const breakdown = card.breakdown || {}
+
+  return (
+    <div className={`rounded-lg border bg-white p-4 ${colors.bg}`}>
+      <div className="flex items-center justify-between mb-3">
+        <p className="font-semibold text-gray-900">{card.name}</p>
+        <Badge variant={colors.badge}>{card.status}</Badge>
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex justify-between text-sm">
+          <span className="text-gray-500">Cost</span>
+          <span className="font-semibold text-gray-900">{fmt(card.total_cost_nzd)}</span>
+        </div>
+        <div className="flex justify-between text-sm">
+          <span className="text-gray-500">Usage</span>
+          <span className="font-medium text-gray-700">
+            {card.total_usage.toLocaleString()} {card.usage_label}
+          </span>
+        </div>
+
+        {card.balance != null && (
+          <div className="flex justify-between text-sm">
+            <span className="text-gray-500">Balance</span>
+            <span className="font-medium text-blue-600">
+              {fmt(card.balance)} {card.balance_currency || 'NZD'}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Breakdown details */}
+      {Object.keys(breakdown).length > 0 && (
+        <div className="mt-3 pt-3 border-t border-gray-100 space-y-1">
+          {Object.entries(breakdown).map(([key, value]) => (
+            <div key={key} className="flex justify-between text-xs">
+              <span className="text-gray-400 capitalize">{key.replace(/_/g, ' ')}</span>
+              <span className="text-gray-600">
+                {typeof value === 'number'
+                  ? key.includes('cost') || key.includes('fee') || key.includes('volume')
+                    ? fmt(value)
+                    : value.toLocaleString()
+                  : String(value)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {card.last_checked && (
+        <p className="mt-2 text-xs text-gray-400">
+          Updated {new Date(card.last_checked).toLocaleString('en-NZ')}
+        </p>
+      )}
     </div>
   )
 }

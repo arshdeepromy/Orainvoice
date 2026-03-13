@@ -143,11 +143,17 @@ class CustomerStatementResponse(BaseModel):
 # Carjam Usage  (GET /reports/carjam-usage)
 # ---------------------------------------------------------------------------
 
+class CarjamDailyBreakdown(BaseModel):
+    date: date
+    lookups: int
+
+
 class CarjamUsageResponse(BaseModel):
-    lookups_this_month: int
-    lookups_included: int
+    total_lookups: int
+    included_in_plan: int
     overage_lookups: int
-    reset_at: datetime | None
+    overage_charge: float
+    daily_breakdown: list[CarjamDailyBreakdown]
 
 
 # ---------------------------------------------------------------------------
@@ -169,11 +175,17 @@ class SmsUsageResponse(BaseModel):
 # Storage Usage  (GET /reports/storage)
 # ---------------------------------------------------------------------------
 
+class StorageBreakdownItem(BaseModel):
+    category: str
+    bytes: int
+
+
 class StorageUsageResponse(BaseModel):
-    storage_used_bytes: int
-    storage_quota_bytes: int
-    usage_percentage: float
-    alert_level: str  # "normal", "amber", "red", "blocked"
+    used_bytes: int
+    used_gb: float
+    quota_gb: float
+    usage_percent: float
+    breakdown: list[StorageBreakdownItem] = []
 
 
 # ---------------------------------------------------------------------------

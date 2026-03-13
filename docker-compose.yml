@@ -1,6 +1,5 @@
 services:
   # --- PostgreSQL ---
-  # Alpine images support both ARM64 and AMD64 automatically
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -8,8 +7,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-workshoppro}
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -19,12 +16,9 @@ services:
       retries: 5
 
   # --- Redis ---
-  # Alpine images support both ARM64 and AMD64 automatically
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -33,18 +27,16 @@ services:
       timeout: 3s
       retries: 5
 
-  # --- FastAPI Application ---
-  # Builds for the host architecture automatically (ARM64 or AMD64)
+  # --- FastAPI Backend ---
   app:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    ports:
-      - "8080:8000"
     env_file:
       - .env
     environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-workshoppro}
       REDIS_URL: redis://redis:6379/0
     depends_on:
@@ -52,15 +44,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - ./app:/app/app
-      - ./alembic:/app/alembic
-      - ./tests:/app/tests
-    command: >
-      uvicorn app.main:app
-      --host 0.0.0.0
-      --port 8000
-      --reload
 
   # --- Frontend (Vite dev server) ---
   frontend:
@@ -68,46 +51,24 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     restart: unless-stopped
-    ports:
-      - "3000:5173"
-    environment:
-      VITE_API_URL: http://app:8000
-    volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
-      - ./frontend/index.html:/app/index.html
-      - ./frontend/vite.config.ts:/app/vite.config.ts
-      - ./frontend/tsconfig.json:/app/tsconfig.json
-      - ./frontend/tailwind.config.js:/app/tailwind.config.js
-      - ./frontend/postcss.config.js:/app/postcss.config.js
-      - ./frontend/package.json:/app/package.json
-      - frontend_node_modules:/app/node_modules
     depends_on:
       - app
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
 
-  # --- Nginx Reverse Proxy ---
+  # --- Nginx gateway (single entry point) ---
+  # Your external Nginx Proxy Manager points to this port.
+  # In dev: http://localhost → port 80
+  # In prod: proxy manager forwards your domain to this container's port 80
   nginx:
     image: nginx:alpine
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "${APP_PORT:-80}:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./frontend/dist:/app/dist:ro
     depends_on:
       - app
       - frontend
-
-  # --- Cloudflare Tunnel (bypasses Colima SSH port forwarding) ---
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    restart: unless-stopped
-    command: tunnel run
-    environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
-    depends_on:
-      - nginx
 
 volumes:
   pgdata:

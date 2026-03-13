@@ -17,6 +17,7 @@ class ModuleResponse(BaseModel):
     category: str | None = None
     is_core: bool = False
     dependencies: list[str] = Field(default_factory=list)
+    dependents: list[str] = Field(default_factory=list)
     status: str = "available"
     is_enabled: bool = False
     in_plan: bool = True

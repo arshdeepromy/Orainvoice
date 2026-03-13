@@ -70,37 +70,90 @@ async def _send_email_async(
             return {"success": False, "error": result.error or "Unknown email send error"}
 
 
+
 async def _send_sms_async(
     org_id: str,
     log_id: str,
     to_number: str,
     body: str,
     org_sender_number: str | None,
+    template_id: str | None = None,
+    variables: dict[str, str] | None = None,
 ) -> dict:
-    """Execute the actual SMS send and update the notification log."""
+    """Execute the actual SMS send and update the notification log.
+
+    If *template_id* and *variables* are provided, the template is loaded
+    from the database, rendered with the supplied variables, and the
+    rendered body is sent instead of the raw *body* parameter.
+
+    Requirements: 15.1, 15.2
+    """
+    import json
+
     from app.core.database import async_session_factory
-    from app.integrations.twilio_sms import send_org_sms
+    from app.core.encryption import envelope_decrypt_str
+    from app.integrations.connexus_sms import ConnexusConfig, ConnexusSmsClient
+    from app.integrations.sms_types import SmsMessage
+    from app.modules.admin.models import SmsVerificationProvider
     from app.modules.notifications.service import update_log_status
+    from sqlalchemy import select
 
     async with async_session_factory() as session:
         async with session.begin():
-            result = await send_org_sms(
-                session,
-                to_number=to_number,
-                body=body,
-                org_sender_number=org_sender_number,
-            )
+            # --- Template rendering (optional) ---
+            effective_body = body
+            if template_id and variables is not None:
+                from app.modules.notifications.models import NotificationTemplate
+                from app.modules.notifications.service import render_sms_body
 
-            if result.success:
+                tpl_stmt = select(NotificationTemplate).where(
+                    NotificationTemplate.id == uuid.UUID(template_id),
+                    NotificationTemplate.channel == "sms",
+                )
+                tpl_result = await session.execute(tpl_stmt)
+                tpl = tpl_result.scalar_one_or_none()
+                if tpl is not None:
+                    tpl_body_blocks = tpl.body_blocks or []
+                    raw_body = ""
+                    if tpl_body_blocks and isinstance(tpl_body_blocks, list) and len(tpl_body_blocks) > 0:
+                        raw_body = tpl_body_blocks[0].get("content", "") if isinstance(tpl_body_blocks[0], dict) else ""
+                    if raw_body:
+                        effective_body = render_sms_body(raw_body, variables)
+
+            # Resolve active Connexus provider
+            stmt = select(SmsVerificationProvider).where(
+                SmsVerificationProvider.provider_key == "connexus",
+                SmsVerificationProvider.is_active == True,
+            )
+            result = await session.execute(stmt)
+            provider = result.scalar_one_or_none()
+
+            if provider is None or not provider.credentials_encrypted:
+                return {"success": False, "error": "Connexus SMS provider not configured or active"}
+
+            creds = json.loads(envelope_decrypt_str(provider.credentials_encrypted))
+            config = ConnexusConfig.from_dict(creds)
+            client = ConnexusSmsClient(config)
+
+            sms = SmsMessage(
+                to_number=to_number,
+                body=effective_body,
+                from_number=org_sender_number,
+            )
+            send_result = await client.send(sms)
+
+            if send_result.success:
                 await update_log_status(
                     session,
                     log_id=uuid.UUID(log_id),
                     status="sent",
                     sent_at=datetime.now(timezone.utc),
                 )
-                return {"success": True, "message_sid": result.message_sid}
+                return {"success": True, "message_sid": send_result.message_sid}
 
-            return {"success": False, "error": result.error or "Unknown SMS send error"}
+            return {"success": False, "error": send_result.error or "Unknown SMS send error"}
+
+
 
 
 async def _mark_permanently_failed(
@@ -200,10 +253,15 @@ async def send_sms_task(
     body,
     org_sender_number=None,
     template_type="unknown",
+    template_id=None,
+    variables=None,
 ):
     """Dispatch an SMS with logging. Called directly (no Celery).
 
-    Requirements: 37.1, 37.2, 37.3
+    When *template_id* and *variables* are provided, the template is loaded,
+    rendered with the variables, and the rendered body is sent via Connexus.
+
+    Requirements: 37.1, 37.2, 37.3, 15.1, 15.2
     """
     try:
         result = await _send_sms_async(
@@ -212,6 +270,8 @@ async def send_sms_task(
             to_number=to_number,
             body=body,
             org_sender_number=org_sender_number,
+            template_id=template_id,
+            variables=variables,
         )
         if result["success"]:
             return result

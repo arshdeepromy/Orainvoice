@@ -5,7 +5,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import apiClient from '@/api/client'
-import { Button, Input, Select, Spinner, Pagination } from '../../components/ui'
+import { Button, Input, Select, Spinner, Pagination, PageSizeSelect } from '../../components/ui'
 
 interface Quote {
   id: string
@@ -38,7 +38,7 @@ const STATUS_OPTIONS = [
   { value: 'converted', label: 'Converted' },
 ]
 
-const PAGE_SIZE = 25
+const DEFAULT_PAGE_SIZE = 10
 
 function formatNZD(amount: number | string | null | undefined): string {
   if (amount == null || isNaN(Number(amount))) return 'NZD 0.00'
@@ -83,6 +83,7 @@ export default function QuoteList() {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [quotes, setQuotes] = useState<Quote[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -102,8 +103,8 @@ export default function QuoteList() {
     setError('')
     try {
       const params: Record<string, string | number> = {
-        limit: PAGE_SIZE,
-        offset: (pg - 1) * PAGE_SIZE,
+        limit: pageSize,
+        offset: (pg - 1) * pageSize,
       }
       if (search.trim()) params.search = search.trim()
       if (status) params.status = status
@@ -133,7 +134,7 @@ export default function QuoteList() {
   useEffect(() => {
     fetchQuotes(searchQuery, statusFilter, page)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page])
+  }, [page, pageSize])
 
   const handleDelete = async (quoteId: string) => {
     setDeleting(true)
@@ -162,7 +163,7 @@ export default function QuoteList() {
     }
   }
 
-  const totalPages = Math.ceil(total / PAGE_SIZE) || 1
+  const totalPages = Math.ceil(total / pageSize) || 1
   const hasFilters = searchQuery || statusFilter
   const clearFilters = () => { setSearchQuery(''); setStatusFilter(''); setPage(1) }
   const canDelete = (status: string) => ['draft', 'declined', 'expired'].includes(status)
@@ -340,11 +341,14 @@ export default function QuoteList() {
           {totalPages > 1 && (
             <div className="mt-4 flex items-center justify-between">
               <p className="text-sm text-gray-500">
-                Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total}
+                Showing {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)} of {total}
               </p>
               <Pagination currentPage={page} totalPages={totalPages} onPageChange={setPage} />
             </div>
           )}
+          <div className="mt-3 flex justify-end">
+            <PageSizeSelect value={pageSize} onChange={(size) => { setPageSize(size); setPage(1) }} />
+          </div>
         </>
       )}
     </div>

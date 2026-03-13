@@ -39,7 +39,8 @@ const INTEGRATION_FIELDS: Record<IntegrationName, FieldDef[]> = {
   carjam: [
     { key: 'api_key', label: 'API key', type: 'password', placeholder: '••••••••', backendKey: 'api_key_last4' },
     { key: 'endpoint_url', label: 'Endpoint URL', type: 'text', placeholder: 'https://www.carjam.co.nz' },
-    { key: 'per_lookup_cost_nzd', label: 'Per-lookup cost (NZD)', type: 'number', placeholder: '0.50' },
+    { key: 'per_lookup_cost_nzd', label: 'Basic per-lookup cost (NZD)', type: 'number', placeholder: '0.50', helperText: 'Cost charged per basic CarJam API lookup' },
+    { key: 'abcd_per_lookup_cost_nzd', label: 'ABCD per-lookup cost (NZD)', type: 'number', placeholder: '0.05', helperText: 'Cost charged per ABCD (lower-cost) lookup' },
     { key: 'global_rate_limit_per_minute', label: 'Global rate limit (calls/min)', type: 'number', placeholder: '60' },
   ],
   stripe: [
@@ -535,6 +536,8 @@ function IntegrationPanel({
     </form>
   )
 }
+
+
 
 /* ── Main Page ── */
 

@@ -25,6 +25,10 @@ from app.modules.module_management.schemas import (
 
 router = APIRouter()
 
+# Module categories that are only visible to global_admin users.
+# These are platform-level features, not org-level features.
+GLOBAL_ADMIN_CATEGORIES = {"admin"}
+
 
 @router.get(
     "",
@@ -36,13 +40,24 @@ async def list_modules(
     db: AsyncSession = Depends(get_db_session),
 ):
     """Return all available modules with their enabled/disabled state
-    for the authenticated organisation."""
+    for the authenticated organisation.
+
+    Modules in the 'admin' category (Branding, Analytics Dashboard,
+    Migration Tool, Internationalisation) are only returned for
+    global_admin users.
+    """
     org_id = getattr(request.state, "org_id", None)
     if not org_id:
         return ModuleListResponse(modules=[], total=0)
 
+    role = getattr(request.state, "role", None)
     svc = ModuleService(db)
     modules = await svc.get_all_modules_for_org(org_id)
+
+    # Filter out global-admin-only modules for non-global_admin users
+    if role != "global_admin":
+        modules = [m for m in modules if m.get("category") not in GLOBAL_ADMIN_CATEGORIES]
+
     items = [ModuleResponse(**m) for m in modules]
     return ModuleListResponse(modules=items, total=len(items))
 
@@ -64,11 +79,24 @@ async def enable_module(
     """
     org_id = getattr(request.state, "org_id", None)
     user_id = getattr(request.state, "user_id", None)
+    role = getattr(request.state, "role", None)
 
     if not org_id:
         return JSONResponse(
             status_code=400,
             content={"detail": "Organisation context required"},
+        )
+
+    # Block non-global_admin from enabling admin-category modules
+    from app.modules.module_management.models import ModuleRegistry
+    mod_result = await db.execute(
+        select(ModuleRegistry.category).where(ModuleRegistry.slug == slug)
+    )
+    mod_category = mod_result.scalar_one_or_none()
+    if mod_category in GLOBAL_ADMIN_CATEGORIES and role != "global_admin":
+        return JSONResponse(
+            status_code=403,
+            content={"detail": f"Module '{slug}' is a platform admin module and cannot be managed by org users."},
         )
 
     # Validate module is available in the org's plan
@@ -136,6 +164,19 @@ async def disable_module(
         return JSONResponse(
             status_code=400,
             content={"detail": f"Core module '{slug}' cannot be disabled."},
+        )
+
+    # Block non-global_admin from disabling admin-category modules
+    role = getattr(request.state, "role", None)
+    from app.modules.module_management.models import ModuleRegistry
+    mod_result = await db.execute(
+        select(ModuleRegistry.category).where(ModuleRegistry.slug == slug)
+    )
+    mod_category = mod_result.scalar_one_or_none()
+    if mod_category in GLOBAL_ADMIN_CATEGORIES and role != "global_admin":
+        return JSONResponse(
+            status_code=403,
+            content={"detail": f"Module '{slug}' is a platform admin module and cannot be managed by org users."},
         )
 
     svc = ModuleService(db)

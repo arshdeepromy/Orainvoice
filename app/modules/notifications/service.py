@@ -264,6 +264,23 @@ async def update_template(
     return _template_to_dict(tpl)
 
 
+def render_sms_body(template_body: str, variables: dict[str, str]) -> str:
+    """Render an SMS template body by substituting ``{{variable}}`` placeholders.
+
+    Uses the same ``{{variable}}`` syntax as the email template system.
+    Variables present in *variables* are replaced; unmatched placeholders
+    are left as-is so the caller can detect missing values.
+
+    Requirements: 15.1, 15.2
+    """
+
+    def _replacer(match: re.Match) -> str:
+        var_name = match.group(1).strip()
+        return variables.get(var_name, match.group(0))
+
+    return re.sub(r"\{\{(\w+)\}\}", _replacer, template_body)
+
+
 def render_template_preview(
     *,
     subject: str | None,
@@ -329,6 +346,24 @@ def render_template_preview(
         "subject": rendered_subject,
         "html_body": "\n".join(html_parts),
     }
+
+def render_sms_body(template_body: str, variables: dict[str, str]) -> str:
+    """Render an SMS template body by substituting ``{{variable}}`` placeholders.
+
+    Uses the same ``{{variable}}`` syntax as the email template system.
+    Variables present in *variables* are replaced; unmatched placeholders
+    are left as-is so the caller can detect missing values.
+
+    Requirements: 15.1, 15.2
+    """
+
+    def _replacer(match: re.Match) -> str:
+        var_name = match.group(1).strip()
+        return variables.get(var_name, match.group(0))
+
+    return re.sub(r"\{\{(\w+)\}\}", _replacer, template_body)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +522,7 @@ from app.modules.notifications.schemas import (
     SMS_TEMPLATE_TYPES,
     DEFAULT_SMS_BODIES,
 )
-from app.integrations.twilio_sms import SMS_CHAR_LIMIT
+from app.integrations.sms_types import SMS_CHAR_LIMIT
 
 
 def _sms_template_to_dict(tpl: NotificationTemplate) -> dict[str, Any]:

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import apiClient from '../../api/client'
-import { Button, Input, Spinner, Modal } from '../../components/ui'
+import { Button, Input, Spinner, Modal, Pagination, PageSizeSelect } from '../../components/ui'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -48,11 +48,28 @@ interface ManualEntryForm {
   fuel_type: string
   engine_size: string
   num_seats: string
+  // Extended fields (matching CarJam data model)
+  vin: string
+  chassis: string
+  engine_no: string
+  transmission: string
+  country_of_origin: string
+  number_of_owners: string
+  vehicle_type: string
+  submodel: string
+  second_colour: string
+  wof_expiry: string
+  rego_expiry: string
+  odometer: string
 }
 
 const EMPTY_MANUAL_FORM: ManualEntryForm = {
   rego: '', make: '', model: '', year: '', colour: '',
   body_type: '', fuel_type: '', engine_size: '', num_seats: '',
+  vin: '', chassis: '', engine_no: '', transmission: '',
+  country_of_origin: '', number_of_owners: '', vehicle_type: '',
+  submodel: '', second_colour: '', wof_expiry: '', rego_expiry: '',
+  odometer: '',
 }
 
 const INDICATOR_COLORS: Record<string, string> = {
@@ -75,6 +92,7 @@ export default function VehicleList() {
   const [vehicles, setVehicles] = useState<VehicleListItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -84,7 +102,10 @@ export default function VehicleList() {
   const [manualCreating, setManualCreating] = useState(false)
   const [manualError, setManualError] = useState('')
 
-  const pageSize = 25
+  /* CarJam onboard from search */
+  const [onboardLoading, setOnboardLoading] = useState(false)
+  const [onboardError, setOnboardError] = useState('')
+
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
 
   /* --- Fetch vehicle list --- */
@@ -104,7 +125,7 @@ export default function VehicleList() {
     }
   }, [])
 
-  useEffect(() => { fetchVehicles(page, search) }, [page, fetchVehicles]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchVehicles(page, search) }, [page, pageSize, fetchVehicles]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* Debounced search */
   useEffect(() => {
@@ -137,6 +158,19 @@ export default function VehicleList() {
       if (manualForm.fuel_type.trim()) body.fuel_type = manualForm.fuel_type.trim()
       if (manualForm.engine_size.trim()) body.engine_size = manualForm.engine_size.trim()
       if (manualForm.num_seats.trim()) body.num_seats = parseInt(manualForm.num_seats, 10)
+      // Extended fields
+      if (manualForm.vin.trim()) body.vin = manualForm.vin.trim()
+      if (manualForm.chassis.trim()) body.chassis = manualForm.chassis.trim()
+      if (manualForm.engine_no.trim()) body.engine_no = manualForm.engine_no.trim()
+      if (manualForm.transmission.trim()) body.transmission = manualForm.transmission.trim()
+      if (manualForm.country_of_origin.trim()) body.country_of_origin = manualForm.country_of_origin.trim()
+      if (manualForm.number_of_owners.trim()) body.number_of_owners = parseInt(manualForm.number_of_owners, 10)
+      if (manualForm.vehicle_type.trim()) body.vehicle_type = manualForm.vehicle_type.trim()
+      if (manualForm.submodel.trim()) body.submodel = manualForm.submodel.trim()
+      if (manualForm.second_colour.trim()) body.second_colour = manualForm.second_colour.trim()
+      if (manualForm.wof_expiry.trim()) body.wof_expiry = manualForm.wof_expiry.trim()
+      if (manualForm.rego_expiry.trim()) body.rego_expiry = manualForm.rego_expiry.trim()
+      if (manualForm.odometer.trim()) body.odometer = parseInt(manualForm.odometer, 10)
       const res = await apiClient.post<{ id: string }>('/vehicles/manual', body)
       setManualOpen(false)
       window.location.href = `/vehicles/${res.data.id}`
@@ -256,10 +290,56 @@ export default function VehicleList() {
         </div>
       )}
 
-      {/* No search results */}
+      {/* No search results — offer to onboard */}
       {!loading && vehicles.length === 0 && search.trim() && (
-        <div className="py-12 text-center text-sm text-gray-500">
-          No vehicles found matching "{search}".
+        <div className="py-12 text-center">
+          <p className="text-sm text-gray-500 mb-4">
+            No vehicles found matching "{search}".
+          </p>
+          <div className="flex flex-col items-center gap-3">
+            <Button
+              onClick={async () => {
+                const cleaned = search.trim().toUpperCase()
+                if (!cleaned) return
+                setOnboardLoading(true)
+                setOnboardError('')
+                try {
+                  const res = await apiClient.post<{
+                    success: boolean
+                    vehicle: { id: string }
+                    message: string
+                  }>('/vehicles/lookup-with-fallback', { rego: cleaned })
+                  if (res.data.success && res.data.vehicle) {
+                    window.location.href = `/vehicles/${res.data.vehicle.id}`
+                  }
+                } catch (err: any) {
+                  const status = err?.response?.status
+                  if (status === 404) {
+                    setOnboardError('Vehicle not found in CarJam. Try manual entry instead.')
+                  } else if (status === 429) {
+                    setOnboardError('Rate limit exceeded. Please try again shortly.')
+                  } else {
+                    setOnboardError('Lookup failed. Please try again or use manual entry.')
+                  }
+                } finally {
+                  setOnboardLoading(false)
+                }
+              }}
+              loading={onboardLoading}
+            >
+              🔍 Look up "{search.trim().toUpperCase()}" via CarJam
+            </Button>
+            <Button variant="secondary" onClick={() => {
+              setManualForm({ ...EMPTY_MANUAL_FORM, rego: search.trim().toUpperCase() })
+              setManualOpen(true)
+              setManualError('')
+            }}>
+              + Manual Entry
+            </Button>
+            {onboardError && (
+              <p className="text-sm text-red-600" role="alert">{onboardError}</p>
+            )}
+          </div>
         </div>
       )}
 
@@ -267,35 +347,65 @@ export default function VehicleList() {
       {totalPages > 1 && (
         <div className="mt-4 flex items-center justify-between">
           <p className="text-sm text-gray-500">
-            Page {page} of {totalPages} ({total} total)
+            Showing {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)} of {total}
           </p>
-          <div className="flex gap-2">
-            <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</Button>
-            <Button size="sm" variant="secondary" disabled={page >= totalPages} onClick={() => setPage(page + 1)}>Next</Button>
-          </div>
+          <Pagination currentPage={page} totalPages={totalPages} onPageChange={setPage} />
         </div>
       )}
+      <div className="mt-3 flex justify-end">
+        <PageSizeSelect value={pageSize} onChange={(size) => { setPageSize(size); setPage(1) }} />
+      </div>
 
-      {/* Manual Entry Modal */}
       <Modal open={manualOpen} onClose={() => { setManualOpen(false); setManualError('') }} title="Manual Vehicle Entry">
         <p className="text-sm text-gray-600 mb-3">Enter vehicle details manually when Carjam data is unavailable.</p>
-        <div className="space-y-3">
+        <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+          {/* Core fields */}
           <Input label="Registration number *" value={manualForm.rego} onChange={(e) => updateManualField('rego', e.target.value)} />
           <div className="grid grid-cols-2 gap-3">
             <Input label="Make" value={manualForm.make} onChange={(e) => updateManualField('make', e.target.value)} />
             <Input label="Model" value={manualForm.model} onChange={(e) => updateManualField('model', e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
+            <Input label="Submodel / Variant" value={manualForm.submodel} onChange={(e) => updateManualField('submodel', e.target.value)} />
             <Input label="Year" type="number" value={manualForm.year} onChange={(e) => updateManualField('year', e.target.value)} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
             <Input label="Colour" value={manualForm.colour} onChange={(e) => updateManualField('colour', e.target.value)} />
+            <Input label="Second Colour" value={manualForm.second_colour} onChange={(e) => updateManualField('second_colour', e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Input label="Body Type" value={manualForm.body_type} onChange={(e) => updateManualField('body_type', e.target.value)} />
+            <Input label="Vehicle Type" value={manualForm.vehicle_type} onChange={(e) => updateManualField('vehicle_type', e.target.value)} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
             <Input label="Fuel Type" value={manualForm.fuel_type} onChange={(e) => updateManualField('fuel_type', e.target.value)} />
+            <Input label="Transmission" value={manualForm.transmission} onChange={(e) => updateManualField('transmission', e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Input label="Engine Size" value={manualForm.engine_size} onChange={(e) => updateManualField('engine_size', e.target.value)} />
             <Input label="Seats" type="number" value={manualForm.num_seats} onChange={(e) => updateManualField('num_seats', e.target.value)} />
+          </div>
+
+          {/* Identification */}
+          <p className="text-xs font-medium text-gray-500 uppercase tracking-wider pt-2">Identification</p>
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="VIN" value={manualForm.vin} onChange={(e) => updateManualField('vin', e.target.value)} />
+            <Input label="Chassis Number" value={manualForm.chassis} onChange={(e) => updateManualField('chassis', e.target.value)} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Engine Number" value={manualForm.engine_no} onChange={(e) => updateManualField('engine_no', e.target.value)} />
+            <Input label="Country of Origin" value={manualForm.country_of_origin} onChange={(e) => updateManualField('country_of_origin', e.target.value)} />
+          </div>
+
+          {/* Compliance & History */}
+          <p className="text-xs font-medium text-gray-500 uppercase tracking-wider pt-2">Compliance & History</p>
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="WOF Expiry" type="date" value={manualForm.wof_expiry} onChange={(e) => updateManualField('wof_expiry', e.target.value)} />
+            <Input label="Rego Expiry" type="date" value={manualForm.rego_expiry} onChange={(e) => updateManualField('rego_expiry', e.target.value)} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Odometer (km)" type="number" value={manualForm.odometer} onChange={(e) => updateManualField('odometer', e.target.value)} />
+            <Input label="Number of Owners" type="number" value={manualForm.number_of_owners} onChange={(e) => updateManualField('number_of_owners', e.target.value)} />
           </div>
         </div>
         {manualError && <p className="mt-2 text-sm text-red-600" role="alert">{manualError}</p>}

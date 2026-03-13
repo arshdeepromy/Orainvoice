@@ -290,3 +290,49 @@ class LoyaltyService:
             "tier_id": str(tier.id),
             "tier_name": tier.name,
         }
+
+    # ------------------------------------------------------------------
+    # Analytics
+    # ------------------------------------------------------------------
+
+    async def get_analytics(self, org_id: uuid.UUID) -> dict:
+        """Return loyalty programme analytics for the organisation."""
+        from app.modules.loyalty.schemas import LoyaltyAnalyticsResponse
+
+        # Total distinct customers with transactions
+        active_result = await self.db.execute(
+            select(func.count(func.distinct(LoyaltyTransaction.customer_id))).where(
+                LoyaltyTransaction.org_id == org_id,
+            )
+        )
+        total_active = int(active_result.scalar_one())
+
+        # Total points issued (earn transactions)
+        issued_result = await self.db.execute(
+            select(func.coalesce(func.sum(LoyaltyTransaction.points), 0)).where(
+                LoyaltyTransaction.org_id == org_id,
+                LoyaltyTransaction.transaction_type == "earn",
+            )
+        )
+        total_issued = int(issued_result.scalar_one())
+
+        # Total points redeemed (redeem transactions — stored as negative)
+        redeemed_result = await self.db.execute(
+            select(func.coalesce(-func.sum(LoyaltyTransaction.points), 0)).where(
+                LoyaltyTransaction.org_id == org_id,
+                LoyaltyTransaction.transaction_type == "redeem",
+            )
+        )
+        total_redeemed = int(redeemed_result.scalar_one())
+
+        redemption_pct = (total_redeemed / total_issued * 100) if total_issued > 0 else 0.0
+
+        return LoyaltyAnalyticsResponse(
+            total_active_members=total_active,
+            members_per_tier=[],
+            total_points_issued=total_issued,
+            total_points_redeemed=total_redeemed,
+            redemption_rate_pct=round(redemption_pct, 1),
+            top_customers=[],
+        )
+

@@ -253,16 +253,39 @@ async def generate_stripe_payment_link(
         customer = customer_result.scalar_one_or_none()
         if customer and customer.phone:
             try:
-                from app.integrations.twilio_sms import send_sms
+                import json as _json
 
-                await send_sms(
-                    to_number=customer.phone,
-                    body=(
-                        f"Pay {invoice.currency} {pay_amount} for invoice "
-                        f"{invoice.invoice_number or invoice.id}: "
-                        f"{payment_url}"
-                    ),
+                from app.core.encryption import envelope_decrypt_str
+                from app.integrations.connexus_sms import ConnexusConfig, ConnexusSmsClient
+                from app.integrations.sms_types import SmsMessage
+                from app.modules.admin.models import SmsVerificationProvider
+
+                stmt = select(SmsVerificationProvider).where(
+                    SmsVerificationProvider.provider_key == "connexus",
+                    SmsVerificationProvider.is_active == True,
                 )
+                prov_result = await db.execute(stmt)
+                provider = prov_result.scalar_one_or_none()
+
+                if provider and provider.credentials_encrypted:
+                    creds = _json.loads(envelope_decrypt_str(provider.credentials_encrypted))
+                    config = ConnexusConfig.from_dict(creds)
+                    client = ConnexusSmsClient(config)
+
+                    sms = SmsMessage(
+                        to_number=customer.phone,
+                        body=(
+                            f"Payment link for invoice "
+                            f"{invoice.invoice_number or invoice.id}: "
+                            f"{payment_url}"
+                        ),
+                    )
+                    await client.send(sms)
+                else:
+                    logger.warning(
+                        "Connexus SMS provider not configured — skipping SMS for invoice %s",
+                        invoice.id,
+                    )
             except (ConnectionError, TimeoutError, OSError) as exc:
                 logger.warning("Failed to send payment link SMS for invoice %s: %s", invoice.id, exc)
 

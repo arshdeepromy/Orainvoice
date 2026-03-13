@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import apiClient from '../../api/client'
-import { Button, Input, Spinner, Pagination } from '../../components/ui'
+import { Button, Input, Spinner, Pagination, PageSizeSelect } from '../../components/ui'
 import { CustomerCreateModal } from '../../components/customers/CustomerCreateModal'
 import { CustomerEditModal } from '../../components/customers/CustomerEditModal'
 import { CustomerViewModal } from '../../components/customers/CustomerViewModal'
@@ -30,7 +30,7 @@ interface CustomerListResponse {
   has_exact_match: boolean
 }
 
-const PAGE_SIZE = 20
+const DEFAULT_PAGE_SIZE = 10
 
 function formatNZD(amount: number | null | undefined): string {
   if (amount == null || isNaN(Number(amount))) return 'NZD0.00'
@@ -44,6 +44,7 @@ function formatNZD(amount: number | null | undefined): string {
 export default function CustomerList() {
   const [searchQuery, setSearchQuery] = useState('')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [data, setData] = useState<CustomerListResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -62,7 +63,7 @@ export default function CustomerList() {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
   const abortRef = useRef<AbortController>()
 
-  const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1
+  const totalPages = data ? Math.max(1, Math.ceil(data.total / pageSize)) : 1
 
   /* --- Fetch customers --- */
   const fetchCustomers = useCallback(async (search: string, pg: number) => {
@@ -74,8 +75,8 @@ export default function CustomerList() {
     setError('')
     try {
       const params: Record<string, string | number> = {
-        limit: PAGE_SIZE,
-        offset: (pg - 1) * PAGE_SIZE,
+        limit: pageSize,
+        offset: (pg - 1) * pageSize,
       }
       if (search.trim()) params.q = search.trim()
 
@@ -105,7 +106,7 @@ export default function CustomerList() {
   useEffect(() => {
     fetchCustomers(searchQuery, page)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page])
+  }, [page, pageSize])
 
   /* --- Handle customer created --- */
   const handleCustomerCreated = (customer: { id: string }) => {
@@ -256,11 +257,14 @@ export default function CustomerList() {
           {totalPages > 1 && (
             <div className="mt-4 flex items-center justify-between">
               <p className="text-sm text-gray-500">
-                Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, data.total)} of {data.total}
+                Showing {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, data.total)} of {data.total}
               </p>
               <Pagination currentPage={page} totalPages={totalPages} onPageChange={setPage} />
             </div>
           )}
+          <div className="mt-3 flex justify-end">
+            <PageSizeSelect value={pageSize} onChange={(size) => { setPageSize(size); setPage(1) }} />
+          </div>
         </>
       )}
 
