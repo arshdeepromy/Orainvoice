@@ -22,8 +22,7 @@ interface OutstandingData {
 
 function defaultRange(): DateRange {
   const now = new Date()
-  const from = new Date(now)
-  from.setMonth(from.getMonth() - 3)
+  const from = new Date(now.getFullYear(), now.getMonth() - 3, 1)
   return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
 }
 
@@ -45,7 +44,7 @@ export default function OutstandingInvoices() {
     setError('')
     try {
       const res = await apiClient.get<OutstandingData>('/reports/outstanding', {
-        params: { from: range.from, to: range.to },
+        params: { start_date: range.from, end_date: range.to },
       })
       setData(res.data)
     } catch {
@@ -70,14 +69,14 @@ export default function OutstandingInvoices() {
 
   return (
     <div data-print-content>
-      <p className="text-sm text-gray-500 mb-4">
+      <p className="text-sm text-gray-500 mb-4 no-print">
         Invoices with outstanding balances. Send payment reminders with one click.
       </p>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-6 no-print">
         <DateRangeFilter value={range} onChange={setRange} />
         <div className="flex items-center gap-2">
-          <ExportButtons endpoint="/reports/outstanding" params={{ from: range.from, to: range.to }} />
+          <ExportButtons endpoint="/reports/outstanding" params={{ start_date: range.from, end_date: range.to }} />
           <PrintButton label="Print Report" />
         </div>
       </div>
@@ -120,8 +119,8 @@ export default function OutstandingInvoices() {
                     </td>
                   </tr>
                 ) : (
-                  data.invoices.map((inv) => (
-                    <tr key={inv.id} className="hover:bg-gray-50">
+                  data.invoices.map((inv, i) => (
+                    <tr key={inv.id || i} className="hover:bg-gray-50">
                       <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-gray-900">{inv.invoice_number}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{inv.customer_name}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{inv.rego || '—'}</td>

@@ -750,7 +750,7 @@ export default function QuoteCreate() {
 
   if (loadingQuote) {
     return (
-      <div className="mx-auto max-w-5xl px-4 py-16 text-center">
+      <div className="px-4 py-16 text-center sm:px-6 lg:px-8">
         <div className="text-gray-500">Loading quote…</div>
       </div>
     )
@@ -770,7 +770,7 @@ export default function QuoteCreate() {
         </div>
       </div>
 
-      <div className="max-w-5xl mx-auto px-6 py-6">
+      <div className="px-6 py-6">
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-6">
 
           {/* Customer and Quote Details — 2-column layout like InvoiceCreate */}

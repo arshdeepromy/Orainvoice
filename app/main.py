@@ -485,6 +485,26 @@ def create_app() -> FastAPI:
         from app.core.demo_org_sync import sync_demo_org_modules
         await sync_demo_org_modules()
 
+    @app.on_event("startup")
+    async def _start_connexus_token_refresher() -> None:
+        from app.integrations.connexus_sms import _token_refresher
+        await _token_refresher.start()
+
+    @app.on_event("startup")
+    async def _start_task_scheduler() -> None:
+        from app.tasks.scheduled import start_scheduler
+        await start_scheduler()
+
+    @app.on_event("shutdown")
+    async def _stop_connexus_token_refresher() -> None:
+        from app.integrations.connexus_sms import _token_refresher
+        await _token_refresher.stop()
+
+    @app.on_event("shutdown")
+    async def _stop_task_scheduler() -> None:
+        from app.tasks.scheduled import stop_scheduler
+        await stop_scheduler()
+
     return app
 
 

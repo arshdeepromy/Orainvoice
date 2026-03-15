@@ -270,7 +270,7 @@ function ConnexusSection({ provider, addToast }: { provider: SmsProvider; addToa
   )
 }
 
-function SmsCostConfig({ provider, addToast }: { provider: SmsProvider; addToast: (type: 'success' | 'error', msg: string) => void }) {
+function SmsCostConfig({ provider, addToast, onConfigSaved }: { provider: SmsProvider; addToast: (type: 'success' | 'error', msg: string) => void; onConfigSaved: () => void }) {
   const [cost, setCost] = useState(String(provider.config?.per_sms_cost_nzd ?? ''))
   const [saving, setSaving] = useState(false)
 
@@ -280,6 +280,7 @@ function SmsCostConfig({ provider, addToast }: { provider: SmsProvider; addToast
       const updated = { ...provider.config, per_sms_cost_nzd: cost ? parseFloat(cost) : 0 }
       await apiClient.patch(`/api/v2/admin/sms-providers/${provider.provider_key}`, { config: updated })
       addToast('success', 'Per-SMS cost saved')
+      onConfigSaved()
     } catch {
       addToast('error', 'Failed to save per-SMS cost')
     } finally {
@@ -311,6 +312,77 @@ function SmsCostConfig({ provider, addToast }: { provider: SmsProvider; addToast
   )
 }
 
+function formatDuration(seconds: number): string {
+  if (seconds <= 0) return ''
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+  const parts: string[] = []
+  if (h > 0) parts.push(`${h} hour${h !== 1 ? 's' : ''}`)
+  if (m > 0) parts.push(`${m} minute${m !== 1 ? 's' : ''}`)
+  if (s > 0 && h === 0) parts.push(`${s} second${s !== 1 ? 's' : ''}`)
+  return parts.join(' ')
+}
+
+function TokenRefreshConfig({ provider, addToast, onConfigSaved }: { provider: SmsProvider; addToast: (type: 'success' | 'error', msg: string) => void; onConfigSaved: () => void }) {
+  const currentVal = Number(provider.config?.token_refresh_interval_seconds ?? 0)
+  const [interval, setInterval] = useState(currentVal > 0 ? String(currentVal) : '')
+  const [saving, setSaving] = useState(false)
+
+  const parsed = parseInt(interval, 10)
+  const isValid = !interval || (Number.isFinite(parsed) && parsed >= 1)
+  const durationLabel = Number.isFinite(parsed) && parsed > 0 ? formatDuration(parsed) : ''
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const val = interval ? parseInt(interval, 10) : 0
+      const updated = { ...provider.config, token_refresh_interval_seconds: val }
+      await apiClient.patch(`/api/v2/admin/sms-providers/${provider.provider_key}`, { config: updated })
+      addToast('success', val > 0 ? `Token refresh interval set to ${formatDuration(val)}` : 'Token refresh interval reset to default')
+      onConfigSaved()
+    } catch {
+      addToast('error', 'Failed to save token refresh settings')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="border-t border-gray-200 pt-4">
+      <h4 className="text-sm font-medium text-gray-700 mb-3">Token Refresh Settings</h4>
+      <div className="flex items-end gap-3">
+        <div className="max-w-xs">
+          <Input
+            label="Refresh interval (seconds)"
+            type="number"
+            placeholder="3300"
+            value={interval}
+            onChange={(e) => setInterval(e.target.value)}
+          />
+        </div>
+        <Button onClick={handleSave} loading={saving} variant="primary" className="mb-0.5" disabled={!isValid}>
+          Save
+        </Button>
+        {durationLabel && (
+          <span className="mb-1.5 text-sm text-gray-600">
+            = {durationLabel}
+          </span>
+        )}
+      </div>
+      {interval && !isValid && (
+        <p className="mt-1 text-xs text-red-500">
+          Must be a positive number.
+        </p>
+      )}
+      <p className="mt-1 text-xs text-gray-400">
+        How long to reuse a cached token before refreshing. Connexus tokens expire after 3600 seconds (1 hour).
+        {!interval && ' Default: 3300 seconds (55 minutes).'}
+      </p>
+    </div>
+  )
+}
+
 function ProviderCard({
   provider,
   onToggleActive,
@@ -319,6 +391,7 @@ function ProviderCard({
   onTestProvider,
   saving,
   addToast,
+  onConfigSaved,
 }: {
   provider: SmsProvider
   onToggleActive: (key: string, active: boolean) => void
@@ -327,9 +400,11 @@ function ProviderCard({
   onTestProvider: (key: string, toNumber: string, message: string) => Promise<void>
   saving: boolean
   addToast: (type: 'success' | 'error', msg: string) => void
+  onConfigSaved: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const [creds, setCreds] = useState<Record<string, string>>({})
+  const [maskedCreds, setMaskedCreds] = useState<Record<string, string>>({})
   const [credsLoaded, setCredsLoaded] = useState(false)
   const [testNumber, setTestNumber] = useState('')
   const [testMessage, setTestMessage] = useState('Hello from OraInvoice! This is a test SMS.')
@@ -338,7 +413,7 @@ function ProviderCard({
 
   const iconEl = PROVIDER_ICONS[provider.icon ?? ''] ?? PROVIDER_ICONS.phone
 
-  // Load saved credentials when expanding
+  // Load saved credentials when expanding — show as placeholders, not editable values
   useEffect(() => {
     if (!expanded || credsLoaded || !provider.credentials_set) return
     let cancelled = false
@@ -346,7 +421,8 @@ function ProviderCard({
       try {
         const res = await apiClient.get(`/api/v2/admin/sms-providers/${provider.provider_key}/credentials`)
         if (!cancelled && res.data?.credentials) {
-          setCreds(res.data.credentials)
+          // Store masked values separately for display — don't put them in the editable creds
+          setMaskedCreds(res.data.credentials)
           setCredsLoaded(true)
         }
       } catch {
@@ -458,18 +534,24 @@ function ProviderCard({
                 <div className="grid gap-3 sm:grid-cols-2">
                   {fields.map((f) => {
                     const key = f.label.toLowerCase().replace(/\s+/g, '_')
+                    const masked = maskedCreds[key]
                     return (
                       <Input
                         key={key}
                         label={f.label}
                         type={f.type ?? 'text'}
-                        placeholder={f.placeholder}
+                        placeholder={masked || f.placeholder}
                         value={creds[key] ?? ''}
                         onChange={(e) => setCreds((prev) => ({ ...prev, [key]: e.target.value }))}
                       />
                     )
                   })}
                 </div>
+                {provider.credentials_set && (
+                  <p className="mt-1 text-xs text-gray-500">
+                    Only fill in fields you want to change. Blank fields keep their current value.
+                  </p>
+                )}
                 <div className="mt-3">
                   <Button
                     onClick={() => onSaveCredentials(provider.provider_key, creds)}
@@ -488,7 +570,12 @@ function ProviderCard({
               )}
 
               {/* Per-SMS cost config */}
-              <SmsCostConfig provider={provider} addToast={addToast} />
+              <SmsCostConfig provider={provider} addToast={addToast} onConfigSaved={onConfigSaved} />
+
+              {/* Token refresh config — Connexus only */}
+              {provider.provider_key === 'connexus' && (
+                <TokenRefreshConfig provider={provider} addToast={addToast} onConfigSaved={onConfigSaved} />
+              )}
 
               {/* Test SMS */}
               {provider.credentials_set && (
@@ -697,6 +784,7 @@ export function SmsProviders() {
             onTestProvider={handleTestProvider}
             saving={saving}
             addToast={addToast}
+            onConfigSaved={fetchProviders}
           />
         ))}
       </div>

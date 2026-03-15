@@ -10,12 +10,15 @@ interface RevenueData {
   total_gst: number
   total_invoices: number
   monthly_breakdown: { month: string; revenue: number }[]
+  total_refunds: number
+  refund_gst: number
+  net_revenue: number
+  net_gst: number
 }
 
 function defaultRange(): DateRange {
   const now = new Date()
-  const from = new Date(now)
-  from.setMonth(from.getMonth() - 1)
+  const from = new Date(now.getFullYear(), now.getMonth() - 1, 1)
   return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
 }
 
@@ -37,7 +40,7 @@ export default function RevenueSummary() {
     setError('')
     try {
       const res = await apiClient.get<RevenueData>('/reports/revenue', {
-        params: { from: range.from, to: range.to },
+        params: { start_date: range.from, end_date: range.to },
       })
       setData(res.data)
     } catch {
@@ -51,12 +54,12 @@ export default function RevenueSummary() {
 
   return (
     <div data-print-content>
-      <p className="text-sm text-gray-500 mb-4">Total revenue, GST collected, and monthly breakdown.</p>
+      <p className="text-sm text-gray-500 mb-4 no-print">Total revenue, GST collected, and monthly breakdown.</p>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-6 no-print">
         <DateRangeFilter value={range} onChange={setRange} />
         <div className="flex items-center gap-2">
-          <ExportButtons endpoint="/reports/revenue" params={{ from: range.from, to: range.to }} />
+          <ExportButtons endpoint="/reports/revenue" params={{ start_date: range.from, end_date: range.to }} />
           <PrintButton label="Print Report" />
         </div>
       </div>
@@ -76,10 +79,22 @@ export default function RevenueSummary() {
             <div className="rounded-lg border border-gray-200 bg-white p-4">
               <p className="text-sm text-gray-500">Total Revenue</p>
               <p className="text-2xl font-semibold text-gray-900">{fmt(data.total_revenue)}</p>
+              {data.total_refunds > 0 && (
+                <p className="text-sm text-red-600 mt-1">Refunds: -${data.total_refunds?.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}</p>
+              )}
+              {data.net_revenue != null && data.total_refunds > 0 && (
+                <p className="text-sm font-medium text-green-700 mt-1">Net: {fmt(data.net_revenue)}</p>
+              )}
             </div>
             <div className="rounded-lg border border-gray-200 bg-white p-4">
               <p className="text-sm text-gray-500">GST Collected</p>
               <p className="text-2xl font-semibold text-gray-900">{fmt(data.total_gst)}</p>
+              {data.refund_gst > 0 && (
+                <p className="text-sm text-red-600 mt-1">Refund GST: -${data.refund_gst?.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}</p>
+              )}
+              {data.net_gst != null && data.total_refunds > 0 && (
+                <p className="text-sm font-medium text-green-700 mt-1">Net: {fmt(data.net_gst)}</p>
+              )}
             </div>
             <div className="rounded-lg border border-gray-200 bg-white p-4">
               <p className="text-sm text-gray-500">Invoices</p>

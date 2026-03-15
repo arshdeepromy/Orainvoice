@@ -10,6 +10,10 @@ interface GstData {
   zero_rated_sales: number
   total_gst_collected: number
   net_gst: number
+  total_refunds: number
+  refund_gst: number
+  adjusted_total_sales: number
+  adjusted_gst_collected: number
 }
 
 function defaultRange(): DateRange {
@@ -20,6 +24,7 @@ function defaultRange(): DateRange {
 }
 
 const fmt = (v: number | undefined) => v != null ? `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}` : '$0.00'
+const fmtNeg = (v: number | undefined) => v != null && v > 0 ? `-$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}` : '$0.00'
 
 /**
  * GST return summary — total sales, GST collected, standard vs zero-rated,
@@ -37,7 +42,7 @@ export default function GstReturnSummary() {
     setError('')
     try {
       const res = await apiClient.get<GstData>('/reports/gst-return', {
-        params: { from: range.from, to: range.to },
+        params: { start_date: range.from, end_date: range.to },
       })
       setData(res.data)
     } catch {
@@ -51,14 +56,14 @@ export default function GstReturnSummary() {
 
   return (
     <div data-print-content>
-      <p className="text-sm text-gray-500 mb-4">
+      <p className="text-sm text-gray-500 mb-4 no-print">
         GST summary formatted for manual IRD GST return filing.
       </p>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-6 no-print">
         <DateRangeFilter value={range} onChange={setRange} />
         <div className="flex items-center gap-2">
-          <ExportButtons endpoint="/reports/gst-return" params={{ from: range.from, to: range.to }} />
+          <ExportButtons endpoint="/reports/gst-return" params={{ start_date: range.from, end_date: range.to }} />
           <PrintButton label="Print Report" />
         </div>
       </div>
@@ -98,6 +103,26 @@ export default function GstReturnSummary() {
                 <td className="px-4 py-3 text-sm font-medium text-gray-900">Total GST Collected</td>
                 <td className="px-4 py-3 text-sm font-medium text-gray-900 text-right">{fmt(data.total_gst_collected)}</td>
               </tr>
+              {data.total_refunds > 0 && (
+                <>
+                  <tr className="hover:bg-gray-50 bg-red-50">
+                    <td className="px-4 py-3 text-sm font-medium text-red-700">Refunds / Credit Notes</td>
+                    <td className="px-4 py-3 text-sm font-medium text-red-700 text-right">{fmtNeg(data.total_refunds)}</td>
+                  </tr>
+                  <tr className="hover:bg-gray-50">
+                    <td className="px-4 py-3 text-sm text-red-600 pl-8">GST on refunds</td>
+                    <td className="px-4 py-3 text-sm text-red-600 text-right">{fmtNeg(data.refund_gst)}</td>
+                  </tr>
+                  <tr className="hover:bg-gray-50 bg-gray-50">
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900">Adjusted Sales (incl. GST)</td>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900 text-right">{fmt(data.adjusted_total_sales)}</td>
+                  </tr>
+                  <tr className="hover:bg-gray-50 bg-gray-50">
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900">Adjusted GST Collected</td>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900 text-right">{fmt(data.adjusted_gst_collected)}</td>
+                  </tr>
+                </>
+              )}
               <tr className="hover:bg-gray-50 bg-green-50">
                 <td className="px-4 py-3 text-sm font-semibold text-gray-900">Net GST Payable</td>
                 <td className="px-4 py-3 text-sm font-semibold text-gray-900 text-right">{fmt(data.net_gst)}</td>

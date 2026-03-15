@@ -240,7 +240,7 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated }: Custom
   const [activeTab, setActiveTab] = useState<TabId>('details')
   
   // Customer type
-  const [customerType, setCustomerType] = useState<'individual' | 'business'>('business')
+  const [customerType, setCustomerType] = useState<'individual' | 'business'>('individual')
   
   // Primary contact / identity
   const [salutation, setSalutation] = useState('')
@@ -283,7 +283,7 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated }: Custom
 
   const resetForm = () => {
     setActiveTab('details')
-    setCustomerType('business')
+    setCustomerType('individual')
     setSalutation('')
     setFirstName('')
     setLastName('')

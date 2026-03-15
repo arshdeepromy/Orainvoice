@@ -328,6 +328,7 @@ class CustomerSearchResult(BaseModel):
     work_phone: Optional[str] = Field(None, description="Work phone")
     receivables: float = Field(0.0, description="Total outstanding balance due (BCY)")
     unused_credits: float = Field(0.0, description="Total unused credit notes (BCY)")
+    reminders_enabled: bool = Field(False, description="Whether any reminder is enabled for this customer")
     linked_vehicles: Optional[list[LinkedVehicleSummary]] = Field(
         None, description="Linked vehicles (when include_vehicles=true)"
     )

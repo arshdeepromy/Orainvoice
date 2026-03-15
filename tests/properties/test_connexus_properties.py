@@ -6,14 +6,13 @@ Properties covered:
   P3 — API failures return structured error results
   P4 — Successful send includes parts metadata
   P5 — Token caching and Authorization header
-  P6 — Proactive token refresh before expiry
+  P6 — API calls never trigger token refresh (background refresher's job)
 
 **Validates: Requirements 1.1, 1.4, 1.6, 1.7, 1.9, 2.2, 2.3, 2.6, 11.3, 12.3**
 """
 
 from __future__ import annotations
 
-import time
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -29,7 +28,7 @@ PBT_SETTINGS = h_settings(
     suppress_health_check=[HealthCheck.too_slow],
 )
 
-from app.integrations.connexus_sms import ConnexusConfig, ConnexusSmsClient
+from app.integrations.connexus_sms import ConnexusConfig, ConnexusSmsClient, _token_cache
 from app.integrations.sms_types import SmsMessage, SmsSendResult
 
 
@@ -64,6 +63,7 @@ def _make_client(
     api_base_url: str = "https://api.test.local/api/connexus",
 ) -> ConnexusSmsClient:
     """Create a ConnexusSmsClient with a mocked HTTP layer."""
+    _token_cache._tokens.clear()
     config = ConnexusConfig(
         client_id=client_id,
         client_secret=client_secret,
@@ -194,7 +194,7 @@ class TestProperty2SendPayload:
         msg = SmsMessage(to_number=to_number, body=body)
         await client.send(msg)
 
-        payload = captured_kwargs["json"]
+        payload = captured_kwargs["data"]
         assert payload["to"] == to_number
         assert payload["body"] == body
         assert payload["from"] == sender_id
@@ -230,7 +230,7 @@ class TestProperty2SendPayload:
         msg = SmsMessage(to_number=to_number, body=body, from_number=from_number)
         await client.send(msg)
 
-        payload = captured_kwargs["json"]
+        payload = captured_kwargs["data"]
         assert payload["to"] == to_number
         assert payload["body"] == body
         assert payload["from"] == from_number
@@ -381,8 +381,12 @@ class TestProperty5TokenCaching:
         client = _make_client()
 
         # Simulate a valid cached token well within the validity window
-        client._token = "cached-token-abc"
-        client._token_expires_at = time.time() + 3600  # 1 hour from now
+        _token_cache.put(
+            client._config.client_id,
+            client._config.api_base_url,
+            "cached-token-abc",
+            3600,  # 1 hour from now
+        )
 
         # Track _refresh_token calls — should NOT be called
         client._refresh_token = AsyncMock()  # type: ignore[method-assign]
@@ -407,41 +411,45 @@ class TestProperty5TokenCaching:
 
 
 # ===========================================================================
-# Property 6: Proactive token refresh before expiry
+# Property 6: Token not refreshed by API calls — background refresher's job
 # ===========================================================================
-# Feature: connexus-sms-integration, Property 6: Proactive token refresh before expiry
+# Feature: connexus-sms-integration, Property 6: API calls never trigger refresh
 
 
-class TestProperty6ProactiveRefresh:
-    """New token requested when within 5-minute margin of expiry.
+class TestProperty6NoInlineRefresh:
+    """API calls use cached token without triggering refresh.
+
+    The background ``_TokenRefresher`` handles proactive refresh.
+    ``_ensure_token`` only refreshes when no token exists at all
+    (bootstrap case).
 
     **Validates: Requirement 2.3**
     """
 
-    @given(seconds_until_expiry=st.integers(min_value=0, max_value=299))
+    @given(seconds_until_expiry=st.integers(min_value=1, max_value=299))
     @PBT_SETTINGS
     @pytest.mark.asyncio
-    async def test_refresh_triggered_within_margin(
+    async def test_near_expiry_token_still_used_without_refresh(
         self,
         seconds_until_expiry: int,
     ) -> None:
-        """P6: _ensure_token refreshes when within 5-minute margin."""
+        """P6: _ensure_token returns near-expiry token without refreshing."""
         client = _make_client()
 
-        # Set token that is within the refresh margin
-        client._token = "old-token"
-        client._token_expires_at = time.time() + seconds_until_expiry
+        # Token within the old 5-minute margin — still valid (not expired)
+        _token_cache.put(
+            client._config.client_id,
+            client._config.api_base_url,
+            "near-expiry-token",
+            seconds_until_expiry,
+        )
 
-        # Mock _refresh_token to set a new token
-        async def _fake_refresh():
-            client._token = "new-token"
-            client._token_expires_at = time.time() + 3600
-
-        client._refresh_token = _fake_refresh  # type: ignore[method-assign]
+        client._refresh_token = AsyncMock()  # type: ignore[method-assign]
 
         token = await client._ensure_token()
 
-        assert token == "new-token"
+        assert token == "near-expiry-token"
+        client._refresh_token.assert_not_called()
 
     @given(seconds_until_expiry=st.integers(min_value=301, max_value=3600))
     @PBT_SETTINGS
@@ -450,12 +458,15 @@ class TestProperty6ProactiveRefresh:
         self,
         seconds_until_expiry: int,
     ) -> None:
-        """P6: _ensure_token does NOT refresh when outside 5-minute margin."""
+        """P6: _ensure_token does NOT refresh when token has plenty of time left."""
         client = _make_client()
 
-        # Set token that is well outside the refresh margin
-        client._token = "valid-token"
-        client._token_expires_at = time.time() + seconds_until_expiry
+        _token_cache.put(
+            client._config.client_id,
+            client._config.api_base_url,
+            "valid-token",
+            seconds_until_expiry,
+        )
 
         client._refresh_token = AsyncMock()  # type: ignore[method-assign]
 

@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.notifications.models import NotificationLog, NotificationTemplate
@@ -1475,3 +1475,663 @@ async def update_notification_preference(
         "is_enabled": pref.is_enabled,
         "channel": pref.channel,
     }
+
+
+# ---------------------------------------------------------------------------
+# Reminder rules CRUD (Zoho-style configurable reminders)
+# ---------------------------------------------------------------------------
+
+from app.modules.notifications.models import ReminderRule
+
+MAX_REMINDER_RULES_PER_ORG = 10
+
+
+def _reminder_rule_to_dict(rule: ReminderRule) -> dict[str, Any]:
+    """Convert a ReminderRule ORM instance to a plain dict."""
+    return {
+        "id": str(rule.id),
+        "org_id": str(rule.org_id),
+        "name": rule.name,
+        "reminder_type": rule.reminder_type,
+        "target": rule.target,
+        "days_offset": rule.days_offset,
+        "timing": rule.timing,
+        "reference_date": rule.reference_date,
+        "send_email": rule.send_email,
+        "send_sms": rule.send_sms,
+        "is_enabled": rule.is_enabled,
+        "sort_order": rule.sort_order,
+    }
+
+
+async def list_reminder_rules(
+    db: AsyncSession, *, org_id: uuid.UUID
+) -> dict[str, Any]:
+    """Return all reminder rules for an org, grouped for the UI."""
+    from app.modules.notifications.schemas import MANUAL_REMINDERS
+
+    stmt = (
+        select(ReminderRule)
+        .where(ReminderRule.org_id == org_id)
+        .order_by(ReminderRule.reference_date, ReminderRule.sort_order)
+    )
+    result = await db.execute(stmt)
+    rules = [_reminder_rule_to_dict(r) for r in result.scalars().all()]
+
+    return {
+        "manual_reminders": MANUAL_REMINDERS,
+        "automated_reminders": rules,
+        "total": len(rules),
+    }
+
+
+async def create_reminder_rule(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    name: str,
+    reminder_type: str,
+    target: str = "customer",
+    days_offset: int = 0,
+    timing: str = "after",
+    reference_date: str = "due_date",
+    send_email: bool = True,
+    send_sms: bool = False,
+    is_enabled: bool = True,
+) -> dict[str, Any] | str:
+    """Create a new reminder rule. Returns dict on success, error string on failure."""
+    from app.modules.notifications.schemas import (
+        VALID_REMINDER_TYPES,
+        VALID_TARGETS,
+        VALID_TIMINGS,
+        VALID_REFERENCE_DATES,
+    )
+
+    if reminder_type not in VALID_REMINDER_TYPES:
+        return f"Invalid reminder_type: {reminder_type}"
+    if target not in VALID_TARGETS:
+        return f"Invalid target: {target}"
+    if timing not in VALID_TIMINGS:
+        return f"Invalid timing: {timing}"
+    if reference_date not in VALID_REFERENCE_DATES:
+        return f"Invalid reference_date: {reference_date}"
+
+    count_stmt = select(func.count(ReminderRule.id)).where(
+        ReminderRule.org_id == org_id,
+    )
+    existing_count = (await db.execute(count_stmt)).scalar() or 0
+    if existing_count >= MAX_REMINDER_RULES_PER_ORG:
+        return f"Maximum of {MAX_REMINDER_RULES_PER_ORG} reminder rules per organisation"
+
+    # Determine sort_order
+    max_sort_stmt = select(func.max(ReminderRule.sort_order)).where(
+        ReminderRule.org_id == org_id,
+    )
+    max_sort = (await db.execute(max_sort_stmt)).scalar() or 0
+
+    rule = ReminderRule(
+        org_id=org_id,
+        name=name,
+        reminder_type=reminder_type,
+        target=target,
+        days_offset=days_offset,
+        timing=timing,
+        reference_date=reference_date,
+        send_email=send_email,
+        send_sms=send_sms,
+        is_enabled=is_enabled,
+        sort_order=max_sort + 1,
+    )
+    db.add(rule)
+    await db.flush()
+    await db.refresh(rule)
+    return _reminder_rule_to_dict(rule)
+
+
+async def update_reminder_rule(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    rule_id: uuid.UUID,
+    name: str | None = None,
+    target: str | None = None,
+    days_offset: int | None = None,
+    timing: str | None = None,
+    reference_date: str | None = None,
+    send_email: bool | None = None,
+    send_sms: bool | None = None,
+    is_enabled: bool | None = None,
+) -> dict[str, Any] | str | None:
+    """Update a reminder rule. Returns dict, error string, or None if not found."""
+    from app.modules.notifications.schemas import (
+        VALID_TARGETS,
+        VALID_TIMINGS,
+        VALID_REFERENCE_DATES,
+    )
+
+    stmt = select(ReminderRule).where(
+        ReminderRule.id == rule_id,
+        ReminderRule.org_id == org_id,
+    )
+    result = await db.execute(stmt)
+    rule = result.scalar_one_or_none()
+    if rule is None:
+        return None
+
+    if target is not None:
+        if target not in VALID_TARGETS:
+            return f"Invalid target: {target}"
+        rule.target = target
+    if name is not None:
+        rule.name = name
+    if days_offset is not None:
+        rule.days_offset = days_offset
+    if timing is not None:
+        if timing not in VALID_TIMINGS:
+            return f"Invalid timing: {timing}"
+        rule.timing = timing
+    if reference_date is not None:
+        if reference_date not in VALID_REFERENCE_DATES:
+            return f"Invalid reference_date: {reference_date}"
+        rule.reference_date = reference_date
+    if send_email is not None:
+        rule.send_email = send_email
+    if send_sms is not None:
+        rule.send_sms = send_sms
+    if is_enabled is not None:
+        rule.is_enabled = is_enabled
+
+    await db.flush()
+    await db.refresh(rule)
+    return _reminder_rule_to_dict(rule)
+
+
+async def delete_reminder_rule(
+    db: AsyncSession, *, org_id: uuid.UUID, rule_id: uuid.UUID
+) -> bool:
+    """Delete a reminder rule. Returns True if deleted, False if not found."""
+    stmt = select(ReminderRule).where(
+        ReminderRule.id == rule_id,
+        ReminderRule.org_id == org_id,
+    )
+    result = await db.execute(stmt)
+    rule = result.scalar_one_or_none()
+    if rule is None:
+        return False
+    await db.delete(rule)
+    await db.flush()
+    return True
+
+
+async def toggle_reminder_rule(
+    db: AsyncSession, *, org_id: uuid.UUID, rule_id: uuid.UUID, is_enabled: bool
+) -> dict[str, Any] | None:
+    """Toggle a single reminder rule on/off. Returns updated dict or None."""
+    stmt = select(ReminderRule).where(
+        ReminderRule.id == rule_id,
+        ReminderRule.org_id == org_id,
+    )
+    result = await db.execute(stmt)
+    rule = result.scalar_one_or_none()
+    if rule is None:
+        return None
+    rule.is_enabled = is_enabled
+    await db.flush()
+    await db.refresh(rule)
+    return _reminder_rule_to_dict(rule)
+
+
+# ---------------------------------------------------------------------------
+# Per-customer reminder processing (Service Due / WOF Expiry)
+# ---------------------------------------------------------------------------
+
+# Country code → phone prefix mapping
+COUNTRY_PHONE_PREFIX: dict[str, str] = {
+    "NZ": "+64",
+    "AU": "+61",
+    "GB": "+44",
+    "US": "+1",
+    "CA": "+1",
+}
+
+DEFAULT_COUNTRY_CODE = "NZ"
+
+
+def normalize_phone_number(
+    phone: str | None,
+    *,
+    customer_address: str | None = None,
+    org_country_code: str | None = None,
+) -> str | None:
+    """Normalize a phone number to include a country code prefix.
+
+    Resolution order for country code:
+    1. Phone already starts with '+' → use as-is
+    2. Customer address contains a known country → use that country's prefix
+    3. Organisation country_code → use that prefix
+    4. Default to NZ (+64)
+
+    Strips leading '0' when prepending country prefix (e.g. 021... → +6421...).
+    """
+    if not phone:
+        return None
+
+    # Strip whitespace, dashes, parens
+    cleaned = re.sub(r"[\s\-\(\)]+", "", phone.strip())
+
+    if not cleaned:
+        return None
+
+    # Already has country code
+    if cleaned.startswith("+"):
+        return cleaned
+
+    # Try to resolve country from customer address
+    resolved_country = None
+    if customer_address:
+        addr_upper = customer_address.upper()
+        for code, _prefix in COUNTRY_PHONE_PREFIX.items():
+            # Simple heuristic: check if country name or code appears in address
+            country_names = {
+                "NZ": ["NEW ZEALAND", "NZ"],
+                "AU": ["AUSTRALIA", "AU"],
+                "GB": ["UNITED KINGDOM", "UK", "ENGLAND", "GB"],
+                "US": ["UNITED STATES", "USA", "US"],
+                "CA": ["CANADA", "CA"],
+            }
+            for name in country_names.get(code, []):
+                if name in addr_upper:
+                    resolved_country = code
+                    break
+            if resolved_country:
+                break
+
+    country = resolved_country or org_country_code or DEFAULT_COUNTRY_CODE
+    prefix = COUNTRY_PHONE_PREFIX.get(country, COUNTRY_PHONE_PREFIX[DEFAULT_COUNTRY_CODE])
+
+    # Strip leading 0 (local format) before prepending prefix
+    if cleaned.startswith("0"):
+        cleaned = cleaned[1:]
+
+    return f"{prefix}{cleaned}"
+
+
+async def process_customer_reminders(db: AsyncSession) -> dict[str, Any]:
+    """Process per-customer configured reminders (Service Due / WOF Expiry).
+
+    Called daily by a scheduled task. For each customer with reminder_config
+    in their custom_fields, checks linked vehicles for upcoming expiry dates
+    and sends notifications via the configured channel.
+
+    Logs detailed errors for org admins when delivery fails.
+    """
+    from app.modules.customers.models import Customer
+    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.admin.models import GlobalVehicle, Organisation
+    from app.modules.admin.models import SubscriptionPlan
+    from app.modules.admin.models import SmsVerificationProvider
+    from app.modules.notifications.models import NotificationLog
+    from app.core.errors import log_error, Severity, Category
+
+    import datetime as dt_mod
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+
+    stats: dict[str, Any] = {
+        "customers_checked": 0,
+        "reminders_sent": 0,
+        "errors": 0,
+        "skipped": 0,
+        "error_details": [],
+    }
+
+    # Find all customers that have reminder_config in custom_fields
+    from sqlalchemy import cast, String
+    cust_stmt = select(Customer).where(
+        Customer.is_anonymised == False,  # noqa: E712
+        Customer.custom_fields.has_key("reminder_config"),  # noqa: W601
+    )
+    cust_result = await db.execute(cust_stmt)
+    customers = cust_result.scalars().all()
+
+    # Cache org data to avoid repeated queries
+    org_cache: dict[uuid.UUID, dict] = {}
+
+    async def _get_org_data(org_id: uuid.UUID) -> dict | None:
+        if org_id in org_cache:
+            return org_cache[org_id]
+
+        org_result = await db.execute(
+            select(Organisation).where(Organisation.id == org_id)
+        )
+        org = org_result.scalar_one_or_none()
+        if org is None:
+            org_cache[org_id] = None  # type: ignore
+            return None
+
+        org_settings = org.settings or {}
+
+        # Check SMS plan allowance
+        sms_allowed = False
+        if org.plan_id:
+            sp_result = await db.execute(
+                select(SubscriptionPlan).where(SubscriptionPlan.id == org.plan_id)
+            )
+            sp = sp_result.scalar_one_or_none()
+            sms_allowed = sp.sms_included if sp else False
+
+        # Check if SMS provider is configured
+        sms_provider_result = await db.execute(
+            select(SmsVerificationProvider).where(
+                SmsVerificationProvider.is_active == True,  # noqa: E712
+            )
+        )
+        sms_provider = sms_provider_result.scalar_one_or_none()
+        sms_configured = sms_provider is not None and sms_provider.credentials_encrypted is not None
+
+        # Check if email provider is configured
+        from app.modules.admin.models import EmailProvider
+        email_provider_result = await db.execute(
+            select(EmailProvider).where(
+                EmailProvider.is_active == True,  # noqa: E712
+                EmailProvider.credentials_set == True,  # noqa: E712
+            ).order_by(EmailProvider.priority)
+        )
+        email_configured = email_provider_result.scalar_one_or_none() is not None
+
+        # Get org country_code from the organisations table
+        country_row = await db.execute(
+            text("SELECT country_code FROM organisations WHERE id = :oid"),
+            {"oid": str(org_id)},
+        )
+        country_code_val = country_row.scalar_one_or_none()
+        org_country_code = country_code_val if country_code_val else "NZ"
+
+        data = {
+            "org": org,
+            "org_name": org.name,
+            "org_phone": org_settings.get("phone", ""),
+            "org_email": org_settings.get("email", ""),
+            "org_country_code": org_country_code,
+            "sms_allowed": sms_allowed,
+            "sms_configured": sms_configured,
+            "email_configured": email_configured,
+        }
+        org_cache[org_id] = data
+        return data
+
+    for customer in customers:
+        custom_fields = customer.custom_fields or {}
+        reminder_config = custom_fields.get("reminder_config", {})
+
+        if not reminder_config:
+            continue
+
+        stats["customers_checked"] += 1
+        org_id = customer.org_id
+
+        org_data = await _get_org_data(org_id)
+        if org_data is None:
+            stats["skipped"] += 1
+            continue
+
+        # Get customer's linked vehicles (global vehicles only — they have expiry dates)
+        cv_stmt = (
+            select(CustomerVehicle, GlobalVehicle)
+            .join(GlobalVehicle, CustomerVehicle.global_vehicle_id == GlobalVehicle.id)
+            .where(
+                CustomerVehicle.customer_id == customer.id,
+                CustomerVehicle.org_id == org_id,
+            )
+        )
+        cv_result = await db.execute(cv_stmt)
+        vehicle_rows = cv_result.all()
+
+        if not vehicle_rows:
+            continue
+
+        customer_name = f"{customer.first_name} {customer.last_name}".strip()
+
+        for reminder_type, config_entry in reminder_config.items():
+            if not isinstance(config_entry, dict):
+                continue
+            if not config_entry.get("enabled", False):
+                continue
+
+            days_before = config_entry.get("days_before", 30)
+            channel = config_entry.get("channel", "email")
+            target_date = today + dt_mod.timedelta(days=days_before)
+
+            # Map reminder type to vehicle field
+            if reminder_type == "service_due":
+                expiry_field = "service_due_date"
+                reminder_label = "Service Due"
+                template_type = "customer_service_due_reminder"
+            elif reminder_type == "wof_expiry":
+                expiry_field = "wof_expiry"
+                reminder_label = "WOF Expiry"
+                template_type = "customer_wof_expiry_reminder"
+            else:
+                continue
+
+            for cv, gv in vehicle_rows:
+                expiry_date = getattr(gv, expiry_field, None)
+                if expiry_date is None:
+                    continue
+
+                # Only send if expiry matches the target date
+                if expiry_date != target_date:
+                    continue
+
+                rego = gv.rego or "Unknown"
+                expiry_date_str = str(expiry_date)
+                vehicle_desc = " ".join(filter(None, [str(gv.year) if gv.year else None, gv.make, gv.model]))
+
+                # Dedup check
+                dedup_subject = f"{template_type}_{org_id}_{gv.id}_{customer.id}_{expiry_date_str}"
+                dedup_stmt = select(func.count(NotificationLog.id)).where(
+                    NotificationLog.org_id == org_id,
+                    NotificationLog.template_type == template_type,
+                    NotificationLog.subject == dedup_subject,
+                )
+                dedup_count = (await db.execute(dedup_stmt)).scalar() or 0
+                if dedup_count > 0:
+                    continue
+
+                send_email = channel in ("email", "both")
+                send_sms = channel in ("sms", "both")
+
+                # --- Email ---
+                if send_email:
+                    if not org_data["email_configured"]:
+                        error_msg = (
+                            f"Customer reminder ({reminder_label}) failed for "
+                            f"{customer_name} — Email service not configured. "
+                            f"Set up an email provider in Admin > Email Providers."
+                        )
+                        await log_error(
+                            db,
+                            severity=Severity.WARNING,
+                            category=Category.INTEGRATION,
+                            module="notifications.customer_reminders",
+                            function_name="process_customer_reminders",
+                            message=error_msg,
+                            org_id=str(org_id),
+                        )
+                        stats["errors"] += 1
+                        stats["error_details"].append(error_msg)
+                    elif not customer.email:
+                        error_msg = (
+                            f"Customer reminder ({reminder_label}) failed for "
+                            f"{customer_name} — No email address on file for customer."
+                        )
+                        await log_error(
+                            db,
+                            severity=Severity.WARNING,
+                            category=Category.INTEGRATION,
+                            module="notifications.customer_reminders",
+                            function_name="process_customer_reminders",
+                            message=error_msg,
+                            org_id=str(org_id),
+                        )
+                        stats["errors"] += 1
+                        stats["error_details"].append(error_msg)
+                    else:
+                        email_subject = f"{reminder_label} reminder for {rego}"
+                        log_entry = await log_email_sent(
+                            db,
+                            org_id=org_id,
+                            recipient=customer.email,
+                            template_type=template_type,
+                            subject=dedup_subject,
+                            status="queued",
+                            channel="email",
+                        )
+                        from app.tasks.notifications import send_email_task
+
+                        email_body = (
+                            f"<p>Hi {customer.first_name},</p>"
+                            f"<p>{reminder_label} for your vehicle <strong>{rego}</strong>"
+                            f"{(' (' + vehicle_desc + ')') if vehicle_desc else ''}"
+                            f" is coming up on <strong>{expiry_date_str}</strong>.</p>"
+                            f"<p>Please contact {org_data['org_name']}"
+                            f"{(' on ' + org_data['org_phone']) if org_data['org_phone'] else ''}"
+                            f" to book your appointment.</p>"
+                        )
+                        text_body = (
+                            f"Hi {customer.first_name}, "
+                            f"{reminder_label} for {rego} is coming up on {expiry_date_str}. "
+                            f"Contact {org_data['org_name']}"
+                            f"{(' on ' + org_data['org_phone']) if org_data['org_phone'] else ''}."
+                        )
+
+                        await send_email_task(
+                            str(org_id),
+                            log_entry["id"],
+                            customer.email,
+                            customer_name,
+                            email_subject,
+                            email_body,
+                            text_body,
+                            None,
+                            org_data["org_email"] or None,
+                            template_type,
+                        )
+                        stats["reminders_sent"] += 1
+
+                # --- SMS ---
+                if send_sms:
+                    if not org_data["sms_configured"]:
+                        error_msg = (
+                            f"Customer reminder ({reminder_label}) failed for "
+                            f"{customer_name} — SMS service not configured or not enabled. "
+                            f"Set up an SMS provider in Admin > SMS Providers."
+                        )
+                        await log_error(
+                            db,
+                            severity=Severity.WARNING,
+                            category=Category.INTEGRATION,
+                            module="notifications.customer_reminders",
+                            function_name="process_customer_reminders",
+                            message=error_msg,
+                            org_id=str(org_id),
+                        )
+                        stats["errors"] += 1
+                        stats["error_details"].append(error_msg)
+                    elif not org_data["sms_allowed"]:
+                        error_msg = (
+                            f"Customer reminder ({reminder_label}) failed for "
+                            f"{customer_name} — SMS not included in organisation's subscription plan. "
+                            f"Upgrade your plan or purchase an SMS package."
+                        )
+                        await log_error(
+                            db,
+                            severity=Severity.WARNING,
+                            category=Category.INTEGRATION,
+                            module="notifications.customer_reminders",
+                            function_name="process_customer_reminders",
+                            message=error_msg,
+                            org_id=str(org_id),
+                        )
+                        stats["errors"] += 1
+                        stats["error_details"].append(error_msg)
+                    elif not customer.phone:
+                        error_msg = (
+                            f"Customer reminder ({reminder_label}) failed for "
+                            f"{customer_name} — No phone number on file for customer."
+                        )
+                        await log_error(
+                            db,
+                            severity=Severity.WARNING,
+                            category=Category.INTEGRATION,
+                            module="notifications.customer_reminders",
+                            function_name="process_customer_reminders",
+                            message=error_msg,
+                            org_id=str(org_id),
+                        )
+                        stats["errors"] += 1
+                        stats["error_details"].append(error_msg)
+                    else:
+                        # Normalize phone number with country code
+                        normalized_phone = normalize_phone_number(
+                            customer.phone,
+                            customer_address=customer.address,
+                            org_country_code=org_data["org_country_code"],
+                        )
+                        if not normalized_phone:
+                            error_msg = (
+                                f"Customer reminder ({reminder_label}) failed for "
+                                f"{customer_name} — Could not determine country code for phone number. "
+                                f"Please add a country code to the customer's phone number, "
+                                f"or set the customer's address or organisation country."
+                            )
+                            await log_error(
+                                db,
+                                severity=Severity.WARNING,
+                                category=Category.INTEGRATION,
+                                module="notifications.customer_reminders",
+                                function_name="process_customer_reminders",
+                                message=error_msg,
+                                org_id=str(org_id),
+                            )
+                            stats["errors"] += 1
+                            stats["error_details"].append(error_msg)
+                        else:
+                            sms_body = (
+                                f"Hi {customer.first_name}, "
+                                f"{reminder_label} for {rego} is due on {expiry_date_str}. "
+                                f"Contact {org_data['org_name']}"
+                                f"{(' on ' + org_data['org_phone']) if org_data['org_phone'] else ''}."
+                            )
+                            sms_log = await log_sms_sent(
+                                db,
+                                org_id=org_id,
+                                recipient=normalized_phone,
+                                template_type=template_type,
+                                body=sms_body,
+                                status="queued",
+                            )
+                            from app.tasks.notifications import send_sms_task
+
+                            await send_sms_task(
+                                str(org_id),
+                                sms_log["id"],
+                                normalized_phone,
+                                sms_body,
+                                None,
+                                template_type,
+                            )
+                            stats["reminders_sent"] += 1
+
+                            # Track SMS usage
+                            try:
+                                await increment_sms_usage(db, org_id)
+                            except Exception:
+                                logger.error(
+                                    "Failed to increment SMS usage for org %s",
+                                    org_id,
+                                    exc_info=True,
+                                )
+
+    return stats

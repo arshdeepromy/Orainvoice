@@ -118,7 +118,7 @@ async def create_item(
         description=description,
         default_price=price,
         is_gst_exempt=is_gst_exempt,
-        category=category,
+        category=category or "general",
         is_active=is_active,
     )
     db.add(item)

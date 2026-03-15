@@ -92,13 +92,17 @@ async def put_credentials(
     user_id = getattr(request.state, "user_id", None)
     ip_address = request.client.host if request.client else None
 
-    result = await save_provider_credentials(
-        db,
-        provider_key=provider_key,
-        credentials=payload.credentials,
-        admin_user_id=uuid.UUID(user_id) if user_id else None,
-        ip_address=ip_address,
-    )
+    try:
+        result = await save_provider_credentials(
+            db,
+            provider_key=provider_key,
+            credentials=payload.credentials,
+            admin_user_id=uuid.UUID(user_id) if user_id else None,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
     if result is None:
         return JSONResponse(status_code=404, content={"detail": "Provider not found"})
 

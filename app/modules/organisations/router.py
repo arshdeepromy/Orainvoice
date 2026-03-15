@@ -1017,3 +1017,78 @@ async def get_plan_features(
     )
     row = result.scalar_one_or_none()
     return {"sms_included": bool(row) if row is not None else False}
+
+
+# ---------------------------------------------------------------------------
+# Public Holidays (org-level, filtered by org country)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/holidays",
+    summary="Get public holidays for the org's country",
+)
+async def get_org_holidays(
+    request: Request,
+    year: int | None = None,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return public holidays based on the organisation's address_country setting.
+
+    Falls back to NZ if no country is configured. Only returns holidays
+    for the org's country code.
+    """
+    from sqlalchemy import select
+    from app.modules.admin.models import Organisation, PublicHoliday
+
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id format"},
+        )
+
+    # Get org's country code from settings
+    result = await db.execute(
+        select(Organisation.settings).where(Organisation.id == org_uuid)
+    )
+    settings = result.scalar_one_or_none() or {}
+    country_raw = settings.get("address_country", "NZ") or "NZ"
+
+    # Resolve legacy full names to codes
+    legacy_map = {
+        "new zealand": "NZ",
+        "australia": "AU",
+    }
+    country_code = country_raw.upper() if len(country_raw) == 2 else legacy_map.get(country_raw.lower(), country_raw.upper()[:2])
+
+    # Query holidays
+    stmt = select(PublicHoliday).where(PublicHoliday.country_code == country_code)
+    if year:
+        stmt = stmt.where(PublicHoliday.year == year)
+    stmt = stmt.order_by(PublicHoliday.holiday_date)
+
+    rows = await db.execute(stmt)
+    holidays = rows.scalars().all()
+
+    return {
+        "country_code": country_code,
+        "holidays": [
+            {
+                "id": str(h.id),
+                "date": h.holiday_date.isoformat(),
+                "name": h.name,
+                "local_name": h.local_name,
+                "year": h.year,
+            }
+            for h in holidays
+        ],
+    }

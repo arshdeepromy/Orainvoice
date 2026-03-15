@@ -1000,3 +1000,184 @@ async def sendgrid_bounce_webhook(
             "customers_flagged": total_flagged,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Reminder rules endpoints (Zoho-style configurable reminders)
+# ---------------------------------------------------------------------------
+
+from app.modules.notifications.schemas import (
+    ReminderRulesListResponse,
+    ReminderRuleResponse,
+    ReminderRuleCreateRequest,
+    ReminderRuleUpdateRequest,
+)
+from app.modules.notifications.service import (
+    list_reminder_rules,
+    create_reminder_rule as svc_create_reminder_rule,
+    update_reminder_rule as svc_update_reminder_rule,
+    delete_reminder_rule as svc_delete_reminder_rule,
+    toggle_reminder_rule as svc_toggle_reminder_rule,
+)
+
+
+@router.get("/reminders", response_model=ReminderRulesListResponse)
+async def list_reminders(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List all reminder rules for the organisation."""
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+    data = await list_reminder_rules(db, org_id=org_uuid)
+    return ReminderRulesListResponse(**data)
+
+
+@router.post("/reminders", response_model=ReminderRuleResponse)
+async def create_reminder(
+    body: ReminderRuleCreateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a new reminder rule."""
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+    role = getattr(request.state, "role", None)
+    if role not in ("org_admin", "global_admin"):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Only Org_Admin can manage reminder rules"},
+        )
+
+    result = await svc_create_reminder_rule(
+        db,
+        org_id=org_uuid,
+        name=body.name,
+        reminder_type=body.reminder_type,
+        target=body.target,
+        days_offset=body.days_offset,
+        timing=body.timing,
+        reference_date=body.reference_date,
+        send_email=body.send_email,
+        send_sms=body.send_sms,
+        is_enabled=body.is_enabled,
+    )
+    if isinstance(result, str):
+        return JSONResponse(status_code=400, content={"detail": result})
+    return ReminderRuleResponse(**result)
+
+
+@router.put("/reminders/{rule_id}", response_model=ReminderRuleResponse)
+async def update_reminder(
+    rule_id: str,
+    body: ReminderRuleUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update a reminder rule."""
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+    role = getattr(request.state, "role", None)
+    if role not in ("org_admin", "global_admin"):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Only Org_Admin can manage reminder rules"},
+        )
+    try:
+        rule_uuid = uuid.UUID(rule_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid rule ID"})
+
+    result = await svc_update_reminder_rule(
+        db,
+        org_id=org_uuid,
+        rule_id=rule_uuid,
+        name=body.name,
+        target=body.target,
+        days_offset=body.days_offset,
+        timing=body.timing,
+        reference_date=body.reference_date,
+        send_email=body.send_email,
+        send_sms=body.send_sms,
+        is_enabled=body.is_enabled,
+    )
+    if result is None:
+        return JSONResponse(status_code=404, content={"detail": "Rule not found"})
+    if isinstance(result, str):
+        return JSONResponse(status_code=400, content={"detail": result})
+    return ReminderRuleResponse(**result)
+
+
+@router.put("/reminders/{rule_id}/toggle", response_model=ReminderRuleResponse)
+async def toggle_reminder(
+    rule_id: str,
+    request: Request,
+    enabled: bool = Query(..., description="Enable or disable the reminder"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Toggle a reminder rule on/off."""
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+    role = getattr(request.state, "role", None)
+    if role not in ("org_admin", "global_admin"):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Only Org_Admin can manage reminder rules"},
+        )
+    try:
+        rule_uuid = uuid.UUID(rule_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid rule ID"})
+
+    result = await svc_toggle_reminder_rule(
+        db, org_id=org_uuid, rule_id=rule_uuid, is_enabled=enabled,
+    )
+    if result is None:
+        return JSONResponse(status_code=404, content={"detail": "Rule not found"})
+    return ReminderRuleResponse(**result)
+
+
+@router.delete("/reminders/{rule_id}")
+async def delete_reminder(
+    rule_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Delete a reminder rule."""
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+    role = getattr(request.state, "role", None)
+    if role not in ("org_admin", "global_admin"):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Only Org_Admin can manage reminder rules"},
+        )
+    try:
+        rule_uuid = uuid.UUID(rule_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid rule ID"})
+
+    deleted = await svc_delete_reminder_rule(db, org_id=org_uuid, rule_id=rule_uuid)
+    if not deleted:
+        return JSONResponse(status_code=404, content={"detail": "Rule not found"})
+    return JSONResponse(content={"message": "Reminder rule deleted"})

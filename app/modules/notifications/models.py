@@ -10,11 +10,12 @@ Tables:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -198,3 +199,143 @@ class NotificationPreference(Base):
     )
 
     organisation = relationship("Organisation", backref="notification_preferences")
+
+
+class ReminderRule(Base):
+    """Configurable automated reminder rule per organisation (Zoho-style)."""
+
+    __tablename__ = "reminder_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    reminder_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    target: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="'customer'"
+    )
+    days_offset: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    timing: Mapped[str] = mapped_column(
+        String(10), nullable=False, server_default="'after'"
+    )
+    reference_date: Mapped[str] = mapped_column(
+        String(30), nullable=False, server_default="'due_date'"
+    )
+    send_email: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true"
+    )
+    send_sms: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    is_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "reminder_type IN ('payment_due', 'payment_expected', 'invoice_issued', 'quote_expiry', 'service_due', 'custom')",
+            name="ck_reminder_rules_type",
+        ),
+        CheckConstraint(
+            "target IN ('customer', 'me', 'both')",
+            name="ck_reminder_rules_target",
+        ),
+        CheckConstraint(
+            "timing IN ('before', 'after')",
+            name="ck_reminder_rules_timing",
+        ),
+        CheckConstraint(
+            "reference_date IN ('due_date', 'expected_payment_date', 'invoice_date', 'quote_expiry_date', 'service_due_date')",
+            name="ck_reminder_rules_reference_date",
+        ),
+    )
+
+    organisation = relationship("Organisation", backref="reminder_rules")
+
+
+class ReminderQueue(Base):
+    """Queue table for batched, rate-limited reminder delivery.
+
+    Phase 1 (daily scan) inserts rows with status='pending'.
+    Phase 2 (worker loop) picks up batches, sends, marks sent/failed.
+    """
+
+    __tablename__ = "reminder_queue"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customers.id"), nullable=False
+    )
+    vehicle_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    reminder_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    channel: Mapped[str] = mapped_column(String(10), nullable=False)
+    recipient: Mapped[str] = mapped_column(String(255), nullable=False)
+    subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="'pending'"
+    )
+    retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    max_retries: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="3"
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scheduled_for: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    scheduled_date: Mapped[date] = mapped_column(
+        Date, nullable=False, server_default=func.current_date()
+    )
+    locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    locked_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('email','sms')",
+            name="ck_reminder_queue_channel",
+        ),
+        CheckConstraint(
+            "status IN ('pending','locked','sent','failed','skipped')",
+            name="ck_reminder_queue_status",
+        ),
+    )
+
+    organisation = relationship("Organisation")

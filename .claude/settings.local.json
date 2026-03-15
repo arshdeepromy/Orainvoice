@@ -16,7 +16,11 @@
       "Bash(find \"C:\\Users\\Romy\\Desktop\\Invoicing\\app\\modules\" -name \"models.py\")",
       "Bash(grep -n \"return <div>\" \"C:\\Users\\Romy\\Desktop\\Invoicing\\frontend\\src\\router\\ModuleRouter.tsx\")",
       "Bash(ls -la \"C:\\Users\\Romy\\Desktop\\Invoicing\\frontend\\src\\pages\")",
-      "Bash(find . -name \"*.py\" -path \"*/alembic/versions/*\")"
+      "Bash(find . -name \"*.py\" -path \"*/alembic/versions/*\")",
+      "Bash(find \"C:\\Users\\Romy\\Desktop\\Invoicing\" -name \"*.py\" -exec grep -l -i \"refund\\|credit.*note\\|credit_note\" {} ;)",
+      "Bash(find \"C:\\Users\\Romy\\Desktop\\Invoicing\\alembic\\versions\" -name \"*.py\" -exec grep -l \"credit_note\" {} ;)",
+      "Bash(find \"C:\\Users\\Romy\\Desktop\\Invoicing\\frontend\\src\" -name \"*.tsx\" -exec grep -l -i \"refund\\|credit.*note\\|credit_note\" {} ;)",
+      "Bash(find \"C:\\Users\\Romy\\Desktop\\Invoicing\\frontend\\src\" -name \"*refund*\" -o -name \"*credit*\")"
     ],
     "deny": []
   }

@@ -126,6 +126,8 @@ async def _get_connexus_client(db: AsyncSession) -> ConnexusSmsClient:
     if provider is None:
         raise ValueError("Connexus SMS provider is not configured or active")
     creds = json.loads(envelope_decrypt_str(provider.credentials_encrypted))
+    if provider.config and provider.config.get("token_refresh_interval_seconds"):
+        creds["token_refresh_interval_seconds"] = provider.config["token_refresh_interval_seconds"]
     config = ConnexusConfig.from_dict(creds)
     return ConnexusSmsClient(config)
 
@@ -778,9 +780,38 @@ async def get_usage_summary(
 
     org, plan = row
 
-    total_sent = org.sms_sent_this_month
+    # Count outbound SMS from sms_messages for the current month (source of truth).
+    # Also count notification_log SMS entries (notification, reminder, booking sends).
+    # Uses raw SQL to avoid RLS filtering issues in admin/cross-org contexts.
+    from datetime import date as _date, datetime as _dt, timezone as _tz
+    from sqlalchemy import text as _sa_text
+
+    _now = _dt.now(_tz.utc)
+    _month_start = _dt.combine(
+        _date(_now.year, _now.month, 1), _dt.min.time(), tzinfo=_tz.utc,
+    )
+    sent_result = await db.execute(
+        _sa_text(
+            "SELECT "
+            "  (SELECT COUNT(*) FROM sms_messages "
+            "   WHERE org_id = :oid AND direction = 'outbound' "
+            "   AND created_at >= :start) "
+            "+ (SELECT COUNT(*) FROM notification_log "
+            "   WHERE org_id = :oid AND channel = 'sms' "
+            "   AND status != 'failed' "
+            "   AND created_at >= :start) "
+            "AS total"
+        ),
+        {"oid": str(org_id), "start": _month_start},
+    )
+    total_sent = int(sent_result.scalar() or 0)
     included_quota = plan.sms_included_quota if plan.sms_included else 0
     per_sms_cost = float(plan.per_sms_cost_nzd)
+
+    # Fall back to provider-level per-SMS cost if plan cost is 0
+    if per_sms_cost == 0:
+        from app.modules.admin.service import _get_provider_per_sms_cost
+        per_sms_cost = await _get_provider_per_sms_cost(db)
 
     # Sum cost_nzd from outbound sms_messages for this org this month
     cost_stmt = select(

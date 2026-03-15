@@ -308,6 +308,15 @@ async def convert_booking_endpoint(
         error_msg = str(exc)
         status_code = 404 if "not found" in error_msg.lower() else 400
         return JSONResponse(status_code=status_code, content={"detail": error_msg})
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error(
+            "Booking conversion failed: %s", exc, exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Conversion failed: {exc}"},
+        )
 
     return BookingConvertResponse(**result)
 

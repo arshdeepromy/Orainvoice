@@ -52,7 +52,7 @@ export default function StorageUsage() {
 
   return (
     <div data-print-content>
-      <p className="text-sm text-gray-500 mb-4">Current storage usage and quota.</p>
+      <p className="text-sm text-gray-500 mb-4 no-print">Current storage usage and quota.</p>
 
       <div className="flex justify-end mb-6 no-print">
         <div className="flex items-center gap-2">
@@ -115,8 +115,8 @@ export default function StorageUsage() {
                     </td>
                   </tr>
                 ) : (
-                  data.breakdown.map((b) => (
-                    <tr key={b.category} className="hover:bg-gray-50">
+                  data.breakdown.map((b, i) => (
+                    <tr key={b.category || i} className="hover:bg-gray-50">
                       <td className="px-4 py-3 text-sm text-gray-900">{b.category}</td>
                       <td className="px-4 py-3 text-sm text-gray-700 text-right">{formatBytes(b.bytes)}</td>
                     </tr>

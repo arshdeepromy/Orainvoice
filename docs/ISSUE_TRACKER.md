@@ -2160,3 +2160,746 @@ Affected endpoints: POST (create), PUT (update), DELETE (deactivate), POST assig
 **Similar Bugs Found & Fixed**: Same `.includes(term)` pattern existed in QuoteCreate and JobCardCreate — fixed all three.
 
 **Related Issues**: ISSUE-028 (InvoiceCreate redesign), ISSUE-027 (customer creation modal)
+
+
+---
+
+### ISSUE-061: SMS sent from customer profile not tracked in usage reports
+
+- **Date**: 2026-03-14
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: SMS sent via the "Send Email / SMS" button on the customer profile page does not appear in Reports → SMS Usage. The "Total SMS Sent" counter stays at 0. Emails sent from the same modal are also not logged in the notification log.
+
+**Root Cause**: The `notify_customer()` function in `app/modules/customers/service.py` sends SMS via `ConnexusSmsClient.send()` and emails via SMTP, but never calls `increment_sms_usage()` (which atomically increments `org.sms_sent_this_month` — the field read by both the Reports SMS Usage page and the SMS Usage Summary widget). It also never calls `log_sms_sent()` or `log_email_sent()` to record the notification in the `notification_log` table. Every other SMS-sending path in the app (sms_chat, notifications/overdue reminders, payment receipts) correctly calls `increment_sms_usage` after a successful send.
+
+**Fix Applied**:
+1. Added `increment_sms_usage(db, org_id)` call after successful SMS send in `notify_customer`
+2. Added `log_sms_sent()` for both successful and failed SMS sends
+3. Added `log_email_sent()` for both successful and failed email sends
+4. Added proper `client.close()` for httpx resource cleanup on the ConnexusSmsClient
+
+**Files Changed**:
+- `app/modules/customers/service.py` — Added SMS usage tracking, notification logging for both email and SMS paths, httpx client cleanup
+
+**Similar Bugs Found & Fixed**: Checked all other SMS-sending paths (`sms_chat/service.py`, `notifications/service.py`, `payments/service.py`, `tasks/notifications.py`). All other paths already call `increment_sms_usage`. The `tasks/notifications.py` path does not close the httpx client but runs in a task context so it's lower priority.
+
+**Related Issues**: ISSUE-062
+
+---
+
+### ISSUE-062: SMS provider credentials silently corrupted by masked values on re-save
+
+- **Date**: 2026-03-14
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: SMS sending returns 401 Unauthorized from Connexus API at the token endpoint (`/auth/token`). The `client_id` and `client_secret` are not expired — regenerating and saving fresh credentials fixes the issue. The test function in Global Admin → SMS Providers works initially but SMS breaks after visiting the provider settings panel.
+
+**Root Cause**: When the SMS Providers panel is expanded, the frontend loads saved credentials via `GET /{provider_key}/credentials`. The backend returns **masked** values (first 4 chars + `•` dots, e.g. `cid_••••••••••••`). These masked values were loaded directly into the form's editable input fields via `setCreds(res.data.credentials)`. If the user then clicked "Save credentials" — even without changing anything, or after changing just one field like sender_id — the masked values were sent back to the backend and saved as the actual credentials, overwriting the real `client_id`/`client_secret` with garbage like `cid_••••••••••••`. Subsequent SMS attempts used these corrupted credentials, causing Connexus to reject them with 401.
+
+**Fix Applied**:
+
+Frontend (`SmsProviders.tsx`):
+1. Added separate `maskedCreds` state — masked values are stored for display as placeholders only, never in the editable `creds` state
+2. Form inputs show masked values as placeholder text, not as editable values
+3. Added hint text: "Only fill in fields you want to change. Blank fields keep their current value."
+
+Backend (`sms_providers/service.py`):
+1. `save_provider_credentials` now rejects any credential value containing the `•` masking character with a clear error message
+2. Credentials are now merged with existing saved credentials — only fields with non-empty values are overwritten, so updating just sender_id won't wipe client_id/client_secret
+3. Added `ValueError` handling in the router for the rejection case
+
+Additional hardening (`connexus_sms.py`):
+1. Added `.strip()` to all credential values in `ConnexusConfig.from_dict()` to prevent whitespace-related auth failures
+2. Added `.strip()` in `_refresh_token()` payload
+3. Added `close()` method to `ConnexusSmsClient` for proper httpx resource cleanup
+4. Added detailed 401 logging (credential lengths, response body) for future debugging
+
+**Files Changed**:
+- `frontend/src/pages/admin/SmsProviders.tsx` — Separated masked display from editable state, placeholder-based UX
+- `app/modules/sms_providers/service.py` — Masked value rejection, credential merging
+- `app/modules/sms_providers/router.py` — ValueError handling for credential save
+- `app/integrations/connexus_sms.py` — Whitespace stripping, close() method, 401 logging
+
+**Similar Bugs Found & Fixed**: Checked email providers — the email provider credentials endpoint does not have a GET masked credentials endpoint, so the same bug pattern does not exist there. However, the email provider `save_email_credentials` also does a full overwrite rather than merge — this is lower risk since there's no masked-value loading, but could be improved in the future.
+
+**Related Issues**: ISSUE-061
+
+---
+
+### ISSUE-063: ConnexusSmsClient httpx resource leak — client never closed
+
+- **Date**: 2026-03-14
+- **Severity**: low
+- **Status**: resolved
+- **Reporter**: agent
+- **Regression of**: N/A
+
+**Symptoms**: No user-visible symptoms. The `ConnexusSmsClient` creates an `httpx.AsyncClient` in `__init__` but never closes it. Each SMS send from `notify_customer`, `test_sms_provider`, and other paths creates a new client instance that leaks the underlying connection pool.
+
+**Root Cause**: `ConnexusSmsClient` had no `close()` method. Callers created instances, used them, and let them be garbage collected without closing the httpx transport.
+
+**Fix Applied**:
+1. Added `async def close()` method to `ConnexusSmsClient` that calls `self._http.aclose()`
+2. Updated `notify_customer` in `customers/service.py` to use try/finally with `client.close()`
+3. Updated `_test_connexus` in `sms_providers/service.py` to use try/finally with `client.close()`
+
+**Files Changed**:
+- `app/integrations/connexus_sms.py` — Added `close()` method
+- `app/modules/customers/service.py` — Added try/finally cleanup
+- `app/modules/sms_providers/service.py` — Added try/finally cleanup
+
+**Similar Bugs Found & Fixed**: Other callers (`tasks/notifications.py`, `sms_chat/service.py`, `payments/service.py`, `admin/service.py`) also create `ConnexusSmsClient` without closing. These are lower priority — task contexts and the chat service may benefit from connection reuse. Logged for future cleanup.
+
+**Related Issues**: ISSUE-062
+
+---
+
+### ISSUE-064: SMS overage charge shows $0.00 — per-SMS cost not read from provider config
+
+- **Date**: 2026-03-14
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Org admin SMS Usage report shows "Overage Charge: $0.00" despite 1 overage SMS and per-SMS cost of $0.11 configured in Global Admin → SMS Providers → Connexus → Pricing. The "Total SMS Sent" and "Overage Count" display correctly, but the cost calculation returns zero.
+
+**Root Cause**: The per-SMS cost is stored in two places:
+1. `subscription_plans.per_sms_cost_nzd` — plan-level cost (defaults to 0)
+2. `sms_verification_providers.config.per_sms_cost_nzd` — provider-level cost (set to 0.11 by global admin)
+
+Three functions in the backend only read from `plan.per_sms_cost_nzd` which is 0 by default. They never check the provider config as a fallback:
+- `get_org_sms_usage()` in `admin/service.py`
+- `get_all_orgs_sms_usage()` in `admin/service.py`
+- `compute_sms_overage_for_billing()` in `admin/service.py`
+- `get_usage_summary()` in `sms_chat/service.py`
+
+**Fix Applied**:
+1. Added `_get_provider_per_sms_cost()` helper in `admin/service.py` that queries the active Connexus provider's `config.per_sms_cost_nzd`
+2. Updated all four functions to use `float(plan.per_sms_cost_nzd) or provider_cost` — falls back to provider config when plan cost is 0
+3. This means the global admin's per-SMS cost setting in SMS Providers now correctly flows through to all usage calculations
+
+**Files Changed**:
+- `app/modules/admin/service.py` — Added `_get_provider_per_sms_cost()`, updated 3 functions
+- `app/modules/sms_chat/service.py` — Updated `get_usage_summary()` with provider cost fallback
+
+**Similar Bugs Found & Fixed**: All four cost calculation paths were affected and fixed in one pass.
+
+**Related Issues**: ISSUE-061
+
+---
+
+### ISSUE-065: Global Admin dashboard Connexus SMS cost shows $0.00
+
+- **Date**: 2026-03-14
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Global Admin Platform Dashboard → Integration Costs & Usage → Connexus SMS card shows Cost: $0.00 and Per Sms Cost Nzd: $0.00, despite per-SMS cost being configured as $0.11 in SMS Providers → Pricing.
+
+**Root Cause**: In `get_integration_cost_dashboard()`, the SMS per-message cost was only read from the provider matching `is_active=True AND is_default=True`. If the Connexus provider is active but not set as default, `default_sms_provider` is `None` and `sms_per_msg_cost` stays at 0.0. The fallback `any_active` check only set status and last_checked — it never read the config for cost.
+
+**Fix Applied**: Introduced `sms_provider_for_cost` variable that tracks whichever provider was found (default or any-active fallback). The per-SMS cost is now read from this provider after the status determination logic, so cost is correctly picked up regardless of whether the provider is marked as default.
+
+**Files Changed**:
+- `app/modules/admin/service.py` — Fixed `get_integration_cost_dashboard()` SMS cost lookup
+
+**Similar Bugs Found & Fixed**: ISSUE-064 fixed the same class of bug (per-SMS cost not flowing through) in the org-level usage calculations.
+
+**Related Issues**: ISSUE-064
+
+---
+
+### ISSUE-066: Connexus token not cached — fresh token requested on every API call
+
+- **Date**: 2026-03-14
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Every SMS send, balance check, or number validation request to the Connexus API triggered a fresh token request to `/auth/token`. With 6 production call sites each creating a new `ConnexusSmsClient` instance, the app was making far more auth requests than necessary, risking Connexus API rate limits.
+
+**Root Cause**: `ConnexusSmsClient` stored the Bearer token as instance attributes (`self._token`, `self._token_expires_at`). Since a new client instance is created for every operation (in `customers/service.py`, `sms_chat/service.py`, `sms_providers/service.py`, `payments/service.py`, `tasks/notifications.py`, `admin/service.py`), the token was never reused — each instance started with no token and immediately requested a new one. The 5-minute proactive refresh margin was useless because clients were discarded after each use.
+
+**Fix Applied**:
+1. Created a module-level `_TokenCache` class in `connexus_sms.py` that stores tokens keyed by `(client_id, api_base_url)` with per-key `asyncio.Lock` to prevent thundering-herd refreshes
+2. `_token_cache` singleton is shared across all `ConnexusSmsClient` instances in the process
+3. `_ensure_token()` uses double-check locking: fast path checks cache, slow path acquires lock and rechecks before refreshing
+4. `_request()` on 401 invalidates the cached token then calls `_ensure_token()` which refreshes
+5. Removed `self._token` and `self._token_expires_at` instance attributes
+6. Token is now reused for ~55 minutes (refreshed 5 min before 1-hour expiry) across all requests
+
+**Files Changed**:
+- `app/integrations/connexus_sms.py` — Rewrote token management with shared `_TokenCache`
+- `tests/test_connexus_client.py` — Updated to use `_token_cache` instead of instance attrs, fixed `data` vs `json` payload assertions
+- `tests/properties/test_connexus_properties.py` — Updated P5/P6 tests to use `_token_cache.put()`, fixed `data` vs `json` payload assertions in P2
+
+**Similar Bugs Found & Fixed**: Fixed pre-existing test bugs where payload assertions used `["json"]` key but `send()` and `validate_number()` pass `data=` to `_request`. These tests would have failed if the mock layer was stricter.
+
+**Related Issues**: ISSUE-062, ISSUE-063
+
+---
+
+### ISSUE-067: SMS sends and scheduled reminders trigger token refresh — should be background-only
+
+- **Date**: 2026-03-14
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Every SMS send, balance check, or scheduled reminder that hits the Connexus API could trigger a token refresh if the cached token was near expiry. This meant user-facing operations (sending SMS, auto-reminders) had unpredictable latency spikes when a token refresh was needed, and risked hitting Connexus API rate limits if multiple concurrent sends all tried to refresh simultaneously.
+
+**Root Cause**: `_ensure_token()` performed proactive refresh when the token was within 5 minutes of expiry. Since `_ensure_token()` was called on every API request, any SMS send or scheduled reminder could trigger a token refresh. There was no separation between "read token from cache" and "refresh token proactively."
+
+**Fix Applied**:
+1. Added `_TokenRefresher` background task class that runs as an `asyncio.Task` started at app boot. It reads the Connexus provider config from DB, refreshes the token on the configured interval, and deposits it in the shared `_token_cache`. This is the only code path that proactively refreshes tokens in production.
+2. `_ensure_token()` now only reads from cache using `get_unexpired()` (no margin). It only falls back to a direct refresh when no token exists at all (bootstrap/first-boot case).
+3. `_request()` on 401: instead of immediately refreshing, it invalidates the stale token and calls `_wait_for_fresh_token()` which polls the cache for up to 4 seconds waiting for the background refresher to deposit a new token. If the background refresher doesn't provide one in time, falls back to a direct refresh as last resort.
+4. Added `get_unexpired()` method to `_TokenCache` — returns token if not yet expired (ignoring margin).
+5. Added `event_for()` and `_refresh_events` to `_TokenCache` — `asyncio.Event` per credential set, fired when `put()` stores a new token, so `_wait_for_fresh_token()` can wake up immediately.
+6. Registered `_token_refresher.start()` on FastAPI startup and `_token_refresher.stop()` on shutdown in `app/main.py`.
+
+**Files Changed**:
+- `app/integrations/connexus_sms.py` — Added `_TokenRefresher`, `_wait_for_fresh_token()`, `get_unexpired()`, event mechanism; rewrote `_ensure_token()` and `_request()` 401 handling
+- `app/main.py` — Added startup/shutdown hooks for `_token_refresher`
+- `tests/test_connexus_client.py` — Updated `TestEnsureToken` (no proactive refresh), `TestRequest` (401 wait-and-retry), added `test_401_falls_back_to_direct_refresh`
+- `tests/properties/test_connexus_properties.py` — Renamed P6 to `TestProperty6NoInlineRefresh`, updated to verify API calls never trigger refresh
+
+**Similar Bugs Found & Fixed**: N/A — this was a design improvement, not a bug pattern.
+
+**Related Issues**: ISSUE-066
+
+
+---
+
+### ISSUE-068: BookingForm customer search sends wrong API params — shows all customers instead of matches
+
+- **Date**: 2026-03-14
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: ISSUE-060 (fix was applied to InvoiceCreate, QuoteCreate, JobCardCreate but missed BookingForm)
+
+**Symptoms**: Typing "Harjap" in the Customer search on the New Booking form shows "Arshdeep Singh" (and other non-matching customers). The search should only show customers whose name, phone, email, or vehicle rego matches the typed text.
+
+**Root Cause**: Two issues:
+1. BookingForm sent `search` as the query parameter but the backend `/customers` endpoint expects `q`. Since `q` was `None`, the backend returned ALL customers unfiltered.
+2. BookingForm also sent `page_size` but the backend expects `limit`. The wrong param name meant no limit was applied.
+3. BookingForm had no client-side `matchesSequence` filter — the fix from ISSUE-060 was applied to InvoiceCreate, QuoteCreate, and JobCardCreate but BookingForm was missed.
+
+**Fix Applied**:
+1. Changed API params from `{ search: customerSearch, page_size: 8 }` to `{ q: customerSearch, limit: 8 }`
+2. Added client-side `matchesSequence` sequential character filter (same algorithm as ISSUE-060) that checks first_name, last_name, full name, phone, email, and linked vehicle regos
+
+**Files Changed**:
+- `frontend/src/pages/bookings/BookingForm.tsx`
+
+**Similar Bugs Found & Fixed**: Checked all other customer search implementations — InvoiceCreate, QuoteCreate, JobCardCreate already have the correct `q` param and `matchesSequence` filter from ISSUE-060.
+
+**Related Issues**: ISSUE-060
+
+---
+
+### ISSUE-069: "Confirm & Invoice" button stuck loading — missing _resolve_customer_id_from_dict function
+
+- **Date**: 2026-03-14
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A (incomplete refactor)
+
+**Symptoms**: Clicking "Confirm & Invoice" on a booking causes the button to spin indefinitely. Backend returns 500. The "Mark Complete" flow on job cards works fine.
+
+**Root Cause**: `convert_booking_to_invoice` was partially rewritten to use the `get_booking()` dict pattern (matching the working `convert_job_card_to_invoice` flow), but the `_resolve_customer_id_from_dict` helper it calls was never created. The function crashed with a `NameError` at runtime.
+
+**Fix Applied**:
+1. Created `_resolve_customer_id_from_dict(db, org_id, bk)` that resolves customer from a booking dict using three strategies: email match → display_name match → first/last name split match
+2. Refactored the old ORM-based `_resolve_customer_id` to delegate to the new dict-based version to eliminate duplicated logic
+
+**Files Changed**:
+- `app/modules/bookings/service.py`
+
+**Related Issues**: ISSUE-057 (same MissingGreenlet pattern)
+
+---
+
+### ISSUE-070: Public holiday sync fires on every app restart — no DB-level dedup
+
+- **Date**: 2026-03-14
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+
+**Symptoms**: Audit logs show `calendar.sync_public_holidays` firing every 30s–2min in dev, producing 4 entries per cycle (NZ×2 years + AU×2 years). Should be a one-time sync stored in DB.
+
+**Root Cause**: The scheduler uses in-memory `last_run` dict initialized to `0.0` on startup. In dev mode with `--reload`, every Python file save restarts uvicorn, which resets `last_run` and triggers all tasks immediately — including the 6-month holiday sync. No DB-level check existed to skip redundant syncs.
+
+**Fix Applied**: Added a DB-level guard in `sync_public_holidays_task` that checks `MAX(synced_at)` from the `public_holidays` table. If holidays were synced within the last 24 hours, the task returns early with `{"skipped": True}`. Manual syncs via the admin API endpoint are unaffected.
+
+**Files Changed**:
+- `app/tasks/scheduled.py`
+
+---
+
+### ISSUE-071: "Confirm & Invoice" returns 500 — float passed where Decimal expected
+
+- **Date**: 2026-03-14
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: ISSUE-069 (incomplete refactor)
+
+**Symptoms**: Clicking "Confirm & Invoice" on a booking shows the confirmation popup, user clicks confirm, API returns 500 with `'float' object has no attribute 'quantize'`. Frontend shows error toast and button resets — user can click again in a loop but it always fails.
+
+**Root Cause**: `convert_booking_to_invoice` built line items with `unit_price` as a Python `float` (`price = float(bk["service_price"])`). The downstream `_calculate_invoice_totals` in `invoices/service.py` calls `.quantize()` on `unit_price`, which is a `Decimal`-only method. The `convert_job_card_to_invoice` reference implementation doesn't have this issue because job card line items store prices as `Decimal` already.
+
+**Fix Applied**:
+1. Changed `float(bk["service_price"])` → `Decimal(str(bk["service_price"]))` in `convert_booking_to_invoice`
+2. Added broader exception handler in `convert_booking_endpoint` router to log and return meaningful 500 errors instead of generic FastAPI 500
+3. Made `_resolve_customer_id_from_dict` case-insensitive and added phone-based fallback
+4. Created `scripts/test_confirm_invoice.py` end-to-end test script that authenticates and exercises the full flow
+
+**Verified**: Test script confirms 200 OK with valid `created_id` — frontend would navigate to `/invoices/{id}/edit`.
+
+**Files Changed**:
+- `app/modules/bookings/service.py` — Decimal fix + improved customer resolution
+- `app/modules/bookings/router.py` — broader exception handling in convert endpoint
+- `scripts/test_confirm_invoice.py` — end-to-end test script
+
+**Related Issues**: ISSUE-069
+
+
+---
+
+### ISSUE-072: Disable Stripe features for org users — pending full implementation
+
+- **Date**: 2026-03-15
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Stripe-related UI elements (payment gateway selector, billing buttons, portal payment page) were visible and clickable for org users despite Stripe not being connected or configured. Clicking them would fail silently or error.
+
+**Root Cause**: Frontend was built with Stripe UI elements assuming Stripe Connect would be configured. No org has connected a Stripe account yet, so all Stripe-dependent features are non-functional.
+
+**Fix Applied**:
+1. **InvoiceCreate.tsx** — Disabled Stripe radio button in payment gateway selector, added "(coming soon)" label
+2. **PaymentPanel.tsx** — Removed "via Stripe" from card payment text, now says generic "card terminal"
+3. **PaymentPage.tsx** (portal) — Replaced Stripe checkout redirect with "Online payments coming soon" message
+4. **TemplateEditor.tsx** — Changed `{{payment_link}}` description from "Stripe payment link" to "Online payment link (coming soon)"
+5. **Billing.tsx** — Disabled "Update payment method", "Upgrade plan", "Downgrade plan", and "Buy more storage" buttons with tooltips explaining Stripe integration is pending. Removed StorageAddonModal and Stripe handler functions.
+6. **InvoiceList.tsx** / **InvoiceDetail.tsx** — Expanded payment method type from `'cash' | 'stripe'` to include `'eftpos' | 'bank_transfer' | 'card' | 'cheque'`
+7. Created `docs/STRIPE_IMPLEMENTATION.md` reference doc documenting all existing backend code, disabled frontend features, and phased implementation plan
+
+**Files Changed**:
+- `frontend/src/pages/invoices/InvoiceCreate.tsx`
+- `frontend/src/pages/pos/PaymentPanel.tsx`
+- `frontend/src/pages/portal/PaymentPage.tsx`
+- `frontend/src/pages/notifications/TemplateEditor.tsx`
+- `frontend/src/pages/settings/Billing.tsx`
+- `frontend/src/pages/invoices/InvoiceList.tsx`
+- `frontend/src/pages/invoices/InvoiceDetail.tsx`
+- `docs/STRIPE_IMPLEMENTATION.md` (new)
+
+**Backend**: No changes — all Stripe backend code left intact for future use.
+
+**Related Issues**: None
+
+**Reference**: See `docs/STRIPE_IMPLEMENTATION.md` for full implementation roadmap.
+
+---
+
+### ISSUE-073: Bulk delete invoices fails with 503 — NOT NULL violation on payments.invoice_id
+
+- **Date**: 2026-03-15
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: `POST /api/v1/invoices/bulk-delete` returns 503 (Service Unavailable). Backend traceback shows `asyncpg.exceptions.NotNullViolationError: null value in column "invoice_id" of relation "payments" violates not-null constraint`.
+
+**Root Cause**: The `Invoice` model's `payments` and `credit_notes` relationships were missing `cascade="all, delete-orphan"`. When SQLAlchemy's `db.delete(inv)` ran during bulk delete, it defaulted to setting `invoice_id = NULL` on related payments/credit_notes before removing the invoice row. But `invoice_id` is NOT NULL on both tables, causing the IntegrityError.
+
+The `line_items` relationship already had `cascade="all, delete-orphan"` configured correctly — payments and credit_notes were simply missed.
+
+**Fix Applied**:
+1. Added `cascade="all, delete-orphan"` to `Invoice.payments` relationship
+2. Added `cascade="all, delete-orphan"` to `Invoice.credit_notes` relationship
+
+**Files Changed**:
+- `app/modules/invoices/models.py`
+
+**Similar Bugs Found & Fixed**: See ISSUE-074 for additional FK violations discovered during the same fix.
+
+**Related Issues**: ISSUE-074
+
+---
+
+### ISSUE-074: Bulk delete invoices fails with FK violation on odometer_readings, tips, pos_transactions
+
+- **Date**: 2026-03-15
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: After fixing ISSUE-073, bulk delete still fails with `asyncpg.exceptions.ForeignKeyViolationError: update or delete on table "invoices" violates foreign key constraint "odometer_readings_invoice_id_fkey" on table "odometer_readings"`. Three additional tables reference `invoices.id` with no ON DELETE action.
+
+**Root Cause**: Five tables reference `invoices.id` via foreign keys, but only `line_items` had proper cascade handling:
+- `payments.invoice_id` — NOT NULL, no ON DELETE CASCADE (fixed in ISSUE-073 at ORM level)
+- `credit_notes.invoice_id` — NOT NULL, no ON DELETE CASCADE (fixed in ISSUE-073 at ORM level)
+- `odometer_readings.invoice_id` — nullable, no ON DELETE SET NULL
+- `tips.invoice_id` — nullable, no ON DELETE SET NULL
+- `pos_transactions.invoice_id` — nullable, no ON DELETE SET NULL
+
+The nullable FK tables need SET NULL (not CASCADE) since those records should survive independently.
+
+**Fix Applied**:
+
+ORM level:
+1. Added explicit `UPDATE ... SET invoice_id = NULL` queries in `bulk_delete_invoices()` for odometer_readings, tips, and pos_transactions before deleting invoices
+2. Added `update` import from sqlalchemy in `app/modules/invoices/service.py`
+
+Database level (migration 0092):
+3. Created Alembic migration `0092_fix_invoice_fk_cascade.py` to add proper ON DELETE actions:
+   - `payments.invoice_id` → ON DELETE CASCADE
+   - `credit_notes.invoice_id` → ON DELETE CASCADE
+   - `odometer_readings.invoice_id` → ON DELETE SET NULL
+   - `tips.invoice_id` → ON DELETE SET NULL
+   - `pos_transactions.invoice_id` → ON DELETE SET NULL
+
+Original migrations patched for fresh deployments:
+4. Updated migration `0005` (payments, credit_notes) with `ondelete="CASCADE"`
+5. Updated migration `0040` (pos_transactions) with `ondelete="SET NULL"`
+6. Updated migration `0045` (tips) with `ondelete="SET NULL"`
+7. Updated migration `0075` (odometer_readings) with `ondelete="SET NULL"`
+
+SQLAlchemy models updated to match DB:
+8. `Payment.invoice_id` — added `ondelete="CASCADE"`
+9. `CreditNote.invoice_id` — added `ondelete="CASCADE"`
+10. `OdometerReading.invoice_id` — added `ondelete="SET NULL"`
+11. `Tip.invoice_id` — added `ondelete="SET NULL"`
+12. `POSTransaction.invoice_id` — added `ondelete="SET NULL"`
+
+**Files Changed**:
+- `app/modules/invoices/service.py` (bulk_delete_invoices + update import)
+- `app/modules/invoices/models.py` (CreditNote FK)
+- `app/modules/payments/models.py` (Payment FK)
+- `app/modules/vehicles/models.py` (OdometerReading FK)
+- `app/modules/tipping/models.py` (Tip FK)
+- `app/modules/pos/models.py` (POSTransaction FK)
+- `alembic/versions/2026_03_15_1100-0092_fix_invoice_fk_cascade.py` (new)
+- `alembic/versions/2025_01_15_0005-0005_create_invoice_payment_tables.py` (patched)
+- `alembic/versions/2025_01_15_0040-0040_create_pos_transactions.py` (patched)
+- `alembic/versions/2025_01_15_0045-0045_create_tips_tables.py` (patched)
+- `alembic/versions/2026_03_10_0900-0075_add_odometer_readings_table.py` (patched)
+
+**Similar Bugs Found & Fixed**: All 5 FK references to invoices.id were audited and fixed in one pass.
+
+**Related Issues**: ISSUE-073
+
+---
+
+### ISSUE-075: GST Return report ignores refunds — shows original GST instead of adjusted amount
+
+- **Date**: 2026-03-15
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Invoice INV-0008 was partially refunded ($50 of $172.50), showing correct adjusted amounts on the invoice detail page (Net Amount $106.52, GST Collected $15.98, Net Total $122.50). However, the GST Return report tab still showed the full original GST of $22.50 with no indication of the refund.
+
+**Root Cause**: The `get_gst_return()` function in `app/modules/reports/service.py` only queried `Invoice.gst_amount` and `Invoice.total` — it had no awareness of credit notes or refund payments. The function simply summed invoice totals within the date range without subtracting any refunds processed in that period.
+
+Additionally, the frontend was sending `from`/`to` query params but the backend expected `start_date`/`end_date`, meaning the date filter dropdown never actually worked — the backend always fell back to "current month" via `resolve_date_range()`.
+
+**Fix Applied**:
+
+Backend:
+1. Updated `get_gst_return()` to query `credit_notes` table for refunds processed within the selected period (using `credit_notes.created_at` date, not the original invoice date)
+2. Calculates GST component of refunds using NZ 15% rate (refund × 3/23)
+3. Returns new fields: `total_refunds`, `refund_gst`, `adjusted_total_sales`, `adjusted_gst_collected`
+4. `net_gst` now reflects the adjusted GST after refunds
+5. Updated `GSTReturnResponse` schema with the 4 new fields
+
+Frontend:
+6. Updated `GstData` interface with new refund fields
+7. Added refund breakdown rows (conditionally shown when refunds > 0): Refunds/Credit Notes, GST on refunds, Adjusted Sales, Adjusted GST Collected
+8. Fixed query params: `from`/`to` → `start_date`/`end_date` to match backend expectations
+9. Added `fmtNeg` formatter for negative currency display
+
+**Files Changed**:
+- `app/modules/reports/service.py` (get_gst_return)
+- `app/modules/reports/schemas.py` (GSTReturnResponse)
+- `frontend/src/pages/reports/GstReturnSummary.tsx`
+
+**Design Decision**: Refunds are attributed to the period they were processed (credit note `created_at`), not the original invoice date. This matches NZ IRD GST return filing requirements — if you invoice in February and refund in March, the February return shows full GST and the March return shows the GST adjustment.
+
+**Related Issues**: None
+
+
+---
+
+### ISSUE-076: Revenue tab ignores refunds — shows original revenue without refund adjustment
+
+- **Date**: 2026-03-15
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Revenue summary tab shows $150 total revenue and $22.50 GST for the period, but a $50 refund was processed on one of the invoices. The revenue figures don't reflect the refund.
+
+**Root Cause**: Same pattern as ISSUE-075 — `get_revenue_summary()` only queried invoice totals without accounting for refunds (credit notes + refund payments).
+
+**Fix Applied**:
+
+Backend:
+1. Added refund queries to `get_revenue_summary()` — queries both `credit_notes` and `payments` (where `is_refund=True`) within the date range
+2. Calculates refund GST component using NZ 15% rate (refund × 3/23)
+3. Returns new fields: `total_refunds`, `refund_gst`, `net_revenue`, `net_gst`
+4. Updated `RevenueSummaryResponse` schema with the 4 new fields
+
+Frontend:
+5. Updated summary cards to show refund amounts in red and net amounts in green
+6. Fixed query params: `from`/`to` → `start_date`/`end_date`
+
+**Files Changed**:
+- `app/modules/reports/service.py` (get_revenue_summary)
+- `app/modules/reports/schemas.py` (RevenueSummaryResponse)
+- `frontend/src/pages/reports/RevenueSummary.tsx`
+
+**Related Issues**: ISSUE-075
+
+---
+
+### ISSUE-077: Date filter param mismatch across ALL report tabs — filters never applied
+
+- **Date**: 2026-03-15
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Changing the date range filter on any report tab had no effect — the data always showed the current month. The filter appeared to work (UI updated) but the API always returned default data.
+
+**Root Cause**: Systemic frontend/backend param name mismatch. All report frontends sent `from`/`to` query params, but the v1 backend endpoints expect `start_date`/`end_date`. When the backend received `None` for both params, `resolve_date_range()` fell back to "current month".
+
+Exception: Carjam Usage endpoint uses `alias="from"` / `alias="to"` in its Query params, so `from`/`to` is correct for that tab.
+
+**Fix Applied**: Updated API call params AND ExportButtons params on all affected tabs:
+- Revenue Summary: `from`/`to` → `start_date`/`end_date`
+- GST Return: `from`/`to` → `start_date`/`end_date`
+- Invoice Status: `from`/`to` → `start_date`/`end_date`
+- Outstanding Invoices: `from`/`to` → `start_date`/`end_date`
+- Top Services: `from`/`to` → `start_date`/`end_date`
+- Fleet Report: `from`/`to` → `start_date`/`end_date`
+- Customer Statement: `from`/`to` → `start_date`/`end_date`
+- SMS Usage: `from`/`to` → `start_date`/`end_date`
+
+Carjam Usage left as `from`/`to` (correct — backend uses aliases).
+
+**Files Changed**:
+- `frontend/src/pages/reports/RevenueSummary.tsx`
+- `frontend/src/pages/reports/GstReturnSummary.tsx`
+- `frontend/src/pages/reports/TopServices.tsx`
+- `frontend/src/pages/reports/InvoiceStatus.tsx`
+- `frontend/src/pages/reports/OutstandingInvoices.tsx`
+- `frontend/src/pages/reports/FleetReport.tsx`
+- `frontend/src/pages/reports/CustomerStatement.tsx`
+- `frontend/src/pages/reports/SmsUsage.tsx`
+
+**Related Issues**: ISSUE-075, ISSUE-076
+
+---
+
+### ISSUE-078: Carjam & SMS summary cards not respecting date filter — show running counters instead of period data
+
+- **Date**: 2026-03-15
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: On the Carjam Usage tab, the daily lookup chart correctly filtered by date range, but the summary cards (Total Lookups, Overage Lookups, Overage Charge) always showed the running monthly counter from `Organisation.carjam_lookups_this_month` regardless of the selected period. Same issue on SMS Usage — summary cards read from org-level counters instead of querying actual data within the date range.
+
+**Root Cause**:
+
+Carjam: `get_carjam_usage()` read `Organisation.carjam_lookups_this_month` for the Total Lookups summary card — a running counter that resets monthly. The daily breakdown was correctly queried from the audit log with date filtering, but the summary card value was disconnected from the date range.
+
+SMS: `get_sms_usage()` delegated to `get_org_sms_usage()` which reads `Organisation.sms_sent_this_month` — another running counter with no date filtering. The function had no `date_from`/`date_to` parameters at all.
+
+**Fix Applied**:
+
+Carjam:
+1. Rewrote `get_carjam_usage()` to count total lookups from the audit log within the date range (same source as daily breakdown) instead of reading the org counter
+2. Overage and overage charge now calculated from the date-filtered count
+
+SMS:
+1. Rewrote `get_sms_usage()` to count outbound messages from `sms_messages` table filtered by date range instead of reading org counters
+2. Added `date_from`/`date_to` parameters to the function signature
+3. Updated SMS router endpoint to accept `start_date`/`end_date` query params and pass them through
+4. Updated SMS frontend to send `start_date`/`end_date` instead of `from`/`to`
+
+**Files Changed**:
+- `app/modules/reports/service.py` (get_carjam_usage, get_sms_usage)
+- `app/modules/reports/router.py` (sms-usage endpoint params)
+- `frontend/src/pages/reports/SmsUsage.tsx` (param fix)
+
+**Related Issues**: ISSUE-077
+
+
+---
+
+### ISSUE-079: Additional vehicles selected during invoice creation not saved or displayed
+
+- **Date**: 2026-03-15
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When creating an invoice, user selects a customer with a linked vehicle (primary), then adds 3 additional vehicles via the vehicle search. After issuing the invoice, only the primary vehicle appears on the invoice detail view. The additional vehicles are lost.
+
+**Root Cause**: The frontend correctly sends a `vehicles` array containing all selected vehicles (primary + additional) in the create invoice payload. However:
+1. The `create_invoice` service function had no `vehicles` parameter — the array was silently ignored
+2. The Invoice model only has single-vehicle fields (`vehicle_rego`, `vehicle_make`, etc.) — no mechanism to store multiple vehicles
+3. The router never passed the `vehicles` array to the service
+4. The invoice detail response never included additional vehicles
+
+**Fix Applied**:
+
+Backend:
+1. Added `vehicles` parameter to `create_invoice()` service function
+2. Additional vehicles (index 1+) stored in `invoice_data_json["additional_vehicles"]` JSONB field — no migration needed
+3. Router now passes `vehicles` from the request payload to the service
+4. `_invoice_to_dict()` includes `additional_vehicles` from `invoice_data_json` in all responses
+5. `get_invoice()` enriches additional vehicles with GlobalVehicle data (make, model, year, WOF expiry, odometer)
+6. `update_invoice()` handles `vehicles` in updates dict — stores additional vehicles in `invoice_data_json`
+7. Added `vehicles` field to `UpdateInvoiceRequest` schema
+8. Added `additional_vehicles` field to `InvoiceResponse` schema
+
+Frontend:
+9. `InvoiceDetail.tsx` — added `additional_vehicles` to interface, renders additional vehicles below the primary vehicle section
+10. `InvoiceList.tsx` — added `additional_vehicles` to interface, renders additional vehicle bars in the invoice card view
+
+**Design Decision**: Additional vehicles are stored in the existing `invoice_data_json` JSONB column rather than creating a new junction table. This avoids a migration and keeps the data co-located with the invoice. The primary vehicle remains in the dedicated columns (`vehicle_rego`, `vehicle_make`, etc.) for backward compatibility and query performance.
+
+**Files Changed**:
+- `app/modules/invoices/service.py` (create_invoice, update_invoice, _invoice_to_dict, get_invoice)
+- `app/modules/invoices/router.py` (pass vehicles to service)
+- `app/modules/invoices/schemas.py` (InvoiceResponse, UpdateInvoiceRequest)
+- `frontend/src/pages/invoices/InvoiceDetail.tsx` (display additional vehicles)
+- `frontend/src/pages/invoices/InvoiceList.tsx` (display additional vehicles in card view)
+
+**Related Issues**: None
+
+---
+
+### ISSUE-080: Print view shows report tabs, heading, and description text
+
+- **Date**: 2026-03-16
+- **Severity**: low
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When clicking Print on any report tab (e.g. Customer Statement), the print preview includes the tab navigation bar (Revenue, Invoice Status, Outstanding, etc.), the "Reports" page heading, and description text. Only the report content should be printed.
+
+**Root Cause**: The `Tabs` component's tab list `div[role="tablist"]` and the `ReportsPage` heading did not have the `no-print` CSS class. The existing `print.css` already hides `.no-print` elements via `@media print`, but these elements were not marked.
+
+**Fix Applied**:
+1. Added `no-print` class to `div[role="tablist"]` in `Tabs.tsx` — hides tab navigation in print
+2. Added `no-print` class to `<h1>Reports</h1>` in `ReportsPage.tsx` — hides page heading in print
+3. Added `no-print` class to description `<p>` in `CustomerStatement.tsx` — hides helper text in print
+
+**Files Changed**:
+- `frontend/src/components/ui/Tabs.tsx`
+- `frontend/src/pages/reports/ReportsPage.tsx`
+- `frontend/src/pages/reports/CustomerStatement.tsx`
+
+**Related Issues**: None
+
+---
+
+### ISSUE-081: Date range presets show rolling periods instead of calendar periods
+
+- **Date**: 2026-03-16
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Selecting "Last year" in the Period dropdown shows a rolling 12-month window (e.g. 15 Mar 2025 — 15 Mar 2026) instead of the previous calendar year (1 Jan 2025 — 31 Dec 2025). Similarly, "Last month" and "Last quarter" showed rolling periods rather than the previous calendar month/quarter.
+
+**Root Cause**: The `presetRange()` function in `DateRangeFilter.tsx` used relative date arithmetic (`d.setFullYear(d.getFullYear() - 1)`) which produces a rolling window from today, not a calendar period. For "Last year", this gave today minus 1 year → today. For "Last month", it gave today minus 1 month → today. For "Last quarter", today minus 3 months → today.
+
+**Fix Applied**:
+1. "Last year" now returns 1 Jan — 31 Dec of the previous year
+2. "Last month" now returns 1st — last day of the previous calendar month
+3. "Last quarter" now returns 1st day of previous quarter — last day of previous quarter
+4. Changed `to` from `const` to `let` so it can be reassigned per preset
+
+**Similar Bugs Found & Fixed**:
+- All `defaultRange()` functions across report tabs used `from.setMonth(from.getMonth() - N)` which has a JavaScript month-rollover edge case (e.g. March 31 minus 1 month = March 3, not Feb 28). Fixed all 12 instances to use `new Date(year, month - N, 1)` which is safe.
+- Added `no-print` class to description paragraphs in all 9 report tabs (Revenue, Invoice Status, Outstanding, Top Services, GST Return, Carjam, SMS, Storage, Fleet) — completing the print view fix from ISSUE-080.
+
+**Files Changed**:
+- `frontend/src/pages/reports/DateRangeFilter.tsx` (preset calculations)
+- `frontend/src/pages/reports/RevenueSummary.tsx` (defaultRange + no-print)
+- `frontend/src/pages/reports/InvoiceStatus.tsx` (defaultRange + no-print)
+- `frontend/src/pages/reports/OutstandingInvoices.tsx` (defaultRange + no-print)
+- `frontend/src/pages/reports/TopServices.tsx` (defaultRange + no-print)
+- `frontend/src/pages/reports/GstReturnSummary.tsx` (no-print)
+- `frontend/src/pages/reports/CarjamUsage.tsx` (no-print)
+- `frontend/src/pages/reports/SmsUsage.tsx` (no-print)
+- `frontend/src/pages/reports/StorageUsage.tsx` (no-print)
+- `frontend/src/pages/reports/FleetReport.tsx` (defaultRange + no-print)
+- `frontend/src/pages/reports/JobReport.tsx` (defaultRange)
+- `frontend/src/pages/reports/InventoryReport.tsx` (defaultRange)
+- `frontend/src/pages/reports/HospitalityReport.tsx` (defaultRange)
+- `frontend/src/pages/reports/ProjectReport.tsx` (defaultRange)
+- `frontend/src/pages/reports/ReportBuilder.tsx` (defaultRange)
+- `frontend/src/pages/admin/Reports.tsx` (defaultRange)
+
+**Related Issues**: ISSUE-080
+
+---
+
+### ISSUE-082: React "unique key" warning in OutstandingInvoices and other report tabs
+
+- **Date**: 2026-03-16
+- **Severity**: low
+- **Status**: resolved
+- **Reporter**: user (console warning)
+- **Regression of**: N/A
+
+**Symptoms**: Console warning: "Each child in a list should have a unique 'key' prop" in `OutstandingInvoices.tsx` at line 114. Occurs when the backend returns items with undefined or duplicate `id` fields.
+
+**Root Cause**: Several report tab `.map()` calls used object properties as React keys (e.g. `inv.id`, `v.rego`, `s.status`, `item.payment_method`, `item.hour`, `b.category`, `s.id`) without index fallbacks. If the backend returns undefined or duplicate values for these fields, React warns about missing/duplicate keys.
+
+**Fix Applied**: Added index fallback to all `.map()` key props across report tabs: `key={value || index}` or `key={value ?? index}`.
+
+**Files Changed**:
+- `frontend/src/pages/reports/OutstandingInvoices.tsx`
+- `frontend/src/pages/reports/FleetReport.tsx`
+- `frontend/src/pages/reports/POSReport.tsx` (2 instances)
+- `frontend/src/pages/reports/StorageUsage.tsx`
+- `frontend/src/pages/reports/ScheduledReports.tsx`
+- `frontend/src/pages/reports/InvoiceStatus.tsx`
+
+**Related Issues**: None

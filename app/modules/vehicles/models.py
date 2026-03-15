@@ -140,7 +140,7 @@ class OdometerReading(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     invoice_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True
     )
     org_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=True

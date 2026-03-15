@@ -415,3 +415,31 @@ class EmailProvider(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+# ---------------------------------------------------------------------------
+# Public Holidays
+# ---------------------------------------------------------------------------
+
+class PublicHoliday(Base):
+    """Public holiday records synced from external calendar APIs."""
+
+    __tablename__ = "public_holidays"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
+    )
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    holiday_date: Mapped[date] = mapped_column(Date, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    local_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_fixed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("country_code", "holiday_date", "name", name="uq_public_holidays_country_date_name"),
+        Index("ix_public_holidays_country_year", "country_code", "year"),
+    )

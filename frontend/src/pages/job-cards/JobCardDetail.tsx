@@ -262,7 +262,7 @@ export default function JobCardDetail() {
 
   if (error || !jobCard) {
     return (
-      <div className="mx-auto max-w-4xl px-4 py-6">
+      <div className="px-4 py-6 sm:px-6 lg:px-8">
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
           {error || 'Job card not found.'}
         </div>
@@ -283,7 +283,7 @@ export default function JobCardDetail() {
   const timeEntries = jobCard.time_entries ?? []
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className="px-4 py-6 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
         <div className="flex items-center gap-3">

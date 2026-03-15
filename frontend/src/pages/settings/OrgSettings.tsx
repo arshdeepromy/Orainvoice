@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Tabs } from '@/components/ui/Tabs'
 import { ToastContainer, useToast } from '@/components/ui/Toast'
+import { CountrySelect, resolveCountryCode } from '@/components/ui/CountrySelect'
 import { useTenant } from '@/contexts/TenantContext'
 import apiClient from '@/api/client'
 
@@ -50,7 +51,7 @@ function BrandingTab() {
   const { refetch: refetchTenant } = useTenant()
   const [form, setForm] = useState<BrandingForm>({
     name: '', logo_url: null, primary_colour: '#2563eb', secondary_colour: '#1e40af', sidebar_display_mode: 'icon_and_name',
-    address_unit: '', address_street: '', address_city: '', address_state: '', address_country: 'New Zealand', address_postcode: '',
+    address_unit: '', address_street: '', address_city: '', address_state: '', address_country: 'NZ', address_postcode: '',
     website: '', phone: '', email: '', invoice_header_text: '', invoice_footer_text: '', email_signature: '',
   })
   const [saving, setSaving] = useState(false)
@@ -65,7 +66,7 @@ function BrandingTab() {
         sidebar_display_mode: data.sidebar_display_mode || 'icon_and_name',
         address_unit: data.address_unit || '', address_street: data.address_street || data.address || '',
         address_city: data.address_city || '', address_state: data.address_state || '',
-        address_country: data.address_country || 'New Zealand', address_postcode: data.address_postcode || '',
+        address_country: resolveCountryCode(data.address_country || 'NZ'), address_postcode: data.address_postcode || '',
         website: data.website || '', phone: data.phone || '', email: data.email || '',
         invoice_header_text: data.invoice_header_text || '', invoice_footer_text: data.invoice_footer_text || '',
         email_signature: data.email_signature || '',
@@ -172,7 +173,7 @@ function BrandingTab() {
         <Input label="State / Region" value={form.address_state} onChange={(e) => update('address_state', e.target.value)} placeholder="e.g. Auckland" />
         <Input label="Postcode" value={form.address_postcode} onChange={(e) => update('address_postcode', e.target.value)} placeholder="e.g. 0600" />
       </div>
-      <Input label="Country" value={form.address_country} onChange={(e) => update('address_country', e.target.value)} placeholder="e.g. New Zealand" />
+      <CountrySelect label="Country" value={form.address_country} onChange={(code) => update('address_country', code)} />
       <Input label="Website" value={form.website} onChange={(e) => update('website', e.target.value)} placeholder="e.g. https://www.example.co.nz" type="url" />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Input label="Phone" value={form.phone} onChange={(e) => update('phone', e.target.value)} type="tel" />

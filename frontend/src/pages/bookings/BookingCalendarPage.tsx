@@ -33,6 +33,7 @@ interface ConvertResponse {
 export default function BookingCalendarPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [editBooking, setEditBooking] = useState<BookingSearchResult | null>(null)
+  const [initialDate, setInitialDate] = useState<string | undefined>(undefined)
   const [refreshKey, setRefreshKey] = useState(0)
   const [calendarView, setCalendarView] = useState<CalendarView>('week')
   const [calendarDate, setCalendarDate] = useState(new Date())
@@ -69,6 +70,17 @@ export default function BookingCalendarPage() {
 
   const handleCreate = () => {
     setEditBooking(null)
+    setInitialDate(undefined)
+    setFormOpen(true)
+  }
+
+  const handleSlotClick = (date: Date, hour: number, minute: number) => {
+    const d = new Date(date)
+    d.setHours(hour, minute, 0, 0)
+    const pad = (n: number) => n.toString().padStart(2, '0')
+    const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+    setEditBooking(null)
+    setInitialDate(dateStr)
     setFormOpen(true)
   }
 
@@ -101,13 +113,14 @@ export default function BookingCalendarPage() {
   }
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className="px-4 py-6 sm:px-6 lg:px-8">
       <h1 className="text-2xl font-semibold text-gray-900 mb-4">Bookings</h1>
 
       <BookingCalendar
         onCreateBooking={handleCreate}
         onEditBooking={handleEdit}
         onConvertBooking={handleConvert}
+        onSlotClick={handleSlotClick}
         refreshKey={refreshKey}
         onViewChange={setCalendarView}
         onDateChange={setCalendarDate}
@@ -129,6 +142,7 @@ export default function BookingCalendarPage() {
         onClose={() => setFormOpen(false)}
         onSaved={handleSaved}
         editBooking={editBooking}
+        initialDate={initialDate}
       />
 
       {jobModalBooking && (

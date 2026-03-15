@@ -1003,6 +1003,18 @@ async def integration_cost_dashboard(
 
 
 @router.get(
+    "/dashboard/connexus-token-refresh-log",
+    summary="Connexus SMS token refresh log with reasons",
+    dependencies=[require_role("global_admin")],
+)
+async def connexus_token_refresh_log():
+    """Return the last 50 token refresh events with plain-English reasons."""
+    from app.integrations.connexus_sms import get_token_refresh_log
+
+    return {"entries": get_token_refresh_log()}
+
+
+@router.get(
     "/reports/churn",
     response_model=ChurnReportResponse,
     responses={
@@ -1117,7 +1129,7 @@ async def list_integrations(
 
     Used by the Global Admin dashboard to show integration health at a glance.
     """
-    integration_names = ("carjam", "stripe", "smtp")
+    integration_names = ("carjam", "stripe")
     results = []
     for name in integration_names:
         config = await get_integration_config(db, name=name)
@@ -1126,6 +1138,47 @@ async def list_integrations(
             "status": "healthy" if config and config.get("is_verified") else "down",
             "last_checked": config.get("updated_at") if config else None,
         })
+
+    # SMTP / Email — check email_providers table for any active, configured provider
+    from app.modules.admin.models import EmailProvider
+    active_email_result = await db.execute(
+        select(EmailProvider).where(
+            EmailProvider.is_active.is_(True),
+            EmailProvider.credentials_set.is_(True),
+        ).order_by(EmailProvider.priority)
+    )
+    active_email = active_email_result.scalars().first()
+
+    if not active_email:
+        # Also check for any provider with credentials set (configured but not activated)
+        creds_email_result = await db.execute(
+            select(EmailProvider).where(
+                EmailProvider.credentials_set.is_(True),
+            ).order_by(EmailProvider.priority)
+        )
+        active_email = creds_email_result.scalars().first()
+
+    if active_email:
+        results.append({
+            "name": "smtp",
+            "status": "healthy",
+            "last_checked": active_email.updated_at.isoformat() if active_email.updated_at else None,
+        })
+    else:
+        # Fallback to legacy integration_configs
+        smtp_config = await get_integration_config(db, name="smtp")
+        if smtp_config and smtp_config.get("fields"):
+            results.append({
+                "name": "smtp",
+                "status": "healthy" if smtp_config.get("is_verified") else "down",
+                "last_checked": smtp_config.get("updated_at"),
+            })
+        else:
+            results.append({
+                "name": "smtp",
+                "status": "not_configured",
+                "last_checked": None,
+            })
 
     # Connexus SMS provider — stored in sms_verification_providers, not integration_configs
     from app.modules.admin.models import SmsVerificationProvider
@@ -2530,3 +2583,58 @@ async def reset_demo_account(
         await db.rollback()
         logger.error("Demo reset failed: %s", exc)
         return JSONResponse(status_code=500, content={"detail": f"Reset failed: {exc}"})
+
+
+# ---------------------------------------------------------------------------
+# Public Holiday Calendar Sync
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/calendar/holidays/sync",
+    summary="Sync public holidays for a country and year",
+    dependencies=[require_role("global_admin")],
+)
+async def sync_holidays(
+    request: Request,
+    country_code: str,
+    year: int,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Fetch public holidays from Nager.Date API and store in DB."""
+    from app.modules.admin.service import sync_public_holidays
+
+    valid_countries = {"NZ", "AU"}
+    code = country_code.upper()
+    if code not in valid_countries:
+        return JSONResponse(status_code=400, content={"detail": f"Unsupported country. Use: {', '.join(valid_countries)}"})
+
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    try:
+        result = await sync_public_holidays(
+            db,
+            code,
+            year,
+            actor_user_id=uuid.UUID(user_id) if user_id else None,
+            ip_address=ip_address,
+        )
+        return result
+    except Exception as exc:
+        logger.error("Holiday sync failed: %s", exc)
+        return JSONResponse(status_code=500, content={"detail": f"Sync failed: {str(exc)}"})
+
+
+@router.get(
+    "/calendar/holidays",
+    summary="List synced public holidays",
+    dependencies=[require_role("global_admin")],
+)
+async def list_holidays(
+    country_code: str | None = None,
+    year: int | None = None,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return synced public holidays, optionally filtered."""
+    from app.modules.admin.service import list_public_holidays
+    return await list_public_holidays(db, country_code=country_code, year=year)

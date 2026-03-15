@@ -17,8 +17,7 @@ interface TopServicesData {
 
 function defaultRange(): DateRange {
   const now = new Date()
-  const from = new Date(now)
-  from.setMonth(from.getMonth() - 1)
+  const from = new Date(now.getFullYear(), now.getMonth() - 1, 1)
   return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
 }
 
@@ -39,7 +38,7 @@ export default function TopServices() {
     setError('')
     try {
       const res = await apiClient.get<TopServicesData>('/reports/top-services', {
-        params: { from: range.from, to: range.to },
+        params: { start_date: range.from, end_date: range.to },
       })
       setData(res.data)
     } catch {
@@ -53,12 +52,12 @@ export default function TopServices() {
 
   return (
     <div data-print-content>
-      <p className="text-sm text-gray-500 mb-4">Services ranked by revenue.</p>
+      <p className="text-sm text-gray-500 mb-4 no-print">Services ranked by revenue.</p>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-6 no-print">
         <DateRangeFilter value={range} onChange={setRange} />
         <div className="flex items-center gap-2">
-          <ExportButtons endpoint="/reports/top-services" params={{ from: range.from, to: range.to }} />
+          <ExportButtons endpoint="/reports/top-services" params={{ start_date: range.from, end_date: range.to }} />
           <PrintButton label="Print Report" />
         </div>
       </div>

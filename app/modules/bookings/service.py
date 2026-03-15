@@ -211,6 +211,11 @@ async def create_booking(
     ip_address: str | None = None,
 ) -> dict:
     """Create a new booking."""
+    # Prevent backdated bookings
+    now = datetime.now(scheduled_at.tzinfo) if scheduled_at.tzinfo else datetime.utcnow()
+    if scheduled_at < now:
+        raise ValueError("Cannot create a booking in the past")
+
     if send_email_confirmation is None:
         send_email_confirmation = send_confirmation
 
@@ -289,6 +294,67 @@ async def create_booking(
     db.add(booking)
     await db.flush()
 
+    # --- Auto-link customer ↔ vehicle (mirrors invoice creation logic) ---
+    if vehicle_rego:
+        try:
+            from app.modules.admin.models import GlobalVehicle
+            from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
+
+            # Try global_vehicles first
+            gv_result = await db.execute(
+                select(GlobalVehicle).where(
+                    sa_func.upper(GlobalVehicle.rego) == vehicle_rego.upper()
+                )
+            )
+            gv = gv_result.scalar_one_or_none()
+
+            if gv:
+                existing = await db.execute(
+                    select(CustomerVehicle).where(
+                        CustomerVehicle.org_id == org_id,
+                        CustomerVehicle.customer_id == customer_id,
+                        CustomerVehicle.global_vehicle_id == gv.id,
+                    )
+                )
+                if existing.scalar_one_or_none() is None:
+                    cv = CustomerVehicle(
+                        org_id=org_id,
+                        customer_id=customer_id,
+                        global_vehicle_id=gv.id,
+                    )
+                    db.add(cv)
+                    await db.flush()
+            else:
+                # Fallback: try org_vehicles
+                ov_result = await db.execute(
+                    select(OrgVehicle).where(
+                        OrgVehicle.org_id == org_id,
+                        sa_func.upper(OrgVehicle.rego) == vehicle_rego.upper(),
+                    )
+                )
+                ov = ov_result.scalar_one_or_none()
+                if ov:
+                    existing = await db.execute(
+                        select(CustomerVehicle).where(
+                            CustomerVehicle.org_id == org_id,
+                            CustomerVehicle.customer_id == customer_id,
+                            CustomerVehicle.org_vehicle_id == ov.id,
+                        )
+                    )
+                    if existing.scalar_one_or_none() is None:
+                        cv = CustomerVehicle(
+                            org_id=org_id,
+                            customer_id=customer_id,
+                            org_vehicle_id=ov.id,
+                        )
+                        db.add(cv)
+                        await db.flush()
+        except Exception:
+            logger.warning(
+                "Failed to auto-link customer %s to vehicle %s on booking %s",
+                customer_id, vehicle_rego, booking.id, exc_info=True,
+            )
+
     # Audit log
     await write_audit_log(
         session=db, org_id=org_id, user_id=user_id,
@@ -297,6 +363,10 @@ async def create_booking(
         ip_address=ip_address,
     )
 
+    # Refresh customer to avoid MissingGreenlet after multiple flushes
+    if send_email_confirmation or send_sms_confirmation:
+        await db.refresh(customer)
+
     # --- Send confirmation email ---
     confirmation_sent = False
     if send_email_confirmation and customer.email:
@@ -304,7 +374,8 @@ async def create_booking(
             confirmation_sent = await _send_booking_confirmation_email(
                 db,
                 org_id=org_id,
-                customer=customer,
+                customer_first_name=customer.first_name,
+                customer_email=customer.email,
                 service_type=service_type,
                 start_time=start_time,
                 duration_minutes=duration_minutes,
@@ -645,81 +716,189 @@ async def convert_booking_to_invoice(
     booking_id: uuid.UUID,
     ip_address: str | None = None,
 ) -> dict:
-    """Convert a booking to a Draft invoice."""
+    """Convert a booking to a Draft invoice.
+
+    Mirrors the convert_job_card_to_invoice pattern:
+    1. Fetch booking as a serialised dict (no lazy-loading issues).
+    2. Resolve customer_id from email / name.
+    3. Build line items from booking service info.
+    4. Create draft invoice via create_invoice.
+    5. Mark booking as completed.
+    """
     from app.modules.invoices.service import create_invoice
 
-    result = await db.execute(
-        select(Booking).where(Booking.id == booking_id, Booking.org_id == org_id)
-    )
-    booking = result.scalar_one_or_none()
-    if booking is None:
-        raise ValueError("Booking not found in this organisation")
-    if booking.status not in _CONVERTIBLE_STATUSES:
-        raise ValueError(f"Cannot convert booking with status '{booking.status}'")
+    # Fetch as dict to avoid lazy-loading / MissingGreenlet issues
+    bk = await get_booking(db, org_id=org_id, booking_id=booking_id)
 
-    customer_id = await _resolve_customer_id(db, org_id, booking)
+    if bk["status"] not in _CONVERTIBLE_STATUSES:
+        raise ValueError(f"Cannot convert booking with status '{bk['status']}'")
+
+    # Resolve customer — try email first, then name
+    customer_id = await _resolve_customer_id_from_dict(db, org_id, bk)
     if customer_id is None:
-        raise ValueError("Cannot find matching customer for this booking")
+        raise ValueError(
+            "Cannot find matching customer for this booking. "
+            "Please ensure the customer exists before converting."
+        )
 
-    invoice = await create_invoice(
-        db, org_id=org_id, user_id=user_id,
+    # Build line items from booking service info
+    invoice_line_items: list[dict] = []
+    if bk.get("service_type"):
+        price = Decimal(str(bk["service_price"])) if bk.get("service_price") else Decimal("0")
+        invoice_line_items.append({
+            "item_type": "service",
+            "description": bk["service_type"],
+            "quantity": 1,
+            "unit_price": price,
+            "is_gst_exempt": False,
+            "sort_order": 0,
+        })
+
+    # Create draft invoice (same pattern as convert_job_card_to_invoice)
+    invoice_dict = await create_invoice(
+        db,
+        org_id=org_id,
+        user_id=user_id,
         customer_id=customer_id,
+        vehicle_rego=bk.get("vehicle_rego"),
         status="draft",
-        notes_internal=booking.notes,
+        line_items_data=invoice_line_items if invoice_line_items else None,
+        notes_internal=bk.get("notes"),
         ip_address=ip_address,
     )
 
-    old_status = booking.status
-    booking.status = "completed"
-    booking.converted_invoice_id = invoice["id"]
+    # Mark booking as completed and link to invoice
+    result = await db.execute(
+        select(Booking).where(
+            Booking.id == booking_id,
+            Booking.org_id == org_id,
+        )
+    )
+    booking_obj = result.scalar_one_or_none()
+    old_status = bk["status"]
+    if booking_obj is not None:
+        booking_obj.status = "completed"
+        booking_obj.converted_invoice_id = invoice_dict["id"]
+        await db.flush()
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="booking.converted_to_invoice",
+        entity_type="booking",
+        entity_id=booking_id,
+        before_value={"status": old_status},
+        after_value={
+            "status": "completed",
+            "invoice_id": str(invoice_dict["id"]),
+        },
+        ip_address=ip_address,
+    )
     await db.flush()
 
-    await write_audit_log(
-        session=db, org_id=org_id, user_id=user_id,
-        action="booking.converted_to_invoice", entity_type="booking", entity_id=booking.id,
-        before_value={"status": old_status},
-        after_value={"status": "completed", "invoice_id": str(invoice["id"])},
-        ip_address=ip_address,
-    )
+    return {
+        "booking_id": booking_id,
+        "target": "invoice",
+        "created_id": invoice_dict["id"],
+        "message": "Booking converted to draft invoice",
+    }
 
-    return {"booking_id": booking.id, "target": "invoice", "created_id": invoice["id"], "message": "Booking converted to draft invoice"}
+
+
+async def _resolve_customer_id_from_dict(
+    db: AsyncSession, org_id: uuid.UUID, bk: dict
+) -> uuid.UUID | None:
+    """Resolve customer_id from a booking dict.
+
+    Tries in order: email (case-insensitive) → phone → display_name →
+    first/last name.
+    """
+    # 1. Match by email (most reliable, case-insensitive)
+    email = bk.get("customer_email")
+    if email:
+        result = await db.execute(
+            select(Customer.id).where(
+                Customer.org_id == org_id,
+                sa_func.lower(Customer.email) == email.lower(),
+            ).limit(1)
+        )
+        cid = result.scalar_one_or_none()
+        if cid:
+            return cid
+
+    # 2. Match by phone
+    phone = bk.get("customer_phone")
+    if phone:
+        result = await db.execute(
+            select(Customer.id).where(
+                Customer.org_id == org_id,
+                Customer.phone == phone,
+            ).limit(1)
+        )
+        cid = result.scalar_one_or_none()
+        if cid:
+            return cid
+
+    name = bk.get("customer_name")
+    if not name:
+        logger.warning(
+            "Cannot resolve customer for booking — no email, phone, or name. "
+            "booking data: email=%s, phone=%s, name=%s",
+            email, phone, name,
+        )
+        return None
+
+    # 3. Match by display_name (case-insensitive)
+    result = await db.execute(
+        select(Customer.id).where(
+            Customer.org_id == org_id,
+            sa_func.lower(Customer.display_name) == name.lower(),
+        ).limit(1)
+    )
+    cid = result.scalar_one_or_none()
+    if cid:
+        return cid
+
+    # 4. Fallback: match by first_name + last_name (case-insensitive)
+    parts = name.split(" ", 1)
+    first = parts[0]
+    last = parts[1] if len(parts) > 1 else ""
+    result = await db.execute(
+        select(Customer.id).where(
+            Customer.org_id == org_id,
+            sa_func.lower(Customer.first_name) == first.lower(),
+            sa_func.lower(Customer.last_name) == last.lower(),
+        ).limit(1)
+    )
+    cid = result.scalar_one_or_none()
+    if cid:
+        return cid
+
+    logger.warning(
+        "Cannot resolve customer for booking — no match found. "
+        "email=%s, phone=%s, name=%s, org_id=%s",
+        email, phone, name, org_id,
+    )
+    return None
 
 
 async def _resolve_customer_id(db: AsyncSession, org_id: uuid.UUID, booking: Booking) -> uuid.UUID | None:
-    """Try to find the customer_id from booking's customer_name/email."""
-    if booking.customer_email:
-        result = await db.execute(
-            select(Customer.id).where(
-                Customer.org_id == org_id,
-                Customer.email == booking.customer_email,
-            ).limit(1)
-        )
-        cid = result.scalar_one_or_none()
-        if cid:
-            return cid
-    # Fallback: match by name
-    if booking.customer_name:
-        parts = booking.customer_name.split(" ", 1)
-        first = parts[0]
-        last = parts[1] if len(parts) > 1 else ""
-        result = await db.execute(
-            select(Customer.id).where(
-                Customer.org_id == org_id,
-                Customer.first_name == first,
-                Customer.last_name == last,
-            ).limit(1)
-        )
-        cid = result.scalar_one_or_none()
-        if cid:
-            return cid
-    return None
+    """Try to find the customer_id from booking's customer_name/email (ORM version)."""
+    bk = {
+        "customer_email": booking.customer_email,
+        "customer_name": booking.customer_name,
+    }
+    return await _resolve_customer_id_from_dict(db, org_id, bk)
 
 
 async def _send_booking_confirmation_email(
     db: AsyncSession,
     *,
     org_id: uuid.UUID,
-    customer,
+    customer_first_name: str,
+    customer_email: str,
     service_type: str | None,
     start_time: datetime,
     duration_minutes: int,
@@ -762,7 +941,7 @@ async def _send_booking_confirmation_email(
     subject = f"Booking Confirmation — {service_type or 'Appointment'} on {formatted_date}"
 
     body = (
-        f"Hi {customer.first_name},\n\n"
+        f"Hi {customer_first_name},\n\n"
         f"Your booking has been confirmed:\n\n"
         f"Service: {service_type or 'Appointment'}\n"
         f"Date & Time: {formatted_date}\n"
@@ -777,7 +956,7 @@ async def _send_booking_confirmation_email(
         f"Kind regards,\n{org_name}\n"
     )
 
-    recipient = customer.email
+    recipient = customer_email
 
     def _build_message(from_name: str, from_email: str) -> MIMEMultipart:
         msg = MIMEMultipart("mixed")

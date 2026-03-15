@@ -36,8 +36,7 @@ const STATUS_COLOUR: Record<string, string> = {
 
 function defaultRange(): DateRange {
   const now = new Date()
-  const from = new Date(now)
-  from.setMonth(from.getMonth() - 1)
+  const from = new Date(now.getFullYear(), now.getMonth() - 1, 1)
   return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
 }
 
@@ -58,7 +57,7 @@ export default function InvoiceStatus() {
     setError('')
     try {
       const res = await apiClient.get<InvoiceStatusData>('/reports/invoices/status', {
-        params: { from: range.from, to: range.to },
+        params: { start_date: range.from, end_date: range.to },
       })
       setData(res.data)
     } catch {
@@ -72,12 +71,12 @@ export default function InvoiceStatus() {
 
   return (
     <div data-print-content>
-      <p className="text-sm text-gray-500 mb-4">Breakdown of invoices by status.</p>
+      <p className="text-sm text-gray-500 mb-4 no-print">Breakdown of invoices by status.</p>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-6 no-print">
         <DateRangeFilter value={range} onChange={setRange} />
         <div className="flex items-center gap-2">
-          <ExportButtons endpoint="/reports/invoices/status" params={{ from: range.from, to: range.to }} />
+          <ExportButtons endpoint="/reports/invoices/status" params={{ start_date: range.from, end_date: range.to }} />
           <PrintButton label="Print Report" />
         </div>
       </div>
@@ -116,8 +115,8 @@ export default function InvoiceStatus() {
                     </td>
                   </tr>
                 ) : (
-                  data.statuses.map((s) => (
-                    <tr key={s.status} className="hover:bg-gray-50">
+                  data.statuses.map((s, i) => (
+                    <tr key={s.status || i} className="hover:bg-gray-50">
                       <td className="px-4 py-3 text-sm">
                         <Badge variant={STATUS_BADGE[s.status] || 'neutral'}>
                           {s.status.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())}

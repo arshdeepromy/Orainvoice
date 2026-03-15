@@ -2,8 +2,8 @@
 
 Covers:
 - Token acquisition via _refresh_token()
-- Token caching and proactive refresh via _ensure_token()
-- 401 retry logic in _request()
+- Token caching via _ensure_token() (read-only from cache)
+- 401 wait-and-retry logic in _request()
 - 30-second HTTP timeout configuration
 - Authorization header injection on all API calls
 
@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from app.integrations.connexus_sms import ConnexusConfig, ConnexusSmsClient
+from app.integrations.connexus_sms import ConnexusConfig, ConnexusSmsClient, _token_cache
 
 
 @pytest.fixture
@@ -33,6 +33,8 @@ def config() -> ConnexusConfig:
 
 @pytest.fixture
 def client(config: ConnexusConfig) -> ConnexusSmsClient:
+    # Clear the shared token cache before each test
+    _token_cache._tokens.clear()
     return ConnexusSmsClient(config)
 
 
@@ -40,8 +42,9 @@ class TestInit:
     """ConnexusSmsClient.__init__ tests."""
 
     def test_initial_state(self, client: ConnexusSmsClient) -> None:
-        assert client._token is None
-        assert client._token_expires_at == 0.0
+        # No cached token for this client_id yet
+        cached = _token_cache.get("test-id", "https://api.test.local")
+        assert cached is None
 
     def test_timeout_configured(self, client: ConnexusSmsClient) -> None:
         assert client._http.timeout == httpx.Timeout(30)
@@ -50,6 +53,8 @@ class TestInit:
         assert ConnexusSmsClient._REFRESH_MARGIN == 300
         assert ConnexusSmsClient._TOKEN_LIFETIME == 3600
         assert ConnexusSmsClient._TIMEOUT == 30
+        assert ConnexusSmsClient._RETRY_WAIT == 4.0
+
 
 
 class TestRefreshToken:
@@ -66,22 +71,23 @@ class TestRefreshToken:
         client._http = AsyncMock()
         client._http.post = AsyncMock(return_value=mock_resp)
 
-        before = time.time()
-        await client._refresh_token()
+        token = await client._refresh_token()
 
         client._http.post.assert_called_once_with(
             "https://api.test.local/auth/token",
             data={"client_id": "test-id", "client_secret": "test-secret"},
         )
-        assert client._token == "abc123"
-        assert client._token_expires_at >= before + 3600
+        assert token == "abc123"
+        # Token should be in the shared cache
+        cached = _token_cache.get("test-id", "https://api.test.local")
+        assert cached == "abc123"
 
     @pytest.mark.asyncio
     async def test_refresh_token_failure_clears_state(
         self, client: ConnexusSmsClient
     ) -> None:
-        client._token = "old-token"
-        client._token_expires_at = time.time() + 9999
+        # Pre-populate cache
+        _token_cache.put("test-id", "https://api.test.local", "old-token", 9999)
 
         mock_resp = httpx.Response(
             401,
@@ -94,8 +100,9 @@ class TestRefreshToken:
         with pytest.raises(httpx.HTTPStatusError):
             await client._refresh_token()
 
-        assert client._token is None
-        assert client._token_expires_at == 0.0
+        # Cache should be invalidated
+        cached = _token_cache.get("test-id", "https://api.test.local")
+        assert cached is None
 
 
 class TestEnsureToken:
@@ -103,8 +110,7 @@ class TestEnsureToken:
 
     @pytest.mark.asyncio
     async def test_fetches_token_when_none(self, client: ConnexusSmsClient) -> None:
-        client._refresh_token = AsyncMock()
-        client._refresh_token.side_effect = lambda: setattr(client, "_token", "new-tok") or setattr(client, "_token_expires_at", time.time() + 3600)
+        client._refresh_token = AsyncMock(return_value="new-tok")
 
         token = await client._ensure_token()
         assert token == "new-tok"
@@ -112,8 +118,8 @@ class TestEnsureToken:
 
     @pytest.mark.asyncio
     async def test_reuses_cached_token(self, client: ConnexusSmsClient) -> None:
-        client._token = "cached-tok"
-        client._token_expires_at = time.time() + 3600  # well within margin
+        # Pre-populate cache with a valid token
+        _token_cache.put("test-id", "https://api.test.local", "cached-tok", 3600)
         client._refresh_token = AsyncMock()
 
         token = await client._ensure_token()
@@ -121,31 +127,30 @@ class TestEnsureToken:
         client._refresh_token.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_refreshes_when_within_margin(
+    async def test_returns_token_within_margin_without_refresh(
         self, client: ConnexusSmsClient
     ) -> None:
-        client._token = "expiring-tok"
-        # Set expiry to 4 minutes from now (within 5-min margin)
-        client._token_expires_at = time.time() + 240
+        """_ensure_token uses get_unexpired (no margin) — a token with 4 min
+        left is still valid.  Proactive refresh is the background task's job."""
+        _token_cache.put("test-id", "https://api.test.local", "near-expiry-tok", 240)
         client._refresh_token = AsyncMock()
-        client._refresh_token.side_effect = lambda: setattr(client, "_token", "fresh-tok") or setattr(client, "_token_expires_at", time.time() + 3600)
+
+        token = await client._ensure_token()
+        assert token == "near-expiry-tok"
+        client._refresh_token.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refreshes_when_expired(
+        self, client: ConnexusSmsClient
+    ) -> None:
+        """_ensure_token refreshes only when the token is fully expired."""
+        # Token that expired 1 second ago
+        _token_cache.put("test-id", "https://api.test.local", "dead-tok", 0)
+        client._refresh_token = AsyncMock(return_value="fresh-tok")
 
         token = await client._ensure_token()
         assert token == "fresh-tok"
         client._refresh_token.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_does_not_refresh_when_outside_margin(
-        self, client: ConnexusSmsClient
-    ) -> None:
-        client._token = "valid-tok"
-        # Set expiry to 10 minutes from now (outside 5-min margin)
-        client._token_expires_at = time.time() + 600
-        client._refresh_token = AsyncMock()
-
-        token = await client._ensure_token()
-        assert token == "valid-tok"
-        client._refresh_token.assert_not_called()
 
 
 class TestRequest:
@@ -189,9 +194,9 @@ class TestRequest:
 
     @pytest.mark.asyncio
     async def test_retries_on_401(self, client: ConnexusSmsClient) -> None:
-        client._token = "old-token"
-        client._token_expires_at = time.time() + 3600
-        client._ensure_token = AsyncMock(return_value="old-token")
+        """On 401, client waits for background refresh then retries."""
+        # Pre-populate cache so _ensure_token returns the old token
+        _token_cache.put("test-id", "https://api.test.local", "old-token", 3600)
 
         resp_401 = AsyncMock()
         resp_401.status_code = 401
@@ -202,22 +207,53 @@ class TestRequest:
         client._http = AsyncMock()
         client._http.request = AsyncMock(side_effect=[resp_401, resp_200])
 
-        # Mock _refresh_token to set a new token
-        async def fake_refresh():
-            client._token = "new-token"
-            client._token_expires_at = time.time() + 3600
+        # Simulate the background refresher depositing a new token
+        # shortly after the 401 invalidates the old one
+        original_wait = client._wait_for_fresh_token
 
-        client._refresh_token = AsyncMock(side_effect=fake_refresh)
+        async def fake_wait():
+            # Simulate background refresher putting a new token
+            _token_cache.put("test-id", "https://api.test.local", "new-token", 3600)
+            return "new-token"
+
+        client._wait_for_fresh_token = fake_wait  # type: ignore[assignment]
 
         resp = await client._request("POST", "https://api.test.local/sms/out", json={"to": "+64123"})
 
         assert resp.status_code == 200
         assert client._http.request.call_count == 2
-        client._refresh_token.assert_called_once()
 
         # Second call should use the new token
         second_call = client._http.request.call_args_list[1]
         assert second_call[1]["headers"]["Authorization"] == "Bearer new-token"
+
+    @pytest.mark.asyncio
+    async def test_401_falls_back_to_direct_refresh(self, client: ConnexusSmsClient) -> None:
+        """On 401, if background refresh doesn't provide a token, falls back to direct refresh."""
+        _token_cache.put("test-id", "https://api.test.local", "old-token", 3600)
+
+        resp_401 = AsyncMock()
+        resp_401.status_code = 401
+
+        resp_200 = AsyncMock()
+        resp_200.status_code = 200
+
+        client._http = AsyncMock()
+        client._http.request = AsyncMock(side_effect=[resp_401, resp_200])
+
+        # Simulate background refresher NOT providing a token
+        async def fake_wait_timeout():
+            return None
+
+        client._wait_for_fresh_token = fake_wait_timeout  # type: ignore[assignment]
+        client._refresh_token = AsyncMock(return_value="fallback-token")
+
+        resp = await client._request("POST", "https://api.test.local/sms/out", json={"to": "+64123"})
+
+        assert resp.status_code == 200
+        client._refresh_token.assert_called_once()
+        second_call = client._http.request.call_args_list[1]
+        assert second_call[1]["headers"]["Authorization"] == "Bearer fallback-token"
 
     @pytest.mark.asyncio
     async def test_does_not_retry_on_non_401(self, client: ConnexusSmsClient) -> None:
@@ -388,7 +424,7 @@ class TestSend:
         await client.send(SmsMessage(to_number="+6421000000", body="Hi", from_number="+6422222222"))
 
         call_kwargs = client._http.request.call_args
-        payload = call_kwargs[1]["json"]
+        payload = call_kwargs[1]["data"]
         assert payload["from"] == "+6422222222"
         assert payload["to"] == "+6421000000"
         assert payload["body"] == "Hi"
@@ -411,7 +447,7 @@ class TestSend:
         await client.send(SmsMessage(to_number="+6421000000", body="Hi"))
 
         call_kwargs = client._http.request.call_args
-        payload = call_kwargs[1]["json"]
+        payload = call_kwargs[1]["data"]
         assert payload["from"] == "TestSender"
 
     @pytest.mark.asyncio
@@ -573,7 +609,7 @@ class TestValidateNumber:
 
         call_args = client._http.request.call_args
         assert call_args[0] == ("POST", "https://api.test.local/number/lookup")
-        assert call_args[1]["json"] == {"number": "+6421999999"}
+        assert call_args[1]["data"] == {"number": "+6421999999"}
 
     @pytest.mark.asyncio
     async def test_validate_number_http_error(self, client: ConnexusSmsClient) -> None:

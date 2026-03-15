@@ -27,6 +27,8 @@ class InvoiceStatus(str, Enum):
     paid = "paid"
     overdue = "overdue"
     voided = "voided"
+    refunded = "refunded"
+    partially_refunded = "partially_refunded"
 
 
 
@@ -149,17 +151,19 @@ class PaymentSummary(BaseModel):
     """Embedded payment info in invoice response."""
     id: str
     date: str | None = None
-    amount: Decimal
+    amount: float
     method: str = "cash"
     recorded_by: str = ""
     note: str | None = None
+    is_refund: bool = False
+    refund_note: str | None = None
 
 
 class CreditNoteSummary(BaseModel):
     """Embedded credit note info in invoice response."""
     id: str
     reference_number: str
-    amount: Decimal
+    amount: float
     reason: str = ""
     created_at: str | None = None
 
@@ -216,6 +220,7 @@ class InvoiceResponse(BaseModel):
     org_gst_number: str | None = None
     org_website: str | None = None
     vehicle: dict | None = None
+    additional_vehicles: list[dict] = Field(default_factory=list)
     created_by: uuid.UUID
     created_at: datetime
     updated_at: datetime
@@ -325,6 +330,7 @@ class UpdateInvoiceRequest(BaseModel):
     vehicle_odometer: int | None = None
     global_vehicle_id: uuid.UUID | None = None
     vehicle_service_due_date: date | None = None
+    vehicles: list[VehicleItem] | None = None
     branch_id: uuid.UUID | None = None
     status: InvoiceStatus | None = None
     notes_internal: str | None = None

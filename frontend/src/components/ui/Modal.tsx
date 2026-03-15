@@ -16,23 +16,30 @@ export function Modal({ open, onClose, title, children, className = '' }: ModalP
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose()
+        // Prevent native dialog close on Escape — modals should only
+        // close via explicit Cancel / Save / X buttons.
+        e.preventDefault()
       }
     },
-    [onClose],
+    [],
   )
 
   useEffect(() => {
     const dialog = dialogRef.current
     if (!dialog) return
 
+    // Prevent native dialog cancel (Escape key) from closing the modal
+    const handleCancel = (e: Event) => { e.preventDefault() }
+
     if (open) {
       previousFocusRef.current = document.activeElement as HTMLElement
       dialog.showModal()
+      dialog.addEventListener('cancel', handleCancel)
       document.addEventListener('keydown', handleKeyDown)
       // Trap focus within the modal
       const releaseTrap = trapFocus(dialog)
       return () => {
+        dialog.removeEventListener('cancel', handleCancel)
         document.removeEventListener('keydown', handleKeyDown)
         releaseTrap()
       }
@@ -42,6 +49,7 @@ export function Modal({ open, onClose, title, children, className = '' }: ModalP
     }
 
     return () => {
+      dialog.removeEventListener('cancel', handleCancel)
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [open, handleKeyDown])
@@ -55,7 +63,9 @@ export function Modal({ open, onClose, title, children, className = '' }: ModalP
         w-full max-h-[90vh] overflow-hidden ${className || 'max-w-lg'}`}
       aria-labelledby="modal-title"
       onClick={(e) => {
-        if (e.target === dialogRef.current) onClose()
+        // Prevent closing when clicking the backdrop — modals should only
+        // close via explicit Cancel / Save / X buttons.
+        e.stopPropagation()
       }}
     >
       <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-white">

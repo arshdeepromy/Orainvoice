@@ -45,7 +45,7 @@ export function Tabs({ tabs, defaultTab, className = '' }: TabsProps) {
 
   return (
     <div className={className}>
-      <div role="tablist" aria-label="Tabs" className="flex border-b border-gray-200">
+      <div role="tablist" aria-label="Tabs" className="flex border-b border-gray-200 no-print">
         {tabs.map((tab) => (
           <button
             key={tab.id}

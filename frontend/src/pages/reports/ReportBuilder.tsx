@@ -44,8 +44,7 @@ const CURRENCIES = ['NZD', 'AUD', 'USD', 'GBP', 'EUR']
 
 function defaultRange(): DateRange {
   const now = new Date()
-  const from = new Date(now)
-  from.setMonth(from.getMonth() - 1)
+  const from = new Date(now.getFullYear(), now.getMonth() - 1, 1)
   return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
 }
 

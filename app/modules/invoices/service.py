@@ -9,7 +9,7 @@ import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
@@ -230,6 +230,7 @@ async def create_invoice(
     vehicle_odometer: int | None = None,
     global_vehicle_id: uuid.UUID | None = None,
     vehicle_service_due_date: date | None = None,
+    vehicles: list[dict] | None = None,
     branch_id: uuid.UUID | None = None,
     status: str = "draft",
     line_items_data: list[dict] | None = None,
@@ -359,6 +360,17 @@ async def create_invoice(
             k: v for k, v in {
                 "payment_terms": payment_terms,
                 "terms_and_conditions": terms_and_conditions,
+                "additional_vehicles": [
+                    {
+                        "id": str(v.get("id", "")),
+                        "rego": v.get("rego", ""),
+                        "make": v.get("make"),
+                        "model": v.get("model"),
+                        "year": v.get("year"),
+                        "odometer": v.get("odometer"),
+                    }
+                    for v in (vehicles or [])[1:]  # Skip first — it's the primary vehicle
+                ] if vehicles and len(vehicles) > 1 else None,
             }.items() if v
         },
         created_by=user_id,
@@ -476,6 +488,7 @@ async def create_invoice(
         if gv:
             gv.service_due_date = vehicle_service_due_date
 
+    await db.refresh(invoice)
     return _invoice_to_dict(invoice, created_line_items)
 
 
@@ -518,6 +531,7 @@ def _invoice_to_dict(invoice: Invoice, line_items: list[LineItem]) -> dict:
         "updated_at": invoice.updated_at,
         "payment_terms": (invoice.invoice_data_json or {}).get("payment_terms"),
         "terms_and_conditions": (invoice.invoice_data_json or {}).get("terms_and_conditions"),
+        "additional_vehicles": (invoice.invoice_data_json or {}).get("additional_vehicles", []),
     }
 
 
@@ -1025,6 +1039,35 @@ async def get_invoice(
                 "service_due_date": gv.service_due_date.isoformat() if getattr(gv, "service_due_date", None) else None,
             }
 
+    # Enrich additional vehicles from invoice_data_json with GlobalVehicle data
+    additional_vehicles_raw = (invoice.invoice_data_json or {}).get("additional_vehicles", [])
+    if additional_vehicles_raw:
+        from app.modules.admin.models import GlobalVehicle
+        enriched_vehicles = []
+        for av in additional_vehicles_raw:
+            av_rego = av.get("rego", "")
+            if av_rego:
+                av_gv_result = await db.execute(
+                    select(GlobalVehicle).where(
+                        func.upper(GlobalVehicle.rego) == av_rego.upper()
+                    )
+                )
+                av_gv = av_gv_result.scalar_one_or_none()
+                if av_gv:
+                    enriched_vehicles.append({
+                        "rego": av_gv.rego,
+                        "make": av_gv.make,
+                        "model": av_gv.model,
+                        "year": av_gv.year,
+                        "wof_expiry": av_gv.wof_expiry.isoformat() if getattr(av_gv, "wof_expiry", None) else None,
+                        "odometer": getattr(av_gv, "odometer_last_recorded", None),
+                    })
+                else:
+                    enriched_vehicles.append(av)
+            else:
+                enriched_vehicles.append(av)
+        result["additional_vehicles"] = enriched_vehicles
+
     # Include payments
     pay_result = await db.execute(
         select(Payment).where(Payment.invoice_id == invoice.id).order_by(Payment.created_at)
@@ -1046,10 +1089,12 @@ async def get_invoice(
         {
             "id": str(p.id),
             "date": p.payment_date.isoformat() if hasattr(p, "payment_date") and p.payment_date else (p.created_at.isoformat() if p.created_at else None),
-            "amount": p.amount,
+            "amount": float(p.amount),
             "method": p.payment_method if hasattr(p, "payment_method") else "cash",
             "recorded_by": recorder_map.get(p.recorded_by, str(p.recorded_by)) if hasattr(p, "recorded_by") and p.recorded_by else "",
             "note": getattr(p, "note", None) or getattr(p, "notes", None),
+            "is_refund": bool(getattr(p, "is_refund", False)),
+            "refund_note": getattr(p, "refund_note", None),
         }
         for p in payments
     ]
@@ -1063,7 +1108,7 @@ async def get_invoice(
         {
             "id": str(cn.id),
             "reference_number": cn.credit_note_number if hasattr(cn, "credit_note_number") else str(cn.id)[:8],
-            "amount": cn.amount,
+            "amount": float(cn.amount),
             "reason": cn.reason if hasattr(cn, "reason") else "",
             "created_at": cn.created_at.isoformat() if cn.created_at else None,
         }
@@ -1257,6 +1302,7 @@ async def void_invoice(
     )
     line_items = list(li_result.scalars().all())
 
+    await db.refresh(invoice)
     return _invoice_to_dict(invoice, line_items)
 
 
@@ -1320,6 +1366,7 @@ async def update_invoice_notes(
     )
     line_items = list(li_result.scalars().all())
 
+    await db.refresh(invoice)
     return _invoice_to_dict(invoice, line_items)
 
 
@@ -1391,6 +1438,26 @@ async def update_invoice(
         if field in allowed_fields:
             setattr(invoice, field, value)
             applied[field] = str(value) if value is not None else None
+
+    # Handle vehicles array — store additional vehicles in invoice_data_json
+    if "vehicles" in updates:
+        vehicles_data = updates["vehicles"]
+        inv_json = dict(invoice.invoice_data_json or {})
+        if vehicles_data and len(vehicles_data) > 1:
+            inv_json["additional_vehicles"] = [
+                {
+                    "id": str(v.get("id", "")),
+                    "rego": v.get("rego", ""),
+                    "make": v.get("make"),
+                    "model": v.get("model"),
+                    "year": v.get("year"),
+                    "odometer": v.get("odometer"),
+                }
+                for v in vehicles_data[1:]
+            ]
+        else:
+            inv_json.pop("additional_vehicles", None)
+        invoice.invoice_data_json = inv_json
 
     await db.flush()
 
@@ -1985,6 +2052,7 @@ async def duplicate_invoice(
         ip_address=ip_address,
     )
 
+    await db.refresh(new_invoice)
     return _invoice_to_dict(new_invoice, new_line_items)
 
 
@@ -2608,6 +2676,18 @@ async def bulk_delete_invoices(
         json_str = str(inv.invoice_data_json) if inv.invoice_data_json else "{}"
         total_bytes += len(json_str.encode("utf-8"))
         deleted_ids.append(inv.id)
+
+    # Null out nullable invoice FKs in related tables before deleting
+    from app.modules.vehicles.models import OdometerReading
+    from app.modules.tipping.models import Tip
+    from app.modules.pos.models import POSTransaction
+
+    for model_cls in (OdometerReading, Tip, POSTransaction):
+        await db.execute(
+            update(model_cls)
+            .where(model_cls.invoice_id.in_(deleted_ids))
+            .values(invoice_id=None)
+        )
 
     # Delete invoices (cascade deletes line_items, credit_notes, payments)
     for inv in invoices:

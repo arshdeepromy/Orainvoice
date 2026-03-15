@@ -50,7 +50,7 @@ export default function CarjamUsage() {
 
   return (
     <div data-print-content>
-      <p className="text-sm text-gray-500 mb-4">Carjam API lookup usage and overage charges.</p>
+      <p className="text-sm text-gray-500 mb-4 no-print">Carjam API lookup usage and overage charges.</p>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-6 no-print">
         <DateRangeFilter value={range} onChange={setRange} />

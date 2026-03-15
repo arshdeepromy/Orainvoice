@@ -147,8 +147,8 @@ export default function ScheduledReports() {
               {schedules.length === 0 ? (
                 <tr><td colSpan={5} className="px-4 py-12 text-center text-sm text-gray-500">No scheduled reports.</td></tr>
               ) : (
-                schedules.map((s) => (
-                  <tr key={s.id} className="hover:bg-gray-50">
+                schedules.map((s, i) => (
+                  <tr key={s.id || i} className="hover:bg-gray-50">
                     <td className="px-4 py-3 text-sm text-gray-900">{s.report_type.replace(/_/g, ' ')}</td>
                     <td className="px-4 py-3 text-sm text-gray-700 capitalize">{s.frequency}</td>
                     <td className="px-4 py-3 text-sm text-gray-700">{s.recipients.join(', ') || '—'}</td>

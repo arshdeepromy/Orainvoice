@@ -15,7 +15,7 @@ interface DateRangeFilterProps {
 
 function presetRange(preset: Preset): DateRange {
   const now = new Date()
-  const to = now.toISOString().slice(0, 10)
+  let to = now.toISOString().slice(0, 10)
   let from = to
 
   switch (preset) {
@@ -28,21 +28,24 @@ function presetRange(preset: Preset): DateRange {
       break
     }
     case 'month': {
-      const d = new Date(now)
-      d.setMonth(d.getMonth() - 1)
+      const d = new Date(now.getFullYear(), now.getMonth() - 1, 1)
       from = d.toISOString().slice(0, 10)
+      const lastDay = new Date(now.getFullYear(), now.getMonth(), 0)
+      to = lastDay.toISOString().slice(0, 10)
       break
     }
     case 'quarter': {
-      const d = new Date(now)
-      d.setMonth(d.getMonth() - 3)
-      from = d.toISOString().slice(0, 10)
+      const currentQ = Math.floor(now.getMonth() / 3)
+      const prevQStart = new Date(now.getFullYear(), (currentQ - 1) * 3, 1)
+      const prevQEnd = new Date(now.getFullYear(), currentQ * 3, 0)
+      from = prevQStart.toISOString().slice(0, 10)
+      to = prevQEnd.toISOString().slice(0, 10)
       break
     }
     case 'year': {
-      const d = new Date(now)
-      d.setFullYear(d.getFullYear() - 1)
-      from = d.toISOString().slice(0, 10)
+      const prevYear = now.getFullYear() - 1
+      from = `${prevYear}-01-01`
+      to = `${prevYear}-12-31`
       break
     }
     case 'custom':

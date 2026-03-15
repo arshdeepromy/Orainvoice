@@ -148,6 +148,7 @@ async def create_invoice_endpoint(
             vehicle_odometer=payload.vehicle_odometer,
             global_vehicle_id=payload.global_vehicle_id,
             vehicle_service_due_date=payload.vehicle_service_due_date,
+            vehicles=[v.model_dump() for v in payload.vehicles] if payload.vehicles else None,
             branch_id=payload.branch_id,
             status=effective_status,
             line_items_data=line_items_data,

@@ -140,7 +140,7 @@ export default function PaymentPanel({ total, onComplete, onCancel }: PaymentPan
           {/* Card payment */}
           {method === 'card' && (
             <div role="tabpanel" aria-label="Card payment" className="text-center py-4">
-              <p className="text-gray-600 text-sm">Present card to terminal or enter card details via Stripe.</p>
+              <p className="text-gray-600 text-sm">Present card to terminal or enter card details.</p>
               <p className="text-lg font-semibold mt-2">${total.toFixed(2)}</p>
             </div>
           )}

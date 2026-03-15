@@ -351,9 +351,10 @@ class TestRefundBalanceCalculations:
             notes="Full refund",
         )
 
-        assert result["invoice_status"] == "issued"
+        assert result["invoice_status"] == "refunded"
         assert result["invoice_amount_paid"] == Decimal("0.00")
-        assert result["invoice_balance_due"] == Decimal("250.00")
+        # balance_due stays at 0 — refund doesn't create new debt for customer
+        assert result["invoice_balance_due"] == Decimal("0.00")
 
     @pytest.mark.asyncio
     @patch("app.modules.payments.service.write_audit_log", new_callable=AsyncMock)
@@ -381,9 +382,10 @@ class TestRefundBalanceCalculations:
             method="cash",
         )
 
-        assert result["invoice_status"] == "partially_paid"
+        assert result["invoice_status"] == "partially_refunded"
         assert result["invoice_amount_paid"] == Decimal("120.00")
-        assert result["invoice_balance_due"] == Decimal("80.00")
+        # balance_due stays at 0 — refund doesn't create new debt for customer
+        assert result["invoice_balance_due"] == Decimal("0.00")
 
     @pytest.mark.asyncio
     async def test_refund_exceeding_amount_paid_raises_error(self):

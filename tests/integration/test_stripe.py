@@ -508,8 +508,8 @@ class TestRefundProcessingFlow:
 
         assert result["stripe_refund_id"] == "re_test_123"
         assert invoice.amount_paid == Decimal("100.00")
-        assert invoice.balance_due == Decimal("100.00")
-        assert invoice.status == "partially_paid"
+        assert invoice.balance_due == Decimal("0.00")
+        assert invoice.status == "partially_refunded"
 
         # Verify Stripe API was called with correct params
         mock_refund.assert_called_once_with(
@@ -550,8 +550,8 @@ class TestRefundProcessingFlow:
 
         assert result["stripe_refund_id"] is None
         assert invoice.amount_paid == Decimal("0.00")
-        assert invoice.balance_due == Decimal("200.00")
-        assert invoice.status == "issued"
+        assert invoice.balance_due == Decimal("0.00")
+        assert invoice.status == "refunded"
 
     @pytest.mark.asyncio
     async def test_refund_rejects_amount_exceeding_paid(self):

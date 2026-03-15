@@ -32,9 +32,18 @@ interface BookingCalendarProps {
   onCreateBooking: () => void
   onEditBooking: (booking: BookingSearchResult) => void
   onConvertBooking: (booking: BookingSearchResult, target: 'job_card' | 'invoice') => void
+  onSlotClick?: (date: Date, hour: number, minute: number) => void
   refreshKey: number
   onViewChange?: (view: CalendarView) => void
   onDateChange?: (date: Date) => void
+}
+
+interface PublicHoliday {
+  id: string
+  date: string
+  name: string
+  local_name: string | null
+  year: number
 }
 
 /* ------------------------------------------------------------------ */
@@ -66,6 +75,10 @@ const STATUS_FILTER_OPTIONS = [
 
 function formatTime(dateStr: string): string {
   return new Intl.DateTimeFormat('en-NZ', { hour: '2-digit', minute: '2-digit', hour12: true }).format(new Date(dateStr))
+}
+
+function formatHour12(hour: number): string {
+  return formatSlotLabel(hour, 0)
 }
 
 
@@ -104,13 +117,47 @@ function isSameDay(a: Date, b: Date): boolean {
 /*  Time slots for day/week views                                      */
 /* ------------------------------------------------------------------ */
 
-const HOURS = Array.from({ length: 13 }, (_, i) => i + 7) // 7am to 7pm
+/** Each slot is { hour, minute } — 30-minute intervals from 7 AM to 7 PM */
+const SLOTS: { hour: number; minute: number }[] = []
+for (let h = 7; h <= 19; h++) {
+  SLOTS.push({ hour: h, minute: 0 })
+  if (h < 19) SLOTS.push({ hour: h, minute: 30 })
+}
 
-function getBookingsForSlot(bookings: BookingSearchResult[], date: Date, hour: number): BookingSearchResult[] {
+function formatSlotLabel(hour: number, minute: number): string {
+  const h12 = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour
+  const ampm = hour < 12 ? 'AM' : 'PM'
+  return `${h12}:${minute.toString().padStart(2, '0')} ${ampm}`
+}
+
+function getBookingsForSlot(bookings: BookingSearchResult[], date: Date, hour: number, minute: number): BookingSearchResult[] {
   return bookings.filter((b) => {
     const d = new Date(b.scheduled_at)
-    return isSameDay(d, date) && d.getHours() === hour
+    const bMin = d.getMinutes()
+    // Bucket into the matching 30-min slot
+    const slotMin = bMin < 30 ? 0 : 30
+    return isSameDay(d, date) && d.getHours() === hour && slotMin === minute
   })
+}
+
+function getHolidayForDate(holidays: PublicHoliday[], date: Date): PublicHoliday | undefined {
+  const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  return holidays.find((h) => h.date === iso)
+}
+
+function isPastSlot(date: Date, hour: number, minute: number): boolean {
+  const now = new Date()
+  const slot = new Date(date)
+  slot.setHours(hour, minute, 0, 0)
+  return slot < now
+}
+
+function isPastDay(date: Date): boolean {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const d = new Date(date)
+  d.setHours(0, 0, 0, 0)
+  return d < today
 }
 
 /* ------------------------------------------------------------------ */
@@ -123,11 +170,12 @@ function getBookingsForSlot(bookings: BookingSearchResult[], date: Date, hour: n
  *
  * Requirements: 64.1
  */
-export default function BookingCalendar({ onCreateBooking, onEditBooking, onConvertBooking, refreshKey, onViewChange, onDateChange }: BookingCalendarProps) {
+export default function BookingCalendar({ onCreateBooking, onEditBooking, onConvertBooking, onSlotClick, refreshKey, onViewChange, onDateChange }: BookingCalendarProps) {
   const [view, setView] = useState<CalendarView>('week')
   const [currentDate, setCurrentDate] = useState(new Date())
   const [statusFilter, setStatusFilter] = useState('')
   const [bookings, setBookings] = useState<BookingSearchResult[]>([])
+  const [holidays, setHolidays] = useState<PublicHoliday[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -149,6 +197,15 @@ export default function BookingCalendar({ onCreateBooking, onEditBooking, onConv
       setLoading(false)
     }
   }, [view, currentDate, statusFilter])
+
+  // Fetch public holidays for the current year visible on calendar
+  const currentYear = currentDate.getFullYear()
+  useEffect(() => {
+    apiClient
+      .get<{ holidays: PublicHoliday[] }>('/org/holidays', { params: { year: currentYear } })
+      .then(({ data }) => setHolidays(data.holidays))
+      .catch(() => setHolidays([]))
+  }, [currentYear])
 
   useEffect(() => { fetchBookings() }, [fetchBookings, refreshKey])
 
@@ -222,9 +279,9 @@ export default function BookingCalendar({ onCreateBooking, onEditBooking, onConv
         <div className="py-16"><Spinner label="Loading bookings" /></div>
       )}
 
-      {!loading && view === 'month' && <MonthView bookings={bookings} currentDate={currentDate} onEdit={onEditBooking} onConvert={onConvertBooking} />}
-      {!loading && view === 'week' && <WeekView bookings={bookings} currentDate={currentDate} onEdit={onEditBooking} onConvert={onConvertBooking} />}
-      {!loading && view === 'day' && <DayView bookings={bookings} currentDate={currentDate} onEdit={onEditBooking} onConvert={onConvertBooking} />}
+      {!loading && view === 'month' && <MonthView bookings={bookings} currentDate={currentDate} onEdit={onEditBooking} onConvert={onConvertBooking} onSlotClick={onSlotClick} holidays={holidays} />}
+      {!loading && view === 'week' && <WeekView bookings={bookings} currentDate={currentDate} onEdit={onEditBooking} onConvert={onConvertBooking} onSlotClick={onSlotClick} holidays={holidays} />}
+      {!loading && view === 'day' && <DayView bookings={bookings} currentDate={currentDate} onEdit={onEditBooking} onConvert={onConvertBooking} onSlotClick={onSlotClick} holidays={holidays} />}
 
       {!loading && bookings.length === 0 && (
         <div className="py-12 text-center text-sm text-gray-500">
@@ -305,11 +362,21 @@ interface ViewProps {
   currentDate: Date
   onEdit: (b: BookingSearchResult) => void
   onConvert: (b: BookingSearchResult, target: 'job_card' | 'invoice') => void
+  onSlotClick?: (date: Date, hour: number, minute: number) => void
+  holidays: PublicHoliday[]
 }
 
-function DayView({ bookings, currentDate, onEdit, onConvert }: ViewProps) {
+function DayView({ bookings, currentDate, onEdit, onConvert, onSlotClick, holidays }: ViewProps) {
+  const holiday = getHolidayForDate(holidays, currentDate)
   return (
     <div className="overflow-x-auto rounded-lg border border-gray-200">
+      {holiday && (
+        <div className="flex items-center gap-2 bg-amber-50 border-b border-amber-200 px-4 py-2 text-sm text-amber-800">
+          <span>🎉</span>
+          <span className="font-medium">{holiday.name}</span>
+          <span className="text-amber-600">— Public Holiday</span>
+        </div>
+      )}
       <table className="min-w-full divide-y divide-gray-200" role="grid" aria-label="Day view calendar">
         <thead className="bg-gray-50">
           <tr>
@@ -320,19 +387,36 @@ function DayView({ bookings, currentDate, onEdit, onConvert }: ViewProps) {
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100 bg-white">
-          {HOURS.map((hour) => {
-            const slotBookings = getBookingsForSlot(bookings, currentDate, hour)
+          {SLOTS.map(({ hour, minute }) => {
+            const slotBookings = getBookingsForSlot(bookings, currentDate, hour, minute)
+            const label = formatSlotLabel(hour, minute)
+            const past = isPastSlot(currentDate, hour, minute)
             return (
-              <tr key={hour} className="hover:bg-gray-50">
+              <tr key={`${hour}-${minute}`} className={`group ${past ? 'opacity-50' : 'hover:bg-blue-50/40'}`}>
                 <td className="whitespace-nowrap px-3 py-3 text-xs text-gray-500 align-top tabular-nums">
-                  {hour.toString().padStart(2, '0')}:00
+                  {label}
                 </td>
-                <td className="px-3 py-2 align-top">
+                <td
+                  className={`px-3 py-2 align-top relative ${past ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                  onClick={() => !past && onSlotClick?.(currentDate, hour, minute)}
+                  role="button"
+                  tabIndex={past ? -1 : 0}
+                  onKeyDown={(e) => { if (!past && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSlotClick?.(currentDate, hour, minute) } }}
+                  aria-label={past ? `Past slot: ${label}` : `Create booking at ${label} on ${formatDayHeader(currentDate)}`}
+                  aria-disabled={past}
+                >
                   <div className="flex flex-col gap-1">
                     {slotBookings.map((b) => (
                       <BookingCard key={b.id} booking={b} onEdit={onEdit} onConvert={onConvert} />
                     ))}
                   </div>
+                  {slotBookings.length === 0 && !past && (
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-600">
+                        + New Booking
+                      </span>
+                    </div>
+                  )}
                 </td>
               </tr>
             )
@@ -347,7 +431,7 @@ function DayView({ bookings, currentDate, onEdit, onConvert }: ViewProps) {
 /*  Week View                                                          */
 /* ------------------------------------------------------------------ */
 
-function WeekView({ bookings, currentDate, onEdit, onConvert }: ViewProps) {
+function WeekView({ bookings, currentDate, onEdit, onConvert, onSlotClick, holidays }: ViewProps) {
   const weekStart = startOfWeek(currentDate)
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
   const today = new Date()
@@ -358,37 +442,60 @@ function WeekView({ bookings, currentDate, onEdit, onConvert }: ViewProps) {
         <thead className="bg-gray-50">
           <tr>
             <th scope="col" className="w-20 px-3 py-2 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Time</th>
-            {days.map((d) => (
-              <th
-                key={d.toISOString()}
-                scope="col"
-                className={`px-2 py-2 text-left text-xs font-medium uppercase tracking-wider ${isSameDay(d, today) ? 'text-blue-600 bg-blue-50' : 'text-gray-500'}`}
-              >
-                {formatDayHeader(d)}
-              </th>
-            ))}
+            {days.map((d) => {
+              const hol = getHolidayForDate(holidays, d)
+              return (
+                <th
+                  key={d.toISOString()}
+                  scope="col"
+                  className={`px-2 py-2 text-center text-xs font-medium uppercase tracking-wider border-l border-gray-200 ${isSameDay(d, today) ? 'text-blue-600 bg-blue-50' : hol ? 'text-amber-700 bg-amber-50' : 'text-gray-500'}`}
+                  title={hol ? hol.name : undefined}
+                >
+                  <div>{formatDayHeader(d)}</div>
+                  {hol && <div className="text-[10px] normal-case font-normal text-amber-600 truncate">🎉 {hol.name}</div>}
+                </th>
+              )
+            })}
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100 bg-white">
-          {HOURS.map((hour) => (
-            <tr key={hour} className="hover:bg-gray-50">
+          {SLOTS.map(({ hour, minute }) => {
+            const label = formatSlotLabel(hour, minute)
+            return (
+            <tr key={`${hour}-${minute}`}>
               <td className="whitespace-nowrap px-3 py-2 text-xs text-gray-500 align-top tabular-nums">
-                {hour.toString().padStart(2, '0')}:00
+                {label}
               </td>
               {days.map((d) => {
-                const slotBookings = getBookingsForSlot(bookings, d, hour)
+                const slotBookings = getBookingsForSlot(bookings, d, hour, minute)
+                const hol = getHolidayForDate(holidays, d)
+                const past = isPastSlot(d, hour, minute)
                 return (
-                  <td key={d.toISOString()} className={`px-1 py-1 align-top min-w-[120px] ${isSameDay(d, today) ? 'bg-blue-50/30' : ''}`}>
+                  <td
+                    key={d.toISOString()}
+                    className={`group px-1 py-1 align-top min-w-[120px] relative border-l border-gray-200 ${past ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-blue-50/40'} ${isSameDay(d, today) ? 'bg-blue-50/30' : hol ? 'bg-amber-50/30' : ''}`}
+                    onClick={() => !past && onSlotClick?.(d, hour, minute)}
+                    role="button"
+                    tabIndex={past ? -1 : 0}
+                    onKeyDown={(e) => { if (!past && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSlotClick?.(d, hour, minute) } }}
+                    aria-label={past ? `Past slot: ${label}` : `Create booking at ${label} on ${formatDayHeader(d)}`}
+                    aria-disabled={past}
+                  >
                     <div className="flex flex-col gap-1">
                       {slotBookings.map((b) => (
                         <BookingCard key={b.id} booking={b} compact onEdit={onEdit} onConvert={onConvert} />
                       ))}
                     </div>
+                    {slotBookings.length === 0 && !past && (
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                        <span className="text-blue-400 text-lg leading-none">+</span>
+                      </div>
+                    )}
                   </td>
                 )
               })}
             </tr>
-          ))}
+          )})}
         </tbody>
       </table>
     </div>
@@ -399,7 +506,7 @@ function WeekView({ bookings, currentDate, onEdit, onConvert }: ViewProps) {
 /*  Month View                                                         */
 /* ------------------------------------------------------------------ */
 
-function MonthView({ bookings, currentDate, onEdit, onConvert }: ViewProps) {
+function MonthView({ bookings, currentDate, onEdit, onConvert, onSlotClick, holidays }: ViewProps) {
   const monthStart = startOfMonth(currentDate)
   const monthEnd = endOfMonth(currentDate)
   const calStart = startOfWeek(monthStart)
@@ -439,15 +546,27 @@ function MonthView({ bookings, currentDate, onEdit, onConvert }: ViewProps) {
             const isCurrentMonth = day.getMonth() === currentDate.getMonth()
             const isToday = isSameDay(day, today)
             const dayBookings = bookings.filter((b) => isSameDay(new Date(b.scheduled_at), day))
+            const holiday = getHolidayForDate(holidays, day)
 
             return (
               <div
                 key={day.toISOString()}
-                className={`min-h-[100px] p-1 ${isCurrentMonth ? 'bg-white' : 'bg-gray-50'} ${isToday ? 'ring-2 ring-inset ring-blue-500' : ''}`}
+                className={`group min-h-[100px] p-1 transition-colors ${isPastDay(day) ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-blue-50/40'} ${isCurrentMonth ? (holiday ? 'bg-amber-50/50' : 'bg-white') : 'bg-gray-50'} ${isToday ? 'ring-2 ring-inset ring-blue-500' : ''}`}
+                onClick={() => !isPastDay(day) && onSlotClick?.(day, 9, 0)}
+                role="button"
+                tabIndex={isPastDay(day) ? -1 : 0}
+                onKeyDown={(e) => { if (!isPastDay(day) && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSlotClick?.(day, 9, 0) } }}
+                aria-label={isPastDay(day) ? `Past date: ${formatDayHeader(day)}` : `Create booking on ${formatDayHeader(day)}${holiday ? ` (${holiday.name})` : ''}`}
+                aria-disabled={isPastDay(day)}
               >
                 <div className={`text-xs font-medium mb-1 ${isCurrentMonth ? 'text-gray-900' : 'text-gray-400'} ${isToday ? 'text-blue-600' : ''}`}>
                   {day.getDate()}
                 </div>
+                {holiday && (
+                  <div className="text-[10px] text-amber-700 bg-amber-100 rounded px-1 py-0.5 mb-1 truncate" title={holiday.name}>
+                    🎉 {holiday.name}
+                  </div>
+                )}
                 <div className="flex flex-col gap-0.5">
                   {dayBookings.slice(0, 3).map((b) => (
                     <BookingCard key={b.id} booking={b} compact onEdit={onEdit} onConvert={onConvert} />

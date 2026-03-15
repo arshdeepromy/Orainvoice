@@ -171,7 +171,7 @@ export default function QuoteList() {
   const canEdit = (status: string) => status === 'draft'
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className="px-4 py-6 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-gray-900">All Quotes</h1>

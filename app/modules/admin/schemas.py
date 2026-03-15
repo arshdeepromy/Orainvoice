@@ -927,6 +927,8 @@ class IntegrationCostCard(BaseModel):
     balance: float | None = None
     balance_currency: str | None = None
     last_checked: str | None = None
+    token_last_refresh: str | None = None
+    token_expires_at: str | None = None
 
 
 class IntegrationCostDashboardResponse(BaseModel):

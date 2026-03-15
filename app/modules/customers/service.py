@@ -65,6 +65,14 @@ def _customer_to_dict(customer: Customer) -> dict:
 
 def _customer_to_search_dict(customer: Customer) -> dict:
     """Convert a Customer ORM instance to a search-result dict."""
+    custom = customer.custom_fields or {}
+    rc = custom.get("reminder_config", {})
+    reminders_on = False
+    if isinstance(rc, dict):
+        reminders_on = any(
+            isinstance(v, dict) and v.get("enabled", False)
+            for v in rc.values()
+        )
     return {
         "id": str(customer.id),
         "customer_type": customer.customer_type or "individual",
@@ -76,6 +84,7 @@ def _customer_to_search_dict(customer: Customer) -> dict:
         "phone": customer.phone,
         "mobile_phone": customer.mobile_phone,
         "work_phone": customer.work_phone,
+        "reminders_enabled": reminders_on,
     }
 
 
@@ -394,14 +403,22 @@ async def update_customer(
     if customer.is_anonymised:
         raise ValueError("Cannot update an anonymised customer record")
 
-    allowed_fields = {"first_name", "last_name", "email", "phone", "address", "notes"}
+    allowed_fields = {
+        "first_name", "last_name", "email", "phone", "address", "notes",
+        "customer_type", "salutation", "company_name", "display_name",
+        "work_phone", "mobile_phone", "currency", "language",
+        "tax_rate_id", "company_id", "payment_terms",
+        "enable_bank_payment", "enable_portal",
+        "billing_address", "shipping_address",
+        "contact_persons", "custom_fields", "remarks",
+    }
     before_value = {}
     updated_fields = []
 
     for field in allowed_fields:
         value = kwargs.get(field)
         if value is not None:
-            before_value[field] = getattr(customer, field)
+            before_value[field] = getattr(customer, field, None)
             setattr(customer, field, value)
             updated_fields.append(field)
 
@@ -409,6 +426,7 @@ async def update_customer(
         return _customer_to_dict(customer)
 
     await db.flush()
+    await db.refresh(customer)
 
     await write_audit_log(
         session=db,
@@ -607,6 +625,7 @@ async def notify_customer(
 
         from app.core.encryption import envelope_decrypt_str
         from app.modules.admin.models import EmailProvider
+        from app.modules.notifications.service import log_email_sent
 
         # Find active email provider
         provider_result = await db.execute(
@@ -671,6 +690,17 @@ async def notify_customer(
                     "Email sent to customer %s via %s",
                     customer_id, provider.provider_key,
                 )
+
+                # Log the successful email send
+                try:
+                    await log_email_sent(
+                        db, org_id=org_id, recipient=customer.email,
+                        template_type="customer_notify", subject=email_subject,
+                        status="sent", sent_at=datetime.now(timezone.utc),
+                    )
+                except Exception:
+                    logger.warning("Failed to log email send for customer %s", customer_id)
+
                 last_error = None
                 break
             except Exception as exc:
@@ -681,6 +711,15 @@ async def notify_customer(
                 )
 
         if last_error:
+            # Log the failed email attempt
+            try:
+                await log_email_sent(
+                    db, org_id=org_id, recipient=customer.email,
+                    template_type="customer_notify", subject=email_subject,
+                    status="failed", error_message=last_error,
+                )
+            except Exception:
+                logger.warning("Failed to log email failure for customer %s", customer_id)
             raise ValueError(f"All email providers failed. Last error: {last_error}")
 
     elif channel == "sms":
@@ -692,10 +731,13 @@ async def notify_customer(
         from app.integrations.sms_types import SmsMessage as SmsMsg
         from app.modules.admin.models import SmsVerificationProvider
         from app.core.encryption import envelope_decrypt_str
+        from app.modules.admin.service import increment_sms_usage
+        from app.modules.notifications.service import log_sms_sent
 
         # Load active SMS provider
         sms_result = await db.execute(
             select(SmsVerificationProvider).where(
+                SmsVerificationProvider.provider_key == "connexus",
                 SmsVerificationProvider.is_active.is_(True),
             )
         )
@@ -705,13 +747,52 @@ async def notify_customer(
             import json
             creds_json = envelope_decrypt_str(sms_provider.credentials_encrypted)
             creds = json.loads(creds_json)
+            if sms_provider.config and sms_provider.config.get("token_refresh_interval_seconds"):
+                creds["token_refresh_interval_seconds"] = sms_provider.config["token_refresh_interval_seconds"]
             config = ConnexusConfig.from_dict(creds)
             client = ConnexusSmsClient(config)
-            sms_msg = SmsMsg(to_number=customer.phone, body=message)
-            sms_send = await client.send(sms_msg)
+            try:
+                sms_msg = SmsMsg(to_number=customer.phone, body=message)
+                sms_send = await client.send(sms_msg)
+            finally:
+                await client.close()
 
             if not sms_send.success:
-                raise ValueError(sms_send.error or "SMS send failed")
+                error_msg = sms_send.error or "SMS send failed"
+                # Log the failed attempt
+                try:
+                    await log_sms_sent(
+                        db, org_id=org_id, recipient=customer.phone,
+                        template_type="customer_notify", body=message,
+                        status="failed", error_message=error_msg,
+                    )
+                except Exception:
+                    logger.warning("Failed to log SMS send failure for customer %s", customer_id)
+                # Surface a clearer message for auth failures
+                if "401" in error_msg:
+                    raise ValueError(
+                        "SMS authentication failed (401). Your Connexus credentials may have "
+                        "expired or been rotated. Please re-enter them in Admin → SMS Providers "
+                        "and test the connection."
+                    )
+                raise ValueError(error_msg)
+
+            # Track SMS usage
+            try:
+                await increment_sms_usage(db, org_id)
+            except Exception:
+                logger.error("Failed to increment SMS usage for org %s", org_id)
+
+            # Log the successful send
+            try:
+                await log_sms_sent(
+                    db, org_id=org_id, recipient=customer.phone,
+                    template_type="customer_notify", body=message,
+                    status="sent", sent_at=datetime.now(timezone.utc),
+                )
+            except Exception:
+                logger.warning("Failed to log SMS send for customer %s", customer_id)
+
             logger.info("SMS sent to customer %s", customer_id)
         else:
             raise ValueError("SMS provider not configured. Set up an SMS provider in Admin > SMS Providers.")
@@ -1609,3 +1690,210 @@ async def delete_fleet_account(
     return {
         "fleet_account_id": str(fleet_account_id),
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-customer reminder configuration (stored in custom_fields JSONB)
+# ---------------------------------------------------------------------------
+
+REMINDER_CONFIG_KEY = "reminder_config"
+
+DEFAULT_REMINDER_DAYS = 30
+
+VALID_REMINDER_TYPES = {"service_due", "wof_expiry"}
+VALID_CHANNELS = {"email", "sms", "both"}
+
+
+def _default_reminder_entry() -> dict:
+    return {
+        "enabled": False,
+        "days_before": DEFAULT_REMINDER_DAYS,
+        "channel": "email",
+    }
+
+
+async def get_customer_reminder_config(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    customer_id: uuid.UUID,
+) -> dict:
+    """Return per-customer reminder configuration with vehicle expiry data."""
+    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.admin.models import GlobalVehicle
+
+    result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.org_id == org_id,
+        )
+    )
+    customer = result.scalar_one_or_none()
+    if customer is None:
+        raise ValueError("Customer not found")
+
+    custom_fields = customer.custom_fields or {}
+    config = custom_fields.get(REMINDER_CONFIG_KEY, {})
+
+    # Fetch linked vehicles with expiry dates (global vehicles only)
+    cv_stmt = (
+        select(CustomerVehicle, GlobalVehicle)
+        .join(GlobalVehicle, CustomerVehicle.global_vehicle_id == GlobalVehicle.id)
+        .where(
+            CustomerVehicle.customer_id == customer_id,
+            CustomerVehicle.org_id == org_id,
+        )
+    )
+    cv_result = await db.execute(cv_stmt)
+    vehicle_rows = cv_result.all()
+
+    vehicles = []
+    for cv, gv in vehicle_rows:
+        vehicles.append({
+            "global_vehicle_id": str(gv.id),
+            "rego": gv.rego,
+            "make": gv.make,
+            "model": gv.model,
+            "year": gv.year,
+            "service_due_date": gv.service_due_date.isoformat() if gv.service_due_date else None,
+            "wof_expiry": gv.wof_expiry.isoformat() if gv.wof_expiry else None,
+        })
+
+    return {
+        "service_due": config.get("service_due", _default_reminder_entry()),
+        "wof_expiry": config.get("wof_expiry", _default_reminder_entry()),
+        "vehicles": vehicles,
+    }
+
+
+async def update_customer_reminder_config(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    reminders: dict,
+) -> dict:
+    """Update per-customer reminder configuration.
+
+    reminders should be a dict like:
+    {
+        "service_due": {"enabled": true, "days_before": 30, "channel": "both"},
+        "wof_expiry": {"enabled": true, "days_before": 14, "channel": "sms"},
+    }
+    """
+    result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.org_id == org_id,
+        )
+    )
+    customer = result.scalar_one_or_none()
+    if customer is None:
+        raise ValueError("Customer not found")
+
+    # Validate and build config
+    validated: dict = {}
+    for rtype in VALID_REMINDER_TYPES:
+        entry = reminders.get(rtype, {})
+        validated[rtype] = {
+            "enabled": bool(entry.get("enabled", False)),
+            "days_before": max(1, min(365, int(entry.get("days_before", DEFAULT_REMINDER_DAYS)))),
+            "channel": entry.get("channel", "email") if entry.get("channel") in VALID_CHANNELS else "email",
+        }
+
+    # Merge into custom_fields
+    custom_fields = dict(customer.custom_fields or {})
+    custom_fields[REMINDER_CONFIG_KEY] = validated
+    customer.custom_fields = custom_fields
+
+    await db.flush()
+    await db.refresh(customer)
+
+    return validated
+
+
+async def update_vehicle_expiry_dates(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    vehicle_updates: list[dict],
+) -> list[dict]:
+    """Update service_due_date and wof_expiry on global vehicles linked to a customer.
+
+    vehicle_updates is a list of dicts like:
+    [
+        {"global_vehicle_id": "...", "service_due_date": "2026-06-01", "wof_expiry": "2026-05-15"},
+    ]
+
+    Only updates fields that are provided (non-None). Returns updated vehicle data.
+    """
+    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.admin.models import GlobalVehicle
+    from datetime import date
+
+    # Verify customer exists
+    result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.org_id == org_id,
+        )
+    )
+    customer = result.scalar_one_or_none()
+    if customer is None:
+        raise ValueError("Customer not found")
+
+    updated = []
+    for vu in vehicle_updates:
+        gv_id_str = vu.get("global_vehicle_id")
+        if not gv_id_str:
+            continue
+
+        try:
+            gv_id = uuid.UUID(gv_id_str)
+        except (ValueError, TypeError):
+            continue
+
+        # Verify this vehicle is linked to this customer
+        cv_check = await db.execute(
+            select(CustomerVehicle).where(
+                CustomerVehicle.customer_id == customer_id,
+                CustomerVehicle.org_id == org_id,
+                CustomerVehicle.global_vehicle_id == gv_id,
+            )
+        )
+        if cv_check.scalar_one_or_none() is None:
+            continue
+
+        # Fetch and update the global vehicle
+        gv_result = await db.execute(
+            select(GlobalVehicle).where(GlobalVehicle.id == gv_id)
+        )
+        gv = gv_result.scalar_one_or_none()
+        if gv is None:
+            continue
+
+        sdd = vu.get("service_due_date")
+        if sdd is not None:
+            try:
+                gv.service_due_date = date.fromisoformat(sdd) if sdd else None
+            except (ValueError, TypeError):
+                pass
+
+        wof = vu.get("wof_expiry")
+        if wof is not None:
+            try:
+                gv.wof_expiry = date.fromisoformat(wof) if wof else None
+            except (ValueError, TypeError):
+                pass
+
+        await db.flush()
+
+        updated.append({
+            "global_vehicle_id": str(gv.id),
+            "rego": gv.rego,
+            "service_due_date": gv.service_due_date.isoformat() if gv.service_due_date else None,
+            "wof_expiry": gv.wof_expiry.isoformat() if gv.wof_expiry else None,
+        })
+
+    return updated

@@ -1078,7 +1078,7 @@ export default function InvoiceCreate() {
         </div>
       </div>
 
-      <div className="max-w-5xl mx-auto px-6 py-6">
+      <div className="px-6 py-6">
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-6">
           
           {/* Customer and Invoice Details */}
@@ -1497,16 +1497,15 @@ export default function InvoiceCreate() {
                 />
                 <span className="text-sm text-gray-700">Bank Transfer</span>
               </label>
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label className="flex items-center gap-2 cursor-not-allowed opacity-50" title="Stripe integration coming soon">
                 <input
                   type="radio"
                   name="paymentGateway"
                   value="stripe"
-                  checked={paymentGateway === 'stripe'}
-                  onChange={(e) => setPaymentGateway(e.target.value)}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                  disabled
+                  className="h-4 w-4 text-gray-400"
                 />
-                <span className="text-sm text-gray-700">Stripe</span>
+                <span className="text-sm text-gray-400">Stripe <span className="text-xs italic">(coming soon)</span></span>
               </label>
             </div>
           </div>

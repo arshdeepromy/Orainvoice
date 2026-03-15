@@ -81,27 +81,16 @@ export function PaymentPage({ token, invoice, primaryColor, onBack }: PaymentPag
         </div>
 
         {/* Payment info */}
-        <p className="mt-4 text-sm text-gray-500">
-          You will be redirected to Stripe's secure checkout to complete your payment.
-        </p>
-
-        {error && (
-          <AlertBanner variant="error" className="mt-4">
-            {error}
-          </AlertBanner>
-        )}
+        <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-medium text-amber-800">Online payments coming soon</p>
+          <p className="text-sm text-amber-700 mt-1">
+            Online payment processing is not yet available. Please contact us directly to arrange payment.
+          </p>
+        </div>
 
         <div className="mt-6 flex gap-3">
-          <Button
-            onClick={handlePay}
-            loading={loading}
-            style={{ backgroundColor: primaryColor }}
-            className="flex-1 !bg-[var(--btn-color)] hover:opacity-90"
-          >
-            Pay {formatNZD(invoice.balance_due)}
-          </Button>
-          <Button variant="secondary" onClick={onBack} disabled={loading}>
-            Cancel
+          <Button variant="secondary" onClick={onBack}>
+            Back to invoices
           </Button>
         </div>
       </div>

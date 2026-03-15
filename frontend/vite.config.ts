@@ -12,8 +12,10 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     allowedHosts: true,
-    // Disable HMR — not useful in Docker image-based deployments
-    // (code changes require image rebuild anyway)
-    hmr: false,
+    hmr: true,
+    watch: {
+      usePolling: true,
+      interval: 1000,
+    },
   },
 })

@@ -23,7 +23,7 @@ def upgrade() -> None:
         sa.Column("reading_km", sa.Integer(), nullable=False),
         sa.Column("source", sa.String(20), nullable=False),  # carjam, manual, invoice
         sa.Column("recorded_by", UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True),
-        sa.Column("invoice_id", UUID(as_uuid=True), sa.ForeignKey("invoices.id"), nullable=True),
+        sa.Column("invoice_id", UUID(as_uuid=True), sa.ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True),
         sa.Column("org_id", UUID(as_uuid=True), sa.ForeignKey("organisations.id"), nullable=True),
         sa.Column("notes", sa.Text(), nullable=True),
         sa.Column("recorded_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),

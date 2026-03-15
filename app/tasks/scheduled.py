@@ -397,13 +397,34 @@ async def execute_migration_job(job_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def reset_sms_counters_task() -> dict:
-    from sqlalchemy import update
+    from sqlalchemy import update, select as sa_select
     from app.core.database import async_session_factory
     from app.modules.admin.models import Organisation
 
     now = datetime.now(timezone.utc)
+
+    # Only reset if we're in a new month since the last reset.
+    # This prevents container restarts from zeroing out counters mid-month.
     try:
         async with async_session_factory() as session:
+            # Check the most recent reset timestamp across all orgs
+            result = await session.execute(
+                sa_select(Organisation.sms_sent_reset_at)
+                .where(Organisation.sms_sent_reset_at.is_not(None))
+                .order_by(Organisation.sms_sent_reset_at.desc())
+                .limit(1)
+            )
+            last_reset = result.scalar_one_or_none()
+
+            if last_reset is not None:
+                # If the last reset was in the current month, skip
+                if last_reset.year == now.year and last_reset.month == now.month:
+                    logger.debug(
+                        "SMS counter reset skipped — already reset this month (%s)",
+                        last_reset.isoformat(),
+                    )
+                    return {"reset": 0, "skipped": True, "reason": "already_reset_this_month"}
+
             async with session.begin():
                 stmt = update(Organisation).values(sms_sent_this_month=0, sms_sent_reset_at=now)
                 result = await session.execute(stmt)
@@ -413,3 +434,181 @@ async def reset_sms_counters_task() -> dict:
     except Exception as exc:
         logger.error("Error resetting SMS counters: %s", exc)
         return {"reset": 0, "errors": [str(exc)]}
+
+
+async def process_customer_reminders_scheduled() -> dict:
+    """Daily task: enqueue per-customer configured reminders.
+
+    Phase 1: Scans customers with reminder_config, checks vehicle expiry
+    dates, and inserts pending items into the reminder_queue table.
+    """
+    from app.core.database import async_session_factory
+    from app.modules.notifications.reminder_queue_service import enqueue_customer_reminders
+
+    try:
+        async with async_session_factory() as session:
+            async with session.begin():
+                result = await enqueue_customer_reminders(session)
+        logger.info(
+            "Customer reminders enqueued: %d scanned, %d enqueued, %d errors",
+            result.get("customers_scanned", 0),
+            result.get("reminders_enqueued", 0),
+            result.get("errors", 0),
+        )
+        return result
+    except Exception as exc:
+        logger.exception("Failed to enqueue customer reminders: %s", exc)
+        return {"error": str(exc)}
+
+
+async def process_reminder_queue_scheduled() -> dict:
+    """Worker task: process pending reminder queue items in batches.
+
+    Phase 2: Picks up batches of pending reminders, sends them with
+    rate limiting and concurrency control, marks sent/failed.
+    Runs every 60 seconds.
+    """
+    from app.core.database import async_session_factory
+    from app.modules.notifications.reminder_queue_service import process_reminder_queue
+
+    try:
+        async with async_session_factory() as session:
+            result = await process_reminder_queue(session)
+        if result.get("sent", 0) > 0 or result.get("failed", 0) > 0:
+            logger.info(
+                "Reminder queue processed: %d sent, %d failed, %d retried, %d batches",
+                result.get("sent", 0),
+                result.get("failed", 0),
+                result.get("retried", 0),
+                result.get("batches_processed", 0),
+            )
+        return result
+    except Exception as exc:
+        logger.exception("Failed to process reminder queue: %s", exc)
+        return {"error": str(exc)}
+
+
+async def sync_public_holidays_task() -> dict:
+    """Sync public holidays for NZ and AU for the next 12 months.
+
+    Syncs both the current year and next year to ensure full coverage.
+    Runs every 6 months to keep holiday data fresh.
+
+    Checks DB synced_at to avoid redundant syncs on app restart / hot-reload.
+    """
+    from sqlalchemy import select, func as sa_func
+    from app.core.database import async_session_factory
+    from app.modules.admin.service import sync_public_holidays
+    from app.modules.admin.models import PublicHoliday
+
+    current_year = date.today().year
+    next_year = current_year + 1
+    total = 0
+    try:
+        async with async_session_factory() as session:
+            async with session.begin():
+                # Check if holidays were synced in the last 24 hours — skip if so
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+                result = await session.execute(
+                    select(sa_func.max(PublicHoliday.synced_at))
+                )
+                last_synced = result.scalar_one_or_none()
+                if last_synced is not None and last_synced >= cutoff:
+                    logger.debug(
+                        "Public holidays already synced at %s — skipping",
+                        last_synced,
+                    )
+                    return {"skipped": True, "last_synced": str(last_synced)}
+
+                for country in ("NZ", "AU"):
+                    for year in (current_year, next_year):
+                        res = await sync_public_holidays(session, country, year)
+                        total += res.get("synced", 0)
+        return {"synced": total, "years": [current_year, next_year], "countries": ["NZ", "AU"]}
+    except Exception as exc:
+        logger.error("Public holiday sync failed: %s", exc)
+        return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Lightweight in-process scheduler
+# ---------------------------------------------------------------------------
+
+import asyncio
+
+# (task_fn, interval_seconds, name)
+_DAILY_TASKS: list[tuple] = [
+    (check_overdue_invoices_task, 3600, "overdue_invoices"),
+    (retry_failed_notifications_task, 300, "retry_notifications"),
+    (archive_error_logs_task, 86400, "archive_error_logs"),
+    (generate_recurring_invoices_task, 3600, "recurring_invoices"),
+    (check_quote_expiry_task, 3600, "quote_expiry"),
+    (send_schedule_reminders_task, 300, "schedule_reminders"),
+    (check_compliance_expiry_task, 86400, "compliance_expiry"),
+    (publish_scheduled_notifications, 60, "publish_notifications"),
+    (reset_sms_counters_task, 86400, "reset_sms_counters"),
+    (process_customer_reminders_scheduled, 86400, "customer_reminders"),
+    (process_reminder_queue_scheduled, 60, "reminder_queue_worker"),
+    (sync_public_holidays_task, 15552000, "sync_public_holidays"),  # every ~6 months
+]
+
+_stop_event: asyncio.Event | None = None
+_task_handle: asyncio.Task | None = None
+
+
+async def _run_task_safe(fn, name: str) -> None:
+    try:
+        result = await fn()
+        logger.info("Scheduled task [%s] completed: %s", name, result)
+    except Exception:
+        logger.exception("Scheduled task [%s] failed", name)
+
+
+async def _scheduler_loop() -> None:
+    """Run all scheduled tasks at their configured intervals."""
+    global _stop_event
+    _stop_event = asyncio.Event()
+
+    # Track last-run time per task
+    last_run: dict[str, float] = {}
+    import time
+
+    # Run an initial pass for daily tasks on startup
+    for fn, interval, name in _DAILY_TASKS:
+        last_run[name] = 0.0  # force first run
+
+    while not _stop_event.is_set():
+        now = time.time()
+        for fn, interval, name in _DAILY_TASKS:
+            if now - last_run.get(name, 0) >= interval:
+                last_run[name] = now
+                asyncio.create_task(_run_task_safe(fn, name))
+
+        # Check every 30 seconds
+        try:
+            await asyncio.wait_for(_stop_event.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def start_scheduler() -> None:
+    """Start the background scheduler (called from app startup)."""
+    global _task_handle
+    if _task_handle is not None and not _task_handle.done():
+        return
+    _task_handle = asyncio.create_task(_scheduler_loop(), name="task-scheduler")
+    logger.info("Background task scheduler started")
+
+
+async def stop_scheduler() -> None:
+    """Stop the background scheduler (called from app shutdown)."""
+    global _task_handle, _stop_event
+    if _stop_event is not None:
+        _stop_event.set()
+    if _task_handle is not None:
+        try:
+            await asyncio.wait_for(_task_handle, timeout=10)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            _task_handle.cancel()
+        _task_handle = None
+    logger.info("Background task scheduler stopped")

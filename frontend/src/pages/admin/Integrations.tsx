@@ -9,6 +9,7 @@ import { ToastContainer, useToast } from '@/components/ui/Toast'
 import apiClient from '@/api/client'
 import { SmsProviders } from './SmsProviders'
 import { EmailProviders } from './EmailProviders'
+import CalendarSync from './CalendarSync'
 
 /* ── Types ── */
 
@@ -564,6 +565,11 @@ export function Integrations() {
       id: 'email-providers',
       label: 'Email Providers',
       content: <EmailProviders />,
+    },
+    {
+      id: 'calendar-sync',
+      label: 'Calendar Sync',
+      content: <CalendarSync />,
     },
   ]
 

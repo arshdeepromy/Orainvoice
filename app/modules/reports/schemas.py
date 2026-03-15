@@ -41,6 +41,10 @@ class RevenueSummaryResponse(BaseModel):
     total_inclusive: Decimal = Field(description="Total revenue incl. GST")
     invoice_count: int = Field(description="Number of invoices in the period")
     average_invoice: Decimal = Field(description="Average invoice value")
+    total_refunds: Decimal = Field(default=Decimal("0"), description="Total refunds (incl. GST) in period")
+    refund_gst: Decimal = Field(default=Decimal("0"), description="GST component of refunds")
+    net_revenue: Decimal = Field(default=Decimal("0"), description="Revenue after refunds (ex-GST)")
+    net_gst: Decimal = Field(default=Decimal("0"), description="GST after refunds")
     period_start: date
     period_end: date
 
@@ -107,13 +111,18 @@ class TopServicesResponse(BaseModel):
 
 class GSTReturnResponse(BaseModel):
     total_sales: Decimal = Field(description="Total sales (incl. GST)")
-    total_gst_collected: Decimal = Field(description="Total GST collected")
-    net_gst: Decimal = Field(description="Net GST payable")
+    total_gst_collected: Decimal = Field(description="Total GST collected on sales")
+    net_gst: Decimal = Field(description="Net GST payable after refunds")
     standard_rated_sales: Decimal = Field(description="Standard-rated sales (ex-GST)")
     standard_rated_gst: Decimal = Field(description="GST on standard-rated sales")
     zero_rated_sales: Decimal = Field(description="Zero-rated / GST-exempt sales")
+    total_refunds: Decimal = Field(default=Decimal("0"), description="Total refund amount (incl. GST) in period")
+    refund_gst: Decimal = Field(default=Decimal("0"), description="GST component of refunds in period")
+    adjusted_total_sales: Decimal = Field(default=Decimal("0"), description="Net sales after refunds (incl. GST)")
+    adjusted_gst_collected: Decimal = Field(default=Decimal("0"), description="Net GST after refunds")
     period_start: date
     period_end: date
+
 
 
 # ---------------------------------------------------------------------------

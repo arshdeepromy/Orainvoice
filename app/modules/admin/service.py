@@ -314,6 +314,70 @@ async def get_effective_sms_quota(db: AsyncSession, org_id: uuid.UUID) -> int:
 
     return plan.sms_included_quota + total_package_credits
 
+async def _get_provider_per_sms_cost(db: AsyncSession) -> float:
+    """Return per-SMS cost from the active Connexus provider config.
+
+    Falls back to 0.0 if no active provider or no cost configured.
+    """
+    result = await db.execute(
+        select(SmsVerificationProvider.config).where(
+            SmsVerificationProvider.provider_key == "connexus",
+            SmsVerificationProvider.is_active.is_(True),
+        )
+    )
+    config = result.scalar_one_or_none()
+    if config and isinstance(config, dict):
+        try:
+            return float(config.get("per_sms_cost_nzd", 0))
+        except (TypeError, ValueError):
+            pass
+    return 0.0
+
+async def get_sms_per_message_cost(db: AsyncSession) -> float:
+    """Return per-SMS cost for the organisation's plan or provider config.
+
+    Public wrapper used by reports module. Falls back to provider config cost.
+    """
+    return await _get_provider_per_sms_cost(db)
+
+
+
+async def _count_org_sms_this_month(db: AsyncSession, org_id: uuid.UUID) -> int:
+    """Count ALL outbound SMS for an org in the current calendar month.
+
+    Combines two sources of truth (raw SQL to bypass RLS on both tables):
+    - ``sms_messages``    — chat/conversation sends (direction='outbound')
+    - ``notification_log`` — notification, reminder, booking & payment SMS
+                             (channel='sms', status NOT 'failed')
+
+    These two tables are mutually exclusive: chat sends only write to
+    ``sms_messages``; all other SMS paths only write to ``notification_log``.
+    """
+    from datetime import date as _date, datetime as _dt, timezone as _tz
+    from sqlalchemy import text as _text
+
+    now = _dt.now(_tz.utc)
+    month_start = _dt.combine(
+        _date(now.year, now.month, 1), _dt.min.time(), tzinfo=_tz.utc,
+    )
+
+    result = await db.execute(
+        _text(
+            "SELECT "
+            "  (SELECT COUNT(*) FROM sms_messages "
+            "   WHERE org_id = :oid AND direction = 'outbound' "
+            "   AND created_at >= :start) "
+            "+ (SELECT COUNT(*) FROM notification_log "
+            "   WHERE org_id = :oid AND channel = 'sms' "
+            "   AND status != 'failed' "
+            "   AND created_at >= :start) "
+            "AS total"
+        ),
+        {"oid": str(org_id), "start": month_start},
+    )
+    return int(result.scalar() or 0)
+
+
 async def get_all_orgs_sms_usage(db: AsyncSession) -> tuple[list[dict], float]:
     """Return SMS usage data for every non-deleted organisation.
 
@@ -327,6 +391,9 @@ async def get_all_orgs_sms_usage(db: AsyncSession) -> tuple[list[dict], float]:
     """
     from sqlalchemy import func as sa_func
 
+    # Get provider-level per-SMS cost as fallback
+    provider_cost = await _get_provider_per_sms_cost(db)
+
     stmt = (
         select(Organisation, SubscriptionPlan)
         .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
@@ -338,9 +405,9 @@ async def get_all_orgs_sms_usage(db: AsyncSession) -> tuple[list[dict], float]:
 
     usage_list: list[dict] = []
     for org, plan in rows:
-        total_sent = org.sms_sent_this_month
+        total_sent = await _count_org_sms_this_month(db, org.id)
         included_in_plan = plan.sms_included_quota if plan.sms_included else 0
-        per_sms_cost = float(plan.per_sms_cost_nzd)
+        per_sms_cost = float(plan.per_sms_cost_nzd) or provider_cost
 
         # Sum credits_remaining from all SMS package purchases for this org
         pkg_stmt = select(
@@ -373,6 +440,9 @@ async def get_org_sms_usage(db: AsyncSession, org_id: uuid.UUID) -> dict:
     """
     from sqlalchemy import func as sa_func
 
+    # Get provider-level per-SMS cost as fallback
+    provider_cost = await _get_provider_per_sms_cost(db)
+
     stmt = (
         select(Organisation, SubscriptionPlan)
         .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
@@ -384,9 +454,9 @@ async def get_org_sms_usage(db: AsyncSession, org_id: uuid.UUID) -> dict:
         raise ValueError("Organisation not found")
 
     org, plan = row
-    total_sent = org.sms_sent_this_month
+    total_sent = await _count_org_sms_this_month(db, org_id)
     included_in_plan = plan.sms_included_quota if plan.sms_included else 0
-    per_sms_cost = float(plan.per_sms_cost_nzd)
+    per_sms_cost = float(plan.per_sms_cost_nzd) or provider_cost
 
     # Sum credits_remaining from all SMS package purchases for this org
     pkg_stmt = select(
@@ -603,11 +673,12 @@ async def compute_sms_overage_for_billing(
             "total_charge_nzd": 0.0,
         }
 
-    per_sms_cost = float(plan.per_sms_cost_nzd)
+    per_sms_cost = float(plan.per_sms_cost_nzd) or await _get_provider_per_sms_cost(db)
     sms_included_quota = plan.sms_included_quota
 
-    # 3. Get the org's sms_sent_this_month
-    total_sent = org.sms_sent_this_month
+    # 3. Count outbound SMS from sms_messages for the current month.
+    #    This is the source of truth — survives counter resets and restarts.
+    total_sent = await _count_org_sms_this_month(db, org_id)
 
     # 4. Compute raw overage against plan quota only
     raw_overage = max(0, total_sent - sms_included_quota)
@@ -994,6 +1065,8 @@ async def send_test_sms(
         }
 
     creds = json.loads(envelope_decrypt_str(provider.credentials_encrypted))
+    if provider.config and provider.config.get("token_refresh_interval_seconds"):
+        creds["token_refresh_interval_seconds"] = provider.config["token_refresh_interval_seconds"]
     config = ConnexusConfig.from_dict(creds)
     client = ConnexusSmsClient(config)
 
@@ -3862,11 +3935,27 @@ async def get_integration_cost_dashboard(
     }
 
     # --- SMS (Connexus) ---
-    sms_stmt = select(
-        sa_func.coalesce(sa_func.sum(Organisation.sms_sent_this_month), 0),
-    ).where(Organisation.status != "deleted")
-    sms_result = await db.execute(sms_stmt)
-    total_sms_sent = int(sms_result.scalar() or 0)
+    # Use raw SQL to bypass RLS (sms_messages has tenant isolation policy).
+    # This is a global admin dashboard — we need counts across ALL orgs.
+    # Combine sms_messages (chat sends) + notification_log (notification SMS).
+    sms_count_result = await db.execute(
+        sa_text(
+            "SELECT "
+            "  (SELECT COUNT(*) FROM sms_messages "
+            "   WHERE direction = 'outbound' AND created_at >= :start) "
+            "+ (SELECT COUNT(*) FROM notification_log "
+            "   WHERE channel = 'sms' AND status != 'failed' "
+            "   AND created_at >= :start) "
+            "AS total_sent, "
+            "  (SELECT COALESCE(SUM(cost_nzd), 0) FROM sms_messages "
+            "   WHERE direction = 'outbound' AND created_at >= :start) "
+            "AS total_cost"
+        ),
+        {"start": period_start},
+    )
+    sms_row = sms_count_result.one()
+    total_sms_sent = int(sms_row[0] or 0)
+    total_sms_cost_from_db = float(sms_row[1] or 0)
 
     # Get SMS per-message cost from provider config (sms_verification_providers.config)
     from app.modules.admin.models import SmsVerificationProvider
@@ -3878,10 +3967,6 @@ async def get_integration_cost_dashboard(
     )
     default_sms_provider = sms_provider_result.scalar_one_or_none()
     sms_per_msg_cost = 0.0
-    if default_sms_provider and default_sms_provider.config:
-        sms_per_msg_cost = float(default_sms_provider.config.get("per_sms_cost_nzd", 0))
-
-    total_sms_cost = round(total_sms_sent * sms_per_msg_cost, 2)
 
     # Connexus balance
     sms_balance = None
@@ -3889,6 +3974,7 @@ async def get_integration_cost_dashboard(
     # Determine SMS status from sms_verification_providers (where Connexus is configured)
     sms_status = "not_configured"
     sms_last_checked = None
+    sms_provider_for_cost = default_sms_provider
     if default_sms_provider:
         sms_status = "healthy" if default_sms_provider.credentials_set else "down"
         sms_last_checked = default_sms_provider.updated_at.isoformat() if default_sms_provider.updated_at else None
@@ -3904,6 +3990,20 @@ async def get_integration_cost_dashboard(
         if any_active:
             sms_status = "healthy"
             sms_last_checked = any_active.updated_at.isoformat() if any_active.updated_at else None
+            sms_provider_for_cost = any_active
+
+    # Read per-SMS cost from whichever provider we found
+    if sms_provider_for_cost and sms_provider_for_cost.config:
+        try:
+            sms_per_msg_cost = float(sms_provider_for_cost.config.get("per_sms_cost_nzd", 0))
+        except (TypeError, ValueError):
+            pass
+
+    total_sms_cost = round(total_sms_cost_from_db, 2) if total_sms_cost_from_db > 0 else round(total_sms_sent * sms_per_msg_cost, 2)
+
+    # Token refresh timing from in-memory cache
+    from app.integrations.connexus_sms import get_token_status
+    token_status = get_token_status()
 
     sms_card = {
         "name": "Connexus SMS",
@@ -3918,6 +4018,8 @@ async def get_integration_cost_dashboard(
         "balance": sms_balance,
         "balance_currency": sms_currency,
         "last_checked": sms_last_checked,
+        "token_last_refresh": token_status["last_refresh_at"],
+        "token_expires_at": token_status["expires_at"],
     }
 
     # --- SMTP ---
@@ -3931,13 +4033,42 @@ async def get_integration_cost_dashboard(
     )
     total_emails = int(email_count_result.scalar() or 0)
 
-    smtp_config = await get_integration_config(db, name="smtp")
-    smtp_status = "healthy" if smtp_config and smtp_config.get("is_verified") else (
-        "not_configured" if not smtp_config or not smtp_config.get("fields") else "down"
+    # Check email_providers table for active, configured providers
+    from app.modules.admin.models import EmailProvider as EmailProviderModel
+    active_email_result = await db.execute(
+        select(EmailProviderModel).where(
+            EmailProviderModel.is_active.is_(True),
+            EmailProviderModel.credentials_set.is_(True),
+        ).order_by(EmailProviderModel.priority)
     )
-    smtp_provider = "Unknown"
-    if smtp_config and smtp_config.get("fields"):
-        smtp_provider = smtp_config["fields"].get("provider", "smtp").capitalize()
+    active_email_provider = active_email_result.scalars().first()
+
+    if not active_email_provider:
+        # Also check for any provider with credentials set (configured but not activated)
+        creds_email_result = await db.execute(
+            select(EmailProviderModel).where(
+                EmailProviderModel.credentials_set.is_(True),
+            ).order_by(EmailProviderModel.priority)
+        )
+        active_email_provider = creds_email_result.scalars().first()
+
+    if active_email_provider:
+        smtp_status = "healthy"
+        smtp_provider = active_email_provider.display_name
+        smtp_last_checked = (
+            active_email_provider.updated_at.isoformat()
+            if active_email_provider.updated_at else None
+        )
+    else:
+        # Fallback: check legacy integration_configs table
+        smtp_config = await get_integration_config(db, name="smtp")
+        smtp_status = "healthy" if smtp_config and smtp_config.get("is_verified") else (
+            "not_configured" if not smtp_config or not smtp_config.get("fields") else "down"
+        )
+        smtp_provider = "Unknown"
+        if smtp_config and smtp_config.get("fields"):
+            smtp_provider = smtp_config["fields"].get("provider", "smtp").capitalize()
+        smtp_last_checked = smtp_config.get("updated_at") if smtp_config else None
 
     smtp_card = {
         "name": "SMTP",
@@ -3949,7 +4080,7 @@ async def get_integration_cost_dashboard(
             "provider": smtp_provider,
             "emails_this_period": total_emails,
         },
-        "last_checked": smtp_config.get("updated_at") if smtp_config else None,
+        "last_checked": smtp_last_checked,
     }
 
     # --- Stripe ---
@@ -4008,3 +4139,100 @@ async def get_integration_cost_dashboard(
         "smtp": smtp_card,
         "stripe": stripe_card,
     }
+
+
+# ---------------------------------------------------------------------------
+# Public Holiday Calendar Sync
+# ---------------------------------------------------------------------------
+
+async def sync_public_holidays(
+    db: AsyncSession,
+    country_code: str,
+    year: int,
+    *,
+    actor_user_id: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Fetch public holidays from Nager.Date API and upsert into DB.
+
+    Uses https://date.nager.at/api/v3/PublicHolidays/{year}/{countryCode}
+    which is free and requires no API key.
+    """
+    import httpx
+    from app.modules.admin.models import PublicHoliday
+
+    url = f"https://date.nager.at/api/v3/PublicHolidays/{year}/{country_code}"
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        holidays_data = resp.json()
+
+    # Delete existing holidays for this country+year before inserting
+    await db.execute(
+        delete(PublicHoliday).where(
+            PublicHoliday.country_code == country_code,
+            PublicHoliday.year == year,
+        )
+    )
+
+    inserted = 0
+    now = datetime.now(timezone.utc)
+    for h in holidays_data:
+        holiday = PublicHoliday(
+            country_code=country_code,
+            holiday_date=datetime.strptime(h["date"], "%Y-%m-%d").date(),
+            name=h.get("name", ""),
+            local_name=h.get("localName"),
+            year=year,
+            is_fixed=h.get("fixed", False),
+            synced_at=now,
+        )
+        db.add(holiday)
+        inserted += 1
+
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        action="calendar.sync_public_holidays",
+        entity_type="public_holidays",
+        entity_id=None,
+        user_id=actor_user_id,
+        ip_address=ip_address,
+        after_value={"country_code": country_code, "year": year, "count": inserted},
+    )
+
+    return {"country_code": country_code, "year": year, "synced": inserted}
+
+
+async def list_public_holidays(
+    db: AsyncSession,
+    country_code: str | None = None,
+    year: int | None = None,
+) -> list[dict]:
+    """List public holidays, optionally filtered by country and year."""
+    from app.modules.admin.models import PublicHoliday
+
+    stmt = select(PublicHoliday).order_by(PublicHoliday.holiday_date)
+    if country_code:
+        stmt = stmt.where(PublicHoliday.country_code == country_code)
+    if year:
+        stmt = stmt.where(PublicHoliday.year == year)
+
+    result = await db.execute(stmt)
+    holidays = result.scalars().all()
+
+    return [
+        {
+            "id": str(h.id),
+            "country_code": h.country_code,
+            "holiday_date": h.holiday_date.isoformat(),
+            "name": h.name,
+            "local_name": h.local_name,
+            "year": h.year,
+            "is_fixed": h.is_fixed,
+            "synced_at": h.synced_at.isoformat() if h.synced_at else None,
+        }
+        for h in holidays
+    ]

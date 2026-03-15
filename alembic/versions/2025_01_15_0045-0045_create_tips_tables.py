@@ -33,7 +33,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["org_id"], ["organisations.id"], name="fk_tips_org_id"),
-        sa.ForeignKeyConstraint(["invoice_id"], ["invoices.id"], name="fk_tips_invoice_id"),
+        sa.ForeignKeyConstraint(["invoice_id"], ["invoices.id"], name="fk_tips_invoice_id", ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["pos_transaction_id"], ["pos_transactions.id"], name="fk_tips_pos_transaction_id"),
     )
     op.create_index("idx_tips_org", "tips", ["org_id"])

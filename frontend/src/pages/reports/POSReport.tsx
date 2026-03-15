@@ -85,8 +85,8 @@ export default function POSReport() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {(data.by_payment_method || []).map((item: any) => (
-                  <tr key={item.payment_method} className="hover:bg-gray-50">
+                {(data.by_payment_method || []).map((item: any, i: number) => (
+                  <tr key={item.payment_method || i} className="hover:bg-gray-50">
                     <td className="px-4 py-3 text-sm text-gray-900 capitalize">{item.payment_method}</td>
                     <td className="px-4 py-3 text-sm text-gray-700 text-right">{item.count}</td>
                     <td className="px-4 py-3 text-sm text-gray-900 text-right">{fmt(item.total)}</td>
@@ -110,8 +110,8 @@ export default function POSReport() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 bg-white">
-              {(data.items || []).map((item: any) => (
-                <tr key={item.hour} className="hover:bg-gray-50">
+              {(data.items || []).map((item: any, i: number) => (
+                <tr key={item.hour ?? i} className="hover:bg-gray-50">
                   <td className="px-4 py-3 text-sm text-gray-900">{String(item.hour).padStart(2, '0')}:00</td>
                   <td className="px-4 py-3 text-sm text-gray-700 text-right">{item.count}</td>
                   <td className="px-4 py-3 text-sm text-gray-900 text-right">{fmt(item.total)}</td>

@@ -171,7 +171,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-5xl px-4 py-16 text-center">
+      <div className="px-4 py-16 text-center sm:px-6 lg:px-8">
         <div className="text-gray-500">Loading quote…</div>
       </div>
     )
@@ -179,7 +179,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
 
   if (!quote) {
     return (
-      <div className="mx-auto max-w-5xl px-4 py-16 text-center">
+      <div className="px-4 py-16 text-center sm:px-6 lg:px-8">
         <div className="text-red-600">Quote not found</div>
         <button onClick={() => navigate('/quotes')} className="mt-4 text-sm text-blue-600 hover:text-blue-800">
           Back to Quotes
@@ -196,7 +196,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   const canDelete = ['draft', 'declined', 'expired'].includes(quote.status)
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className="px-4 py-6 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">

@@ -361,6 +361,7 @@ def upgrade() -> None:
             ["invoice_id"],
             ["invoices.id"],
             name="fk_credit_notes_invoice_id",
+            ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
             ["created_by"],
@@ -410,6 +411,7 @@ def upgrade() -> None:
             ["invoice_id"],
             ["invoices.id"],
             name="fk_payments_invoice_id",
+            ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
             ["recorded_by"],

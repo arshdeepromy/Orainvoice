@@ -4,11 +4,11 @@ import { Button, Input, Select, Modal, Spinner } from '../../components/ui'
 import { ModuleGate } from '../../components/common/ModuleGate'
 import { useModules } from '../../contexts/ModuleContext'
 import { VehicleLiveSearch } from '../../components/vehicles/VehicleLiveSearch'
+import { CustomerCreateModal } from '../../components/customers/CustomerCreateModal'
 import type { BookingSearchResult } from './BookingCalendar'
 import {
   shouldTriggerCustomerSearch,
   shouldShowAddNewOption,
-  getPrePopulatedFirstName,
 } from '../../utils/bookingFormHelpers'
 
 /* ------------------------------------------------------------------ */
@@ -67,6 +67,7 @@ interface BookingFormProps {
   onClose: () => void
   onSaved: () => void
   editBooking?: BookingSearchResult | null
+  initialDate?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -114,7 +115,7 @@ function nowLocalStr(): string {
  *
  * Requirements: 64.2, 64.3
  */
-export default function BookingForm({ open, onClose, onSaved, editBooking }: BookingFormProps) {
+export default function BookingForm({ open, onClose, onSaved, editBooking, initialDate }: BookingFormProps) {
   const isEdit = !!editBooking
   const { isEnabled } = useModules()
   const vehiclesEnabled = isEnabled('vehicles')
@@ -125,13 +126,7 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
   const [customerResults, setCustomerResults] = useState<CustomerOption[]>([])
   const [searchingCustomers, setSearchingCustomers] = useState(false)
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false)
-  const [showInlineCustomerForm, setShowInlineCustomerForm] = useState(false)
-  const [inlineFirstName, setInlineFirstName] = useState('')
-  const [inlineLastName, setInlineLastName] = useState('')
-  const [inlineEmail, setInlineEmail] = useState('')
-  const [inlinePhone, setInlinePhone] = useState('')
-  const [inlineCustomerError, setInlineCustomerError] = useState('')
-  const [savingInlineCustomer, setSavingInlineCustomer] = useState(false)
+  const [showCustomerCreateModal, setShowCustomerCreateModal] = useState(false)
 
   const [vehicleRego, setVehicleRego] = useState('')
   const [selectedVehicle, setSelectedVehicle] = useState<{
@@ -238,7 +233,7 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
       setInlineServiceDescription('')
       setInlineServiceGstExempt(false)
       setInlineServiceError('')
-      setScheduledAt(nowLocalStr())
+      setScheduledAt(initialDate || nowLocalStr())
       setDurationMinutes('60')
       setNotes('')
       setStatus('scheduled')
@@ -246,15 +241,10 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
       setSendSmsConfirmation(false)
       setReminderOption('none')
       setCustomReminderHours('')
-      setShowInlineCustomerForm(false)
-      setInlineFirstName('')
-      setInlineLastName('')
-      setInlineEmail('')
-      setInlinePhone('')
-      setInlineCustomerError('')
+      setShowCustomerCreateModal(false)
       setError('')
     }
-  }, [open, editBooking])
+  }, [open, editBooking, initialDate])
 
   /* Fetch plan features to determine SMS availability */
   useEffect(() => {
@@ -263,17 +253,6 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
       .then((res) => setSmsIncluded(res.data.sms_included ?? false))
       .catch(() => setSmsIncluded(false))
   }, [open])
-
-  /* Pre-populate inline customer first name from search query if it looks like a name */
-  useEffect(() => {
-    if (showInlineCustomerForm) {
-      setInlineFirstName(getPrePopulatedFirstName(customerSearch))
-      setInlineLastName('')
-      setInlineEmail('')
-      setInlinePhone('')
-      setInlineCustomerError('')
-    }
-  }, [showInlineCustomerForm]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* Customer search */
   useEffect(() => {
@@ -288,10 +267,31 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
       setSearchingCustomers(true)
       try {
         const res = await apiClient.get<{ items?: CustomerOption[]; results?: CustomerOption[]; customers?: CustomerOption[] }>('/customers', {
-          params: { search: customerSearch, page_size: 8, ...(vehiclesEnabled ? { include_vehicles: true } : {}) },
+          params: { q: customerSearch, limit: 8, ...(vehiclesEnabled ? { include_vehicles: true } : {}) },
         })
         const items = res.data.items ?? res.data.results ?? res.data.customers ?? []
-        setCustomerResults(items)
+        // Client-side sequential character matching for precision (ISSUE-060)
+        const term = customerSearch.trim().toLowerCase()
+        const matchesSeq = (haystack: string, needle: string): boolean => {
+          let ni = 0
+          const h = haystack.toLowerCase()
+          for (let i = 0; i < h.length && ni < needle.length; i++) {
+            if (h[i] === needle[ni]) ni++
+          }
+          return ni === needle.length
+        }
+        const filtered = term.length > 0 ? items.filter((c) => {
+          const regoMatch = (c.linked_vehicles || []).some((v) => matchesSeq(v.rego || '', term))
+          return (
+            matchesSeq(c.first_name || '', term) ||
+            matchesSeq(c.last_name || '', term) ||
+            matchesSeq(`${c.first_name} ${c.last_name}`, term) ||
+            matchesSeq(c.phone || '', term) ||
+            matchesSeq(c.email || '', term) ||
+            regoMatch
+          )
+        }) : items
+        setCustomerResults(filtered)
         setShowCustomerDropdown(true)
       } catch {
         setCustomerResults([])
@@ -331,34 +331,6 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
     }, 300)
     return () => clearTimeout(timer)
   }, [serviceSearch, serviceCatalogueId])
-
-  /* Submit inline customer form */
-  const handleInlineCustomerSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!inlineFirstName.trim() || !inlineLastName.trim()) {
-      setInlineCustomerError('First name and last name are required.')
-      return
-    }
-    setSavingInlineCustomer(true)
-    setInlineCustomerError('')
-    try {
-      const res = await apiClient.post<{ id: string; first_name: string; last_name: string }>('/customers', {
-        first_name: inlineFirstName.trim(),
-        last_name: inlineLastName.trim(),
-        email: inlineEmail.trim() || null,
-        phone: inlinePhone.trim() || null,
-      })
-      const created = res.data
-      setCustomerId(created.id)
-      setCustomerSearch(`${created.first_name} ${created.last_name}`)
-      setShowInlineCustomerForm(false)
-    } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      setInlineCustomerError(detail ?? 'Failed to create customer.')
-    } finally {
-      setSavingInlineCustomer(false)
-    }
-  }
 
   /* Submit inline service form */
   const handleInlineServiceSubmit = async (e: React.FormEvent) => {
@@ -400,6 +372,12 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
     e.preventDefault()
     if (!customerId) {
       setError('Please select a customer.')
+      return
+    }
+
+    // Prevent backdated bookings (new only)
+    if (!isEdit && new Date(scheduledAt) < new Date()) {
+      setError('Cannot create a booking in the past. Please select a future date and time.')
       return
     }
 
@@ -492,7 +470,6 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
                       setCustomerId(c.id)
                       setCustomerSearch(`${c.first_name} ${c.last_name}`)
                       setShowCustomerDropdown(false)
-                      setShowInlineCustomerForm(false)
                       // Auto-fill first linked vehicle
                       if (vehiclesEnabled && c.linked_vehicles && c.linked_vehicles.length > 0 && !selectedVehicle) {
                         const v = c.linked_vehicles[0]
@@ -509,7 +486,6 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
                         setCustomerId(c.id)
                         setCustomerSearch(`${c.first_name} ${c.last_name}`)
                         setShowCustomerDropdown(false)
-                        setShowInlineCustomerForm(false)
                         if (vehiclesEnabled && c.linked_vehicles && c.linked_vehicles.length > 0 && !selectedVehicle) {
                           const v = c.linked_vehicles[0]
                           setSelectedVehicle({
@@ -549,12 +525,12 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
                     aria-selected={false}
                     className="cursor-pointer px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 focus:bg-blue-50 font-medium"
                     onClick={() => {
-                      setShowInlineCustomerForm(true)
+                      setShowCustomerCreateModal(true)
                       setShowCustomerDropdown(false)
                     }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
-                        setShowInlineCustomerForm(true)
+                        setShowCustomerCreateModal(true)
                         setShowCustomerDropdown(false)
                       }
                     }}
@@ -567,68 +543,16 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
             )}
           </div>
 
-          {/* Inline customer form */}
-          {showInlineCustomerForm && (
-            <div className="rounded-md border border-gray-200 bg-gray-50 p-4 space-y-3" data-testid="inline-customer-form">
-              <h4 className="text-sm font-medium text-gray-700">New Customer</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Input
-                  label="First Name *"
-                  placeholder="First name"
-                  value={inlineFirstName}
-                  onChange={(e) => setInlineFirstName(e.target.value)}
-                  aria-label="Customer first name"
-                />
-                <Input
-                  label="Last Name *"
-                  placeholder="Last name"
-                  value={inlineLastName}
-                  onChange={(e) => setInlineLastName(e.target.value)}
-                  aria-label="Customer last name"
-                />
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Input
-                  label="Email"
-                  placeholder="email@example.com"
-                  type="email"
-                  value={inlineEmail}
-                  onChange={(e) => setInlineEmail(e.target.value)}
-                  aria-label="Customer email"
-                />
-                <Input
-                  label="Phone"
-                  placeholder="Phone number"
-                  type="tel"
-                  value={inlinePhone}
-                  onChange={(e) => setInlinePhone(e.target.value)}
-                  aria-label="Customer phone"
-                />
-              </div>
-              {inlineCustomerError && (
-                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
-                  {inlineCustomerError}
-                </div>
-              )}
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  disabled={savingInlineCustomer}
-                  onClick={handleInlineCustomerSubmit}
-                >
-                  {savingInlineCustomer ? 'Saving…' : 'Create Customer'}
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={savingInlineCustomer}
-                  onClick={() => setShowInlineCustomerForm(false)}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
+          {/* Customer create modal (full form) */}
+          <CustomerCreateModal
+            open={showCustomerCreateModal}
+            onClose={() => setShowCustomerCreateModal(false)}
+            onCustomerCreated={(created) => {
+              setCustomerId(created.id)
+              setCustomerSearch(`${created.first_name} ${created.last_name}`)
+              setShowCustomerCreateModal(false)
+            }}
+          />
 
           {/* Vehicle rego (module-gated) */}
           <ModuleGate module="vehicles">
@@ -714,11 +638,11 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
                     <span className="ml-2 text-gray-500">— ${parseFloat(s.default_price).toFixed(2)}</span>
                   </li>
                 ))}
-                {shouldShowAddNewOption(serviceSearch, serviceResults.length) && !searchingServices && (
+                {!searchingServices && serviceSearch.trim().length >= 2 && (
                   <li
                     role="option"
                     aria-selected={false}
-                    className="cursor-pointer px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 focus:bg-blue-50 font-medium"
+                    className="cursor-pointer px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 focus:bg-blue-50 font-medium border-t border-gray-100"
                     onClick={() => {
                       setShowInlineServiceForm(true)
                       setInlineServiceName(serviceSearch.trim())
@@ -819,6 +743,7 @@ export default function BookingForm({ open, onClose, onSaved, editBooking }: Boo
               value={scheduledAt}
               onChange={(e) => setScheduledAt(e.target.value)}
               required
+              {...(!isEdit ? { min: new Date().toISOString().slice(0, 16) } : {})}
             />
             <Select
               label="Duration"

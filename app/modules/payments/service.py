@@ -269,6 +269,8 @@ async def generate_stripe_payment_link(
 
                 if provider and provider.credentials_encrypted:
                     creds = _json.loads(envelope_decrypt_str(provider.credentials_encrypted))
+                    if provider.config and provider.config.get("token_refresh_interval_seconds"):
+                        creds["token_refresh_interval_seconds"] = provider.config["token_refresh_interval_seconds"]
                     config = ConnexusConfig.from_dict(creds)
                     client = ConnexusSmsClient(config)
 
@@ -562,10 +564,10 @@ async def process_refund(
         raise ValueError("Invoice not found in this organisation")
 
     # Only allow refunds on invoices that have received payments
-    if invoice.status not in ("paid", "partially_paid", "overdue"):
+    if invoice.status not in ("paid", "partially_paid", "overdue", "refunded", "partially_refunded"):
         raise ValueError(
             f"Cannot refund invoice with status '{invoice.status}'. "
-            "Invoice must be paid, partially paid, or overdue."
+            "Invoice must be paid, partially paid, overdue, or refunded."
         )
 
     # Validate refund amount
@@ -634,14 +636,20 @@ async def process_refund(
     await db.flush()
 
     # Update invoice balances
+    # Refund reduces amount_paid but does NOT increase balance_due.
+    # The customer does not owe more money after a refund — the business
+    # is paying back. balance_due stays at 0 for fully-paid invoices.
     invoice.amount_paid = invoice.amount_paid - amount
-    invoice.balance_due = invoice.balance_due + amount
 
-    # Determine new status
-    if invoice.amount_paid <= Decimal("0"):
-        new_status = "issued"
-    elif invoice.balance_due > Decimal("0"):
-        new_status = "partially_paid"
+    # Determine new status based on refund
+    total_payments = invoice.amount_paid  # net after refund
+    if total_payments <= Decimal("0"):
+        # Full refund — everything paid has been refunded
+        new_status = "refunded"
+        invoice.amount_paid = Decimal("0")
+    elif total_payments < invoice.total:
+        # Partial refund — some amount still retained
+        new_status = "partially_refunded"
     else:
         new_status = "paid"
 

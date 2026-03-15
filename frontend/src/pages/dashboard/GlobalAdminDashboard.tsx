@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { Badge } from '@/components/ui/Badge'
@@ -25,8 +25,8 @@ interface ErrorCounts {
 
 interface IntegrationStatus {
   name: string
-  status: 'healthy' | 'degraded' | 'down'
-  last_checked: string
+  status: 'healthy' | 'degraded' | 'down' | 'not_configured'
+  last_checked: string | null
 }
 
 interface BillingIssue {
@@ -47,6 +47,8 @@ interface IntegrationCostCard {
   balance?: number | null
   balance_currency?: string | null
   last_checked?: string | null
+  token_last_refresh?: string | null
+  token_expires_at?: string | null
 }
 
 interface IntegrationCosts {
@@ -80,6 +82,7 @@ const integrationStatusVariant: Record<IntegrationStatus['status'], 'success' | 
   healthy: 'success',
   degraded: 'warning',
   down: 'error',
+  not_configured: 'warning',
 }
 
 const defaultErrorCounts: ErrorCounts = { info: 0, warning: 0, error: 0, critical: 0 }
@@ -240,7 +243,11 @@ export function GlobalAdminDashboard() {
                   <p className="text-xs text-gray-500">
                     {integration.last_checked
                       ? `Checked ${new Date(integration.last_checked).toLocaleTimeString('en-NZ')}`
-                      : 'Not configured'}
+                      : integration.status === 'not_configured'
+                        ? 'Not configured'
+                        : integration.status === 'healthy'
+                          ? 'Configured'
+                          : 'Not verified'}
                   </p>
                 </div>
                 <Badge variant={integrationStatusVariant[integration.status]}>
@@ -360,7 +367,145 @@ const statusColors: Record<string, { bg: string; text: string; badge: 'success' 
   not_configured: { bg: 'border-gray-200', text: 'text-gray-400', badge: 'warning' },
 }
 
+function formatCountdown(expiresAt: string): string {
+  const diff = new Date(expiresAt).getTime() - Date.now()
+  if (diff <= 0) return 'expired'
+  const h = Math.floor(diff / 3_600_000)
+  const m = Math.floor((diff % 3_600_000) / 60_000)
+  const s = Math.floor((diff % 60_000) / 1_000)
+  if (h > 0) return `${h}h ${m}m ${s}s`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
+}
+
+function TokenCountdown({ expiresAt }: { expiresAt: string }) {
+  const [label, setLabel] = useState(() => formatCountdown(expiresAt))
+  useEffect(() => {
+    const id = setInterval(() => setLabel(formatCountdown(expiresAt)), 1000)
+    return () => clearInterval(id)
+  }, [expiresAt])
+  const isExpired = new Date(expiresAt).getTime() <= Date.now()
+  return (
+    <span className={`font-medium ${isExpired ? 'text-red-500' : 'text-emerald-600'}`}>
+      {label}
+    </span>
+  )
+}
+
+interface TokenRefreshEntry {
+  timestamp: string
+  reason: string
+  trigger: string
+  was_early: boolean
+  token_remaining_secs: number | null
+  success: boolean
+}
+
+function TokenRefreshLogModal({
+  open,
+  onClose,
+}: {
+  open: boolean
+  onClose: () => void
+}) {
+  const [entries, setEntries] = useState<TokenRefreshEntry[]>([])
+  const [loading, setLoading] = useState(false)
+
+  const fetchLog = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await apiClient.get<{ entries: TokenRefreshEntry[] }>(
+        '/admin/dashboard/connexus-token-refresh-log',
+      )
+      setEntries(res.data.entries)
+    } catch {
+      setEntries([])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (open) fetchLog()
+  }, [open, fetchLog])
+
+  if (!open) return null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Token refresh log"
+    >
+      <div
+        className="w-full max-w-2xl max-h-[80vh] overflow-auto rounded-lg bg-white shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b px-5 py-3">
+          <h3 className="text-lg font-semibold text-gray-900">Token Refresh Log</h3>
+          <button
+            onClick={onClose}
+            className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="px-5 py-4">
+          {loading ? (
+            <Spinner size="md" label="Loading refresh log" className="py-8" />
+          ) : entries.length === 0 ? (
+            <p className="py-8 text-center text-sm text-gray-500">
+              No token refreshes recorded yet. Entries appear after the first refresh cycle.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {entries.map((entry, i) => (
+                <div
+                  key={`${entry.timestamp}-${i}`}
+                  className={`rounded-lg border p-3 ${
+                    entry.success
+                      ? 'border-gray-200 bg-gray-50'
+                      : 'border-red-200 bg-red-50'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-medium text-gray-900">{entry.reason}</p>
+                    <Badge variant={entry.success ? 'success' : 'error'}>
+                      {entry.success ? 'OK' : 'Failed'}
+                    </Badge>
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
+                    <span>{new Date(entry.timestamp).toLocaleString('en-NZ')}</span>
+                    <span className="font-mono">{entry.trigger}</span>
+                    {entry.was_early && (
+                      <span className="text-amber-600">
+                        ⚡ Early refresh ({entry.token_remaining_secs != null
+                          ? `${Math.round(entry.token_remaining_secs)}s remaining`
+                          : 'before expiry'})
+                      </span>
+                    )}
+                    {!entry.was_early && entry.token_remaining_secs != null && (
+                      <span className="text-red-500">
+                        Token was expired ({Math.abs(Math.round(entry.token_remaining_secs))}s ago)
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function IntegrationCostCardView({ card }: { card: IntegrationCostCard }) {
+  const [showRefreshLog, setShowRefreshLog] = useState(false)
   const colors = statusColors[card.status] || statusColors.not_configured
   const fmt = (v: number) => `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const breakdown = card.breakdown || {}
@@ -409,6 +554,36 @@ function IntegrationCostCardView({ card }: { card: IntegrationCostCard }) {
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Token refresh timing (Connexus SMS only) */}
+      {(card.token_last_refresh || card.token_expires_at) && (
+        <div className="mt-3 pt-3 border-t border-gray-100 space-y-1">
+          {card.token_last_refresh && (
+            <div className="flex justify-between text-xs">
+              <span className="text-gray-400">Last Token Refresh</span>
+              <span className="text-gray-600">
+                {new Date(card.token_last_refresh).toLocaleString('en-NZ')}
+              </span>
+            </div>
+          )}
+          {card.token_expires_at && (
+            <div className="flex justify-between text-xs">
+              <span className="text-gray-400">Next Refresh In</span>
+              <TokenCountdown expiresAt={card.token_expires_at} />
+            </div>
+          )}
+          <button
+            onClick={() => setShowRefreshLog(true)}
+            className="mt-1.5 w-full rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors"
+          >
+            Refresh Reasons
+          </button>
+          <TokenRefreshLogModal
+            open={showRefreshLog}
+            onClose={() => setShowRefreshLog(false)}
+          />
         </div>
       )}
 

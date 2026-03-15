@@ -437,7 +437,7 @@ export function WebhookSettings() {
       <h1 className="text-2xl font-semibold text-gray-900 mb-6">Webhook settings</h1>
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-      <div className="max-w-4xl space-y-4">
+      <div className="space-y-4">
         {hasFailedDeliveries && (
           <AlertBanner variant="warning" title="Delivery failures detected">
             Some webhook deliveries have failed. Check the delivery log for details.

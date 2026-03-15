@@ -46,6 +46,7 @@ from app.modules.customers.service import (
     export_customer_data,
     get_customer,
     get_customer_profile,
+    get_customer_reminder_config,
     get_fleet_account,
     list_fleet_accounts,
     merge_customers,
@@ -53,7 +54,9 @@ from app.modules.customers.service import (
     search_customers,
     tag_vehicle_to_customer,
     update_customer,
+    update_customer_reminder_config,
     update_fleet_account,
+    update_vehicle_expiry_dates,
 )
 
 router = APIRouter()
@@ -947,3 +950,115 @@ async def tag_vehicle_endpoint(
         message="Vehicle tagged to customer",
         vehicle_link=LinkedVehicleResponse(**link_data),
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-customer reminder configuration
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{customer_id}/reminders")
+async def get_customer_reminders_endpoint(
+    customer_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Get per-customer reminder configuration (Service Due, WOF Expiry)."""
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        cust_uuid = uuid.UUID(customer_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid customer ID format"},
+        )
+
+    try:
+        config = await get_customer_reminder_config(
+            db, org_id=org_uuid, customer_id=cust_uuid
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return config
+
+
+@router.put("/{customer_id}/reminders")
+async def update_customer_reminders_endpoint(
+    customer_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update per-customer reminder configuration."""
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        cust_uuid = uuid.UUID(customer_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid customer ID format"},
+        )
+
+    body = await request.json()
+
+    try:
+        updated = await update_customer_reminder_config(
+            db,
+            org_id=org_uuid,
+            customer_id=cust_uuid,
+            reminders=body,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return updated
+
+
+@router.put("/{customer_id}/vehicle-dates")
+async def update_vehicle_dates_endpoint(
+    customer_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update service_due_date and wof_expiry on vehicles linked to a customer."""
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        cust_uuid = uuid.UUID(customer_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid customer ID format"},
+        )
+
+    body = await request.json()
+    vehicles = body.get("vehicles", [])
+
+    try:
+        updated = await update_vehicle_expiry_dates(
+            db,
+            org_id=org_uuid,
+            customer_id=cust_uuid,
+            vehicle_updates=vehicles,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return {"updated": updated}

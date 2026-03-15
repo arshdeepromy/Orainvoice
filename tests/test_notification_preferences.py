@@ -123,11 +123,11 @@ class TestNotificationCategories:
     """Verify the category groupings and notification type constants."""
 
     def test_all_types_count(self):
-        """All 13 notification types are defined."""
-        assert len(ALL_NOTIFICATION_TYPES) == 13
+        """All 19 notification types are defined."""
+        assert len(ALL_NOTIFICATION_TYPES) == 19
 
-    def test_four_categories(self):
-        assert len(NOTIFICATION_CATEGORIES) == 4
+    def test_six_categories(self):
+        assert len(NOTIFICATION_CATEGORIES) == 6
 
     def test_invoicing_types(self):
         assert set(NOTIFICATION_CATEGORIES["Invoicing"]) == {
@@ -143,6 +143,7 @@ class TestNotificationCategories:
         assert set(NOTIFICATION_CATEGORIES["Vehicle Reminders"]) == {
             "wof_expiry_reminder",
             "registration_expiry_reminder",
+            "service_due_reminder",
         }
 
     def test_system_alerts_types(self):
@@ -154,6 +155,19 @@ class TestNotificationCategories:
             "subscription_payment_failed",
             "login_alert",
             "account_locked",
+        }
+
+    def test_quotes_types(self):
+        assert set(NOTIFICATION_CATEGORIES["Quotes"]) == {
+            "quote_sent",
+            "quote_accepted",
+            "quote_expired",
+        }
+
+    def test_bookings_types(self):
+        assert set(NOTIFICATION_CATEGORIES["Bookings"]) == {
+            "booking_confirmation",
+            "booking_cancellation",
         }
 
     def test_all_types_is_union_of_categories(self):

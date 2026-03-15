@@ -590,9 +590,19 @@ NOTIFICATION_CATEGORIES: dict[str, list[str]] = {
     "Payments": [
         "payment_received",
     ],
+    "Quotes": [
+        "quote_sent",
+        "quote_accepted",
+        "quote_expired",
+    ],
+    "Bookings": [
+        "booking_confirmation",
+        "booking_cancellation",
+    ],
     "Vehicle Reminders": [
         "wof_expiry_reminder",
         "registration_expiry_reminder",
+        "service_due_reminder",
     ],
     "System Alerts": [
         "storage_warning_80",
@@ -741,3 +751,93 @@ class SendGridBounceEvent(BaseModel):
     sg_message_id: Optional[str] = Field(None, description="SendGrid message ID")
     timestamp: Optional[int] = Field(None, description="Unix timestamp of the event")
     reason: Optional[str] = Field(None, description="Bounce reason")
+
+
+# ---------------------------------------------------------------------------
+# Reminder rule schemas (Zoho-style configurable reminders)
+# ---------------------------------------------------------------------------
+
+VALID_REMINDER_TYPES: list[str] = [
+    "payment_due",
+    "payment_expected",
+    "invoice_issued",
+    "quote_expiry",
+    "service_due",
+    "custom",
+]
+
+VALID_TARGETS: list[str] = ["customer", "me", "both"]
+VALID_TIMINGS: list[str] = ["before", "after"]
+VALID_REFERENCE_DATES: list[str] = [
+    "due_date",
+    "expected_payment_date",
+    "invoice_date",
+    "quote_expiry_date",
+    "service_due_date",
+]
+
+# Manual reminders are informational — no DB config needed
+MANUAL_REMINDERS: list[dict[str, str]] = [
+    {
+        "id": "manual_overdue",
+        "name": "Reminder For Overdue Invoices",
+        "description": "You can send this reminder to your customers manually, from an overdue invoice's details page.",
+    },
+    {
+        "id": "manual_sent",
+        "name": "Reminder For Sent Invoices",
+        "description": "You can send this reminder to your customers manually, from a sent (but not overdue) invoice's details page.",
+    },
+]
+
+
+class ReminderRuleResponse(BaseModel):
+    """Single reminder rule."""
+
+    id: str
+    org_id: str
+    name: str
+    reminder_type: str
+    target: str
+    days_offset: int
+    timing: str
+    reference_date: str
+    send_email: bool
+    send_sms: bool
+    is_enabled: bool
+    sort_order: int
+
+
+class ReminderRulesListResponse(BaseModel):
+    """GET /notifications/reminders response."""
+
+    manual_reminders: list[dict] = Field(default_factory=list)
+    automated_reminders: list[ReminderRuleResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+class ReminderRuleCreateRequest(BaseModel):
+    """POST /notifications/reminders request."""
+
+    name: str = Field(..., min_length=1, max_length=100)
+    reminder_type: str = Field(..., description="Type: payment_due, payment_expected, etc.")
+    target: str = Field("customer", description="Who to remind: customer, me, both")
+    days_offset: int = Field(0, ge=0, le=365)
+    timing: str = Field("after", description="before or after the reference date")
+    reference_date: str = Field("due_date", description="Which date to base the reminder on")
+    send_email: bool = Field(True)
+    send_sms: bool = Field(False)
+    is_enabled: bool = Field(True)
+
+
+class ReminderRuleUpdateRequest(BaseModel):
+    """PUT /notifications/reminders/{id} request."""
+
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    target: Optional[str] = None
+    days_offset: Optional[int] = Field(None, ge=0, le=365)
+    timing: Optional[str] = None
+    reference_date: Optional[str] = None
+    send_email: Optional[bool] = None
+    send_sms: Optional[bool] = None
+    is_enabled: Optional[bool] = None

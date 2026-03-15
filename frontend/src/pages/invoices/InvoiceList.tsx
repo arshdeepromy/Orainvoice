@@ -1,14 +1,25 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import apiClient from '../../api/client'
-import { Button, Spinner, Modal } from '../../components/ui'
+import { Button, Spinner, Modal, Badge } from '../../components/ui'
 import { ModuleGate } from '../../components/common/ModuleGate'
+import { CreditNoteModal } from '../../components/invoices/CreditNoteModal'
+import { RefundModal } from '../../components/invoices/RefundModal'
+import {
+  computeCreditableAmount,
+  computePaymentSummary,
+  isCreditNoteButtonVisible,
+  isRefundButtonVisible,
+  getPaymentBadgeType,
+  shouldShowRefundNote,
+  formatNZD as formatNZDUtil,
+} from '../../components/invoices/refund-credit-note.utils'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type InvoiceStatus = 'draft' | 'issued' | 'partially_paid' | 'paid' | 'overdue' | 'voided'
+type InvoiceStatus = 'draft' | 'issued' | 'partially_paid' | 'paid' | 'overdue' | 'voided' | 'refunded' | 'partially_refunded'
 type BadgeVariant = 'success' | 'warning' | 'error' | 'info' | 'neutral'
 
 interface InvoiceSummary {
@@ -80,9 +91,11 @@ interface PaymentRecord {
   id: string
   date: string
   amount: number
-  method: 'cash' | 'stripe'
+  method: 'cash' | 'stripe' | 'eftpos' | 'bank_transfer' | 'card' | 'cheque'
   recorded_by: string
   note?: string
+  is_refund?: boolean
+  refund_note?: string
 }
 
 interface CreditNote {
@@ -105,6 +118,7 @@ interface InvoiceDetailData {
   vehicle_model?: string | null
   vehicle_year?: number | null
   vehicle_odometer?: number | null
+  additional_vehicles?: { rego: string; make?: string; model?: string; year?: number; wof_expiry?: string; odometer?: number }[]
   line_items: LineItem[]
   subtotal: number
   subtotal_ex_gst?: number
@@ -178,6 +192,8 @@ const STATUS_CONFIG: Record<InvoiceStatus, { label: string; variant: BadgeVarian
   paid: { label: 'PAID', variant: 'success', color: 'text-emerald-600' },
   overdue: { label: 'OVERDUE', variant: 'error', color: 'text-red-600' },
   voided: { label: 'VOIDED', variant: 'neutral', color: 'text-gray-400' },
+  refunded: { label: 'REFUNDED', variant: 'warning', color: 'text-orange-600' },
+  partially_refunded: { label: 'PARTIALLY REFUNDED', variant: 'warning', color: 'text-orange-600' },
 }
 
 const STATUS_OPTIONS = [
@@ -188,12 +204,14 @@ const STATUS_OPTIONS = [
   { value: 'paid', label: 'Paid' },
   { value: 'overdue', label: 'Overdue' },
   { value: 'voided', label: 'Voided' },
+  { value: 'refunded', label: 'Refunded' },
+  { value: 'partially_refunded', label: 'Partially Refunded' },
 ]
 
 const PAGE_SIZE = 25
 
 function getDueDateLabel(inv: InvoiceSummary): { text: string; className: string } | null {
-  if (inv.status === 'paid' || inv.status === 'voided' || inv.status === 'draft') return null
+  if (inv.status === 'paid' || inv.status === 'voided' || inv.status === 'draft' || inv.status === 'refunded' || inv.status === 'partially_refunded') return null
   if (!inv.due_date) return null
   const now = new Date()
   const due = new Date(inv.due_date)
@@ -336,6 +354,10 @@ export default function InvoiceList() {
   const [shareModalOpen, setShareModalOpen] = useState(false)
   const [shareUrl, setShareUrl] = useState('')
   const [shareCopied, setShareCopied] = useState(false)
+
+  /* Credit Note & Refund modals */
+  const [creditNoteModalOpen, setCreditNoteModalOpen] = useState(false)
+  const [refundModalOpen, setRefundModalOpen] = useState(false)
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
   const [deleteTargetNumber, setDeleteTargetNumber] = useState('')
@@ -601,7 +623,15 @@ export default function InvoiceList() {
   const isDraft = invoice?.status === 'draft'
   const isVoided = invoice?.status === 'voided'
   const canVoid = invoice && !isVoided && !isDraft
-  const canRecordPayment = invoice && !isVoided && invoice.status !== 'draft' && (invoice.balance_due ?? 0) > 0
+  const canRecordPayment = invoice && !isVoided && invoice.status !== 'draft' && invoice.status !== 'refunded' && invoice.status !== 'partially_refunded' && (invoice.balance_due ?? 0) > 0
+
+  /* Computed values for credit notes and refunds */
+  const creditableAmount = invoice ? computeCreditableAmount(
+    invoice.total,
+    (invoice.credit_notes || []).map(cn => cn.amount)
+  ) : 0
+  const paymentSummary = invoice ? computePaymentSummary(invoice.payments || []) : { totalPaid: 0, totalRefunded: 0, netPaid: 0 }
+  const refundableAmount = paymentSummary.netPaid
 
   return (
     <div className="flex h-full overflow-hidden bg-gray-50 -m-4 lg:-m-6">
@@ -934,6 +964,22 @@ export default function InvoiceList() {
                       >
                         Copy Link
                       </button>
+                      {invoice && isCreditNoteButtonVisible(invoice.status) && (
+                        <button
+                          onClick={() => { setCreditNoteModalOpen(true); setMoreMenuOpen(false) }}
+                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                        >
+                          Create Credit Note
+                        </button>
+                      )}
+                      {invoice && isRefundButtonVisible(invoice.amount_paid) && (
+                        <button
+                          onClick={() => { setRefundModalOpen(true); setMoreMenuOpen(false) }}
+                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                        >
+                          Process Refund
+                        </button>
+                      )}
                       {canVoid && (
                         <>
                           <div className="border-t border-gray-100 my-1" />
@@ -994,6 +1040,20 @@ export default function InvoiceList() {
             {isVoided && (
               <div className="mx-6 mt-3 rounded-lg bg-red-50 border border-red-200 px-4 py-2.5 text-sm text-red-700">
                 This invoice has been voided.{invoice.void_reason && <> Reason: {invoice.void_reason}</>}
+              </div>
+            )}
+
+            {/* Refund banner */}
+            {(invoice.status === 'refunded' || invoice.status === 'partially_refunded') && (
+              <div className="mx-6 mt-3 rounded-lg bg-orange-50 border border-orange-200 px-4 py-2.5 text-sm text-orange-800">
+                <div className="font-medium">
+                  {invoice.status === 'refunded' ? 'This invoice has been fully refunded.' : 'This invoice has been partially refunded.'}
+                </div>
+                {(invoice.payments || []).filter(p => p.is_refund).map((p, i) => (
+                  <div key={i} className="text-orange-700 mt-0.5">
+                    {formatNZDUtil(p.amount)} refunded via {p.method}{p.refund_note ? ` — ${p.refund_note}` : ''}
+                  </div>
+                ))}
               </div>
             )}
 
@@ -1143,6 +1203,39 @@ export default function InvoiceList() {
                       </div>
                     </div>
                   )}
+                  {/* Additional vehicles */}
+                  {invoice.additional_vehicles && invoice.additional_vehicles.length > 0 && (
+                    <div className="relative z-10 px-8 pb-2">
+                      {invoice.additional_vehicles.map((av, idx) => (
+                        <div key={av.rego || idx} className="bg-slate-50 rounded-lg border border-slate-200 px-5 py-2 mt-1">
+                          <div className="flex items-center gap-6 text-sm">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs text-gray-400 uppercase tracking-wider">Rego</span>
+                              <span className="font-mono font-bold text-gray-900 bg-yellow-100 px-2 py-0.5 rounded text-xs">{av.rego}</span>
+                            </div>
+                            {(av.make || av.model) && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs text-gray-400 uppercase tracking-wider">Vehicle</span>
+                                <span className="text-gray-900">{[av.year, av.make, av.model].filter(Boolean).join(' ') || '—'}</span>
+                              </div>
+                            )}
+                            {av.odometer ? (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs text-gray-400 uppercase tracking-wider">Odometer</span>
+                                <span className="text-gray-900">{Number(av.odometer).toLocaleString()} km</span>
+                              </div>
+                            ) : null}
+                            {av.wof_expiry && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs text-gray-400 uppercase tracking-wider">WOF Expiry</span>
+                                <span className="text-gray-900">{formatDate(av.wof_expiry)}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   </ModuleGate>
 
                   {/* Line items table */}
@@ -1224,12 +1317,43 @@ export default function InvoiceList() {
                               {formatNZD(invoice.total_incl_gst ?? invoice.total)}
                             </dd>
                           </div>
-                          {(invoice.amount_paid ?? 0) > 0 && (
+                          {paymentSummary.totalPaid > 0 && (
                             <div className="flex justify-between py-1 text-emerald-600">
                               <dt>Payments</dt>
-                              <dd className="tabular-nums">−{formatNZD(invoice.amount_paid)}</dd>
+                              <dd className="tabular-nums">−{formatNZDUtil(paymentSummary.totalPaid)}</dd>
                             </div>
                           )}
+                          {paymentSummary.totalRefunded > 0 && (
+                            <div className="flex justify-between py-1 text-red-600">
+                              <dt>Refunded</dt>
+                              <dd className="tabular-nums">+{formatNZDUtil(paymentSummary.totalRefunded)}</dd>
+                            </div>
+                          )}
+                          {paymentSummary.totalRefunded > 0 && (() => {
+                            const netRetained = paymentSummary.netPaid
+                            const netRetainedExGst = netRetained / 1.15
+                            const netGst = netRetained - netRetainedExGst
+                            return (
+                              <div className="border-t border-orange-200 mt-1 pt-1 space-y-1">
+                                <div className="flex justify-between py-0.5 text-xs text-gray-500 uppercase tracking-wider">
+                                  <dt>Adjusted after refund</dt>
+                                  <dd></dd>
+                                </div>
+                                <div className="flex justify-between py-0.5">
+                                  <dt className="text-gray-500">Net Amount (ex-GST)</dt>
+                                  <dd className="text-gray-900 tabular-nums">{formatNZDUtil(netRetainedExGst)}</dd>
+                                </div>
+                                <div className="flex justify-between py-0.5">
+                                  <dt className="text-gray-500">GST Collected (15%)</dt>
+                                  <dd className="text-gray-900 tabular-nums">{formatNZDUtil(netGst)}</dd>
+                                </div>
+                                <div className="flex justify-between py-0.5 font-semibold">
+                                  <dt className="text-gray-900">Net Total (incl. GST)</dt>
+                                  <dd className="text-gray-900 tabular-nums">{formatNZDUtil(netRetained)}</dd>
+                                </div>
+                              </div>
+                            )
+                          })()}
                           <div className="flex justify-between py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg px-4 -mx-4 font-bold">
                             <dt>Balance Due</dt>
                             <dd className="tabular-nums">{formatNZD(invoice.balance_due)}</dd>
@@ -1271,29 +1395,71 @@ export default function InvoiceList() {
                     <thead>
                       <tr className="border-b border-gray-100">
                         <th className="text-left py-2 text-xs text-gray-500 font-medium">Date</th>
+                        <th className="text-left py-2 text-xs text-gray-500 font-medium">Type</th>
                         <th className="text-right py-2 text-xs text-gray-500 font-medium">Amount</th>
                         <th className="text-left py-2 text-xs text-gray-500 font-medium">Method</th>
                         <th className="text-left py-2 text-xs text-gray-500 font-medium">Recorded By</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {(invoice.payments || []).map((p) => (
-                        <tr key={p.id} className="border-b border-gray-50">
-                          <td className="py-2 text-gray-900">{formatDate(p.date)}</td>
-                          <td className="py-2 text-right tabular-nums font-medium text-emerald-600">{formatNZD(p.amount)}</td>
-                          <td className="py-2 text-gray-700 capitalize">{p.method}</td>
-                          <td className="py-2 text-gray-700">{p.recorded_by}</td>
-                        </tr>
-                      ))}
+                      {(invoice.payments || []).map((p) => {
+                        const badgeType = getPaymentBadgeType(!!p.is_refund)
+                        return (
+                          <Fragment key={p.id}>
+                          <tr className="border-b border-gray-50">
+                            <td className="py-2 text-gray-900">{formatDate(p.date)}</td>
+                            <td className="py-2">
+                              <Badge variant={badgeType.color === 'green' ? 'success' : 'error'}>{badgeType.label}</Badge>
+                            </td>
+                            <td className={`py-2 text-right tabular-nums font-medium ${p.is_refund ? 'text-red-600' : 'text-emerald-600'}`}>{formatNZD(p.amount)}</td>
+                            <td className="py-2 text-gray-700 capitalize">{p.method}</td>
+                            <td className="py-2 text-gray-700">{p.recorded_by}</td>
+                          </tr>
+                          {shouldShowRefundNote(!!p.is_refund, p.refund_note) && (
+                            <tr>
+                              <td colSpan={5} className="py-1 text-sm text-gray-500 italic">
+                                Note: {p.refund_note}
+                              </td>
+                            </tr>
+                          )}
+                          </Fragment>
+                        )
+                      })}
                     </tbody>
                   </table>
+                  <div className="mt-3 flex justify-end">
+                    <dl className="w-56 space-y-1 text-sm">
+                      <div className="flex justify-between">
+                        <dt className="text-gray-500">Total Paid</dt>
+                        <dd className="text-gray-900 tabular-nums">{formatNZDUtil(paymentSummary.totalPaid)}</dd>
+                      </div>
+                      <div className="flex justify-between">
+                        <dt className="text-gray-500">Total Refunded</dt>
+                        <dd className="text-red-600 tabular-nums">{formatNZDUtil(paymentSummary.totalRefunded)}</dd>
+                      </div>
+                      <div className="flex justify-between border-t border-gray-200 pt-1 font-semibold">
+                        <dt className="text-gray-900">Net Paid</dt>
+                        <dd className="text-gray-900 tabular-nums">{formatNZDUtil(paymentSummary.netPaid)}</dd>
+                      </div>
+                    </dl>
+                  </div>
                 </div>
               )}
 
               {/* ---- Credit Notes ---- */}
               {(invoice.credit_notes || []).length > 0 && (
                 <div className="max-w-3xl mx-auto mt-4 bg-white rounded-xl shadow-sm border border-gray-200 p-5">
-                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Credit Notes</h3>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Credit Notes</h3>
+                    {isCreditNoteButtonVisible(invoice.status) && (
+                      <button
+                        onClick={() => setCreditNoteModalOpen(true)}
+                        className="text-xs font-medium text-blue-600 hover:text-blue-700"
+                      >
+                        + Create Credit Note
+                      </button>
+                    )}
+                  </div>
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-gray-100">
@@ -1313,6 +1479,15 @@ export default function InvoiceList() {
                         </tr>
                       ))}
                     </tbody>
+                    <tfoot>
+                      <tr className="border-t border-gray-200">
+                        <td className="py-2 text-sm font-medium text-gray-900">Total</td>
+                        <td className="py-2 text-right tabular-nums font-medium text-red-600">
+                          −{formatNZDUtil((invoice.credit_notes || []).reduce((sum, cn) => sum + cn.amount, 0))}
+                        </td>
+                        <td colSpan={2}></td>
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
               )}
@@ -1485,6 +1660,26 @@ export default function InvoiceList() {
           </Button>
         </div>
       </Modal>
+
+      {/* Credit Note & Refund Modals */}
+      {invoice && (
+        <>
+          <CreditNoteModal
+            open={creditNoteModalOpen}
+            onClose={() => setCreditNoteModalOpen(false)}
+            onSuccess={() => { fetchDetail(invoice.id); fetchInvoices(searchQuery, statusFilter, page) }}
+            invoiceId={invoice.id}
+            creditableAmount={creditableAmount}
+          />
+          <RefundModal
+            open={refundModalOpen}
+            onClose={() => setRefundModalOpen(false)}
+            onSuccess={() => { fetchDetail(invoice.id); fetchInvoices(searchQuery, statusFilter, page) }}
+            invoiceId={invoice.id}
+            refundableAmount={refundableAmount}
+          />
+        </>
+      )}
     </div>
   )
 }

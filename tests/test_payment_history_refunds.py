@@ -272,16 +272,16 @@ class TestProcessRefund:
             notes="Customer returned item",
         )
 
-        assert result["invoice_balance_due"] == Decimal("50.00")
+        assert result["invoice_balance_due"] == Decimal("0.00")
         assert result["invoice_amount_paid"] == Decimal("150.00")
-        assert result["invoice_status"] == "partially_paid"
+        assert result["invoice_status"] == "partially_refunded"
         assert result["stripe_refund_id"] is None
         assert "50" in result["message"]
         mock_audit.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("app.modules.payments.service.write_audit_log", new_callable=AsyncMock)
-    async def test_full_cash_refund_sets_issued(self, mock_audit):
+    async def test_full_cash_refund_sets_refunded(self, mock_audit):
         org_id = uuid.uuid4()
         user_id = uuid.uuid4()
         invoice = _make_invoice(
@@ -308,8 +308,8 @@ class TestProcessRefund:
         )
 
         assert result["invoice_amount_paid"] == Decimal("0.00")
-        assert result["invoice_balance_due"] == Decimal("100.00")
-        assert result["invoice_status"] == "issued"
+        assert result["invoice_balance_due"] == Decimal("0.00")
+        assert result["invoice_status"] == "refunded"
 
     @pytest.mark.asyncio
     @patch("app.integrations.stripe_connect.create_stripe_refund", new_callable=AsyncMock)
@@ -374,7 +374,7 @@ class TestProcessRefund:
         )
         assert result["stripe_refund_id"] == "re_test789"
         assert result["invoice_amount_paid"] == Decimal("150.00")
-        assert result["invoice_balance_due"] == Decimal("50.00")
+        assert result["invoice_balance_due"] == Decimal("0.00")
 
     @pytest.mark.asyncio
     async def test_rejects_refund_on_draft_invoice(self):

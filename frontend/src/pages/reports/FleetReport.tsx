@@ -22,8 +22,7 @@ interface FleetData {
 
 function defaultRange(): DateRange {
   const now = new Date()
-  const from = new Date(now)
-  from.setMonth(from.getMonth() - 3)
+  const from = new Date(now.getFullYear(), now.getMonth() - 3, 1)
   return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
 }
 
@@ -46,7 +45,7 @@ export default function FleetReport() {
     setError('')
     try {
       const res = await apiClient.get<FleetData>(`/reports/fleet/${fleetId}`, {
-        params: { from: range.from, to: range.to },
+        params: { start_date: range.from, end_date: range.to },
       })
       setData(res.data)
     } catch {
@@ -58,7 +57,7 @@ export default function FleetReport() {
 
   return (
     <div data-print-content>
-      <p className="text-sm text-gray-500 mb-4">
+      <p className="text-sm text-gray-500 mb-4 no-print">
         Fleet account report showing total spend, vehicles serviced, and outstanding balance.
       </p>
 
@@ -106,7 +105,7 @@ export default function FleetReport() {
 
           <div className="flex justify-end mb-4">
             <div className="flex items-center gap-2 no-print">
-              <ExportButtons endpoint={`/reports/fleet/${fleetId}`} params={{ from: range.from, to: range.to }} />
+              <ExportButtons endpoint={`/reports/fleet/${fleetId}`} params={{ start_date: range.from, end_date: range.to }} />
               <PrintButton label="Print Report" />
             </div>
           </div>
@@ -131,8 +130,8 @@ export default function FleetReport() {
                     </td>
                   </tr>
                 ) : (
-                  data.vehicles.map((v) => (
-                    <tr key={v.rego} className="hover:bg-gray-50">
+                  data.vehicles.map((v, i) => (
+                    <tr key={v.rego || i} className="hover:bg-gray-50">
                       <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-gray-900">{v.rego}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{v.make}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{v.model}</td>

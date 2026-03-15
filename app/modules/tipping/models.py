@@ -30,7 +30,7 @@ class Tip(Base):
         UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False,
     )
     invoice_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True,
+        UUID(as_uuid=True), ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True,
     )
     pos_transaction_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("pos_transactions.id"), nullable=True,

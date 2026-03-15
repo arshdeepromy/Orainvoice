@@ -322,6 +322,8 @@ async def carjam_usage_report(
 async def sms_usage_report(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
 ):
     """SMS usage for the organisation.
 
@@ -334,7 +336,11 @@ async def sms_usage_report(
     if not org_id:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
 
-    data = await get_sms_usage(db, org_id)
+    data = await get_sms_usage(
+        db, org_id,
+        date_from=_parse_date(start_date),
+        date_to=_parse_date(end_date),
+    )
     return SmsUsageResponse(**data)
 
 

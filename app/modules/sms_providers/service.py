@@ -116,6 +116,14 @@ async def save_provider_credentials(
     ip_address: str | None = None,
 ) -> dict | None:
     """Save encrypted credentials for a provider."""
+    # Guard: reject masked/placeholder values that were accidentally sent back
+    for key, val in credentials.items():
+        if isinstance(val, str) and "•" in val:
+            raise ValueError(
+                f"Credential field '{key}' contains masked placeholder characters. "
+                "Please re-enter the full value."
+            )
+
     result = await db.execute(
         select(SmsVerificationProvider).where(
             SmsVerificationProvider.provider_key == provider_key
@@ -125,7 +133,18 @@ async def save_provider_credentials(
     if provider is None:
         return None
 
-    encrypted = envelope_encrypt(json.dumps(credentials))
+    # Merge with existing credentials — only overwrite fields that were provided
+    # This allows updating just one field without wiping the others
+    existing_creds = {}
+    if provider.credentials_encrypted and provider.credentials_set:
+        try:
+            existing_creds = json.loads(envelope_decrypt_str(provider.credentials_encrypted))
+        except Exception:
+            pass  # If decryption fails, start fresh
+
+    merged = {**existing_creds, **{k: v for k, v in credentials.items() if v}}
+
+    encrypted = envelope_encrypt(json.dumps(merged))
     provider.credentials_encrypted = encrypted
     provider.credentials_set = True
     await db.flush()
@@ -306,18 +325,21 @@ async def _test_connexus(creds: dict, to_number: str, message: str) -> dict:
     config = ConnexusConfig.from_dict(creds)
     client = ConnexusSmsClient(config)
 
-    # First, check balance as a connectivity / auth test
-    balance_result = await client.check_balance()
-    if "error" in balance_result:
-        return {
-            "success": False,
-            "message": f"Connexus connectivity check failed: {balance_result['error']}",
-            "error": balance_result["error"],
-        }
+    try:
+        # First, check balance as a connectivity / auth test
+        balance_result = await client.check_balance()
+        if "error" in balance_result:
+            return {
+                "success": False,
+                "message": f"Connexus connectivity check failed: {balance_result['error']}",
+                "error": balance_result["error"],
+            }
 
-    # Send a test SMS — sender_id may be empty (uses WebSMS shared shortcode)
-    sms = SmsMessage(to_number=to_number, body=message, from_number=sender_id or None)
-    send_result = await client.send(sms)
+        # Send a test SMS — sender_id may be empty (uses WebSMS shared shortcode)
+        sms = SmsMessage(to_number=to_number, body=message, from_number=sender_id or None)
+        send_result = await client.send(sms)
+    finally:
+        await client.close()
 
     if send_result.success:
         balance_info = f" (Account balance: {balance_result.get('balance', 'N/A')} {balance_result.get('currency', 'NZD')})"

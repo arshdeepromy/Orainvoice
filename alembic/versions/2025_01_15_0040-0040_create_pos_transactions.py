@@ -46,7 +46,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["org_id"], ["organisations.id"], name="fk_pos_transactions_org_id"),
         sa.ForeignKeyConstraint(["session_id"], ["pos_sessions.id"], name="fk_pos_transactions_session_id"),
-        sa.ForeignKeyConstraint(["invoice_id"], ["invoices.id"], name="fk_pos_transactions_invoice_id"),
+        sa.ForeignKeyConstraint(["invoice_id"], ["invoices.id"], name="fk_pos_transactions_invoice_id", ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["customer_id"], ["customers.id"], name="fk_pos_transactions_customer_id"),
         sa.ForeignKeyConstraint(["created_by"], ["users.id"], name="fk_pos_transactions_created_by"),
         # NOTE: table_id FK to restaurant_tables is omitted — that table is created in Task 31.

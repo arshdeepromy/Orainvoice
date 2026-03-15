@@ -132,6 +132,8 @@ async def _send_sms_async(
                 return {"success": False, "error": "Connexus SMS provider not configured or active"}
 
             creds = json.loads(envelope_decrypt_str(provider.credentials_encrypted))
+            if provider.config and provider.config.get("token_refresh_interval_seconds"):
+                creds["token_refresh_interval_seconds"] = provider.config["token_refresh_interval_seconds"]
             config = ConnexusConfig.from_dict(creds)
             client = ConnexusSmsClient(config)
 
@@ -330,4 +332,29 @@ async def process_wof_rego_reminders_task() -> dict:
         return result
     except Exception as exc:
         logger.exception("Failed to process WOF/rego reminders: %s", exc)
+        return {"error": str(exc)}
+
+
+async def process_customer_reminders_task() -> dict:
+    """Process per-customer configured reminders (Service Due, WOF Expiry).
+
+    Called daily by scheduled task. Checks each customer's reminder_config
+    in custom_fields and sends notifications for upcoming vehicle expiry dates.
+    """
+    from app.core.database import async_session_factory
+    from app.modules.notifications.service import process_customer_reminders
+
+    try:
+        async with async_session_factory() as session:
+            async with session.begin():
+                result = await process_customer_reminders(session)
+        logger.info(
+            "Customer reminders processed: %d checked, %d sent, %d errors",
+            result.get("customers_checked", 0),
+            result.get("reminders_sent", 0),
+            result.get("errors", 0),
+        )
+        return result
+    except Exception as exc:
+        logger.exception("Failed to process customer reminders: %s", exc)
         return {"error": str(exc)}

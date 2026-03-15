@@ -7,7 +7,8 @@
 
 import { useEffect, useState, useCallback, useImperativeHandle, forwardRef } from 'react'
 import apiClient from '../../api/client'
-import { Badge, Button, Spinner, useToast } from '../../components/ui'
+import { Badge, Button, Spinner, useToast, ConfirmDialog } from '../../components/ui'
+import { useModules } from '../../contexts/ModuleContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -132,11 +133,16 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
   // raw calendar reference date (avoids timezone-shift issues when the
   // pre-computed startDate crosses a day boundary in UTC).
   const apiDate = calendarDate ?? startDate
+  const { isEnabled } = useModules()
+  const jobCardsEnabled = isEnabled('jobs')
   const [bookings, setBookings] = useState<BookingListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [cancellingId, setCancellingId] = useState<string | null>(null)
+  const [convertingId, setConvertingId] = useState<string | null>(null)
   const [flashId, setFlashId] = useState<string | null>(null)
+  const [confirmAction, setConfirmAction] = useState<{ type: 'cancel' | 'invoice'; booking: BookingListItem } | null>(null)
+  const [activeTab, setActiveTab] = useState<'scheduled' | 'completed'>('scheduled')
   const { addToast } = useToast()
 
   /** Expose markConverted to parent via ref */
@@ -182,10 +188,8 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
 
   /* ---- Cancel action ---- */
   const handleCancel = async (booking: BookingListItem) => {
-    if (!window.confirm(`Cancel booking for ${booking.customer_name ?? 'this customer'}?`)) {
-      return
-    }
     setCancellingId(booking.id)
+    setConfirmAction(null)
     try {
       await apiClient.put(`/bookings/${booking.id}`, { status: 'cancelled' })
       addToast('success', 'Booking cancelled.')
@@ -195,6 +199,27 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
       addToast('error', detail ?? 'Failed to cancel booking.')
     } finally {
       setCancellingId(null)
+    }
+  }
+
+  /* ---- Confirm & Invoice (when job_cards module is disabled) ---- */
+  const handleConfirmInvoice = async (booking: BookingListItem) => {
+    setConvertingId(booking.id)
+    setConfirmAction(null)
+    try {
+      const res = await apiClient.post<{ booking_id: string; created_id: string; message: string }>(
+        `/bookings/${booking.id}/convert`,
+        null,
+        { params: { target: 'invoice' } },
+      )
+      addToast('success', 'Draft invoice created — redirecting to edit.')
+      // Navigate to invoice edit page so user can review/adjust line items
+      window.location.href = `/invoices/${res.data.created_id}/edit`
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      addToast('error', detail ?? 'Failed to create invoice.')
+    } finally {
+      setConvertingId(null)
     }
   }
 
@@ -217,6 +242,16 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
     )
   }
 
+  const SCHEDULED_STATUSES = new Set(['pending', 'scheduled', 'confirmed'])
+  const COMPLETED_STATUSES = new Set(['completed', 'cancelled', 'no_show'])
+
+  const filteredBookings = bookings.filter((b) =>
+    activeTab === 'scheduled' ? SCHEDULED_STATUSES.has(b.status) : COMPLETED_STATUSES.has(b.status)
+  )
+
+  const scheduledCount = bookings.filter((b) => SCHEDULED_STATUSES.has(b.status)).length
+  const completedCount = bookings.filter((b) => COMPLETED_STATUSES.has(b.status)).length
+
   if (bookings.length === 0) {
     return (
       <div className="mt-6 py-8 text-center text-sm text-gray-500">
@@ -229,7 +264,38 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
     <div className="mt-6">
       <h2 className="text-lg font-medium text-gray-900 mb-3">Bookings</h2>
 
-      <div className="overflow-x-auto rounded-lg border border-gray-200">
+      {/* Tabs */}
+      <div className="flex border-b border-gray-200 mb-0">
+        <button
+          type="button"
+          onClick={() => setActiveTab('scheduled')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === 'scheduled'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+          }`}
+        >
+          Scheduled ({scheduledCount})
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('completed')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === 'completed'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+          }`}
+        >
+          Completed ({completedCount})
+        </button>
+      </div>
+
+      {filteredBookings.length === 0 ? (
+        <div className="py-8 text-center text-sm text-gray-500">
+          No {activeTab} bookings for this period.
+        </div>
+      ) : (
+      <div className="overflow-x-auto rounded-b-lg border border-gray-200 border-t-0">
         <table className="min-w-full divide-y divide-gray-200" role="table">
           <thead className="bg-gray-50">
             <tr>
@@ -242,7 +308,7 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 bg-white">
-            {bookings.map((b) => {
+            {filteredBookings.map((b) => {
               const badge = STATUS_BADGE[b.status] ?? STATUS_BADGE.pending
               const muted = isMuted(b.status)
               const actionable = canActOnBooking(b)
@@ -273,19 +339,31 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
                           <Button
                             size="sm"
                             variant="danger"
-                            onClick={() => handleCancel(b)}
+                            onClick={() => setConfirmAction({ type: 'cancel', booking: b })}
                             loading={cancellingId === b.id}
                             disabled={cancellingId === b.id}
                           >
                             Cancel
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="primary"
-                            onClick={() => onCreateJob?.(b)}
-                          >
-                            Create Job
-                          </Button>
+                          {jobCardsEnabled ? (
+                            <Button
+                              size="sm"
+                              variant="primary"
+                              onClick={() => onCreateJob?.(b)}
+                            >
+                              Create Job
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="primary"
+                              onClick={() => setConfirmAction({ type: 'invoice', booking: b })}
+                              loading={convertingId === b.id}
+                              disabled={convertingId === b.id}
+                            >
+                              Confirm &amp; Invoice
+                            </Button>
+                          )}
                         </>
                       )}
                       {b.converted_job_id != null && (
@@ -304,6 +382,26 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
           </tbody>
         </table>
       </div>
+      )}
+
+      <ConfirmDialog
+        open={confirmAction !== null}
+        title={confirmAction?.type === 'cancel' ? 'Cancel Booking' : 'Confirm & Invoice'}
+        message={
+          confirmAction?.type === 'cancel'
+            ? `Are you sure you want to cancel the booking for ${confirmAction.booking.customer_name ?? 'this customer'}?`
+            : `Confirm booking and create invoice for ${confirmAction?.booking.customer_name ?? 'this customer'}?`
+        }
+        confirmLabel={confirmAction?.type === 'cancel' ? 'Yes, Cancel' : 'Confirm & Invoice'}
+        variant={confirmAction?.type === 'cancel' ? 'danger' : 'primary'}
+        loading={cancellingId !== null || convertingId !== null}
+        onConfirm={() => {
+          if (!confirmAction) return
+          if (confirmAction.type === 'cancel') handleCancel(confirmAction.booking)
+          else handleConfirmInvoice(confirmAction.booking)
+        }}
+        onCancel={() => setConfirmAction(null)}
+      />
     </div>
   )
 })

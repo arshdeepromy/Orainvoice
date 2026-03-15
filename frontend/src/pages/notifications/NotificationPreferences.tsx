@@ -137,6 +137,10 @@ export default function NotificationPreferences() {
           .filter((group) => {
             // Hide "Vehicle Reminders" when vehicles module is disabled
             if (group.category === 'Vehicle Reminders' && !isEnabled('vehicles')) return false
+            // Hide "Bookings" when bookings module is disabled
+            if (group.category === 'Bookings' && !isEnabled('bookings')) return false
+            // Hide "Quotes" when quotes module is disabled
+            if (group.category === 'Quotes' && !isEnabled('quotes')) return false
             return true
           })
           .map((group) => (

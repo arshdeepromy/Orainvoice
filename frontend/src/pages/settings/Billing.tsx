@@ -216,7 +216,7 @@ function StorageUsage({
     <div className="rounded-lg border border-gray-200 p-5">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-lg font-semibold text-gray-900">Storage</h3>
-        <Button size="sm" variant="secondary" onClick={onPurchaseAddon}>
+        <Button size="sm" variant="secondary" disabled title="Requires Stripe billing integration">
           Buy more storage
         </Button>
       </div>
@@ -393,8 +393,6 @@ export function Billing() {
   const [billing, setBilling] = useState<BillingData | null>(null)
   const [invoices, setInvoices] = useState<PastInvoice[]>([])
   const [loading, setLoading] = useState(true)
-  const [addonOpen, setAddonOpen] = useState(false)
-  const [purchasing, setPurchasing] = useState(false)
   const { toasts, addToast, dismissToast } = useToast()
 
   const fetchBilling = async () => {
@@ -417,49 +415,6 @@ export function Billing() {
   }
 
   useEffect(() => { fetchBilling() }, [])
-
-  const handleUpdatePayment = async () => {
-    try {
-      const { data } = await apiClient.put<{ url: string }>('/billing/payment-method')
-      window.open(data.url, '_blank', 'noopener,noreferrer')
-    } catch {
-      addToast('error', 'Could not open payment settings. Please try again.')
-    }
-  }
-
-  const handleUpgrade = async () => {
-    try {
-      await apiClient.post('/billing/upgrade')
-      addToast('success', 'Plan upgrade started')
-      fetchBilling()
-    } catch {
-      addToast('error', 'Failed to start upgrade. Please try again.')
-    }
-  }
-
-  const handleDowngrade = async () => {
-    try {
-      await apiClient.post('/billing/downgrade')
-      addToast('success', 'Your plan will downgrade at the start of your next billing period')
-      fetchBilling()
-    } catch {
-      addToast('error', 'Failed to start downgrade. Please try again.')
-    }
-  }
-
-  const handlePurchaseStorage = async (gb: number) => {
-    setPurchasing(true)
-    try {
-      await apiClient.post('/billing/storage/purchase', { additional_gb: gb })
-      addToast('success', `Added ${gb} GB of storage`)
-      setAddonOpen(false)
-      fetchBilling()
-    } catch {
-      addToast('error', 'Failed to purchase storage. Please try again.')
-    } finally {
-      setPurchasing(false)
-    }
-  }
 
   if (loading) {
     return (
@@ -524,27 +479,23 @@ export function Billing() {
 
         {/* Actions */}
         <div className="flex flex-wrap gap-3">
-          <Button onClick={handleUpdatePayment} variant="secondary">
+          <Button variant="secondary" disabled title="Stripe integration coming soon — payment method management will be available once Stripe is connected">
             Update payment method
           </Button>
-          <Button onClick={handleUpgrade}>Upgrade plan</Button>
-          <Button onClick={handleDowngrade} variant="secondary">
+          <Button disabled title="Plan upgrades coming soon — requires Stripe billing integration">
+            Upgrade plan
+          </Button>
+          <Button variant="secondary" disabled title="Plan downgrades coming soon — requires Stripe billing integration">
             Downgrade plan
           </Button>
         </div>
+        <p className="text-xs text-gray-500 mt-1">
+          Payment method and plan management will be available once Stripe billing integration is complete.
+        </p>
 
         {/* Past invoices */}
         <PastInvoices invoices={invoices} />
       </div>
-
-      {/* Storage add-on modal */}
-      <StorageAddonModal
-        open={addonOpen}
-        onClose={() => setAddonOpen(false)}
-        pricePerGb={billing.storage_addon_price_per_gb}
-        onConfirm={handlePurchaseStorage}
-        purchasing={purchasing}
-      />
     </div>
   )
 }

@@ -271,10 +271,49 @@
           <td style="text-align:right; color:#1a1a1a;">NZD{{ "%.2f" | format(invoice.total | float) }}</td>
         </tr>
         {% if invoice.amount_paid and invoice.amount_paid > 0 %}
+        {% set total_paid = namespace(val=0) %}
+        {% set total_refunded = namespace(val=0) %}
+        {% if invoice.payments %}
+          {% for p in invoice.payments %}
+            {% if p.is_refund %}
+              {% set total_refunded.val = total_refunded.val + (p.amount | float) %}
+            {% else %}
+              {% set total_paid.val = total_paid.val + (p.amount | float) %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {% if total_paid.val > 0 %}
         <tr>
           <td style="color:#059669;">Payments</td>
-          <td style="text-align:right; color:#059669;">&minus;NZD{{ "%.2f" | format(invoice.amount_paid | float) }}</td>
+          <td style="text-align:right; color:#059669;">&minus;NZD{{ "%.2f" | format(total_paid.val) }}</td>
         </tr>
+        {% endif %}
+        {% if total_refunded.val > 0 %}
+        <tr>
+          <td style="color:#dc2626;">Refunded</td>
+          <td style="text-align:right; color:#dc2626;">+NZD{{ "%.2f" | format(total_refunded.val) }}</td>
+        </tr>
+        {% set net_retained = total_paid.val - total_refunded.val %}
+        {% set net_ex_gst = net_retained / 1.15 %}
+        {% set net_gst = net_retained - net_ex_gst %}
+        <tr><td colspan="2" style="padding-top:6px; border-top:1px solid #fed7aa;"></td></tr>
+        <tr>
+          <td style="color:#888; font-size:8pt; text-transform:uppercase; letter-spacing:0.5px;">Adjusted after refund</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td class="lbl">Net Amount (ex-GST)</td>
+          <td class="val">{{ "%.2f" | format(net_ex_gst) }}</td>
+        </tr>
+        <tr>
+          <td class="lbl">GST Collected ({{ gst_percentage }}%)</td>
+          <td class="val">{{ "%.2f" | format(net_gst) }}</td>
+        </tr>
+        <tr>
+          <td style="color:#1a1a1a; font-weight:700;">Net Total (incl. GST)</td>
+          <td style="text-align:right; color:#1a1a1a; font-weight:700;">NZD{{ "%.2f" | format(net_retained) }}</td>
+        </tr>
+        {% endif %}
         {% endif %}
       </table>
       <!-- Balance Due bar -->
@@ -297,6 +336,14 @@
 <div style="text-align:center; margin:14px 0; padding:8px; background:#dcfce7; border:1px solid #4ade80; border-radius:6px; font-weight:700; color:#166534; font-size:10pt;">
   PAID IN FULL
 </div>
+{% elif invoice.status == 'refunded' %}
+<div style="text-align:center; margin:14px 0; padding:8px; background:#fff7ed; border:1px solid #fb923c; border-radius:6px; font-weight:700; color:#9a3412; font-size:10pt;">
+  REFUNDED
+</div>
+{% elif invoice.status == 'partially_refunded' %}
+<div style="text-align:center; margin:14px 0; padding:8px; background:#fff7ed; border:1px solid #fb923c; border-radius:6px; font-weight:700; color:#9a3412; font-size:10pt;">
+  PARTIALLY REFUNDED
+</div>
 {% elif invoice.status == 'voided' %}
 <div style="text-align:center; margin:14px 0; padding:8px; background:#fce4ec; border:1px solid #f87171; border-radius:6px; font-weight:700; color:#991b1b; font-size:10pt;">
   VOIDED{% if invoice.void_reason %} &mdash; {{ invoice.void_reason }}{% endif %}
@@ -304,6 +351,50 @@
 {% elif invoice.status == 'overdue' %}
 <div style="text-align:center; margin:14px 0; padding:8px; background:#fff7ed; border:1px solid #fb923c; border-radius:6px; font-weight:700; color:#9a3412; font-size:10pt;">
   OVERDUE
+</div>
+{% endif %}
+
+<!-- ============================================================ -->
+<!--  PAYMENT HISTORY (shown when payments exist)                  -->
+<!-- ============================================================ -->
+{% if invoice.payments and invoice.payments | length > 0 %}
+<div style="margin-top:14px;">
+  <div class="section-title">Payment History</div>
+  <table style="width:100%; font-size:9pt; border-collapse:collapse; margin-top:6px;">
+    <thead>
+      <tr style="border-bottom:1px solid #ddd;">
+        <th style="text-align:left; padding:4px 8px; color:#888; font-size:8pt; text-transform:uppercase;">Date</th>
+        <th style="text-align:left; padding:4px 8px; color:#888; font-size:8pt; text-transform:uppercase;">Type</th>
+        <th style="text-align:right; padding:4px 8px; color:#888; font-size:8pt; text-transform:uppercase;">Amount</th>
+        <th style="text-align:left; padding:4px 8px; color:#888; font-size:8pt; text-transform:uppercase;">Method</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in invoice.payments %}
+      <tr style="border-bottom:1px solid #f0f0f0;">
+        <td style="padding:6px 8px;">{{ p.date or '' }}</td>
+        <td style="padding:6px 8px;">
+          {% if p.is_refund %}
+            <span style="color:#dc2626; font-weight:600;">Refund</span>
+          {% else %}
+            <span style="color:#059669; font-weight:600;">Payment</span>
+          {% endif %}
+        </td>
+        <td style="text-align:right; padding:6px 8px; font-weight:600; {{ 'color:#dc2626;' if p.is_refund else 'color:#1a1a1a;' }}">
+          NZD{{ "%.2f" | format(p.amount | float) }}
+        </td>
+        <td style="padding:6px 8px; text-transform:capitalize;">{{ p.method }}</td>
+      </tr>
+      {% if p.is_refund and p.refund_note %}
+      <tr>
+        <td colspan="4" style="padding:2px 8px 6px 8px; font-size:8pt; color:#666; font-style:italic;">
+          Reason: {{ p.refund_note }}
+        </td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
 </div>
 {% endif %}
 

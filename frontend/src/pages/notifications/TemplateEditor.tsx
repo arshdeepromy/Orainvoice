@@ -34,7 +34,7 @@ const TEMPLATE_VARIABLES_BASE = [
   { variable: '{{invoice_number}}', description: 'Invoice number' },
   { variable: '{{total_due}}', description: 'Total amount due' },
   { variable: '{{due_date}}', description: 'Invoice due date' },
-  { variable: '{{payment_link}}', description: 'Stripe payment link' },
+  { variable: '{{payment_link}}', description: 'Online payment link (coming soon)' },
   { variable: '{{org_name}}', description: 'Organisation name' },
   { variable: '{{org_phone}}', description: 'Organisation phone' },
   { variable: '{{org_email}}', description: 'Organisation email' },

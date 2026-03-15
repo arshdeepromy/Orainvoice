@@ -226,7 +226,7 @@ class Invoice(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('draft','issued','partially_paid','paid','overdue','voided')",
+            "status IN ('draft','issued','partially_paid','paid','overdue','voided','refunded','partially_refunded')",
             name="ck_invoices_status",
         ),
         CheckConstraint(
@@ -251,9 +251,13 @@ class Invoice(Base):
         order_by="LineItem.sort_order",
     )
     credit_notes: Mapped[list[CreditNote]] = relationship(
-        back_populates="invoice"
+        back_populates="invoice",
+        cascade="all, delete-orphan",
     )
-    payments: Mapped[list["Payment"]] = relationship(back_populates="invoice")
+    payments: Mapped[list["Payment"]] = relationship(
+        back_populates="invoice",
+        cascade="all, delete-orphan",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +360,7 @@ class CreditNote(Base):
         UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False
     )
     invoice_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("invoices.id", ondelete="CASCADE"), nullable=False
     )
     credit_note_number: Mapped[str] = mapped_column(
         String(50), nullable=False

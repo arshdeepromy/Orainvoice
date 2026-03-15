@@ -61,7 +61,7 @@ export default function SmsUsage() {
     try {
       const [usageRes, pkgRes] = await Promise.all([
         apiClient.get<SmsUsageData>('/reports/sms-usage', {
-          params: { from: range.from, to: range.to },
+          params: { start_date: range.from, end_date: range.to },
         }),
         apiClient.get<SmsPackage[]>('/org/sms-packages'),
       ])
@@ -107,12 +107,12 @@ export default function SmsUsage() {
 
   return (
     <div data-print-content>
-      <p className="text-sm text-gray-500 mb-4">SMS usage, overage charges, and package credits.</p>
+      <p className="text-sm text-gray-500 mb-4 no-print">SMS usage, overage charges, and package credits.</p>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-6 no-print">
         <DateRangeFilter value={range} onChange={setRange} />
         <div className="flex items-center gap-2">
-          <ExportButtons endpoint="/reports/sms-usage" params={{ from: range.from, to: range.to }} />
+          <ExportButtons endpoint="/reports/sms-usage" params={{ start_date: range.from, end_date: range.to }} />
           <PrintButton label="Print Report" />
         </div>
       </div>

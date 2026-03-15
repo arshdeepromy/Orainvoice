@@ -369,7 +369,7 @@ export default function JobCardCreate() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className="px-4 py-6 sm:px-6 lg:px-8">
       <div className="flex items-center gap-3 mb-6">
         <button onClick={() => { window.location.href = '/job-cards' }}
           className="rounded p-1 text-gray-400 hover:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"

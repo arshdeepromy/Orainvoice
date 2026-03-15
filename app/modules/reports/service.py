@@ -61,6 +61,7 @@ async def get_revenue_summary(
     """Revenue summary for the organisation within the date range.
 
     Excludes voided invoices from revenue reporting (Req 19.7).
+    Accounts for refunds (credit notes + refund payments) in the period.
     """
     result = await db.execute(
         select(
@@ -80,13 +81,54 @@ async def get_revenue_summary(
     row = result.one()
     count = row.invoice_count or 0
     total_rev = Decimal(str(row.total_inclusive or 0))
+    total_revenue_ex = Decimal(str(row.total_revenue or 0))
+    total_gst = Decimal(str(row.total_gst or 0))
     avg = (total_rev / count) if count > 0 else Decimal("0")
+
+    # Refunds: credit notes + refund payments in the period
+    cn_result = await db.execute(
+        select(
+            func.coalesce(func.sum(CreditNote.amount), 0).label("cn_refunds"),
+        )
+        .where(
+            CreditNote.org_id == org_id,
+            func.date(CreditNote.created_at) >= period_start,
+            func.date(CreditNote.created_at) <= period_end,
+        )
+    )
+    cn_refunds = Decimal(str(cn_result.scalar() or 0))
+
+    pay_refund_result = await db.execute(
+        select(
+            func.coalesce(func.sum(Payment.amount), 0).label("pay_refunds"),
+        )
+        .where(
+            Payment.org_id == org_id,
+            Payment.is_refund == True,  # noqa: E712
+            func.date(Payment.created_at) >= period_start,
+            func.date(Payment.created_at) <= period_end,
+        )
+    )
+    pay_refunds = Decimal(str(pay_refund_result.scalar() or 0))
+
+    total_refunds = cn_refunds + pay_refunds
+    gst_rate = Decimal("3") / Decimal("23")
+    refund_gst = (total_refunds * gst_rate).quantize(Decimal("0.01"))
+    refund_ex_gst = total_refunds - refund_gst
+
+    net_revenue = total_revenue_ex - refund_ex_gst
+    net_gst = total_gst - refund_gst
+
     return {
-        "total_revenue": Decimal(str(row.total_revenue or 0)),
-        "total_gst": Decimal(str(row.total_gst or 0)),
+        "total_revenue": total_revenue_ex,
+        "total_gst": total_gst,
         "total_inclusive": total_rev,
         "invoice_count": count,
         "average_invoice": avg.quantize(Decimal("0.01")),
+        "total_refunds": total_refunds,
+        "refund_gst": refund_gst,
+        "net_revenue": net_revenue,
+        "net_gst": net_gst,
         "period_start": period_start,
         "period_end": period_end,
     }
@@ -246,6 +288,8 @@ async def get_gst_return(
     """GST return summary formatted for IRD filing.
 
     Separates standard-rated and zero-rated (GST-exempt) line items.
+    Accounts for refunds/credit notes processed within the period,
+    using the credit note's created_at date (not the original invoice date).
     Req 45.6
     """
     # Standard-rated items (not GST-exempt)
@@ -300,14 +344,57 @@ async def get_gst_return(
     total_gst = Decimal(str(gst_row.total_gst or 0))
     total_sales = Decimal(str(gst_row.total_sales or 0))
 
-    # Standard-rated GST = total GST (zero-rated items contribute 0 GST)
+    # Refunds processed within the period — from both sources:
+    # 1. Credit notes (created via credit note flow)
+    # 2. Refund payments (created via process_refund with is_refund=True)
+    cn_result = await db.execute(
+        select(
+            func.coalesce(func.sum(CreditNote.amount), 0).label("cn_refunds"),
+        )
+        .where(
+            CreditNote.org_id == org_id,
+            func.date(CreditNote.created_at) >= period_start,
+            func.date(CreditNote.created_at) <= period_end,
+        )
+    )
+    cn_refunds = Decimal(str(cn_result.scalar() or 0))
+
+    pay_refund_result = await db.execute(
+        select(
+            func.coalesce(func.sum(Payment.amount), 0).label("pay_refunds"),
+        )
+        .where(
+            Payment.org_id == org_id,
+            Payment.is_refund == True,  # noqa: E712
+            func.date(Payment.created_at) >= period_start,
+            func.date(Payment.created_at) <= period_end,
+        )
+    )
+    pay_refunds = Decimal(str(pay_refund_result.scalar() or 0))
+
+    total_refunds = cn_refunds + pay_refunds
+
+    # GST component of refunds: refund amounts are GST-inclusive at 15%
+    # GST portion = refund_amount * 3/23 (i.e. 15/115)
+    gst_rate = Decimal("3") / Decimal("23")
+    refund_gst = (total_refunds * gst_rate).quantize(Decimal("0.01"))
+
+    # Adjusted figures
+    adjusted_total_sales = total_sales - total_refunds
+    adjusted_gst = total_gst - refund_gst
+    adjusted_std_gst = total_gst - refund_gst
+
     return {
         "total_sales": total_sales,
         "total_gst_collected": total_gst,
-        "net_gst": total_gst,  # simplified — no input tax credits in scope
+        "net_gst": adjusted_gst,
         "standard_rated_sales": std_sales,
-        "standard_rated_gst": total_gst,
+        "standard_rated_gst": adjusted_std_gst,
         "zero_rated_sales": zero_sales,
+        "total_refunds": total_refunds,
+        "refund_gst": refund_gst,
+        "adjusted_total_sales": adjusted_total_sales,
+        "adjusted_gst_collected": adjusted_gst,
         "period_start": period_start,
         "period_end": period_end,
     }
@@ -445,33 +532,16 @@ async def get_carjam_usage(
     # Get org plan info
     result = await db.execute(
         select(
-            Organisation.carjam_lookups_this_month,
-            Organisation.carjam_lookups_reset_at,
             SubscriptionPlan.carjam_lookups_included,
         )
+        .select_from(Organisation)
         .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
         .where(Organisation.id == org_id)
     )
     row = result.one_or_none()
+    included = (row.carjam_lookups_included or 0) if row else 0
 
-    if not row:
-        return {
-            "total_lookups": 0,
-            "included_in_plan": 0,
-            "overage_lookups": 0,
-            "overage_charge": 0.0,
-            "daily_breakdown": [],
-        }
-
-    lookups = row.carjam_lookups_this_month or 0
-    included = row.carjam_lookups_included or 0
-    overage = max(0, lookups - included)
-
-    # Get per-lookup cost for overage charge
-    per_lookup_cost = await get_carjam_per_lookup_cost(db)
-    overage_charge = round(overage * per_lookup_cost, 2)
-
-    # Daily breakdown from audit log
+    # Default date range
     if not date_from:
         now = datetime.now(timezone.utc)
         date_from = date(now.year, now.month, 1)
@@ -484,17 +554,34 @@ async def get_carjam_usage(
         "vehicle.carjam_basic_lookup",
         "vehicle.carjam_lookup",
     ]
+
+    date_filter = [
+        AuditLog.org_id == org_id,
+        AuditLog.action.in_(carjam_actions),
+        AuditLog.created_at >= datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc),
+        AuditLog.created_at <= datetime.combine(date_to, datetime.max.time(), tzinfo=timezone.utc),
+    ]
+
+    # Total lookups within the date range (from audit log)
+    total_result = await db.execute(
+        select(func.count()).select_from(AuditLog).where(*date_filter)
+    )
+    lookups = total_result.scalar() or 0
+
+    overage = max(0, lookups - included)
+    try:
+        per_lookup_cost = await get_carjam_per_lookup_cost(db)
+    except Exception:
+        per_lookup_cost = 0.0
+    overage_charge = round(overage * per_lookup_cost, 2)
+
+    # Daily breakdown
     daily_result = await db.execute(
         select(
             func.date(AuditLog.created_at).label("day"),
             func.count().label("count"),
         )
-        .where(
-            AuditLog.org_id == org_id,
-            AuditLog.action.in_(carjam_actions),
-            AuditLog.created_at >= datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc),
-            AuditLog.created_at <= datetime.combine(date_to, datetime.max.time(), tzinfo=timezone.utc),
-        )
+        .where(*date_filter)
         .group_by(func.date(AuditLog.created_at))
         .order_by(func.date(AuditLog.created_at))
     )
@@ -520,42 +607,91 @@ async def get_carjam_usage(
 async def get_sms_usage(
     db: AsyncSession,
     org_id: uuid.UUID,
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> dict:
-    """SMS usage for the organisation.
+    """SMS usage for the organisation within the date range.
 
-    Delegates to the admin service's get_org_sms_usage and adds reset_at.
+    Counts outbound messages from sms_messages table filtered by date.
     Requirements: 7.1
     """
-    from app.modules.admin.service import get_org_sms_usage
+    from app.modules.sms_chat.models import SmsMessage
+    from app.modules.admin.service import get_sms_per_message_cost
+    from sqlalchemy import text as _text
 
+    # Default date range: current month
+    if not date_from:
+        now = datetime.now(timezone.utc)
+        date_from = date(now.year, now.month, 1)
+    if not date_to:
+        date_to = datetime.now(timezone.utc).date()
+
+    # Count outbound messages in the date range using raw SQL to bypass RLS.
+    # Two sources: sms_messages (chat sends) + notification_log (notification/reminder SMS)
+    start_dt = datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc)
+    end_dt = datetime.combine(date_to, datetime.max.time(), tzinfo=timezone.utc)
+
+    msg_result = await db.execute(
+        _text(
+            "SELECT "
+            "  (SELECT COUNT(*) FROM sms_messages "
+            "   WHERE org_id = :oid AND direction = 'outbound' "
+            "   AND created_at >= :start AND created_at <= :end_dt) "
+            "+ (SELECT COUNT(*) FROM notification_log "
+            "   WHERE org_id = :oid AND channel = 'sms' "
+            "   AND status != 'failed' "
+            "   AND created_at >= :start AND created_at <= :end_dt) "
+            "AS total"
+        ),
+        {"oid": str(org_id), "start": start_dt, "end_dt": end_dt},
+    )
+    total_sent = int(msg_result.scalar() or 0)
+
+    # Get plan included quota
+    result = await db.execute(
+        select(
+            SubscriptionPlan.sms_included,
+            SubscriptionPlan.sms_included_quota,
+        )
+        .select_from(Organisation)
+        .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
+        .where(Organisation.id == org_id)
+    )
+    row = result.one_or_none()
+    sms_enabled = bool(row.sms_included) if row else False
+    included = (row.sms_included_quota or 0) if row and sms_enabled else 0
+
+    # Sum package credits from SmsPackagePurchase
+    from app.modules.admin.models import SmsPackagePurchase
+    pkg_result = await db.execute(
+        select(
+            func.coalesce(func.sum(SmsPackagePurchase.credits_remaining), 0)
+        ).where(SmsPackagePurchase.org_id == org_id)
+    )
+    package_credits = int(pkg_result.scalar() or 0)
+    effective_quota = (included + package_credits) if sms_enabled else 0
+
+    overage = max(0, total_sent - effective_quota)
     try:
-        usage = await get_org_sms_usage(db, org_id)
-    except ValueError:
-        return {
-            "total_sent": 0,
-            "included_in_plan": 0,
-            "package_credits_remaining": 0,
-            "effective_quota": 0,
-            "overage_count": 0,
-            "overage_charge_nzd": 0.0,
-            "per_sms_cost_nzd": 0.0,
-            "reset_at": None,
-        }
+        per_sms_cost = await get_sms_per_message_cost(db)
+    except Exception:
+        per_sms_cost = 0.0
+    overage_charge = round(overage * per_sms_cost, 2)
 
     # Fetch reset_at from the organisation record
-    result = await db.execute(
+    reset_result = await db.execute(
         select(Organisation.sms_sent_reset_at).where(Organisation.id == org_id)
     )
-    reset_at = result.scalar()
+    reset_at = reset_result.scalar()
 
     return {
-        "total_sent": usage["total_sent"],
-        "included_in_plan": usage["included_in_plan"],
-        "package_credits_remaining": usage["package_credits_remaining"],
-        "effective_quota": usage["effective_quota"],
-        "overage_count": usage["overage_count"],
-        "overage_charge_nzd": usage["overage_charge_nzd"],
-        "per_sms_cost_nzd": usage["per_sms_cost_nzd"],
+        "total_sent": total_sent,
+        "included_in_plan": included,
+        "package_credits_remaining": package_credits,
+        "effective_quota": effective_quota,
+        "overage_count": overage,
+        "overage_charge_nzd": overage_charge,
+        "per_sms_cost_nzd": per_sms_cost,
         "reset_at": reset_at,
     }
 

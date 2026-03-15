@@ -73,7 +73,7 @@ class POSTransaction(Base):
         UUID(as_uuid=True), ForeignKey("pos_sessions.id"), nullable=True,
     )
     invoice_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True,
+        UUID(as_uuid=True), ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True,
     )
     customer_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("customers.id"), nullable=True,
