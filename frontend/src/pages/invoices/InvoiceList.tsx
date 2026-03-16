@@ -285,8 +285,26 @@ const PRINT_STYLES = `
     border-radius: 0 !important;
   }
 
-  /* Preserve background colours and white text in print */
-  [style*="print-color-adjust"],
+  /* Balance Due bar: grey background + dark text for print */
+  .print-balance-bar,
+  .print-balance-bar dt,
+  .print-balance-bar dd {
+    background: #e5e7eb !important;
+    color: #1a1a1a !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Table header: grey background + dark text for print */
+  .print-table-header,
+  .print-table-header th {
+    background: #e5e7eb !important;
+    color: #1a1a1a !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Preserve other background colours */
   [class*="bg-yellow-"],
   [class*="bg-gray-50"] {
     -webkit-print-color-adjust: exact !important;
@@ -1237,7 +1255,7 @@ export default function InvoiceList() {
                   <div className="relative z-10 px-8 pb-6">
                     <table className="w-full">
                       <thead>
-                        <tr style={{ background: '#3b5bdb', color: '#fff', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } as React.CSSProperties}>
+                        <tr className="print-table-header" style={{ background: '#3b5bdb', color: '#fff', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } as React.CSSProperties}>
                           <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider rounded-tl-lg" style={{ color: '#fff' }}>#</th>
                           <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: '#fff' }}>Description</th>
                           <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider" style={{ color: '#fff' }}>Qty</th>
@@ -1349,7 +1367,7 @@ export default function InvoiceList() {
                               </div>
                             )
                           })()}
-                          <div className="flex justify-between py-2.5 rounded-lg px-4 -mx-4 font-bold" style={{ background: '#3b5bdb', color: '#fff', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } as React.CSSProperties}>
+                          <div className="flex justify-between py-2.5 rounded-lg px-4 -mx-4 font-bold print-balance-bar" style={{ background: '#3b5bdb', color: '#fff', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } as React.CSSProperties}>
                             <dt style={{ color: '#fff' }}>Balance Due</dt>
                             <dd className="tabular-nums" style={{ color: '#fff' }}>{formatNZD(invoice.balance_due)}</dd>
                           </div>
