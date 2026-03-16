@@ -2958,3 +2958,32 @@ Frontend:
 **Similar Bugs Found & Fixed**: Same empty-string UUID pattern applied to `InvoiceCreateRequest` (for POST /invoices). `VehicleItem` validator added for nested vehicle IDs.
 
 **Related Issues**: ISSUE-079 (additional vehicles feature)
+
+---
+
+### ISSUE-084: SMS reminder via Send Reminder button fails silently
+
+- **Date**: 2026-03-17
+- **Severity**: major
+- **Status**: resolved
+- **Reporter**: user
+
+**Symptoms**: Clicking "Send SMS" in the Send Reminder dropdown shows success toast, but SMS is never delivered. Error log shows "SMS notification permanently failed after 3 retries" with the Connexus response body as the error message.
+
+**Root Cause**: Two issues:
+
+1. **Connexus client only accepted `status: "accepted"`** — The `ConnexusSmsClient.send()` method only treated `status == "accepted"` as success. Connexus returns `status: "queued"` when SMS is accepted but held for delivery (e.g. nighttime queue — "Message queued for delivery at 7am NZ time"). This valid 200 response was treated as failure, triggering 3 retries, all of which also returned "queued", resulting in permanent failure.
+
+2. **Backend returned 200 on SMS failure** — `send_payment_reminder()` returned `{"status": "failed", "channel": "sms"}` with HTTP 200 when SMS send failed. The frontend only caught HTTP errors (4xx/5xx), so it showed a success toast even though the SMS failed.
+
+**Fix Applied**:
+
+1. Updated `ConnexusSmsClient.send()` to treat both `"accepted"` and `"queued"` as success. Also captures `queue_reason` and `queue_message` in metadata, and uses `.get("message_id")` with fallback to `websms_id`.
+2. Added `db.flush()` before calling `send_sms_task()` so the notification_log row is visible to the task's independent session.
+3. Added explicit error check: if `send_sms_task` returns `success=False`, raises `ValueError` with the error message, causing the router to return HTTP 400 with the detail — which the frontend catches and displays.
+
+**Files Changed**:
+- `app/integrations/connexus_sms.py`
+- `app/modules/invoices/service.py`
+
+**Similar Bugs Found & Fixed**: Same Connexus `"queued"` status would affect any SMS sent during NZ nighttime hours (not just reminders). The fix in the Connexus client covers all SMS sends globally.
