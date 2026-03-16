@@ -495,6 +495,11 @@ async def update_invoice_endpoint(
         )
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).exception("Failed to update invoice %s: %s", invoice_id, exc)
+        await db.rollback()
+        return JSONResponse(status_code=500, content={"detail": f"Failed to update invoice: {exc}"})
 
     # If "sent", issue the invoice then email it
     if should_email:

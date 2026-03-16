@@ -362,8 +362,8 @@ async def create_invoice(
                 "terms_and_conditions": terms_and_conditions,
                 "additional_vehicles": [
                     {
-                        "id": str(v.get("id", "")),
-                        "rego": v.get("rego", ""),
+                        "id": str(v["id"]) if v.get("id") else "",
+                        "rego": v.get("rego") or "",
                         "make": v.get("make"),
                         "model": v.get("model"),
                         "year": v.get("year"),
@@ -1502,8 +1502,8 @@ async def update_invoice(
         if vehicles_data and len(vehicles_data) > 1:
             inv_json["additional_vehicles"] = [
                 {
-                    "id": str(v.get("id", "")),
-                    "rego": v.get("rego", ""),
+                    "id": str(v["id"]) if v.get("id") else "",
+                    "rego": v.get("rego") or "",
                     "make": v.get("make"),
                     "model": v.get("model"),
                     "year": v.get("year"),

@@ -976,8 +976,9 @@ export default function InvoiceCreate() {
         await apiClient.post('/invoices', buildPayload('draft'))
         window.location.href = '/invoices'
       }
-    } catch {
-      setErrors({ submit: 'Failed to save draft. Please try again.' })
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to save draft. Please try again.'
+      setErrors({ submit: msg })
     } finally {
       setSaving(false)
     }
@@ -994,8 +995,9 @@ export default function InvoiceCreate() {
         await apiClient.post('/invoices', buildPayload('sent'))
         window.location.href = '/invoices'
       }
-    } catch {
-      setErrors({ submit: 'Failed to send invoice. Please try again.' })
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to send invoice. Please try again.'
+      setErrors({ submit: msg })
     } finally {
       setSaving(false)
     }

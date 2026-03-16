@@ -74,7 +74,7 @@ class VehicleItem(BaseModel):
     model_config = {"extra": "ignore"}  # Frontend sends extra fields like odometer
 
     id: uuid.UUID | None = None
-    rego: str
+    rego: str | None = None
     make: str | None = None
     model: str | None = None
     year: int | None = None
