@@ -3228,6 +3228,10 @@ async def send_payment_reminder(
             status="queued",
         )
 
+        # Flush so the notification_log row is visible to send_sms_task's
+        # independent session (it opens its own connection).
+        await db.flush()
+
         from app.tasks.notifications import send_sms_task
         result = await send_sms_task(
             str(org_id),
@@ -3237,6 +3241,10 @@ async def send_payment_reminder(
             None,
             "payment_reminder",
         )
+
+        if not result.get("success"):
+            error_msg = result.get("error", "SMS send failed")
+            raise ValueError(f"SMS reminder failed: {error_msg}")
 
         # Track SMS usage
         try:
@@ -3255,7 +3263,7 @@ async def send_payment_reminder(
         )
         await db.flush()
 
-        status = "sent" if result.get("success") else "failed"
+        status = "sent"
         return {"status": status, "channel": "sms", "recipient": phone}
 
     else:
