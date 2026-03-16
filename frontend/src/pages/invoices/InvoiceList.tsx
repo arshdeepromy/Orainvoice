@@ -285,18 +285,36 @@ const PRINT_STYLES = `
     border-radius: 0 !important;
   }
 
-  /* Preserve gradient backgrounds (blue header row, balance due bar) */
-  .bg-gradient-to-r,
-  [class*="from-blue-"], [class*="to-indigo-"],
-  [class*="bg-blue-"], [class*="bg-yellow-"],
-  [class*="bg-slate-"], [class*="bg-emerald-"],
+  /* Print-safe overrides for blue gradient elements (balance bar, table header).
+     Browsers strip backgrounds by default when "Background graphics" is unchecked,
+     leaving white text on white paper. Override to dark text + border so it's
+     always readable regardless of the background graphics setting. */
+  .bg-gradient-to-r.from-blue-600,
+  tr.bg-gradient-to-r.from-blue-600,
+  div.bg-gradient-to-r.from-blue-600 {
+    background: #1e3a5f !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color: #1a1a1a !important;
+    border: 2px solid #1e3a5f !important;
+  }
+
+  /* Force dark text on gradient elements so they're readable without backgrounds */
+  .bg-gradient-to-r.text-white,
+  tr.bg-gradient-to-r.text-white,
+  div.bg-gradient-to-r.text-white,
+  .bg-gradient-to-r.text-white th,
+  .bg-gradient-to-r.text-white dt,
+  .bg-gradient-to-r.text-white dd {
+    color: #1a1a1a !important;
+  }
+
+  /* Preserve other background colours */
+  [class*="bg-yellow-"],
   [class*="bg-gray-50"] {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
-
-  /* Keep text colours as designed */
-  .text-white { color: white !important; }
 
   /* Tables don't break across pages */
   table { page-break-inside: avoid; }
