@@ -71,11 +71,14 @@ class LineItemCreate(BaseModel):
 class VehicleItem(BaseModel):
     """Schema for a vehicle in the vehicles array."""
 
+    model_config = {"extra": "ignore"}  # Frontend sends extra fields like odometer
+
     id: uuid.UUID
     rego: str
     make: str | None = None
     model: str | None = None
     year: int | None = None
+    odometer: int | None = None
 
 
 class InvoiceCreateRequest(BaseModel):
@@ -322,6 +325,8 @@ class UpdateInvoiceRequest(BaseModel):
     and immutable once set (Req 23.2).
     """
 
+    model_config = {"extra": "ignore", "populate_by_name": True}
+
     customer_id: uuid.UUID | None = None
     vehicle_rego: str | None = None
     vehicle_make: str | None = None
@@ -333,12 +338,18 @@ class UpdateInvoiceRequest(BaseModel):
     vehicles: list[VehicleItem] | None = None
     branch_id: uuid.UUID | None = None
     status: InvoiceStatus | None = None
+    line_items: list[LineItemCreate] | None = None
     notes_internal: str | None = None
     notes_customer: str | None = Field(default=None, alias="customer_notes")
     terms_and_conditions: str | None = None
+    issue_date: date | None = None
     due_date: date | None = None
+    payment_terms: str | None = None
     discount_type: str | None = Field(default=None, pattern=r"^(percentage|fixed)$")
     discount_value: Decimal | None = Field(default=None, ge=0)
+    shipping_charges: Decimal | None = Field(default=None, ge=0)
+    adjustment: Decimal | None = None
+    currency: str | None = Field(default=None, max_length=3, min_length=3)
 
 
 class UpdateInvoiceResponse(BaseModel):
@@ -727,3 +738,20 @@ class InvoiceEmailResponse(BaseModel):
     recipient_email: str
     pdf_size_bytes: int
     status: str
+
+
+class SendReminderRequest(BaseModel):
+    """POST /api/v1/invoices/{id}/send-reminder request body."""
+
+    channel: str = Field(
+        ...,
+        description="Delivery channel: 'email' or 'sms'.",
+    )
+
+
+class SendReminderResponse(BaseModel):
+    """POST /api/v1/invoices/{id}/send-reminder response."""
+
+    status: str
+    channel: str
+    recipient: str

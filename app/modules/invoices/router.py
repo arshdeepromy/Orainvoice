@@ -1423,3 +1423,60 @@ async def share_invoice_endpoint(
         await db.commit()
 
     return JSONResponse(content={"share_token": token, "invoice_id": str(invoice_id)})
+
+
+# ---------------------------------------------------------------------------
+# Send Payment Reminder — Requirements: 38.1
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{invoice_id}/send-reminder",
+    responses={
+        200: {"description": "Reminder sent"},
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        404: {"description": "Invoice not found"},
+    },
+    summary="Send a payment reminder via email or SMS",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def send_reminder_endpoint(
+    invoice_id: uuid.UUID,
+    request: Request,
+    payload: dict,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Send a payment reminder for an invoice via email or SMS.
+
+    Requirements: 38.1
+    """
+    from app.modules.invoices.service import send_payment_reminder
+
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    channel = payload.get("channel")
+    if channel not in ("email", "sms"):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "channel must be 'email' or 'sms'"},
+        )
+
+    try:
+        result = await send_payment_reminder(
+            db,
+            org_id=org_uuid,
+            invoice_id=invoice_id,
+            channel=channel,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    await db.commit()
+    return result

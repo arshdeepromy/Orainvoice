@@ -9,7 +9,7 @@ import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
@@ -1426,18 +1426,73 @@ async def update_invoice(
         "due_date": str(invoice.due_date) if invoice.due_date else None,
     }
 
-    # Apply allowed field updates
+    # Apply allowed field updates (direct model columns)
     allowed_fields = {
         "customer_id", "vehicle_rego", "vehicle_make", "vehicle_model",
         "vehicle_year", "vehicle_odometer", "branch_id",
-        "notes_internal", "notes_customer", "due_date",
-        "discount_type", "discount_value",
+        "notes_internal", "notes_customer", "due_date", "issue_date",
+        "discount_type", "discount_value", "currency",
+    }
+    # Fields stored in invoice_data_json (no direct column)
+    json_fields = {
+        "payment_terms", "terms_and_conditions",
+        "shipping_charges", "adjustment",
     }
     applied = {}
     for field, value in updates.items():
         if field in allowed_fields:
             setattr(invoice, field, value)
             applied[field] = str(value) if value is not None else None
+
+    # Store JSON-backed fields in invoice_data_json
+    json_updates = {k: updates[k] for k in json_fields if k in updates}
+    if json_updates:
+        inv_json = dict(invoice.invoice_data_json or {})
+        for k, v in json_updates.items():
+            if v is not None:
+                inv_json[k] = str(v) if isinstance(v, Decimal) else v
+            else:
+                inv_json.pop(k, None)
+            applied[k] = str(v) if v is not None else None
+        invoice.invoice_data_json = inv_json
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(invoice, "invoice_data_json")
+
+    # Handle line_items — replace all line items if provided
+    if "line_items" in updates and updates["line_items"] is not None:
+        new_items = updates["line_items"]
+        # Delete existing line items
+        await db.execute(
+            delete(LineItem).where(LineItem.invoice_id == invoice.id)
+        )
+        await db.flush()
+
+        org_result_li = await db.execute(
+            select(Organisation).where(Organisation.id == org_id)
+        )
+        org_li = org_result_li.scalar_one_or_none()
+        gst_rate_li = Decimal(str((org_li.settings or {}).get("gst_percentage", 15))) if org_li else Decimal("15")
+
+        for idx, item_data in enumerate(new_items):
+            qty = Decimal(str(item_data.get("quantity", 1)))
+            rate = Decimal(str(item_data.get("rate") or item_data.get("unit_price", 0)))
+            amount = Decimal(str(item_data.get("amount", 0))) or (qty * rate)
+            tax_rate = Decimal(str(item_data.get("tax_rate", gst_rate_li)))
+            is_exempt = tax_rate == 0
+
+            li = LineItem(
+                invoice_id=invoice.id,
+                item_type="service",
+                description=item_data.get("description", ""),
+                quantity=qty,
+                unit_price=rate,
+                is_gst_exempt=is_exempt,
+                line_total=amount,
+                sort_order=idx,
+            )
+            db.add(li)
+        await db.flush()
+        applied["line_items"] = f"{len(new_items)} items"
 
     # Handle vehicles array — store additional vehicles in invoice_data_json
     if "vehicles" in updates:
@@ -1458,6 +1513,8 @@ async def update_invoice(
         else:
             inv_json.pop("additional_vehicles", None)
         invoice.invoice_data_json = inv_json
+        from sqlalchemy.orm.attributes import flag_modified as _flag_modified
+        _flag_modified(invoice, "invoice_data_json")
 
     await db.flush()
 
@@ -1473,8 +1530,15 @@ async def update_invoice(
         if gv:
             gv.service_due_date = vehicle_service_due_date
 
-    # Recalculate totals if discount changed
-    if "discount_type" in applied or "discount_value" in applied:
+    # Recalculate totals if discount, line items, or financial fields changed
+    needs_recalc = (
+        "discount_type" in applied
+        or "discount_value" in applied
+        or "shipping_charges" in applied
+        or "adjustment" in applied
+        or "line_items" in applied
+    )
+    if needs_recalc:
         await _recalculate_invoice(db, invoice, org_id)
 
     # Audit log with before/after values (Req 23.3)
@@ -3014,3 +3078,184 @@ async def email_invoice(
         "pdf_size_bytes": len(pdf_bytes),
         "status": "sent",
     }
+
+
+async def send_payment_reminder(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    channel: str,
+) -> dict:
+    """Send a payment reminder via email or SMS for an outstanding invoice.
+
+    Uses the existing email/SMS provider infrastructure. Logs the send to
+    notification_log for audit trail.
+
+    Requirements: 38.1
+    """
+    from app.modules.notifications.service import log_email_sent, log_sms_sent
+
+    invoice_dict = await get_invoice(db, org_id=org_id, invoice_id=invoice_id)
+
+    cust_result = await db.execute(
+        select(Customer).where(
+            Customer.id == invoice_dict["customer_id"],
+            Customer.org_id == org_id,
+        )
+    )
+    customer = cust_result.scalar_one_or_none()
+    if customer is None:
+        raise ValueError("Customer not found.")
+
+    inv_number = invoice_dict.get("invoice_number") or "DRAFT"
+    balance_due = invoice_dict.get("balance_due", 0)
+    org_name = invoice_dict.get("org_name") or "Your Company"
+    currency = invoice_dict.get("currency", "NZD")
+    customer_name = f"{customer.first_name or ''} {customer.last_name or ''}".strip() or "Customer"
+
+    if channel == "email":
+        if not customer.email:
+            raise ValueError("Customer has no email address on file.")
+
+        # Reuse the email_invoice infrastructure but with reminder subject/body
+        import json as _json
+        import smtplib
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+
+        from app.core.encryption import envelope_decrypt_str
+        from app.modules.admin.models import EmailProvider
+
+        provider_result = await db.execute(
+            select(EmailProvider)
+            .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
+            .order_by(EmailProvider.priority)
+        )
+        providers = list(provider_result.scalars().all())
+        if not providers:
+            raise ValueError("No active email provider configured.")
+
+        subject = f"Payment Reminder — Invoice {inv_number} from {org_name}"
+        body_text = (
+            f"Hi {customer_name},\n\n"
+            f"This is a friendly reminder that invoice {inv_number} "
+            f"has an outstanding balance of {currency} {balance_due:.2f}.\n\n"
+            f"Please arrange payment at your earliest convenience.\n\n"
+            f"Thank you,\n{org_name}"
+        )
+
+        used_provider = None
+        last_error = None
+        for provider in providers:
+            try:
+                creds_json = envelope_decrypt_str(provider.credentials_encrypted)
+                credentials = _json.loads(creds_json)
+                smtp_host = provider.smtp_host
+                smtp_port = provider.smtp_port or 587
+                smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
+                username = credentials.get("username") or credentials.get("api_key", "")
+                password = credentials.get("password") or credentials.get("api_key", "")
+                config = provider.config or {}
+                from_email = config.get("from_email") or username
+                from_name = config.get("from_name") or org_name
+
+                msg = MIMEMultipart("mixed")
+                msg["From"] = f"{from_name} <{from_email}>"
+                msg["To"] = customer.email
+                msg["Subject"] = subject
+                msg.attach(MIMEText(body_text, "plain", "utf-8"))
+
+                if smtp_encryption == "ssl":
+                    server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+                else:
+                    server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+                    if smtp_encryption == "tls":
+                        server.starttls()
+                if username and password:
+                    server.login(username, password)
+                server.sendmail(from_email, customer.email, msg.as_string())
+                server.quit()
+                used_provider = provider
+                break
+            except Exception as e:
+                last_error = e
+                continue
+
+        if used_provider is None:
+            raise ValueError(f"All email providers failed. Last error: {last_error}")
+
+        await log_email_sent(
+            db,
+            org_id=org_id,
+            recipient=customer.email,
+            template_type="payment_reminder",
+            subject=subject,
+            status="sent",
+            channel="email",
+        )
+
+        await write_audit_log(
+            db,
+            action="invoice.reminder_email_sent",
+            entity_type="invoice",
+            entity_id=invoice_id,
+            org_id=org_id,
+            after_value={"recipient": customer.email, "invoice_number": inv_number},
+        )
+        await db.flush()
+
+        return {"status": "sent", "channel": "email", "recipient": customer.email}
+
+    elif channel == "sms":
+        phone = customer.phone or customer.mobile_phone
+        if not phone:
+            raise ValueError("Customer has no phone number on file.")
+
+        sms_body = (
+            f"Hi {customer_name}, this is a reminder that invoice "
+            f"{inv_number} has a balance of {currency} {balance_due:.2f} outstanding. "
+            f"Please pay at your earliest convenience. — {org_name}"
+        )
+
+        sms_log = await log_sms_sent(
+            db,
+            org_id=org_id,
+            recipient=phone,
+            template_type="payment_reminder",
+            body=sms_body,
+            status="queued",
+        )
+
+        from app.tasks.notifications import send_sms_task
+        result = await send_sms_task(
+            str(org_id),
+            sms_log["id"],
+            phone,
+            sms_body,
+            None,
+            "payment_reminder",
+        )
+
+        # Track SMS usage
+        try:
+            from app.modules.admin.service import increment_sms_usage
+            await increment_sms_usage(db, org_id)
+        except Exception:
+            pass
+
+        await write_audit_log(
+            db,
+            action="invoice.reminder_sms_sent",
+            entity_type="invoice",
+            entity_id=invoice_id,
+            org_id=org_id,
+            after_value={"recipient": phone, "invoice_number": inv_number},
+        )
+        await db.flush()
+
+        status = "sent" if result.get("success") else "failed"
+        return {"status": status, "channel": "sms", "recipient": phone}
+
+    else:
+        raise ValueError(f"Invalid channel: {channel}. Must be 'email' or 'sms'.")

@@ -2903,3 +2903,43 @@ Frontend:
 - `frontend/src/pages/reports/InvoiceStatus.tsx`
 
 **Related Issues**: None
+
+
+---
+
+### ISSUE-083: 422 Unprocessable Content on PUT /invoices/{id} (save draft)
+
+- **Date**: 2026-03-16
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user (browser console)
+- **Regression of**: N/A
+
+**Symptoms**: Clicking "Save as Draft" on an existing invoice returns 422 Unprocessable Content. The PUT request to `/api/v1/invoices/{id}` fails Pydantic validation because the frontend sends fields that the `UpdateInvoiceRequest` schema doesn't recognize.
+
+**Root Cause**: Three issues in the invoice update flow:
+
+1. `UpdateInvoiceRequest` schema was missing `model_config = {"extra": "ignore"}` — the frontend sends many extra fields (`order_number`, `salesperson_id`, `subject`, `gst_number`, `payment_gateway`, `is_recurring`, `invoice_number`) that Pydantic rejects by default.
+2. `UpdateInvoiceRequest` was missing fields that the frontend sends and the backend should process: `line_items`, `issue_date`, `currency`, `payment_terms`, `terms_and_conditions`, `shipping_charges`, `adjustment`.
+3. `VehicleItem` schema (nested in the vehicles array) was missing `model_config = {"extra": "ignore"}` and the `odometer` field — the frontend sends `odometer` per vehicle which Pydantic rejected.
+4. The `update_invoice()` service function didn't handle `line_items` (delete + recreate), `issue_date`/`currency` (direct columns), or `payment_terms`/`terms_and_conditions`/`shipping_charges`/`adjustment` (stored in `invoice_data_json` JSONB).
+
+**Fix Applied**:
+
+1. Added `model_config = {"extra": "ignore", "populate_by_name": True}` to `UpdateInvoiceRequest`
+2. Added missing fields to `UpdateInvoiceRequest`: `line_items`, `issue_date`, `currency`, `payment_terms`, `terms_and_conditions`, `shipping_charges`, `adjustment`, `global_vehicle_id`, `vehicle_service_due_date`, `vehicles`
+3. Added `model_config = {"extra": "ignore"}` and `odometer: int | None = None` to `VehicleItem`
+4. Updated `update_invoice()` service to:
+   - Handle `line_items`: deletes existing LineItems and recreates from payload
+   - Added `issue_date`, `currency` to direct column `allowed_fields`
+   - Added `payment_terms`, `terms_and_conditions`, `shipping_charges`, `adjustment` as JSON-backed fields stored in `invoice_data_json`
+   - Added `flag_modified` for JSONB mutation detection
+   - Added recalculate trigger for line_items/shipping/adjustment changes
+
+**Files Changed**:
+- `app/modules/invoices/schemas.py`
+- `app/modules/invoices/service.py`
+
+**Similar Bugs Found & Fixed**: `VehicleItem` was missing `extra: ignore` — same pattern as the parent `UpdateInvoiceRequest`. `LineItemCreate` already had `extra: ignore` so no fix needed there.
+
+**Related Issues**: None

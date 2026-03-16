@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, Fragment } from 'react'
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
 import { useParams } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Modal } from '../../components/ui'
@@ -249,6 +249,11 @@ export default function InvoiceDetail() {
   const [creditNoteModalOpen, setCreditNoteModalOpen] = useState(false)
   const [refundModalOpen, setRefundModalOpen] = useState(false)
 
+  /* Send Reminder */
+  const [reminderOpen, setReminderOpen] = useState(false)
+  const [sendingReminder, setSendingReminder] = useState(false)
+  const reminderRef = useRef<HTMLDivElement>(null)
+
   /* ---- Inject print styles ---- */
   useEffect(() => {
     const style = document.createElement('style')
@@ -328,6 +333,33 @@ export default function InvoiceDetail() {
 
   const handlePrint = () => {
     window.print()
+  }
+
+  // Close reminder dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (reminderRef.current && !reminderRef.current.contains(e.target as Node)) {
+        setReminderOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const handleSendReminder = async (channel: 'email' | 'sms') => {
+    if (!invoice) return
+    setSendingReminder(true)
+    setReminderOpen(false)
+    setActionMessage('')
+    try {
+      await apiClient.post(`/invoices/${invoice.id}/send-reminder`, { channel })
+      setActionMessage(`Payment reminder sent via ${channel === 'email' ? 'email' : 'SMS'}.`)
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setActionMessage(msg || `Failed to send ${channel} reminder.`)
+    } finally {
+      setSendingReminder(false)
+    }
   }
 
   const handleDownloadPDF = async () => {
@@ -432,6 +464,35 @@ export default function InvoiceDetail() {
           <Button size="sm" variant="secondary" onClick={handleEmail} loading={emailing}>
             Email
           </Button>
+          {/* Send Reminder dropdown */}
+          <div className="relative" ref={reminderRef}>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => setReminderOpen(!reminderOpen)}
+              loading={sendingReminder}
+            >
+              Send Reminder ▾
+            </Button>
+            {reminderOpen && (
+              <div className="absolute right-0 top-full z-20 mt-1 w-44 rounded-md border border-gray-200 bg-white shadow-lg">
+                <button
+                  type="button"
+                  className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 rounded-t-md"
+                  onClick={() => handleSendReminder('email')}
+                >
+                  📧 Send Email
+                </button>
+                <button
+                  type="button"
+                  className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 rounded-b-md border-t border-gray-100"
+                  onClick={() => handleSendReminder('sms')}
+                >
+                  💬 Send SMS
+                </button>
+              </div>
+            )}
+          </div>
           <Button size="sm" variant="secondary" onClick={handlePrint}>
             Print
           </Button>
