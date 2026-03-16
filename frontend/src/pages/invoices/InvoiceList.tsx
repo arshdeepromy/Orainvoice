@@ -285,23 +285,8 @@ const PRINT_STYLES = `
     border-radius: 0 !important;
   }
 
-  /* Print-safe overrides for blue gradient elements (balance bar, table header).
-     Browsers strip backgrounds by default when "Background graphics" is unchecked,
-     leaving white text on white paper. Override to dark text + border so it's
-     always readable regardless of the background graphics setting. */
-  .print-safe-bar,
-  .print-safe-bar th,
-  .print-safe-bar td,
-  .print-safe-bar dt,
-  .print-safe-bar dd {
-    background: none !important;
-    color: #1a1a1a !important;
-    border: 2px solid #1a1a1a !important;
-    -webkit-print-color-adjust: exact !important;
-    print-color-adjust: exact !important;
-  }
-
-  /* Preserve other background colours */
+  /* Preserve background colours and white text in print */
+  [style*="print-color-adjust"],
   [class*="bg-yellow-"],
   [class*="bg-gray-50"] {
     -webkit-print-color-adjust: exact !important;
@@ -1252,12 +1237,12 @@ export default function InvoiceList() {
                   <div className="relative z-10 px-8 pb-6">
                     <table className="w-full">
                       <thead>
-                        <tr className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white print-safe-bar">
-                          <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider rounded-tl-lg">#</th>
-                          <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">Description</th>
-                          <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider">Qty</th>
-                          <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider">Rate</th>
-                          <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider rounded-tr-lg">Amount</th>
+                        <tr style={{ background: '#3b5bdb', color: '#fff', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } as React.CSSProperties}>
+                          <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider rounded-tl-lg" style={{ color: '#fff' }}>#</th>
+                          <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: '#fff' }}>Description</th>
+                          <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider" style={{ color: '#fff' }}>Qty</th>
+                          <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider" style={{ color: '#fff' }}>Rate</th>
+                          <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider rounded-tr-lg" style={{ color: '#fff' }}>Amount</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1364,9 +1349,9 @@ export default function InvoiceList() {
                               </div>
                             )
                           })()}
-                          <div className="flex justify-between py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg px-4 -mx-4 font-bold print-safe-bar">
-                            <dt>Balance Due</dt>
-                            <dd className="tabular-nums">{formatNZD(invoice.balance_due)}</dd>
+                          <div className="flex justify-between py-2.5 rounded-lg px-4 -mx-4 font-bold" style={{ background: '#3b5bdb', color: '#fff', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } as React.CSSProperties}>
+                            <dt style={{ color: '#fff' }}>Balance Due</dt>
+                            <dd className="tabular-nums" style={{ color: '#fff' }}>{formatNZD(invoice.balance_due)}</dd>
                           </div>
                         </dl>
                       </div>
