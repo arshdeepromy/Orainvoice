@@ -1482,6 +1482,7 @@ async def update_invoice(
 
             li = LineItem(
                 invoice_id=invoice.id,
+                org_id=org_id,
                 item_type="service",
                 description=item_data.get("description", ""),
                 quantity=qty,
