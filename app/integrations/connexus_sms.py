@@ -789,11 +789,16 @@ class ConnexusSmsClient:
 
             if resp.is_success:
                 data = resp.json()
-                if data.get("status") == "accepted":
+                msg_status = data.get("status")
+                if msg_status in ("accepted", "queued"):
                     return SmsSendResult(
                         success=True,
-                        message_sid=data["message_id"],
-                        metadata={"parts_count": data.get("parts", 1)},
+                        message_sid=data.get("message_id") or data.get("websms_id", ""),
+                        metadata={
+                            "parts_count": data.get("parts", 1),
+                            "queue_reason": data.get("queue_reason"),
+                            "queue_message": data.get("queue_message"),
+                        },
                     )
 
             # Non-success HTTP or unexpected status in body
