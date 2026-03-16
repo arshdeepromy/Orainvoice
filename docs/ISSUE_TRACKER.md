@@ -2915,31 +2915,30 @@ Frontend:
 - **Reporter**: user (browser console)
 - **Regression of**: N/A
 
-**Symptoms**: Clicking "Save as Draft" on an existing invoice returns 422 Unprocessable Content. The PUT request to `/api/v1/invoices/{id}` fails Pydantic validation because the frontend sends fields that the `UpdateInvoiceRequest` schema doesn't recognize.
+**Symptoms**: Clicking "Save as Draft" on an existing invoice returns 422 Unprocessable Content. The PUT request to `/api/v1/invoices/{id}` fails Pydantic validation because the frontend sends fields that the `UpdateInvoiceRequest` schema doesn't recognize, and sends empty strings for optional UUID fields.
 
-**Root Cause**: Three issues in the invoice update flow:
+**Root Cause**: Five issues in the invoice update flow:
 
 1. `UpdateInvoiceRequest` schema was missing `model_config = {"extra": "ignore"}` — the frontend sends many extra fields (`order_number`, `salesperson_id`, `subject`, `gst_number`, `payment_gateway`, `is_recurring`, `invoice_number`) that Pydantic rejects by default.
 2. `UpdateInvoiceRequest` was missing fields that the frontend sends and the backend should process: `line_items`, `issue_date`, `currency`, `payment_terms`, `terms_and_conditions`, `shipping_charges`, `adjustment`.
-3. `VehicleItem` schema (nested in the vehicles array) was missing `model_config = {"extra": "ignore"}` and the `odometer` field — the frontend sends `odometer` per vehicle which Pydantic rejected.
+3. `VehicleItem` schema (nested in the vehicles array) was missing `model_config = {"extra": "ignore"}`, the `odometer` field, and had `id: uuid.UUID` as required — the frontend sends `id: ''` (empty string) for vehicles loaded from existing invoices that don't have a `global_vehicle_id`.
 4. The `update_invoice()` service function didn't handle `line_items` (delete + recreate), `issue_date`/`currency` (direct columns), or `payment_terms`/`terms_and_conditions`/`shipping_charges`/`adjustment` (stored in `invoice_data_json` JSONB).
+5. Frontend `buildPayload` sent `global_vehicle_id: ''` (empty string) and vehicles with `id: ''` which Pydantic rejected as invalid UUIDs.
 
 **Fix Applied**:
 
 1. Added `model_config = {"extra": "ignore", "populate_by_name": True}` to `UpdateInvoiceRequest`
 2. Added missing fields to `UpdateInvoiceRequest`: `line_items`, `issue_date`, `currency`, `payment_terms`, `terms_and_conditions`, `shipping_charges`, `adjustment`, `global_vehicle_id`, `vehicle_service_due_date`, `vehicles`
-3. Added `model_config = {"extra": "ignore"}` and `odometer: int | None = None` to `VehicleItem`
-4. Updated `update_invoice()` service to:
-   - Handle `line_items`: deletes existing LineItems and recreates from payload
-   - Added `issue_date`, `currency` to direct column `allowed_fields`
-   - Added `payment_terms`, `terms_and_conditions`, `shipping_charges`, `adjustment` as JSON-backed fields stored in `invoice_data_json`
-   - Added `flag_modified` for JSONB mutation detection
-   - Added recalculate trigger for line_items/shipping/adjustment changes
+3. Made `VehicleItem.id` optional (`uuid.UUID | None = None`), added `model_config = {"extra": "ignore"}`, `odometer` field, and empty-string-to-None validator
+4. Added `empty_str_to_none` validators on `UpdateInvoiceRequest` and `InvoiceCreateRequest` for UUID fields (`global_vehicle_id`, `customer_id`, `branch_id`) and `discount_type`
+5. Frontend: `global_vehicle_id: vehicles[0]?.id || undefined` (empty string → omitted), `vehicles: vehicles.filter(v => v.id)` (exclude vehicles without valid ID)
+6. Updated `update_invoice()` service to handle line_items, JSON-backed fields, and recalculation triggers
 
 **Files Changed**:
 - `app/modules/invoices/schemas.py`
 - `app/modules/invoices/service.py`
+- `frontend/src/pages/invoices/InvoiceCreate.tsx`
 
-**Similar Bugs Found & Fixed**: `VehicleItem` was missing `extra: ignore` — same pattern as the parent `UpdateInvoiceRequest`. `LineItemCreate` already had `extra: ignore` so no fix needed there.
+**Similar Bugs Found & Fixed**: Same empty-string UUID pattern applied to `InvoiceCreateRequest` (for POST /invoices). `VehicleItem` validator added for nested vehicle IDs.
 
 **Related Issues**: None

@@ -925,9 +925,9 @@ export default function InvoiceCreate() {
       vehicle_model: vehicles[0]?.model,
       vehicle_year: vehicles[0]?.year,
       vehicle_odometer: vehicles[0]?.newOdometer ?? vehicles[0]?.odometer ?? undefined,
-      global_vehicle_id: vehicles[0]?.id,
+      global_vehicle_id: vehicles[0]?.id || undefined,
       vehicle_service_due_date: vehicles[0]?.newServiceDueDate ?? vehicles[0]?.service_due_date ?? undefined,
-      vehicles: vehicles.map(v => ({
+      vehicles: vehicles.filter(v => v.id).map(v => ({
         id: v.id,
         rego: v.rego,
         make: v.make,

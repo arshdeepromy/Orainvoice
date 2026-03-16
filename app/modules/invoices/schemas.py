@@ -73,12 +73,19 @@ class VehicleItem(BaseModel):
 
     model_config = {"extra": "ignore"}  # Frontend sends extra fields like odometer
 
-    id: uuid.UUID
+    id: uuid.UUID | None = None
     rego: str
     make: str | None = None
     model: str | None = None
     year: int | None = None
     odometer: int | None = None
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, v):
+        if v == "" or v is None:
+            return None
+        return v
 
 
 class InvoiceCreateRequest(BaseModel):
@@ -117,6 +124,21 @@ class InvoiceCreateRequest(BaseModel):
     discount_value: Decimal | None = Field(default=None, ge=0)
     currency: str = Field(default="NZD", max_length=3, min_length=3)
     exchange_rate_to_nzd: Decimal | None = Field(default=None, gt=0)
+
+    @field_validator("global_vehicle_id", "branch_id", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, v):
+        """Convert empty strings to None so Pydantic doesn't reject them as invalid UUIDs."""
+        if v == "" or v is None:
+            return None
+        return v
+
+    @field_validator("discount_type", mode="before")
+    @classmethod
+    def empty_discount_type_to_none(cls, v):
+        if v == "" or v is None:
+            return None
+        return v
 
 
 class LineItemResponse(BaseModel):
@@ -350,6 +372,21 @@ class UpdateInvoiceRequest(BaseModel):
     shipping_charges: Decimal | None = Field(default=None, ge=0)
     adjustment: Decimal | None = None
     currency: str | None = Field(default=None, max_length=3, min_length=3)
+
+    @field_validator("global_vehicle_id", "customer_id", "branch_id", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, v):
+        """Convert empty strings to None so Pydantic doesn't reject them as invalid UUIDs."""
+        if v == "" or v is None:
+            return None
+        return v
+
+    @field_validator("discount_type", mode="before")
+    @classmethod
+    def empty_discount_type_to_none(cls, v):
+        if v == "" or v is None:
+            return None
+        return v
 
 
 class UpdateInvoiceResponse(BaseModel):
