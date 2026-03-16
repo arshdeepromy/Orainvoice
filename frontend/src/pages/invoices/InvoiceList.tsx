@@ -289,24 +289,16 @@ const PRINT_STYLES = `
      Browsers strip backgrounds by default when "Background graphics" is unchecked,
      leaving white text on white paper. Override to dark text + border so it's
      always readable regardless of the background graphics setting. */
-  .bg-gradient-to-r.from-blue-600,
-  tr.bg-gradient-to-r.from-blue-600,
-  div.bg-gradient-to-r.from-blue-600 {
-    background: #1e3a5f !important;
+  .print-safe-bar,
+  .print-safe-bar th,
+  .print-safe-bar td,
+  .print-safe-bar dt,
+  .print-safe-bar dd {
+    background: none !important;
+    color: #1a1a1a !important;
+    border: 2px solid #1a1a1a !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
-    color: #1a1a1a !important;
-    border: 2px solid #1e3a5f !important;
-  }
-
-  /* Force dark text on gradient elements so they're readable without backgrounds */
-  .bg-gradient-to-r.text-white,
-  tr.bg-gradient-to-r.text-white,
-  div.bg-gradient-to-r.text-white,
-  .bg-gradient-to-r.text-white th,
-  .bg-gradient-to-r.text-white dt,
-  .bg-gradient-to-r.text-white dd {
-    color: #1a1a1a !important;
   }
 
   /* Preserve other background colours */
@@ -1260,7 +1252,7 @@ export default function InvoiceList() {
                   <div className="relative z-10 px-8 pb-6">
                     <table className="w-full">
                       <thead>
-                        <tr className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
+                        <tr className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white print-safe-bar">
                           <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider rounded-tl-lg">#</th>
                           <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">Description</th>
                           <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider">Qty</th>
@@ -1372,7 +1364,7 @@ export default function InvoiceList() {
                               </div>
                             )
                           })()}
-                          <div className="flex justify-between py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg px-4 -mx-4 font-bold">
+                          <div className="flex justify-between py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg px-4 -mx-4 font-bold print-safe-bar">
                             <dt>Balance Due</dt>
                             <dd className="tabular-nums">{formatNZD(invoice.balance_due)}</dd>
                           </div>
