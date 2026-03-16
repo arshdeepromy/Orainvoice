@@ -202,6 +202,40 @@
 </div>
 {% endif %}
 
+<!-- Additional vehicles -->
+{% if invoice.additional_vehicles and invoice.additional_vehicles | length > 0 %}
+{% for av in invoice.additional_vehicles %}
+<div class="vehicle-bar" style="margin-top:4px;">
+  <table>
+    <tr>
+      <td>
+        <div class="vlbl">Rego</div>
+        <span class="rego-tag">{{ av.rego or '' }}</span>
+      </td>
+      {% if av.make or av.model %}
+      <td>
+        <div class="vlbl">Vehicle</div>
+        <div class="vval">{{ av.year or '' }} {{ av.make or '' }} {{ av.model or '' }}</div>
+      </td>
+      {% endif %}
+      {% if av.odometer %}
+      <td>
+        <div class="vlbl">Odometer</div>
+        <div class="vval">{{ "{:,}".format(av.odometer | int) }} km</div>
+      </td>
+      {% endif %}
+      {% if av.wof_expiry %}
+      <td>
+        <div class="vlbl">WOF Expiry</div>
+        <div class="vval">{{ av.wof_expiry }}</div>
+      </td>
+      {% endif %}
+    </tr>
+  </table>
+</div>
+{% endfor %}
+{% endif %}
+
 <!-- ============================================================ -->
 <!--  LINE ITEMS TABLE                                             -->
 <!-- ============================================================ -->

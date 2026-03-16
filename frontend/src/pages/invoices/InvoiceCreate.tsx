@@ -774,21 +774,37 @@ export default function InvoiceCreate() {
           setCustomer(inv.customer)
         }
         if (inv.vehicle_rego) {
-          setVehicles([{
-            id: '',
+          const primaryVehicle = {
+            id: inv.vehicle?.id || '',
             rego: inv.vehicle_rego,
             make: inv.vehicle_make || '',
             model: inv.vehicle_model || '',
             year: inv.vehicle_year || null,
+            colour: inv.vehicle?.colour || '',
+            body_type: '',
+            fuel_type: '',
+            engine_size: '',
+            wof_expiry: inv.vehicle?.wof_expiry || null,
+            registration_expiry: null,
+            odometer: inv.vehicle_odometer || null,
+            service_due_date: inv.vehicle?.service_due_date || null,
+          }
+          const additionalVehicles = (inv.additional_vehicles || []).map((av: Record<string, unknown>) => ({
+            id: (av.id as string) || '',
+            rego: (av.rego as string) || '',
+            make: (av.make as string) || '',
+            model: (av.model as string) || '',
+            year: (av.year as number) || null,
             colour: '',
             body_type: '',
             fuel_type: '',
             engine_size: '',
-            wof_expiry: null,
+            wof_expiry: (av.wof_expiry as string) || null,
             registration_expiry: null,
-            odometer: inv.vehicle_odometer || null,
-            service_due_date: inv.vehicle?.service_due_date || null,
-          }])
+            odometer: (av.odometer as number) || null,
+            service_due_date: null,
+          }))
+          setVehicles([primaryVehicle, ...additionalVehicles])
         }
         if (inv.invoice_number) setInvoiceNumber(inv.invoice_number)
         if (inv.due_date) setDueDate(inv.due_date)
@@ -927,8 +943,8 @@ export default function InvoiceCreate() {
       vehicle_odometer: vehicles[0]?.newOdometer ?? vehicles[0]?.odometer ?? undefined,
       global_vehicle_id: vehicles[0]?.id || undefined,
       vehicle_service_due_date: vehicles[0]?.newServiceDueDate ?? vehicles[0]?.service_due_date ?? undefined,
-      vehicles: vehicles.filter(v => v.id).map(v => ({
-        id: v.id,
+      vehicles: vehicles.map(v => ({
+        id: v.id || undefined,
         rego: v.rego,
         make: v.make,
         model: v.model,

@@ -2925,20 +2925,36 @@ Frontend:
 4. The `update_invoice()` service function didn't handle `line_items` (delete + recreate), `issue_date`/`currency` (direct columns), or `payment_terms`/`terms_and_conditions`/`shipping_charges`/`adjustment` (stored in `invoice_data_json` JSONB).
 5. Frontend `buildPayload` sent `global_vehicle_id: ''` (empty string) and vehicles with `id: ''` which Pydantic rejected as invalid UUIDs.
 
-**Fix Applied**:
+**Fix Applied** (across 4 commits):
 
+**Commit 1 — Schema & service fixes**:
 1. Added `model_config = {"extra": "ignore", "populate_by_name": True}` to `UpdateInvoiceRequest`
 2. Added missing fields to `UpdateInvoiceRequest`: `line_items`, `issue_date`, `currency`, `payment_terms`, `terms_and_conditions`, `shipping_charges`, `adjustment`, `global_vehicle_id`, `vehicle_service_due_date`, `vehicles`
 3. Made `VehicleItem.id` optional (`uuid.UUID | None = None`), added `model_config = {"extra": "ignore"}`, `odometer` field, and empty-string-to-None validator
 4. Added `empty_str_to_none` validators on `UpdateInvoiceRequest` and `InvoiceCreateRequest` for UUID fields (`global_vehicle_id`, `customer_id`, `branch_id`) and `discount_type`
-5. Frontend: `global_vehicle_id: vehicles[0]?.id || undefined` (empty string → omitted), `vehicles: vehicles.filter(v => v.id)` (exclude vehicles without valid ID)
+5. Frontend: `global_vehicle_id: vehicles[0]?.id || undefined` (empty string → omitted)
 6. Updated `update_invoice()` service to handle line_items, JSON-backed fields, and recalculation triggers
+
+**Commit 2 — NOT NULL violation on line_items**:
+7. Fixed missing `org_id=org_id` when creating LineItem in `update_invoice()` — was causing NOT NULL violation
+
+**Commit 3 — VehicleItem.rego optional + str(None) fix**:
+8. Made `VehicleItem.rego` optional
+9. Fixed `str(None)` → `""` in vehicle JSON storage (both create and update paths)
+10. Added actual backend error messages to frontend error display
+
+**Commit 4 — Multi-vehicle save, edit-mode loading, PDF template**:
+11. Frontend `buildPayload`: Changed `vehicles.filter(v => v.id).map(...)` to `vehicles.map(v => ({id: v.id || undefined, ...}))` — the filter was removing the primary vehicle (which has `id: ''` when loaded from existing invoice), causing the `vehicles` array to have only 1 item, so `len(vehicles_data) > 1` was false and additional vehicles weren't saved
+12. Frontend edit-mode loading: Added loading of `additional_vehicles` from invoice response into the `vehicles` state array (previously only loaded primary vehicle, so re-editing a draft lost additional vehicles)
+13. PDF template: Added additional vehicles section to `app/templates/pdf/invoice.html` — loops through `invoice.additional_vehicles` and renders a `vehicle-bar` div for each one with rego, make/model/year, odometer, and WOF expiry
 
 **Files Changed**:
 - `app/modules/invoices/schemas.py`
 - `app/modules/invoices/service.py`
+- `app/modules/invoices/router.py`
 - `frontend/src/pages/invoices/InvoiceCreate.tsx`
+- `app/templates/pdf/invoice.html`
 
 **Similar Bugs Found & Fixed**: Same empty-string UUID pattern applied to `InvoiceCreateRequest` (for POST /invoices). `VehicleItem` validator added for nested vehicle IDs.
 
-**Related Issues**: None
+**Related Issues**: ISSUE-079 (additional vehicles feature)
