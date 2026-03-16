@@ -364,6 +364,7 @@ export default function InvoiceList() {
   const [sendMenuOpen, setSendMenuOpen] = useState(false)
   const [pdfMenuOpen, setPdfMenuOpen] = useState(false)
   const [moreMenuOpen, setMoreMenuOpen] = useState(false)
+  const [reminderMenuOpen, setReminderMenuOpen] = useState(false)
   const [shareModalOpen, setShareModalOpen] = useState(false)
   const [shareUrl, setShareUrl] = useState('')
   const [shareCopied, setShareCopied] = useState(false)
@@ -380,6 +381,7 @@ export default function InvoiceList() {
   const sendMenuRef = useRef<HTMLDivElement>(null)
   const pdfMenuRef = useRef<HTMLDivElement>(null)
   const moreMenuRef = useRef<HTMLDivElement>(null)
+  const reminderMenuRef = useRef<HTMLDivElement>(null)
 
   /* --- Inject print styles --- */
   useEffect(() => {
@@ -396,6 +398,7 @@ export default function InvoiceList() {
       if (sendMenuRef.current && !sendMenuRef.current.contains(e.target as Node)) setSendMenuOpen(false)
       if (pdfMenuRef.current && !pdfMenuRef.current.contains(e.target as Node)) setPdfMenuOpen(false)
       if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) setMoreMenuOpen(false)
+      if (reminderMenuRef.current && !reminderMenuRef.current.contains(e.target as Node)) setReminderMenuOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -552,6 +555,21 @@ export default function InvoiceList() {
   const handlePrint = () => {
     setPdfMenuOpen(false)
     window.print()
+  }
+
+  const handleSendReminder = async (channel: 'email' | 'sms') => {
+    if (!invoice) return
+    setReminderMenuOpen(false)
+    setActionLoading('reminder')
+    try {
+      await apiClient.post(`/invoices/${invoice.id}/send-reminder`, { channel })
+      showMsg(`Payment reminder sent via ${channel === 'email' ? 'email' : 'SMS'}.`, 'success')
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      showMsg(msg || `Failed to send ${channel} reminder.`, 'error')
+    } finally {
+      setActionLoading('')
+    }
   }
 
   const handleRecordPayment = async () => {
@@ -861,7 +879,7 @@ export default function InvoiceList() {
                 {/* Send dropdown */}
                 <div className="relative" ref={sendMenuRef}>
                   <button
-                    onClick={() => { setSendMenuOpen(!sendMenuOpen); setPdfMenuOpen(false); setMoreMenuOpen(false) }}
+                    onClick={() => { setSendMenuOpen(!sendMenuOpen); setPdfMenuOpen(false); setMoreMenuOpen(false); setReminderMenuOpen(false) }}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -894,6 +912,42 @@ export default function InvoiceList() {
                   )}
                 </div>
 
+                {/* Send Reminder dropdown — only for non-draft, non-voided invoices with balance due */}
+                {canRecordPayment && (
+                  <div className="relative" ref={reminderMenuRef}>
+                    <button
+                      onClick={() => { setReminderMenuOpen(!reminderMenuOpen); setSendMenuOpen(false); setPdfMenuOpen(false); setMoreMenuOpen(false) }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+                      </svg>
+                      Reminder
+                      <svg className="w-3 h-3 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                      </svg>
+                    </button>
+                    {reminderMenuOpen && (
+                      <div className="absolute right-0 mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1">
+                        <button
+                          onClick={() => handleSendReminder('email')}
+                          disabled={actionLoading === 'reminder'}
+                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          {actionLoading === 'reminder' ? 'Sending…' : '📧 Send Email'}
+                        </button>
+                        <button
+                          onClick={() => handleSendReminder('sms')}
+                          disabled={actionLoading === 'reminder'}
+                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 border-t border-gray-100"
+                        >
+                          {actionLoading === 'reminder' ? 'Sending…' : '💬 Send SMS'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Share button */}
                 <button
                   onClick={handleShareLink}
@@ -908,7 +962,7 @@ export default function InvoiceList() {
                 {/* PDF/Print dropdown */}
                 <div className="relative" ref={pdfMenuRef}>
                   <button
-                    onClick={() => { setPdfMenuOpen(!pdfMenuOpen); setSendMenuOpen(false); setMoreMenuOpen(false) }}
+                    onClick={() => { setPdfMenuOpen(!pdfMenuOpen); setSendMenuOpen(false); setMoreMenuOpen(false); setReminderMenuOpen(false) }}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -954,7 +1008,7 @@ export default function InvoiceList() {
                 {/* More menu */}
                 <div className="relative" ref={moreMenuRef}>
                   <button
-                    onClick={() => { setMoreMenuOpen(!moreMenuOpen); setSendMenuOpen(false); setPdfMenuOpen(false) }}
+                    onClick={() => { setMoreMenuOpen(!moreMenuOpen); setSendMenuOpen(false); setPdfMenuOpen(false); setReminderMenuOpen(false) }}
                     className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
                     aria-label="More actions"
                   >
