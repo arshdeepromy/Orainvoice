@@ -638,14 +638,6 @@ export function Organisations() {
       header: 'Actions',
       render: (row) => (
         <div className="flex gap-2 flex-wrap">
-          {row.status !== 'deleted' && (
-            <Button size="sm" variant="secondary" onClick={() => {
-              sessionStorage.setItem('admin_view_as_org', JSON.stringify({ id: row.id, name: row.name }))
-              navigate('/dashboard')
-            }}>
-              View as Org
-            </Button>
-          )}
           {row.status !== 'suspended' && row.status !== 'deleted' && (
             <Button size="sm" variant="secondary" onClick={() => setSuspendOrg(row)}>
               Suspend
