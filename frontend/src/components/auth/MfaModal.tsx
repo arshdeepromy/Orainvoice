@@ -103,6 +103,7 @@ export function MfaModal({ open, onClose, onSuccess }: MfaModalProps) {
   const [challengeSent, setChallengeSent] = useState(false)
   const [sendingChallenge, setSendingChallenge] = useState(false)
   const [passkeyLoading, setPasskeyLoading] = useState(false)
+  const [resendCooldown, setResendCooldown] = useState(0)
   const inputRefs = useRef<(HTMLInputElement | null)[]>([])
   const backdropRef = useRef<HTMLDivElement>(null)
 
@@ -117,8 +118,16 @@ export function MfaModal({ open, onClose, onSuccess }: MfaModalProps) {
       setBackupCode('')
       setError(null)
       setChallengeSent(false)
+      setResendCooldown(0)
     }
   }, [open, initialMethod])
+
+  // Tick down the resend cooldown timer
+  useEffect(() => {
+    if (resendCooldown <= 0) return
+    const id = setInterval(() => setResendCooldown((c) => Math.max(0, c - 1)), 1000)
+    return () => clearInterval(id)
+  }, [resendCooldown])
 
   const sendChallengeOtp = useCallback(
     async (selectedMethod: MfaMethod) => {
@@ -155,6 +164,7 @@ export function MfaModal({ open, onClose, onSuccess }: MfaModalProps) {
             const confirmationResult = await signInWithPhoneNumber(auth, phone_number, recaptchaVerifier)
             firebaseConfirmationRef.current = confirmationResult
             setChallengeSent(true)
+            setResendCooldown(60)
             return
           }
         }
@@ -165,6 +175,7 @@ export function MfaModal({ open, onClose, onSuccess }: MfaModalProps) {
           method: selectedMethod,
         })
         setChallengeSent(true)
+        setResendCooldown(60)
       } catch (err: unknown) {
         const response = (err as { response?: { status?: number; data?: { detail?: string } } })?.response
         if (response?.status === 429) {
@@ -487,10 +498,10 @@ export function MfaModal({ open, onClose, onSuccess }: MfaModalProps) {
               <button
                 type="button"
                 onClick={() => sendChallengeOtp(method)}
-                disabled={sendingChallenge}
+                disabled={sendingChallenge || resendCooldown > 0}
                 className="w-full text-center text-sm font-medium text-blue-600 hover:text-blue-500 disabled:text-gray-400"
               >
-                {sendingChallenge ? 'Sending...' : 'Resend code'}
+                {sendingChallenge ? 'Sending...' : resendCooldown > 0 ? `Resend code (${resendCooldown}s)` : 'Resend code'}
               </button>
             )}
           </form>
