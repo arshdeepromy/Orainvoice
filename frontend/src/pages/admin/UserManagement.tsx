@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { ToastContainer, useToast } from '@/components/ui/Toast'
 import apiClient from '@/api/client'
+import { Profile } from '@/pages/settings/Profile'
 
 interface UserRow {
   id: string
@@ -45,6 +46,7 @@ export function UserManagement() {
   const [statusFilter, setStatusFilter] = useState('')
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
+  const [editModalOpen, setEditModalOpen] = useState(false)
   const { toasts, addToast, dismissToast } = useToast()
 
   const ORG_ROLES = ['org_admin', 'franchise_admin', 'location_manager', 'salesperson', 'staff_member']
@@ -143,11 +145,18 @@ export function UserManagement() {
       key: 'id',
       header: 'Actions',
       render: (row) => (
-        row.role !== 'global_admin' ? (
-          <Button size="sm" variant={row.is_active ? 'danger' : 'secondary'} onClick={() => handleToggleActive(row)}>
-            {row.is_active ? 'Deactivate' : 'Activate'}
-          </Button>
-        ) : null
+        <div className="flex gap-2">
+          {tab === 'global' && (
+            <Button size="sm" variant="secondary" onClick={() => setEditModalOpen(true)}>
+              Edit
+            </Button>
+          )}
+          {row.role !== 'global_admin' && (
+            <Button size="sm" variant={row.is_active ? 'danger' : 'secondary'} onClick={() => handleToggleActive(row)}>
+              {row.is_active ? 'Deactivate' : 'Activate'}
+            </Button>
+          )}
+        </div>
       ),
     },
   ]
@@ -212,6 +221,30 @@ export function UserManagement() {
           <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Previous</Button>
           <span className="text-sm text-gray-600 self-center">Page {page} of {Math.ceil(total / 25)}</span>
           <Button size="sm" variant="secondary" disabled={page >= Math.ceil(total / 25)} onClick={() => setPage(p => p + 1)}>Next</Button>
+        </div>
+      )}
+
+      {/* Edit Profile Modal for Global Admin */}
+      {editModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 overflow-y-auto py-8">
+          <div className="bg-gray-50 rounded-xl shadow-2xl w-full max-w-2xl mx-4 relative">
+            <div className="sticky top-0 bg-white rounded-t-xl border-b border-gray-200 px-6 py-4 flex items-center justify-between z-10">
+              <h2 className="text-lg font-semibold text-gray-900">Edit Profile</h2>
+              <button
+                type="button"
+                onClick={() => setEditModalOpen(false)}
+                className="rounded-md p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+                aria-label="Close"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-6">
+              <Profile />
+            </div>
+          </div>
         </div>
       )}
     </div>
