@@ -36,6 +36,7 @@ function formatDate(iso: string | null): string {
 }
 
 export function UserManagement() {
+  const [tab, setTab] = useState<'org' | 'global'>('org')
   const [users, setUsers] = useState<UserRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
@@ -46,17 +47,35 @@ export function UserManagement() {
   const [page, setPage] = useState(1)
   const { toasts, addToast, dismissToast } = useToast()
 
+  const ORG_ROLES = ['org_admin', 'franchise_admin', 'location_manager', 'salesperson', 'staff_member']
+  const GLOBAL_ROLES = ['global_admin']
+
   const fetchUsers = async () => {
     setLoading(true)
     setError(false)
     try {
       const params: Record<string, string> = { page: String(page), page_size: '25' }
       if (search.trim()) params.search = search.trim()
-      if (roleFilter) params.role = roleFilter
       if (statusFilter) params.is_active = statusFilter
+
+      if (tab === 'global') {
+        // Global Admin tab — always filter to global_admin role
+        params.role = 'global_admin'
+      } else {
+        // Org Users tab — use selected role filter, or no role filter (backend returns all)
+        if (roleFilter) params.role = roleFilter
+      }
+
       const res = await apiClient.get('/admin/users', { params })
-      setUsers(res.data.users ?? [])
-      setTotal(res.data.total ?? 0)
+      let fetched: UserRow[] = res.data.users ?? []
+
+      // Client-side filter: if org tab with no role filter, exclude global_admin users
+      if (tab === 'org' && !roleFilter) {
+        fetched = fetched.filter((u) => u.role !== 'global_admin')
+      }
+
+      setUsers(fetched)
+      setTotal(tab === 'org' && !roleFilter ? fetched.length : (res.data.total ?? 0))
     } catch {
       setError(true)
       addToast('error', 'Failed to load users')
@@ -65,9 +84,17 @@ export function UserManagement() {
     }
   }
 
-  useEffect(() => { fetchUsers() }, [page])
+  useEffect(() => { fetchUsers() }, [page, tab])
 
   const handleSearch = () => { setPage(1); fetchUsers() }
+
+  const handleTabChange = (newTab: 'org' | 'global') => {
+    setTab(newTab)
+    setSearch('')
+    setRoleFilter('')
+    setStatusFilter('')
+    setPage(1)
+  }
 
   const handleToggleActive = async (user: UserRow) => {
     try {
@@ -87,11 +114,11 @@ export function UserManagement() {
       sortable: true,
       render: (row) => <Badge variant="neutral">{ROLE_LABELS[row.role] ?? row.role}</Badge>,
     },
-    {
-      key: 'org_name',
+    ...(tab === 'org' ? [{
+      key: 'org_name' as keyof UserRow,
       header: 'Organisation',
-      render: (row) => row.org_name ?? <span className="text-gray-400">Platform</span>,
-    },
+      render: (row: UserRow) => row.org_name ?? <span className="text-gray-400">Platform</span>,
+    }] : []),
     {
       key: 'is_active',
       header: 'Status',
@@ -125,6 +152,10 @@ export function UserManagement() {
     },
   ]
 
+  const roleOptions = tab === 'org'
+    ? ORG_ROLES.map((r) => ({ value: r, label: ROLE_LABELS[r] ?? r }))
+    : GLOBAL_ROLES.map((r) => ({ value: r, label: ROLE_LABELS[r] ?? r }))
+
   if (loading && users.length === 0) {
     return <div className="flex items-center justify-center py-20"><Spinner label="Loading users" /></div>
   }
@@ -140,9 +171,38 @@ export function UserManagement() {
         <span className="text-sm text-gray-500">{total} users total</span>
       </div>
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
+      {/* Tabs */}
+      <div className="flex border-b border-gray-200 mb-4">
+        <button
+          type="button"
+          onClick={() => handleTabChange('org')}
+          className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            tab === 'org'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+          }`}
+        >
+          Organisation Users
+        </button>
+        <button
+          type="button"
+          onClick={() => handleTabChange('global')}
+          className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            tab === 'global'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+          }`}
+        >
+          Global Admin Users
+        </button>
+      </div>
+
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
         <Input label="Search by email" placeholder="Search..." value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} className="sm:w-72" />
-        <Select label="Role" options={[{ value: '', label: 'All roles' }, ...Object.entries(ROLE_LABELS).map(([v, l]) => ({ value: v, label: l }))]} value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} />
+        {tab === 'org' && (
+          <Select label="Role" options={[{ value: '', label: 'All roles' }, ...roleOptions]} value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} />
+        )}
         <Select label="Status" options={[{ value: '', label: 'All' }, { value: 'true', label: 'Active' }, { value: 'false', label: 'Inactive' }]} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} />
         <div className="flex items-end"><Button onClick={handleSearch}>Search</Button></div>
       </div>
