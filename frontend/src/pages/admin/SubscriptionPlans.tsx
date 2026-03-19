@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
@@ -1188,8 +1189,18 @@ export function SubscriptionPlans() {
   const [saving, setSaving] = useState(false)
   const { toasts, addToast, dismissToast } = useToast()
 
-  /* ── Tab state ── */
-  const [activeMainTab, setActiveMainTab] = useState<'plans' | 'coupons' | 'storage'>('plans')
+  /* ── Tab state (URL-persistent) ── */
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const activeMainTab: 'plans' | 'coupons' | 'storage' =
+    tabParam === 'coupons' ? 'coupons' : tabParam === 'storage' ? 'storage' : 'plans'
+  const setActiveMainTab = (t: 'plans' | 'coupons' | 'storage') => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('tab', t)
+      return next
+    }, { replace: true })
+  }
 
   /* ── Coupon state ── */
   const [coupons, setCoupons] = useState<Coupon[]>([])

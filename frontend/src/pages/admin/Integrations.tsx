@@ -313,7 +313,7 @@ function IntegrationPanel({
           : ''
         onToast('success', `ABCD lookup successful${attemptsMsg}: ${res.data.message}`)
       } else if (res.data.retry_suggested) {
-        onToast('info', 'Carjam is fetching data. Please try again in a few seconds.')
+        onToast('success', 'Carjam is fetching data. Please try again in a few seconds.')
       } else {
         onToast('error', res.data.message)
       }
@@ -678,6 +678,56 @@ function IntegrationPanel({
 
 export function Integrations() {
   const { toasts, addToast, dismissToast } = useToast()
+  const [restoring, setRestoring] = useState(false)
+  const [backing, setBacking] = useState(false)
+
+  const handleBackup = async () => {
+    setBacking(true)
+    try {
+      const res = await apiClient.get('/admin/integrations/backup')
+      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `integration-settings-backup-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      addToast('success', 'Backup downloaded')
+    } catch {
+      addToast('error', 'Failed to export backup')
+    } finally {
+      setBacking(false)
+    }
+  }
+
+  const handleRestore = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.json'
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0]
+      if (!file) return
+      setRestoring(true)
+      try {
+        const text = await file.text()
+        const data = JSON.parse(text)
+        const res = await apiClient.post('/admin/integrations/restore', data)
+        const restored = res.data.restored || {}
+        const parts: string[] = []
+        if (restored.integrations?.length) parts.push(`${restored.integrations.length} integrations`)
+        if (restored.sms_providers?.length) parts.push(`${restored.sms_providers.length} SMS providers`)
+        if (restored.email_providers?.length) parts.push(`${restored.email_providers.length} email providers`)
+        addToast('success', `Restored: ${parts.join(', ') || 'nothing to restore'}`)
+      } catch {
+        addToast('error', 'Failed to restore settings. Check the file format.')
+      } finally {
+        setRestoring(false)
+      }
+    }
+    input.click()
+  }
 
   const tabs = [
     {
@@ -709,9 +759,19 @@ export function Integrations() {
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-gray-900 mb-6">Integrations</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-semibold text-gray-900">Integrations</h1>
+        <div className="flex gap-2">
+          <Button variant="secondary" size="sm" onClick={handleBackup} loading={backing}>
+            Backup Settings
+          </Button>
+          <Button variant="secondary" size="sm" onClick={handleRestore} loading={restoring}>
+            Restore Settings
+          </Button>
+        </div>
+      </div>
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
-      <Tabs tabs={tabs} defaultTab="carjam" />
+      <Tabs tabs={tabs} defaultTab="carjam" urlPersist />
     </div>
   )
 }

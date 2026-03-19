@@ -545,7 +545,7 @@ export function Reports() {
   return (
     <div>
       <h1 className="text-2xl font-semibold text-gray-900 mb-6">Admin Reports</h1>
-      <Tabs tabs={tabs} defaultTab="mrr" />
+      <Tabs tabs={tabs} defaultTab="mrr" urlPersist />
     </div>
   )
 }

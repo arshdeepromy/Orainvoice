@@ -1234,6 +1234,85 @@ async def list_integrations(
 
 
 @router.get(
+    "/integrations/backup",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+    summary="Export all integration settings as JSON backup",
+    dependencies=[require_role("global_admin")],
+)
+async def backup_integration_settings(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Export all integration configs (carjam, stripe, smtp, twilio),
+    SMS providers, and email providers as a downloadable JSON backup.
+
+    Only Global_Admin users can access this endpoint.
+    """
+    from app.modules.admin.service import export_integration_settings
+
+    data = await export_integration_settings(db)
+    return JSONResponse(content=data)
+
+
+@router.post(
+    "/integrations/restore",
+    responses={
+        400: {"description": "Invalid backup data"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+    summary="Restore integration settings from JSON backup",
+    dependencies=[require_role("global_admin")],
+)
+async def restore_integration_settings(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Restore integration configs, SMS providers, and email providers
+    from a previously exported JSON backup.
+
+    Only Global_Admin users can access this endpoint.
+    """
+    from app.modules.admin.service import import_integration_settings
+
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+
+    if not isinstance(body, dict) or "integrations" not in body:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid backup format — missing 'integrations' key"},
+        )
+
+    try:
+        restored = await import_integration_settings(
+            db,
+            data=body,
+            imported_by=uuid.UUID(user_id) if user_id else uuid.uuid4(),
+            ip_address=ip_address,
+        )
+    except Exception as exc:
+        logger.exception("Failed to restore integration settings")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Restore failed: {str(exc)}"},
+        )
+
+    return JSONResponse(content={
+        "message": "Integration settings restored successfully",
+        "restored": restored,
+    })
+
+
+@router.get(
     "/integrations/{name}",
     response_model=IntegrationConfigGetResponse,
     responses={
@@ -3647,3 +3726,4 @@ async def delete_storage_package_endpoint(
         )
 
     return StoragePackageResponse(**result)
+

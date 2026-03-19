@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
@@ -37,7 +38,9 @@ function formatDate(iso: string | null): string {
 }
 
 export function UserManagement() {
-  const [tab, setTab] = useState<'org' | 'global'>('org')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const tab: 'org' | 'global' = tabParam === 'global' ? 'global' : 'org'
   const [users, setUsers] = useState<UserRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
@@ -91,7 +94,11 @@ export function UserManagement() {
   const handleSearch = () => { setPage(1); fetchUsers() }
 
   const handleTabChange = (newTab: 'org' | 'global') => {
-    setTab(newTab)
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('tab', newTab)
+      return next
+    }, { replace: true })
     setSearch('')
     setRoleFilter('')
     setStatusFilter('')

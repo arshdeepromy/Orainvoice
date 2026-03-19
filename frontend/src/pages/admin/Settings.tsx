@@ -739,7 +739,7 @@ export function Settings() {
     <div>
       <h1 className="text-2xl font-semibold text-gray-900 mb-6">Platform Settings</h1>
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
-      <Tabs tabs={tabs} defaultTab="vehicle-db" />
+      <Tabs tabs={tabs} defaultTab="vehicle-db" urlPersist />
     </div>
   )
 }

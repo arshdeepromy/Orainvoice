@@ -5089,3 +5089,231 @@ async def deactivate_storage_package(
 
     await db.refresh(pkg, ["created_at", "updated_at"])
     return _storage_package_to_dict(pkg)
+
+
+# ---------------------------------------------------------------------------
+# Integration Settings Backup / Restore
+# ---------------------------------------------------------------------------
+
+
+async def export_integration_settings(
+    db: AsyncSession,
+) -> dict:
+    """Export all integration configs, SMS providers, and email providers as JSON.
+
+    Decrypts stored configs so the backup contains the actual values.
+    Returns a dict ready to be serialised as JSON.
+    """
+    from app.modules.admin.models import IntegrationConfig, SmsVerificationProvider, EmailProvider
+    from app.core.encryption import envelope_decrypt_str
+
+    backup: dict = {"version": 1, "integrations": {}, "sms_providers": [], "email_providers": []}
+
+    # Integration configs (carjam, stripe, smtp, twilio)
+    result = await db.execute(select(IntegrationConfig))
+    for row in result.scalars().all():
+        try:
+            config_data = json.loads(envelope_decrypt_str(row.config_encrypted))
+        except Exception:
+            config_data = {}
+        backup["integrations"][row.name] = {
+            "config": config_data,
+            "is_verified": row.is_verified,
+        }
+
+    # SMS verification providers
+    result = await db.execute(select(SmsVerificationProvider))
+    for row in result.scalars().all():
+        entry: dict = {
+            "provider_key": row.provider_key,
+            "display_name": row.display_name,
+            "description": row.description,
+            "icon": row.icon,
+            "is_active": row.is_active,
+            "is_default": row.is_default,
+            "priority": row.priority,
+            "config": row.config or {},
+            "credentials_set": row.credentials_set,
+        }
+        # Include decrypted credentials if set
+        if row.credentials_encrypted:
+            try:
+                entry["credentials"] = json.loads(envelope_decrypt_str(row.credentials_encrypted))
+            except Exception:
+                entry["credentials"] = None
+        else:
+            entry["credentials"] = None
+        backup["sms_providers"].append(entry)
+
+    # Email providers
+    result = await db.execute(select(EmailProvider))
+    for row in result.scalars().all():
+        entry = {
+            "provider_key": row.provider_key,
+            "display_name": row.display_name,
+            "description": row.description,
+            "smtp_host": row.smtp_host,
+            "smtp_port": row.smtp_port,
+            "smtp_encryption": row.smtp_encryption,
+            "priority": row.priority,
+            "is_active": row.is_active,
+            "config": row.config or {},
+            "credentials_set": row.credentials_set,
+        }
+        if row.credentials_encrypted:
+            try:
+                entry["credentials"] = json.loads(envelope_decrypt_str(row.credentials_encrypted))
+            except Exception:
+                entry["credentials"] = None
+        else:
+            entry["credentials"] = None
+        backup["email_providers"].append(entry)
+
+    return backup
+
+
+async def import_integration_settings(
+    db: AsyncSession,
+    *,
+    data: dict,
+    imported_by: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Restore integration settings from a backup JSON dict.
+
+    Overwrites existing configs. Returns a summary of what was restored.
+    """
+    from app.modules.admin.models import IntegrationConfig, SmsVerificationProvider, EmailProvider
+    from app.core.encryption import envelope_encrypt
+
+    restored: dict = {"integrations": [], "sms_providers": [], "email_providers": []}
+
+    # Restore integration configs
+    integrations = data.get("integrations", {})
+    for name, entry in integrations.items():
+        if name not in ("carjam", "stripe", "smtp", "twilio"):
+            continue
+        config_data = entry.get("config", {})
+        if not config_data:
+            continue
+        encrypted = envelope_encrypt(json.dumps(config_data))
+        is_verified = entry.get("is_verified", False)
+
+        result = await db.execute(
+            select(IntegrationConfig).where(IntegrationConfig.name == name)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.config_encrypted = encrypted
+            existing.is_verified = is_verified
+        else:
+            db.add(IntegrationConfig(
+                name=name,
+                config_encrypted=encrypted,
+                is_verified=is_verified,
+            ))
+        restored["integrations"].append(name)
+
+    # Restore SMS providers
+    for entry in data.get("sms_providers", []):
+        provider_key = entry.get("provider_key")
+        if not provider_key:
+            continue
+        result = await db.execute(
+            select(SmsVerificationProvider).where(
+                SmsVerificationProvider.provider_key == provider_key
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.display_name = entry.get("display_name", existing.display_name)
+            existing.description = entry.get("description", existing.description)
+            existing.icon = entry.get("icon", existing.icon)
+            existing.is_active = entry.get("is_active", existing.is_active)
+            existing.is_default = entry.get("is_default", existing.is_default)
+            existing.priority = entry.get("priority", existing.priority)
+            existing.config = entry.get("config", existing.config)
+            if entry.get("credentials"):
+                existing.credentials_encrypted = envelope_encrypt(json.dumps(entry["credentials"]))
+                existing.credentials_set = True
+        else:
+            creds_enc = None
+            creds_set = False
+            if entry.get("credentials"):
+                creds_enc = envelope_encrypt(json.dumps(entry["credentials"]))
+                creds_set = True
+            db.add(SmsVerificationProvider(
+                provider_key=provider_key,
+                display_name=entry.get("display_name", provider_key),
+                description=entry.get("description"),
+                icon=entry.get("icon"),
+                is_active=entry.get("is_active", False),
+                is_default=entry.get("is_default", False),
+                priority=entry.get("priority", 0),
+                config=entry.get("config", {}),
+                credentials_encrypted=creds_enc,
+                credentials_set=creds_set,
+            ))
+        restored["sms_providers"].append(provider_key)
+
+    # Restore email providers
+    for entry in data.get("email_providers", []):
+        provider_key = entry.get("provider_key")
+        if not provider_key:
+            continue
+        result = await db.execute(
+            select(EmailProvider).where(
+                EmailProvider.provider_key == provider_key
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.display_name = entry.get("display_name", existing.display_name)
+            existing.description = entry.get("description", existing.description)
+            existing.smtp_host = entry.get("smtp_host", existing.smtp_host)
+            existing.smtp_port = entry.get("smtp_port", existing.smtp_port)
+            existing.smtp_encryption = entry.get("smtp_encryption", existing.smtp_encryption)
+            existing.priority = entry.get("priority", existing.priority)
+            existing.is_active = entry.get("is_active", existing.is_active)
+            existing.config = entry.get("config", existing.config)
+            if entry.get("credentials"):
+                existing.credentials_encrypted = envelope_encrypt(json.dumps(entry["credentials"]))
+                existing.credentials_set = True
+        else:
+            creds_enc = None
+            creds_set = False
+            if entry.get("credentials"):
+                creds_enc = envelope_encrypt(json.dumps(entry["credentials"]))
+                creds_set = True
+            db.add(EmailProvider(
+                provider_key=provider_key,
+                display_name=entry.get("display_name", provider_key),
+                description=entry.get("description"),
+                smtp_host=entry.get("smtp_host"),
+                smtp_port=entry.get("smtp_port"),
+                smtp_encryption=entry.get("smtp_encryption", "tls"),
+                priority=entry.get("priority", 1),
+                is_active=entry.get("is_active", False),
+                config=entry.get("config", {}),
+                credentials_encrypted=creds_enc,
+                credentials_set=creds_set,
+            ))
+        restored["email_providers"].append(provider_key)
+
+    await db.flush()
+
+    await write_audit_log(
+        session=db,
+        org_id=None,
+        user_id=imported_by,
+        action="admin.integration_settings_restored",
+        entity_type="integration_config",
+        entity_id=None,
+        after_value={
+            "restored": restored,
+            "ip_address": ip_address,
+        },
+        ip_address=ip_address,
+    )
+
+    return restored

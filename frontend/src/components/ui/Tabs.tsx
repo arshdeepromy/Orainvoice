@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 interface Tab {
   id: string
@@ -10,11 +11,41 @@ interface TabsProps {
   tabs: Tab[]
   defaultTab?: string
   className?: string
+  /** When true, syncs the active tab with the URL ?tab= search param */
+  urlPersist?: boolean
 }
 
-export function Tabs({ tabs, defaultTab, className = '' }: TabsProps) {
-  const [activeTab, setActiveTab] = useState(defaultTab || tabs[0]?.id || '')
+export function Tabs({ tabs, defaultTab, className = '', urlPersist = false }: TabsProps) {
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  const urlTab = urlPersist ? searchParams.get('tab') : null
+  const initial = (urlTab && tabs.some((t) => t.id === urlTab)) ? urlTab : (defaultTab || tabs[0]?.id || '')
+
+  const [activeTab, setActiveTab] = useState(initial)
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
+
+  // Sync from URL changes (browser back/forward)
+  useEffect(() => {
+    if (!urlPersist) return
+    const paramTab = searchParams.get('tab')
+    if (paramTab && tabs.some((t) => t.id === paramTab) && paramTab !== activeTab) {
+      setActiveTab(paramTab)
+    }
+  }, [searchParams, urlPersist, tabs]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selectTab = useCallback(
+    (id: string) => {
+      setActiveTab(id)
+      if (urlPersist) {
+        setSearchParams((prev: URLSearchParams) => {
+          const next = new URLSearchParams(prev)
+          next.set('tab', id)
+          return next
+        }, { replace: true })
+      }
+    },
+    [urlPersist, setSearchParams],
+  )
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -35,10 +66,10 @@ export function Tabs({ tabs, defaultTab, className = '' }: TabsProps) {
 
       e.preventDefault()
       const nextTab = tabs[nextIndex]
-      setActiveTab(nextTab.id)
+      selectTab(nextTab.id)
       tabRefs.current.get(nextTab.id)?.focus()
     },
-    [activeTab, tabs],
+    [activeTab, tabs, selectTab],
   )
 
   const activeContent = tabs.find((t) => t.id === activeTab)?.content
@@ -57,7 +88,7 @@ export function Tabs({ tabs, defaultTab, className = '' }: TabsProps) {
             aria-selected={activeTab === tab.id}
             aria-controls={`tabpanel-${tab.id}`}
             tabIndex={activeTab === tab.id ? 0 : -1}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => selectTab(tab.id)}
             onKeyDown={handleKeyDown}
             className={`px-4 py-2 text-sm font-medium transition-colors
               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset
