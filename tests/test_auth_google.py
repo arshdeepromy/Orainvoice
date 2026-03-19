@@ -188,11 +188,21 @@ class TestAuthenticateGoogle:
         google_info = GoogleUserInfo(email=user.email, name="Test", google_id="g-123")
 
         mock_db = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = user
-        mock_db.execute.return_value = mock_result
+
+        # First execute returns user, second returns empty MFA methods
+        mock_user_result = MagicMock()
+        mock_user_result.scalar_one_or_none.return_value = user
+
+        mock_mfa_result = MagicMock()
+        mock_mfa_scalars = MagicMock()
+        mock_mfa_scalars.all.return_value = []
+        mock_mfa_result.scalars.return_value = mock_mfa_scalars
+
+        mock_db.execute.side_effect = [mock_user_result, mock_mfa_result]
 
         with patch("app.modules.auth.service.write_audit_log", new_callable=AsyncMock), \
+             patch("app.modules.auth.service.check_ip_allowlist", new_callable=AsyncMock, return_value=False), \
+             patch("app.modules.auth.service.enforce_session_limit", new_callable=AsyncMock, return_value=0), \
              patch("app.modules.auth.service.Session") as MockSession:
             MockSession.return_value = MagicMock()
             result = await authenticate_google(
@@ -251,16 +261,33 @@ class TestAuthenticateGoogle:
 
     @pytest.mark.asyncio
     async def test_mfa_user_gets_challenge(self):
-        """User with MFA → MFARequiredResponse."""
-        user = _make_mock_user(mfa_methods=[{"type": "totp"}])
+        """User with MFA → MFAChallengeResponse with Redis-based challenge session."""
+        from app.modules.auth.models import UserMfaMethod
+
+        user = _make_mock_user(mfa_methods=[])
         google_info = GoogleUserInfo(email=user.email, name="Test", google_id="g-123")
 
-        mock_db = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = user
-        mock_db.execute.return_value = mock_result
+        # Create a mock verified MFA method
+        mock_mfa_method = MagicMock(spec=UserMfaMethod)
+        mock_mfa_method.method = "totp"
+        mock_mfa_method.verified = True
 
-        with patch("app.modules.auth.service.write_audit_log", new_callable=AsyncMock):
+        mock_db = AsyncMock()
+
+        # First execute returns user, second returns MFA methods
+        mock_user_result = MagicMock()
+        mock_user_result.scalar_one_or_none.return_value = user
+
+        mock_mfa_result = MagicMock()
+        mock_mfa_scalars = MagicMock()
+        mock_mfa_scalars.all.return_value = [mock_mfa_method]
+        mock_mfa_result.scalars.return_value = mock_mfa_scalars
+
+        mock_db.execute.side_effect = [mock_user_result, mock_mfa_result]
+
+        with patch("app.modules.auth.service.write_audit_log", new_callable=AsyncMock), \
+             patch("app.modules.auth.service.check_ip_allowlist", new_callable=AsyncMock, return_value=False), \
+             patch("app.modules.auth.mfa_service._store_challenge_session", new_callable=AsyncMock):
             result = await authenticate_google(
                 db=mock_db,
                 google_user_info=google_info,
@@ -270,7 +297,7 @@ class TestAuthenticateGoogle:
             )
 
         assert result.mfa_required is True
-        assert "totp" in result.mfa_methods
+        assert "totp" in result.methods
 
     @pytest.mark.asyncio
     async def test_existing_google_id_not_overwritten(self):
@@ -279,11 +306,20 @@ class TestAuthenticateGoogle:
         google_info = GoogleUserInfo(email=user.email, name="Test", google_id="new-id")
 
         mock_db = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = user
-        mock_db.execute.return_value = mock_result
+
+        mock_user_result = MagicMock()
+        mock_user_result.scalar_one_or_none.return_value = user
+
+        mock_mfa_result = MagicMock()
+        mock_mfa_scalars = MagicMock()
+        mock_mfa_scalars.all.return_value = []
+        mock_mfa_result.scalars.return_value = mock_mfa_scalars
+
+        mock_db.execute.side_effect = [mock_user_result, mock_mfa_result]
 
         with patch("app.modules.auth.service.write_audit_log", new_callable=AsyncMock), \
+             patch("app.modules.auth.service.check_ip_allowlist", new_callable=AsyncMock, return_value=False), \
+             patch("app.modules.auth.service.enforce_session_limit", new_callable=AsyncMock, return_value=0), \
              patch("app.modules.auth.service.Session") as MockSession:
             MockSession.return_value = MagicMock()
             await authenticate_google(

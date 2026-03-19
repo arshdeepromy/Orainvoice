@@ -39,7 +39,6 @@ def _make_user(
     email="user@example.com",
     is_active=True,
     password_hash="$2b$12$fakehash",
-    backup_codes_hash=None,
 ):
     """Create a mock User object."""
     user = MagicMock(spec=User)
@@ -49,7 +48,6 @@ def _make_user(
     user.role = "org_admin"
     user.is_active = is_active
     user.password_hash = password_hash
-    user.backup_codes_hash = backup_codes_hash
     user.mfa_methods = []
     return user
 
@@ -297,19 +295,31 @@ class TestResetViaBackupCode:
     async def test_resets_with_valid_backup_code(self):
         """Valid backup code resets password and invalidates sessions."""
         from app.modules.auth.service import reset_via_backup_code
+        from app.modules.auth.models import UserBackupCode
         import bcrypt as bcrypt_lib
 
         user_id = uuid.uuid4()
         plain_code = "ABCD1234"
         hashed = bcrypt_lib.hashpw(plain_code.encode(), bcrypt_lib.gensalt()).decode()
-        backup_codes = [{"hash": hashed, "used": False}]
-        user = _make_user(user_id=user_id, backup_codes_hash=backup_codes)
 
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = user
+        user = _make_user(user_id=user_id)
+
+        # Create a mock UserBackupCode record
+        mock_bc = MagicMock(spec=UserBackupCode)
+        mock_bc.code_hash = hashed
+        mock_bc.used = False
+        mock_bc.used_at = None
+
+        mock_user_result = MagicMock()
+        mock_user_result.scalar_one_or_none.return_value = user
+
+        mock_bc_result = MagicMock()
+        mock_bc_scalars = MagicMock()
+        mock_bc_scalars.all.return_value = [mock_bc]
+        mock_bc_result.scalars.return_value = mock_bc_scalars
 
         db = AsyncMock()
-        db.execute.return_value = mock_result
+        db.execute.side_effect = [mock_user_result, mock_bc_result]
 
         with (
             patch("app.integrations.hibp.is_password_compromised", new_callable=AsyncMock, return_value=False),
@@ -328,7 +338,8 @@ class TestResetViaBackupCode:
         # Password updated
         assert user.password_hash == "$2b$12$newhash"
         # Backup code marked as used
-        assert user.backup_codes_hash[0]["used"] is True
+        assert mock_bc.used is True
+        assert mock_bc.used_at is not None
         # Sessions invalidated
         mock_invalidate.assert_called_once()
 
@@ -336,17 +347,26 @@ class TestResetViaBackupCode:
     async def test_rejects_invalid_backup_code(self):
         """Raises ValueError for an incorrect backup code."""
         from app.modules.auth.service import reset_via_backup_code
+        from app.modules.auth.models import UserBackupCode
         import bcrypt as bcrypt_lib
 
         hashed = bcrypt_lib.hashpw(b"REALCODE", bcrypt_lib.gensalt()).decode()
-        backup_codes = [{"hash": hashed, "used": False}]
-        user = _make_user(backup_codes_hash=backup_codes)
+        user = _make_user()
 
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = user
+        mock_bc = MagicMock(spec=UserBackupCode)
+        mock_bc.code_hash = hashed
+        mock_bc.used = False
+
+        mock_user_result = MagicMock()
+        mock_user_result.scalar_one_or_none.return_value = user
+
+        mock_bc_result = MagicMock()
+        mock_bc_scalars = MagicMock()
+        mock_bc_scalars.all.return_value = [mock_bc]
+        mock_bc_result.scalars.return_value = mock_bc_scalars
 
         db = AsyncMock()
-        db.execute.return_value = mock_result
+        db.execute.side_effect = [mock_user_result, mock_bc_result]
 
         with (
             patch("app.modules.auth.service.write_audit_log", new_callable=AsyncMock),
@@ -363,18 +383,21 @@ class TestResetViaBackupCode:
     async def test_rejects_already_used_backup_code(self):
         """Raises ValueError when the backup code has already been used."""
         from app.modules.auth.service import reset_via_backup_code
-        import bcrypt as bcrypt_lib
 
         plain_code = "USEDCODE"
-        hashed = bcrypt_lib.hashpw(plain_code.encode(), bcrypt_lib.gensalt()).decode()
-        backup_codes = [{"hash": hashed, "used": True}]
-        user = _make_user(backup_codes_hash=backup_codes)
+        user = _make_user()
 
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = user
+        # No unused backup codes returned (all used)
+        mock_user_result = MagicMock()
+        mock_user_result.scalar_one_or_none.return_value = user
+
+        mock_bc_result = MagicMock()
+        mock_bc_scalars = MagicMock()
+        mock_bc_scalars.all.return_value = []  # No unused codes
+        mock_bc_result.scalars.return_value = mock_bc_scalars
 
         db = AsyncMock()
-        db.execute.return_value = mock_result
+        db.execute.side_effect = [mock_user_result, mock_bc_result]
 
         with (
             patch("app.modules.auth.service.write_audit_log", new_callable=AsyncMock),
@@ -410,18 +433,28 @@ class TestResetViaBackupCode:
     async def test_rejects_compromised_password_via_backup(self):
         """Raises ValueError when new password is compromised (HIBP)."""
         from app.modules.auth.service import reset_via_backup_code
+        from app.modules.auth.models import UserBackupCode
         import bcrypt as bcrypt_lib
 
         plain_code = "VALIDCODE"
         hashed = bcrypt_lib.hashpw(plain_code.encode(), bcrypt_lib.gensalt()).decode()
-        backup_codes = [{"hash": hashed, "used": False}]
-        user = _make_user(backup_codes_hash=backup_codes)
+        user = _make_user()
 
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = user
+        mock_bc = MagicMock(spec=UserBackupCode)
+        mock_bc.code_hash = hashed
+        mock_bc.used = False
+        mock_bc.used_at = None
+
+        mock_user_result = MagicMock()
+        mock_user_result.scalar_one_or_none.return_value = user
+
+        mock_bc_result = MagicMock()
+        mock_bc_scalars = MagicMock()
+        mock_bc_scalars.all.return_value = [mock_bc]
+        mock_bc_result.scalars.return_value = mock_bc_scalars
 
         db = AsyncMock()
-        db.execute.return_value = mock_result
+        db.execute.side_effect = [mock_user_result, mock_bc_result]
 
         with (
             patch("app.integrations.hibp.is_password_compromised", new_callable=AsyncMock, return_value=True),

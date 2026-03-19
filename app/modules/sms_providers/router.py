@@ -164,3 +164,128 @@ async def test_provider(
         ip_address=ip_address,
     )
     return SmsProviderTestResponse(**result)
+
+
+@router.post(
+    "/{provider_key}/set-mfa-default",
+    summary="Set provider as default for MFA/phone verification",
+    dependencies=[require_role("global_admin")],
+)
+async def set_mfa_default(
+    provider_key: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Set this provider as the default for delivering MFA and phone verification codes."""
+    from app.modules.sms_providers.service import set_mfa_default_provider
+
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    result = await set_mfa_default_provider(
+        db,
+        provider_key=provider_key,
+        admin_user_id=uuid.UUID(user_id) if user_id else None,
+        ip_address=ip_address,
+    )
+
+    status = 200 if result["success"] else 400
+    return JSONResponse(status_code=status, content=result)
+
+
+@router.get(
+    "/{provider_key}/firebase-config",
+    summary="Get Firebase config for client-side SDK initialisation",
+    dependencies=[require_role("global_admin")],
+)
+async def get_firebase_config(
+    provider_key: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the Firebase project config needed to initialise the JS SDK.
+
+    Only returns the non-secret fields (apiKey, projectId, appId) which are
+    safe to expose to the browser — they are the same values embedded in any
+    Firebase web app's firebaseConfig snippet.
+    """
+    if provider_key != "firebase_phone_auth":
+        return JSONResponse(status_code=400, content={"detail": "Only supported for Firebase"})
+
+    creds = await get_provider_credentials(db, provider_key)
+    if not creds:
+        return JSONResponse(status_code=404, content={"detail": "No credentials configured"})
+
+    return {
+        "apiKey": creds.get("api_key", ""),
+        "projectId": creds.get("project_id", ""),
+        "appId": creds.get("app_id", ""),
+        "authDomain": f"{creds.get('project_id', '')}.firebaseapp.com",
+    }
+
+
+@router.post(
+    "/{provider_key}/send-test-code",
+    summary="Send a real verification code via Firebase for testing",
+    dependencies=[require_role("global_admin")],
+)
+async def send_test_code(
+    provider_key: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Send a real SMS verification code to a phone number to test delivery."""
+    from app.modules.sms_providers.service import send_firebase_test_code
+
+    body = await request.json()
+    to_number = body.get("to_number", "").strip()
+    if not to_number:
+        return JSONResponse(status_code=400, content={"success": False, "message": "Phone number is required"})
+
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if provider_key != "firebase_phone_auth":
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "message": "Send test code is only supported for Firebase Phone Auth"},
+        )
+
+    result = await send_firebase_test_code(
+        db,
+        to_number=to_number,
+        admin_user_id=uuid.UUID(user_id) if user_id else None,
+        ip_address=ip_address,
+    )
+
+    status = 200 if result.get("success") else 400
+    return JSONResponse(status_code=status, content=result)
+
+@router.get(
+    "/{provider_key}/firebase-config",
+    summary="Get Firebase config for client-side SDK initialisation",
+    dependencies=[require_role("global_admin")],
+)
+async def get_firebase_config(
+    provider_key: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the Firebase project config needed to initialise the JS SDK.
+
+    Only returns the non-secret fields (apiKey, projectId, appId) which are
+    safe to expose to the browser — they are the same values embedded in any
+    Firebase web app's firebaseConfig snippet.
+    """
+    if provider_key != "firebase_phone_auth":
+        return JSONResponse(status_code=400, content={"detail": "Only supported for Firebase"})
+
+    creds = await get_provider_credentials(db, provider_key)
+    if not creds:
+        return JSONResponse(status_code=404, content={"detail": "No credentials configured"})
+
+    return {
+        "apiKey": creds.get("api_key", ""),
+        "projectId": creds.get("project_id", ""),
+        "appId": creds.get("app_id", ""),
+        "authDomain": f"{creds.get('project_id', '')}.firebaseapp.com",
+    }
+

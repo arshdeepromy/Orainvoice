@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # --- JWT / Auth ---
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 15
+    access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
     refresh_token_remember_days: int = 30
 
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
 
     # --- WebAuthn / Passkeys ---
     webauthn_rp_id: str = "localhost"
-    webauthn_rp_name: str = "WorkshopPro NZ"
+    webauthn_rp_name: str = "OraInvoice"
     webauthn_origin: str = "http://localhost:5173"
 
     # --- Encryption ---

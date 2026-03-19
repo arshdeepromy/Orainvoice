@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import logging
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -16,10 +17,10 @@ from app.config import settings
 from app.core.audit import write_audit_log
 from app.core.ip_allowlist import get_org_ip_allowlist, is_ip_in_allowlist
 from app.modules.auth.jwt import create_access_token, create_refresh_token
-from app.modules.auth.models import Session, User
+from app.modules.auth.models import Session, User, UserMfaMethod, UserPasskeyCredential
 from app.modules.auth.password import verify_password
 from app.integrations.google_oauth import GoogleUserInfo
-from app.modules.auth.schemas import LoginRequest, MFARequiredResponse, TokenResponse
+from app.modules.auth.schemas import LoginRequest, MFAChallengeResponse, MFARequiredResponse, TokenResponse
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ async def authenticate_user(
     ip_address: str | None,
     device_type: str | None,
     browser: str | None,
-) -> TokenResponse | MFARequiredResponse:
+) -> TokenResponse | MFAChallengeResponse:
     """Validate credentials and return tokens or MFA challenge.
 
     Raises ``ValueError`` with a generic message on any failure so the
@@ -74,6 +75,18 @@ async def authenticate_user(
             org_id=user.org_id,
         )
         raise ValueError("Invalid credentials")
+
+    # 1a. Block unverified email accounts
+    if not user.is_email_verified:
+        await _audit_failed_login(
+            db,
+            ip_address=ip_address,
+            email=payload.email,
+            reason="email_not_verified",
+            user_id=user.id,
+            org_id=user.org_id,
+        )
+        raise ValueError("Please verify your email address before logging in. Check your inbox for the verification link.")
 
     # 1b. IP allowlist check (Requirement 6.1)
     if user.org_id and ip_address:
@@ -141,18 +154,32 @@ async def authenticate_user(
             )
         raise ValueError("Invalid credentials")
 
-    # 4. Check if MFA is configured
-    mfa_methods = user.mfa_methods or []
-    if mfa_methods:
+    # 4. Check if MFA is configured (normalised tables)
+    from app.modules.auth.models import UserMfaMethod
+    from app.modules.auth.mfa_service import _store_challenge_session
+
+    mfa_stmt = select(UserMfaMethod).where(
+        UserMfaMethod.user_id == user.id,
+        UserMfaMethod.verified == True,  # noqa: E712
+    )
+    mfa_result = await db.execute(mfa_stmt)
+    verified_methods = mfa_result.scalars().all()
+
+    if verified_methods:
         # Reset failed count on valid password (MFA still pending)
         user.failed_login_count = 0
         user.locked_until = None
-        mfa_token = create_access_token_mfa_pending(user.id)
-        method_types = [m.get("type", "unknown") for m in mfa_methods if isinstance(m, dict)]
-        return MFARequiredResponse(
+        # Generate a random mfa_token and store challenge session in Redis
+        mfa_token = secrets.token_urlsafe(32)
+        method_types = [m.method for m in verified_methods]
+        default = next((m.method for m in verified_methods if m.is_default), None)
+        sms_phone = next((m.phone_number for m in verified_methods if m.method == "sms" and m.phone_number), None)
+        await _store_challenge_session(mfa_token, user.id, method_types, phone_number=sms_phone)
+        return MFAChallengeResponse(
             mfa_required=True,
             mfa_token=mfa_token,
-            mfa_methods=method_types,
+            methods=method_types,
+            default_method=default,
         )
 
     # 5. Issue JWT pair
@@ -582,7 +609,21 @@ async def _do_rotation(
     user_result = await db.execute(
         select(User).where(User.id == current_session.user_id)
     )
-    user = user_result.scalar_one()
+    user = user_result.scalar_one_or_none()
+
+    if user is None:
+        raise ValueError("User no longer exists")
+
+    # For non-global-admin users, verify their org still exists
+    if user.role != "global_admin" and user.org_id:
+        from app.modules.admin.models import Organisation
+        org_result = await db.execute(
+            select(Organisation.id).where(Organisation.id == user.org_id)
+        )
+        if org_result.scalar_one_or_none() is None:
+            # Org was deleted — invalidate the entire session family
+            await _invalidate_family(db, current_session.family_id)
+            raise ValueError("Organisation no longer exists")
 
     # Issue new tokens
     # Global admins should not have org_id in their JWT (they access all orgs)
@@ -608,19 +649,10 @@ async def _do_rotation(
     )
     db.add(new_session)
 
-    await write_audit_log(
-        session=db,
-        org_id=current_session.org_id,
-        user_id=current_session.user_id,
-        action="auth.token_rotated",
-        entity_type="session",
-        entity_id=new_session.id,
-        after_value={
-            "family_id": str(current_session.family_id),
-            "ip_address": ip_address,
-        },
-        ip_address=ip_address,
-    )
+    # Note: we intentionally do NOT write an audit log for routine token
+    # rotations.  At scale (10k+ users) this would generate thousands of
+    # low-value rows per hour.  Security-relevant events (reuse detection,
+    # login, logout) are still logged.
 
     return TokenResponse(access_token=access_token, refresh_token=new_refresh_token)
 
@@ -660,7 +692,7 @@ async def authenticate_google(
     ip_address: str | None,
     device_type: str | None,
     browser: str | None,
-) -> TokenResponse | MFARequiredResponse:
+) -> TokenResponse | MFAChallengeResponse:
     """Authenticate a user via Google OAuth.
 
     Looks up the user by email. If found, links the Google ID (if not
@@ -704,15 +736,28 @@ async def authenticate_google(
     if not user.google_oauth_id:
         user.google_oauth_id = google_user_info.google_id
 
-    # Check if MFA is configured
-    mfa_methods = user.mfa_methods or []
-    if mfa_methods:
-        mfa_token = create_access_token_mfa_pending(user.id)
-        method_types = [m.get("type", "unknown") for m in mfa_methods if isinstance(m, dict)]
-        return MFARequiredResponse(
+    # Check if MFA is configured (normalised tables)
+    from app.modules.auth.models import UserMfaMethod
+    from app.modules.auth.mfa_service import _store_challenge_session
+
+    mfa_stmt = select(UserMfaMethod).where(
+        UserMfaMethod.user_id == user.id,
+        UserMfaMethod.verified == True,  # noqa: E712
+    )
+    mfa_result = await db.execute(mfa_stmt)
+    verified_methods = mfa_result.scalars().all()
+
+    if verified_methods:
+        mfa_token = secrets.token_urlsafe(32)
+        method_types = [m.method for m in verified_methods]
+        default = next((m.method for m in verified_methods if m.is_default), None)
+        sms_phone = next((m.phone_number for m in verified_methods if m.method == "sms" and m.phone_number), None)
+        await _store_challenge_session(mfa_token, user.id, method_types, phone_number=sms_phone)
+        return MFAChallengeResponse(
             mfa_required=True,
             mfa_token=mfa_token,
-            mfa_methods=method_types,
+            methods=method_types,
+            default_method=default,
         )
 
     # Issue JWT pair
@@ -778,76 +823,78 @@ async def _get_redis():
     return redis_pool
 
 
-def _get_rp():
-    """Build a WebAuthn RelyingParty from settings."""
-    from webauthn.types import RelyingParty
-    return RelyingParty(
-        id=settings.webauthn_rp_id,
-        name=settings.webauthn_rp_name,
-        icon=None,
-    )
+def _bytes_to_base64url(b: bytes) -> str:
+    """Encode bytes to base64url (no padding)."""
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
 
 
-def _serialize_public_key(public_key) -> str:
-    """Serialize a cryptography public key to base64-encoded DER."""
-    from cryptography.hazmat.primitives.serialization import (
-        Encoding,
-        PublicFormat,
-    )
-    der_bytes = public_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
-    return base64.b64encode(der_bytes).decode()
-
-
-def _deserialize_public_key(public_key_b64: str):
-    """Deserialize a base64-encoded DER public key."""
-    from cryptography.hazmat.primitives.serialization import load_der_public_key
-    der_bytes = base64.b64decode(public_key_b64)
-    return load_der_public_key(der_bytes)
+def _base64url_to_bytes(s: str) -> bytes:
+    """Decode base64url (with or without padding) to bytes."""
+    s += "=" * (4 - len(s) % 4)
+    return base64.urlsafe_b64decode(s)
 
 
 async def generate_passkey_register_options(
+    db: AsyncSession,
     user: User,
     device_name: str = "My Passkey",
 ) -> dict:
     """Generate WebAuthn registration options for a user.
 
-    Stores the challenge in Redis with a 5-minute TTL.
-    Returns the options dict to be sent to the client.
+    Uses py_webauthn v2.x ``generate_registration_options()`` and
+    ``options_to_json()`` to produce options compatible with the browser
+    WebAuthn API.  Enforces a 10-credential limit and stores the
+    challenge in Redis with a 60 s TTL.
     """
-    import webauthn
-    from webauthn.types import Attestation
-
-    rp = _get_rp()
-    webauthn_user = webauthn.types.User(
-        id=str(user.id).encode(),
-        name=user.email,
-        display_name=user.email,
-        icon=None,
+    from webauthn import generate_registration_options, options_to_json
+    from webauthn.helpers.structs import (
+        AttestationConveyancePreference,
+        PublicKeyCredentialDescriptor,
     )
 
-    # Build exclude list from existing credentials
-    existing_creds = user.passkey_credentials or []
-    existing_keys = []
-    for cred in existing_creds:
-        if isinstance(cred, dict) and "credential_id" in cred:
-            existing_keys.append(base64.b64decode(cred["credential_id"]))
+    # --- enforce max 10 credentials ---
+    result = await db.execute(
+        select(UserPasskeyCredential).where(
+            UserPasskeyCredential.user_id == user.id,
+        )
+    )
+    existing_creds: list[UserPasskeyCredential] = list(result.scalars().all())
 
-    options, challenge_b64 = webauthn.create_webauthn_credentials(
-        rp=rp,
-        user=webauthn_user,
-        existing_keys=existing_keys if existing_keys else None,
-        attestation_request=Attestation.NoneAttestation,
+    if len(existing_creds) >= 10:
+        raise ValueError(
+            "Maximum number of passkeys (10) reached. "
+            "Remove an existing passkey to register a new one."
+        )
+
+    # Build exclude list from existing credential IDs
+    exclude_credentials = [
+        PublicKeyCredentialDescriptor(id=_base64url_to_bytes(cred.credential_id))
+        for cred in existing_creds
+    ] if existing_creds else None
+
+    options = generate_registration_options(
+        rp_id=settings.webauthn_rp_id,
+        rp_name=settings.webauthn_rp_name,
+        user_id=str(user.id).encode(),
+        user_name=user.email,
+        user_display_name=user.email,
+        attestation=AttestationConveyancePreference.NONE,
+        exclude_credentials=exclude_credentials,
+        timeout=60000,
     )
 
-    # Store challenge in Redis with 5-min TTL
+    # options_to_json returns a JSON string; parse to dict for the response
+    options_json = json.loads(options_to_json(options))
+
+    # Store challenge in Redis with 60 s TTL (challenge is base64url in the options)
     redis = await _get_redis()
     challenge_key = f"webauthn:register:{user.id}"
-    await redis.setex(challenge_key, 300, json.dumps({
-        "challenge": challenge_b64,
+    await redis.setex(challenge_key, 60, json.dumps({
+        "challenge": options_json["challenge"],
         "device_name": device_name,
     }))
 
-    return options
+    return options_json
 
 
 async def verify_passkey_registration(
@@ -857,15 +904,12 @@ async def verify_passkey_registration(
 ) -> dict:
     """Verify a WebAuthn registration response and store the credential.
 
-    Expects credential_response with keys:
-      - client_data_b64: base64-encoded clientDataJSON
-      - attestation_b64: base64-encoded attestationObject
-      - credential_id_b64: base64-encoded credential raw ID
-
-    Returns the stored credential info dict.
+    Uses py_webauthn v2.x ``verify_registration_response()``.
+    The frontend sends ``client_data_b64``, ``attestation_b64``, and
+    ``credential_id_b64`` — we reconstruct the credential dict that
+    py_webauthn expects.
     """
-    import webauthn
-    from webauthn.metadata import FIDOMetadata
+    from webauthn import verify_registration_response
 
     # Retrieve challenge from Redis
     redis = await _get_redis()
@@ -875,15 +919,11 @@ async def verify_passkey_registration(
         raise ValueError("Registration challenge expired or not found")
 
     stored = json.loads(stored_data)
-    challenge_b64 = stored["challenge"]
+    challenge_b64url = stored["challenge"]
     device_name = stored.get("device_name", "My Passkey")
 
     # Clean up the challenge
     await redis.delete(challenge_key)
-
-    rp = _get_rp()
-    # Use empty FIDO metadata (no attestation verification needed)
-    fido_metadata = FIDOMetadata(entries=[], aaguid_map={}, cki_map={})
 
     client_data_b64 = credential_response.get("client_data_b64", "")
     attestation_b64 = credential_response.get("attestation_b64", "")
@@ -892,29 +932,62 @@ async def verify_passkey_registration(
     if not client_data_b64 or not attestation_b64 or not credential_id_b64:
         raise ValueError("Missing required fields in credential response")
 
-    result = webauthn.verify_create_webauthn_credentials(
-        rp=rp,
-        challenge_b64=challenge_b64,
-        client_data_b64=client_data_b64,
-        attestation_b64=attestation_b64,
-        fido_metadata=fido_metadata,
-    )
-
-    # Serialize public key for storage
-    public_key_b64 = _serialize_public_key(result.public_key)
-
-    new_credential = {
-        "credential_id": credential_id_b64,
-        "public_key": public_key_b64,
-        "public_key_alg": result.public_key_alg,
-        "sign_count": result.sign_count,
-        "device_name": device_name,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+    # Build the credential dict that py_webauthn expects
+    credential_dict = {
+        "id": credential_id_b64,
+        "rawId": credential_id_b64,
+        "response": {
+            "clientDataJSON": client_data_b64,
+            "attestationObject": attestation_b64,
+        },
+        "type": "public-key",
+        "clientExtensionResults": {},
     }
 
-    existing_creds = list(user.passkey_credentials or [])
-    existing_creds.append(new_credential)
-    user.passkey_credentials = existing_creds
+    verification = verify_registration_response(
+        credential=credential_dict,
+        expected_challenge=_base64url_to_bytes(challenge_b64url),
+        expected_rp_id=settings.webauthn_rp_id,
+        expected_origin=settings.webauthn_origin,
+        require_user_verification=False,
+    )
+
+    # Store credential using base64url encoding for consistency
+    cred_id_b64url = _bytes_to_base64url(verification.credential_id)
+    cred_public_key_b64url = _bytes_to_base64url(verification.credential_public_key)
+
+    # --- Store credential in normalised table ---
+    new_credential = UserPasskeyCredential(
+        user_id=user.id,
+        credential_id=cred_id_b64url,
+        public_key=cred_public_key_b64url,
+        public_key_alg=-7,  # ES256 (most common)
+        sign_count=verification.sign_count,
+        device_name=device_name,
+    )
+    db.add(new_credential)
+
+    # --- Ensure a 'passkey' entry exists in user_mfa_methods ---
+    mfa_result = await db.execute(
+        select(UserMfaMethod).where(
+            UserMfaMethod.user_id == user.id,
+            UserMfaMethod.method == "passkey",
+        )
+    )
+    passkey_method = mfa_result.scalar_one_or_none()
+    if passkey_method is None:
+        passkey_method = UserMfaMethod(
+            user_id=user.id,
+            method="passkey",
+            verified=True,
+            verified_at=datetime.now(timezone.utc),
+        )
+        db.add(passkey_method)
+    elif not passkey_method.verified:
+        passkey_method.verified = True
+        passkey_method.verified_at = datetime.now(timezone.utc)
+
+    await db.flush()
 
     await write_audit_log(
         session=db,
@@ -924,99 +997,158 @@ async def verify_passkey_registration(
         entity_type="user",
         entity_id=user.id,
         after_value={
-            "credential_id": credential_id_b64,
+            "credential_id": cred_id_b64url,
             "device_name": device_name,
         },
     )
 
     return {
-        "credential_id": credential_id_b64,
+        "credential_id": cred_id_b64url,
         "device_name": device_name,
     }
 
 
 async def generate_passkey_login_options(
     db: AsyncSession,
-    email: str,
+    user_id: uuid.UUID,
 ) -> dict:
     """Generate WebAuthn authentication options for a user.
 
-    Stores the challenge in Redis with a 5-minute TTL.
-    Returns the options dict to be sent to the client.
+    Uses py_webauthn v2.x ``generate_authentication_options()`` and
+    ``options_to_json()``.  Stores the challenge in Redis with a 60 s TTL.
     """
-    import webauthn
+    from webauthn import generate_authentication_options, options_to_json
+    from webauthn.helpers.structs import PublicKeyCredentialDescriptor
 
     # Look up user
-    result = await db.execute(select(User).where(User.email == email))
+    result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
     if user is None or not user.is_active:
         raise ValueError("No account found or account inactive")
 
-    existing_creds = user.passkey_credentials or []
-    if not existing_creds:
+    # Query non-flagged credentials from normalised table
+    cred_result = await db.execute(
+        select(UserPasskeyCredential).where(
+            UserPasskeyCredential.user_id == user.id,
+            UserPasskeyCredential.flagged == False,  # noqa: E712
+        )
+    )
+    credentials: list[UserPasskeyCredential] = list(cred_result.scalars().all())
+
+    if not credentials:
         raise ValueError("No passkeys registered for this account")
 
     # Build allow list of credential IDs
-    existing_keys = []
-    for cred in existing_creds:
-        if isinstance(cred, dict) and "credential_id" in cred:
-            existing_keys.append(base64.b64decode(cred["credential_id"]))
+    allow_credentials = [
+        PublicKeyCredentialDescriptor(id=_base64url_to_bytes(cred.credential_id))
+        for cred in credentials
+    ]
 
-    rp = _get_rp()
-    options, challenge_b64 = webauthn.get_webauthn_credentials(
-        rp=rp,
-        existing_keys=existing_keys if existing_keys else None,
+    options = generate_authentication_options(
+        rp_id=settings.webauthn_rp_id,
+        allow_credentials=allow_credentials,
+        timeout=60000,
     )
 
-    # Store challenge in Redis with 5-min TTL
+    options_json = json.loads(options_to_json(options))
+
+    # Store challenge in Redis with 60s TTL
     redis = await _get_redis()
     challenge_key = f"webauthn:login:{user.id}"
-    await redis.setex(challenge_key, 300, json.dumps({
-        "challenge": challenge_b64,
+    await redis.setex(challenge_key, 60, json.dumps({
+        "challenge": options_json["challenge"],
         "user_id": str(user.id),
     }))
 
-    return options
+    return options_json
+
 
 
 async def verify_passkey_login(
     db: AsyncSession,
-    email: str,
+    user_id: uuid.UUID,
     credential_response: dict,
     ip_address: str | None = None,
     device_type: str | None = None,
     browser: str | None = None,
 ) -> TokenResponse:
-    """Verify a WebAuthn authentication response and issue JWT tokens.
+    """Verify a WebAuthn assertion response and issue JWT tokens.
 
-    Passkey login satisfies MFA — no additional MFA prompt is required
-    (Requirement 2.9).
+    Uses py_webauthn v2.x ``verify_authentication_response()``.
+    Implements clone detection: if the authenticator's sign count S' ≤
+    stored sign count S (and S > 0), the credential is flagged and
+    authentication is rejected.
+
+    Passkey login satisfies MFA — no additional MFA prompt is required.
 
     Expects credential_response with keys:
-      - client_data_b64: base64-encoded clientDataJSON
-      - authenticator_b64: base64-encoded authenticatorData
-      - signature_b64: base64-encoded signature
-      - credential_id_b64: base64-encoded credential raw ID
+      - credential_id: base64url-encoded credential raw ID
+      - authenticator_data: base64url-encoded authenticatorData
+      - client_data_json: base64url-encoded clientDataJSON
+      - signature: base64url-encoded signature
+      - user_handle: base64url-encoded userHandle (optional)
     """
-    import webauthn
+    from webauthn import verify_authentication_response
+
+    # Extract fields from credential response
+    credential_id_b64 = credential_response.get("credential_id", "")
+    authenticator_data_b64 = credential_response.get("authenticator_data", "")
+    client_data_json_b64 = credential_response.get("client_data_json", "")
+    signature_b64 = credential_response.get("signature", "")
+    user_handle_b64 = credential_response.get("user_handle")
+
+    if not all([credential_id_b64, authenticator_data_b64, client_data_json_b64, signature_b64]):
+        raise ValueError("Missing required fields in credential response")
+
+    # Look up credential from normalised table
+    cred_result = await db.execute(
+        select(UserPasskeyCredential).where(
+            UserPasskeyCredential.credential_id == credential_id_b64,
+        )
+    )
+    matched_cred: UserPasskeyCredential | None = cred_result.scalar_one_or_none()
+
+    if matched_cred is None:
+        raise ValueError("Authentication failed")
 
     # Look up user
-    result = await db.execute(select(User).where(User.email == email))
+    result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
     if user is None or not user.is_active:
         await _audit_failed_login(
             db,
             ip_address=ip_address,
-            email=email,
+            email=user.email if user else "unknown",
             reason="passkey_no_account" if user is None else "account_inactive",
             user_id=user.id if user else None,
             org_id=user.org_id if user else None,
         )
         raise ValueError("Authentication failed")
 
-    # IP allowlist check (Requirement 6.1)
+    # Verify credential belongs to this user
+    if matched_cred.user_id != user.id:
+        raise ValueError("Authentication failed")
+
+    # Reject flagged credentials
+    if matched_cred.flagged:
+        await write_audit_log(
+            session=db,
+            org_id=user.org_id,
+            user_id=user.id,
+            action="auth.passkey_login_flagged_rejected",
+            entity_type="user",
+            entity_id=user.id,
+            after_value={"credential_id": credential_id_b64},
+            ip_address=ip_address,
+        )
+        raise ValueError(
+            "Passkey credential flagged for security review. "
+            "Please contact your administrator."
+        )
+
+    # IP allowlist check
     if user.org_id and ip_address:
         ip_blocked = await check_ip_allowlist(
             db, org_id=user.org_id, ip_address=ip_address,
@@ -1033,66 +1165,68 @@ async def verify_passkey_login(
         raise ValueError("Authentication challenge expired or not found")
 
     stored = json.loads(stored_data)
-    challenge_b64 = stored["challenge"]
+    challenge_b64url = stored["challenge"]
 
     # Clean up the challenge
     await redis.delete(challenge_key)
 
-    # Extract fields from credential response
-    client_data_b64 = credential_response.get("client_data_b64", "")
-    authenticator_b64 = credential_response.get("authenticator_b64", "")
-    signature_b64 = credential_response.get("signature_b64", "")
-    credential_id_b64 = credential_response.get("credential_id_b64", "")
+    # Build the credential dict that py_webauthn v2.x expects
+    credential_dict = {
+        "id": credential_id_b64,
+        "rawId": credential_id_b64,
+        "response": {
+            "authenticatorData": authenticator_data_b64,
+            "clientDataJSON": client_data_json_b64,
+            "signature": signature_b64,
+        },
+        "type": "public-key",
+        "clientExtensionResults": {},
+    }
+    if user_handle_b64:
+        credential_dict["response"]["userHandle"] = user_handle_b64
 
-    if not all([client_data_b64, authenticator_b64, signature_b64, credential_id_b64]):
-        raise ValueError("Missing required fields in credential response")
-
-    # Find the matching credential in user's stored passkeys
-    existing_creds = user.passkey_credentials or []
-    matched_cred = None
-    matched_idx = None
-    for idx, cred in enumerate(existing_creds):
-        if isinstance(cred, dict) and cred.get("credential_id") == credential_id_b64:
-            matched_cred = cred
-            matched_idx = idx
-            break
-
-    if matched_cred is None:
-        await _audit_failed_login(
-            db,
-            ip_address=ip_address,
-            email=email,
-            reason="passkey_credential_not_found",
-            user_id=user.id,
-            org_id=user.org_id,
-        )
-        raise ValueError("Authentication failed")
-
-    stored_public_key = _deserialize_public_key(matched_cred["public_key"])
-    stored_sign_count = matched_cred.get("sign_count", 0)
-    pubkey_alg = matched_cred.get("public_key_alg", -7)  # default ES256
-
-    rp = _get_rp()
-    verification = webauthn.verify_get_webauthn_credentials(
-        rp=rp,
-        challenge_b64=challenge_b64,
-        client_data_b64=client_data_b64,
-        authenticator_b64=authenticator_b64,
-        signature_b64=signature_b64,
-        sign_count=stored_sign_count,
-        pubkey_alg=pubkey_alg,
-        pubkey=stored_public_key,
+    verification = verify_authentication_response(
+        credential=credential_dict,
+        expected_challenge=_base64url_to_bytes(challenge_b64url),
+        expected_rp_id=settings.webauthn_rp_id,
+        expected_origin=settings.webauthn_origin,
+        credential_public_key=_base64url_to_bytes(matched_cred.public_key),
+        credential_current_sign_count=matched_cred.sign_count,
+        require_user_verification=False,
     )
 
-    # Update sign count
-    updated_creds = list(existing_creds)
-    updated_creds[matched_idx] = {
-        **matched_cred,
-        "sign_count": verification.sign_count,
-    }
-    user.passkey_credentials = updated_creds
+    new_sign_count = verification.new_sign_count
 
-    # Passkey satisfies MFA — issue tokens directly (Requirement 2.9)
+    # Clone detection: if S' ≤ S and S > 0, flag credential and reject
+    if matched_cred.sign_count > 0 and new_sign_count <= matched_cred.sign_count:
+        matched_cred.flagged = True
+        await db.flush()
+
+        await write_audit_log(
+            session=db,
+            org_id=user.org_id,
+            user_id=user.id,
+            action="auth.passkey_clone_detected",
+            entity_type="user",
+            entity_id=user.id,
+            after_value={
+                "credential_id": credential_id_b64,
+                "stored_sign_count": matched_cred.sign_count,
+                "received_sign_count": new_sign_count,
+            },
+            ip_address=ip_address,
+        )
+        raise ValueError(
+            "Passkey credential flagged for security review. "
+            "Please contact your administrator."
+        )
+
+    # Update sign count (S' > S)
+    matched_cred.sign_count = new_sign_count
+    matched_cred.last_used_at = datetime.now(timezone.utc)
+    await db.flush()
+
+    # Passkey satisfies MFA — issue tokens directly
     # Global admins should not have org_id in their JWT (they access all orgs)
     token_org_id = None if user.role == "global_admin" else user.org_id
     access_token = create_access_token(
@@ -1144,6 +1278,191 @@ async def verify_passkey_login(
     )
 
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
+
+
+# ---------------------------------------------------------------------------
+# Passkey management (Task 8.3)
+# ---------------------------------------------------------------------------
+
+
+async def list_passkey_credentials(
+    db: AsyncSession,
+    user: User,
+) -> list[dict]:
+    """Return all passkey credentials for a user.
+
+    Queries the ``user_passkey_credentials`` table and returns a list of
+    dicts with ``credential_id``, ``device_name``, ``created_at``, and
+    ``last_used_at`` for each credential.
+
+    Requirements: 13.1
+    """
+    result = await db.execute(
+        select(UserPasskeyCredential).where(
+            UserPasskeyCredential.user_id == user.id,
+        ).order_by(UserPasskeyCredential.created_at.desc())
+    )
+    credentials: list[UserPasskeyCredential] = list(result.scalars().all())
+
+    return [
+        {
+            "credential_id": cred.credential_id,
+            "device_name": cred.device_name,
+            "created_at": cred.created_at,
+            "last_used_at": cred.last_used_at,
+        }
+        for cred in credentials
+    ]
+
+
+async def rename_passkey(
+    db: AsyncSession,
+    user: User,
+    credential_id: str,
+    new_name: str,
+) -> dict:
+    """Rename a passkey credential's friendly name.
+
+    Updates the ``device_name`` column on the matching
+    ``UserPasskeyCredential`` row.  The new name is truncated to 50
+    characters to respect the column constraint.
+
+    Requirements: 13.2
+    """
+    new_name = new_name[:50]
+
+    result = await db.execute(
+        select(UserPasskeyCredential).where(
+            UserPasskeyCredential.user_id == user.id,
+            UserPasskeyCredential.credential_id == credential_id,
+        )
+    )
+    cred = result.scalar_one_or_none()
+    if cred is None:
+        raise ValueError("Passkey credential not found")
+
+    cred.device_name = new_name
+    await db.flush()
+
+    await write_audit_log(
+        session=db,
+        org_id=user.org_id,
+        user_id=user.id,
+        action="auth.passkey_renamed",
+        entity_type="user",
+        entity_id=user.id,
+        after_value={
+            "credential_id": credential_id,
+            "device_name": new_name,
+        },
+    )
+
+    return {
+        "credential_id": cred.credential_id,
+        "device_name": cred.device_name,
+    }
+
+
+async def remove_passkey(
+    db: AsyncSession,
+    user: User,
+    credential_id: str,
+    password: str,
+) -> None:
+    """Remove a passkey credential after password confirmation.
+
+    1. Verify the user's password.
+    2. Look up the credential in ``user_passkey_credentials``.
+    3. Check the last-method guard: if passkey is the user's only
+       verified MFA method and the organisation requires MFA, reject
+       the removal.
+    4. Delete the credential.  If no passkey credentials remain, also
+       remove the ``passkey`` entry from ``user_mfa_methods``.
+
+    Requirements: 13.3, 13.4, 13.5
+    """
+    from app.modules.admin.models import Organisation
+
+    # 1. Verify password
+    if not user.password_hash or not verify_password(password, user.password_hash):
+        raise ValueError("Invalid password")
+
+    # 2. Look up the credential
+    result = await db.execute(
+        select(UserPasskeyCredential).where(
+            UserPasskeyCredential.user_id == user.id,
+            UserPasskeyCredential.credential_id == credential_id,
+        )
+    )
+    cred = result.scalar_one_or_none()
+    if cred is None:
+        raise ValueError("Passkey credential not found")
+
+    # 3. Count remaining passkey credentials (excluding the one being removed)
+    count_result = await db.execute(
+        select(UserPasskeyCredential).where(
+            UserPasskeyCredential.user_id == user.id,
+            UserPasskeyCredential.credential_id != credential_id,
+        )
+    )
+    remaining_passkeys = len(count_result.scalars().all())
+
+    # If this is the last passkey credential, check the last-method guard
+    if remaining_passkeys == 0:
+        # Count all other verified MFA methods (non-passkey)
+        other_methods_result = await db.execute(
+            select(UserMfaMethod).where(
+                UserMfaMethod.user_id == user.id,
+                UserMfaMethod.verified == True,  # noqa: E712
+                UserMfaMethod.method != "passkey",
+            )
+        )
+        other_verified_count = len(other_methods_result.scalars().all())
+
+        if other_verified_count == 0:
+            # Passkey is the only MFA method — check org policy
+            if user.org_id:
+                org_result = await db.execute(
+                    select(Organisation).where(Organisation.id == user.org_id)
+                )
+                org = org_result.scalar_one_or_none()
+                if org and org.settings.get("mfa_policy") == "mandatory":
+                    raise ValueError(
+                        "Cannot disable the last MFA method. "
+                        "At least one method is required by your organisation."
+                    )
+            if user.role == "global_admin":
+                raise ValueError(
+                    "Cannot disable the last MFA method. "
+                    "At least one method is required for global administrators."
+                )
+
+    # 4. Delete the credential
+    await db.delete(cred)
+
+    # If no passkey credentials remain, remove the passkey MFA method entry
+    if remaining_passkeys == 0:
+        mfa_result = await db.execute(
+            select(UserMfaMethod).where(
+                UserMfaMethod.user_id == user.id,
+                UserMfaMethod.method == "passkey",
+            )
+        )
+        passkey_method = mfa_result.scalar_one_or_none()
+        if passkey_method is not None:
+            await db.delete(passkey_method)
+
+    await db.flush()
+
+    await write_audit_log(
+        session=db,
+        org_id=user.org_id,
+        user_id=user.id,
+        action="auth.passkey_removed",
+        entity_type="user",
+        entity_id=user.id,
+        after_value={"credential_id": credential_id},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1450,22 +1769,28 @@ async def reset_via_backup_code(
     if user is None or not user.is_active:
         raise ValueError("Invalid credentials")
 
-    # 2. Verify backup code
-    backup_codes = user.backup_codes_hash or []
+    # 2. Verify backup code (normalised table)
+    import bcrypt as bcrypt_lib
+
+    from app.modules.auth.models import UserBackupCode
+
+    stmt = select(UserBackupCode).where(
+        UserBackupCode.user_id == user.id,
+        UserBackupCode.used == False,  # noqa: E712
+    )
+    bc_result = await db.execute(stmt)
+    unused_codes = bc_result.scalars().all()
+
     matched = False
-    for i, entry in enumerate(backup_codes):
-        if isinstance(entry, dict) and not entry.get("used", False):
-            import bcrypt as bcrypt_lib
-            if bcrypt_lib.checkpw(
-                backup_code.encode("utf-8"),
-                entry["hash"].encode("utf-8"),
-            ):
-                # Mark as used
-                updated_codes = list(backup_codes)
-                updated_codes[i] = {**entry, "used": True}
-                user.backup_codes_hash = updated_codes
-                matched = True
-                break
+    for bc_entry in unused_codes:
+        if bcrypt_lib.checkpw(
+            backup_code.encode("utf-8"),
+            bc_entry.code_hash.encode("utf-8"),
+        ):
+            bc_entry.used = True
+            bc_entry.used_at = datetime.now(timezone.utc)
+            matched = True
+            break
 
     if not matched:
         await write_audit_log(
@@ -1816,3 +2141,547 @@ async def _send_invitation_email(email: str, token: str) -> None:
     )
     # TODO: Replace with Celery task dispatching a real email via
     # app.integrations.brevo once the Notification_Module is implemented.
+
+
+# ---------------------------------------------------------------------------
+# Email verification for public signup (Req 8.7)
+# ---------------------------------------------------------------------------
+
+_VERIFY_TOKEN_EXPIRY_SECONDS = 48 * 3600  # 48 hours
+
+
+async def create_email_verification_token(
+    user_id: uuid.UUID,
+    email: str,
+) -> str:
+    """Generate a verification token and store it in Redis.
+
+    Returns the raw token (to be included in the verification URL).
+    """
+    from app.core.redis import redis_pool
+
+    token = secrets.token_urlsafe(48)
+    token_hash = _hash_invite_token(token)
+    token_data = json.dumps({
+        "user_id": str(user_id),
+        "email": email,
+        "type": "email_verification",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await redis_pool.setex(
+        f"email_verify:{token_hash}",
+        _VERIFY_TOKEN_EXPIRY_SECONDS,
+        token_data,
+    )
+    return token
+
+
+async def verify_signup_email(
+    db: AsyncSession,
+    *,
+    token: str,
+    ip_address: str | None = None,
+    device_type: str | None = None,
+    browser: str | None = None,
+) -> dict:
+    """Verify a signup email using the token from the verification link.
+
+    Marks the user's email as verified and issues a JWT pair so the
+    user is logged in immediately.
+
+    Raises ``ValueError`` on invalid/expired token.
+    """
+    from app.core.redis import redis_pool
+
+    token_hash = _hash_invite_token(token)
+    redis_key = f"email_verify:{token_hash}"
+
+    stored_data = await redis_pool.get(redis_key)
+    if stored_data is None:
+        raise ValueError("Invalid or expired verification link")
+
+    token_info = json.loads(
+        stored_data if isinstance(stored_data, str) else stored_data.decode()
+    )
+    user_id = uuid.UUID(token_info["user_id"])
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise ValueError("Invalid or expired verification link")
+
+    if user.is_email_verified:
+        raise ValueError("Email has already been verified")
+
+    # Mark email as verified
+    user.is_email_verified = True
+
+    # Consume the token
+    await redis_pool.delete(redis_key)
+
+    # Issue JWT pair
+    token_org_id = None if user.role == "global_admin" else user.org_id
+    access_token = create_access_token(
+        user_id=user.id,
+        org_id=token_org_id,
+        role=user.role,
+        email=user.email,
+    )
+    refresh_token = create_refresh_token()
+
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        days=settings.refresh_token_expire_days
+    )
+
+    family_id = uuid.uuid4()
+    session = Session(
+        user_id=user.id,
+        org_id=user.org_id,
+        refresh_token_hash=_hash_refresh_token(refresh_token),
+        family_id=family_id,
+        device_type=device_type,
+        browser=browser,
+        ip_address=ip_address,
+        expires_at=expires_at,
+    )
+    db.add(session)
+
+    user.last_login_at = datetime.now(timezone.utc)
+
+    await write_audit_log(
+        session=db,
+        org_id=user.org_id,
+        user_id=user.id,
+        action="auth.signup_email_verified",
+        entity_type="user",
+        entity_id=user.id,
+        after_value={
+            "ip_address": ip_address,
+            "device_type": device_type,
+            "browser": browser,
+        },
+        ip_address=ip_address,
+    )
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    }
+
+
+async def send_verification_email(
+    db,
+    *,
+    email: str,
+    user_name: str,
+    org_name: str,
+    verification_token: str,
+    base_url: str,
+) -> None:
+    """Send a welcome/verification email to a newly signed-up user.
+
+    Uses the email_providers table (same as invoice/quote emails).
+    Falls back to logging the verification URL if no provider is configured.
+    """
+    import smtplib
+    import json as _json
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from sqlalchemy import select as _select
+    from app.modules.admin.models import EmailProvider
+    from app.core.encryption import envelope_decrypt_str
+
+    verify_url = f"{base_url}/verify-email?token={verification_token}&type=signup"
+    login_url = f"{base_url}/login"
+
+    subject = "Welcome to OraInvoice — Verify your email"
+
+    html_body = f"""
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; margin-bottom: 30px;">
+        <h1 style="color: #1f2937; font-size: 24px; margin: 0;">Welcome to OraInvoice</h1>
+      </div>
+
+      <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+        Hi {user_name},
+      </p>
+
+      <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+        Thanks for signing up! Your organisation <strong>{org_name}</strong> has been created.
+        Please verify your email address to activate your account.
+      </p>
+
+      <div style="text-align: center; margin: 30px 0;">
+        <a href="{verify_url}"
+           style="display: inline-block; padding: 14px 32px; background-color: #2563eb;
+                  color: #ffffff; text-decoration: none; border-radius: 8px;
+                  font-size: 16px; font-weight: 600;">
+          Verify Email Address
+        </a>
+      </div>
+
+      <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+        Once verified, you can log in at:<br/>
+        <a href="{login_url}" style="color: #2563eb;">{login_url}</a>
+      </p>
+
+      <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+        This verification link expires in 48 hours. If you didn't create this account,
+        you can safely ignore this email.
+      </p>
+
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;" />
+
+      <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+        OraInvoice — Invoicing made simple
+      </p>
+    </div>
+    """
+
+    text_body = (
+        f"Hi {user_name},\n\n"
+        f"Thanks for signing up! Your organisation {org_name} has been created.\n"
+        f"Please verify your email address to activate your account.\n\n"
+        f"Verify here: {verify_url}\n\n"
+        f"Once verified, log in at: {login_url}\n\n"
+        f"This link expires in 48 hours.\n"
+    )
+
+    # Find active email providers ordered by priority (same pattern as invoice emails)
+    provider_result = await db.execute(
+        _select(EmailProvider)
+        .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
+        .order_by(EmailProvider.priority)
+    )
+    providers = list(provider_result.scalars().all())
+
+    if not providers:
+        logger.warning(
+            "No active email provider configured — cannot send verification email to %s (token: %s...)",
+            email,
+            verification_token[:8],
+        )
+        if settings.environment == "development":
+            logger.warning("DEV VERIFICATION URL: %s", verify_url)
+        return
+
+    # Try each provider in priority order until one succeeds
+    last_error = None
+    for provider in providers:
+        try:
+            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
+            credentials = _json.loads(creds_json)
+
+            smtp_host = provider.smtp_host
+            smtp_port = provider.smtp_port or 587
+            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
+            username = credentials.get("username") or credentials.get("api_key", "")
+            password = credentials.get("password") or credentials.get("api_key", "")
+
+            config = provider.config or {}
+            from_email = config.get("from_email") or username
+            from_name = config.get("from_name") or "OraInvoice"
+
+            msg = MIMEMultipart("alternative")
+            msg["From"] = f"{from_name} <{from_email}>"
+            msg["To"] = email
+            msg["Subject"] = subject
+            msg.attach(MIMEText(text_body, "plain"))
+            msg.attach(MIMEText(html_body, "html"))
+
+            if smtp_encryption == "ssl":
+                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+            else:
+                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+                if smtp_encryption == "tls":
+                    server.starttls()
+
+            if username and password:
+                server.login(username, password)
+
+            server.sendmail(from_email, email, msg.as_string())
+            server.quit()
+            logger.info("Verification email sent to %s via %s", email, provider.provider_key)
+            return
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "Email provider %s failed for verification email to %s: %s",
+                provider.provider_key, email, e,
+            )
+            continue
+
+    logger.warning(
+        "All email providers failed for verification email to %s: %s (token: %s...)",
+        email, last_error, verification_token[:8],
+    )
+    if settings.environment == "development":
+        logger.warning("DEV VERIFICATION URL: %s", verify_url)
+
+
+async def resend_verification_email(
+    db: AsyncSession,
+    *,
+    email: str,
+    base_url: str,
+) -> dict:
+    """Resend the verification email for a user who hasn't verified yet.
+
+    Generates a new token and sends a fresh email.
+    Returns a dict with status info.
+
+    Raises ``ValueError`` if user not found or already verified.
+    """
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        # Don't reveal whether the email exists
+        return {"message": "If that email is registered, a verification link has been sent."}
+
+    if user.is_email_verified:
+        return {"message": "If that email is registered, a verification link has been sent."}
+
+    # Get org name for the email
+    from app.modules.admin.models import Organisation
+    org_name = "your organisation"
+    if user.org_id:
+        org_result = await db.execute(
+            select(Organisation.name).where(Organisation.id == user.org_id)
+        )
+        name = org_result.scalar_one_or_none()
+        if name:
+            org_name = name
+
+    user_name = user.email.split("@")[0]
+
+    token = await create_email_verification_token(user.id, user.email)
+    await send_verification_email(
+        db,
+        email=user.email,
+        user_name=user_name,
+        org_name=org_name,
+        verification_token=token,
+        base_url=base_url,
+    )
+
+    return {"message": "If that email is registered, a verification link has been sent."}
+
+
+async def send_receipt_email(
+    db,
+    *,
+    email: str,
+    user_name: str,
+    org_name: str,
+    plan_name: str,
+    amount_cents: int,
+    plan_amount_cents: int = 0,
+    gst_amount_cents: int = 0,
+    gst_percentage: float = 0,
+    processing_fee_cents: int = 0,
+    verification_token: str,
+    base_url: str,
+) -> None:
+    """Send a receipt email with payment summary and verification link.
+
+    Sent after successful payment confirmation for paid-plan signups.
+    Uses the same email provider infrastructure as verification emails.
+
+    Requirements: 4.1, 4.2
+    """
+    import smtplib
+    import json as _json
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from sqlalchemy import select as _select
+    from app.modules.admin.models import EmailProvider
+    from app.core.encryption import envelope_decrypt_str
+
+    verify_url = f"{base_url}/verify-email?token={verification_token}&type=signup"
+    login_url = f"{base_url}/login"
+    amount_display = f"${amount_cents / 100:.2f}"
+
+    # Build breakdown rows for the receipt
+    has_breakdown = plan_amount_cents > 0 and gst_amount_cents > 0
+    if has_breakdown:
+        plan_display = f"${plan_amount_cents / 100:.2f}"
+        gst_display = f"${gst_amount_cents / 100:.2f}"
+        fee_display = f"${processing_fee_cents / 100:.2f}"
+        breakdown_html = f"""
+          <tr>
+            <td style="color: #6b7280; padding: 4px 0;">{plan_name} (monthly)</td>
+            <td style="color: #1f2937; text-align: right; padding: 4px 0;">{plan_display}</td>
+          </tr>
+          <tr>
+            <td style="color: #6b7280; padding: 4px 0;">GST ({gst_percentage}%)</td>
+            <td style="color: #1f2937; text-align: right; padding: 4px 0;">{gst_display}</td>
+          </tr>"""
+        if processing_fee_cents > 0:
+            breakdown_html += f"""
+          <tr>
+            <td style="color: #6b7280; padding: 4px 0;">Payment processing fee</td>
+            <td style="color: #1f2937; text-align: right; padding: 4px 0;">{fee_display}</td>
+          </tr>"""
+        breakdown_html += f"""
+          <tr style="border-top: 1px solid #e5e7eb;">
+            <td style="color: #1f2937; padding: 8px 0 4px 0; font-weight: 600;">Total charged</td>
+            <td style="color: #1f2937; text-align: right; padding: 8px 0 4px 0; font-weight: 600;">{amount_display} NZD</td>
+          </tr>"""
+        breakdown_text = (
+            f"  {plan_name} (monthly): {plan_display}\n"
+            f"  GST ({gst_percentage}%): {gst_display}\n"
+            + (f"  Processing fee: {fee_display}\n" if processing_fee_cents > 0 else "")
+            + f"  Total charged: {amount_display} NZD\n"
+        )
+    else:
+        breakdown_html = f"""
+          <tr>
+            <td style="color: #6b7280; padding: 4px 0;">Plan</td>
+            <td style="color: #1f2937; text-align: right; padding: 4px 0; font-weight: 600;">{plan_name}</td>
+          </tr>
+          <tr>
+            <td style="color: #6b7280; padding: 4px 0;">Amount charged</td>
+            <td style="color: #1f2937; text-align: right; padding: 4px 0; font-weight: 600;">{amount_display}</td>
+          </tr>"""
+        breakdown_text = (
+            f"  Plan: {plan_name}\n"
+            f"  Amount charged: {amount_display}\n"
+        )
+
+    subject = "OraInvoice — Payment receipt & email verification"
+
+    html_body = f"""
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; margin-bottom: 30px;">
+        <h1 style="color: #1f2937; font-size: 24px; margin: 0;">Welcome to OraInvoice</h1>
+      </div>
+
+      <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+        Hi {user_name},
+      </p>
+
+      <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+        Thank you for your payment! Your organisation <strong>{org_name}</strong> has been created
+        on the <strong>{plan_name}</strong> plan.
+      </p>
+
+      <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 20px 0;">
+        <h2 style="color: #1f2937; font-size: 18px; margin: 0 0 12px 0;">Payment Summary</h2>
+        <table style="width: 100%; border-collapse: collapse;">
+          {breakdown_html}
+        </table>
+      </div>
+
+      <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+        Please verify your email address to activate your account:
+      </p>
+
+      <div style="text-align: center; margin: 30px 0;">
+        <a href="{verify_url}"
+           style="display: inline-block; padding: 14px 32px; background-color: #2563eb;
+                  color: #ffffff; text-decoration: none; border-radius: 8px;
+                  font-size: 16px; font-weight: 600;">
+          Verify Email &amp; Activate Account
+        </a>
+      </div>
+
+      <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+        Once verified, you can log in at:<br/>
+        <a href="{login_url}" style="color: #2563eb;">{login_url}</a>
+      </p>
+
+      <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+        This verification link expires in 48 hours. If you didn't create this account,
+        please contact support.
+      </p>
+
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;" />
+
+      <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+        OraInvoice — Invoicing made simple
+      </p>
+    </div>
+    """
+
+    text_body = (
+        f"Hi {user_name},\n\n"
+        f"Thank you for your payment! Your organisation {org_name} has been created "
+        f"on the {plan_name} plan.\n\n"
+        f"Payment Summary\n"
+        + breakdown_text
+        + f"\nPlease verify your email to activate your account:\n"
+        f"{verify_url}\n\n"
+        f"Once verified, log in at: {login_url}\n\n"
+        f"This link expires in 48 hours.\n"
+    )
+
+    # Find active email providers ordered by priority
+    provider_result = await db.execute(
+        _select(EmailProvider)
+        .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
+        .order_by(EmailProvider.priority)
+    )
+    providers = list(provider_result.scalars().all())
+
+    if not providers:
+        logger.warning(
+            "No active email provider configured — cannot send receipt email to %s (token: %s...)",
+            email,
+            verification_token[:8],
+        )
+        if settings.environment == "development":
+            logger.warning("DEV VERIFICATION URL: %s", verify_url)
+        return
+
+    last_error = None
+    for provider in providers:
+        try:
+            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
+            credentials = _json.loads(creds_json)
+
+            smtp_host = provider.smtp_host
+            smtp_port = provider.smtp_port or 587
+            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
+            username = credentials.get("username") or credentials.get("api_key", "")
+            password = credentials.get("password") or credentials.get("api_key", "")
+
+            config = provider.config or {}
+            from_email = config.get("from_email") or username
+            from_name = config.get("from_name") or "OraInvoice"
+
+            msg = MIMEMultipart("alternative")
+            msg["From"] = f"{from_name} <{from_email}>"
+            msg["To"] = email
+            msg["Subject"] = subject
+            msg.attach(MIMEText(text_body, "plain"))
+            msg.attach(MIMEText(html_body, "html"))
+
+            if smtp_encryption == "ssl":
+                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+            else:
+                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+                if smtp_encryption == "tls":
+                    server.starttls()
+
+            if username and password:
+                server.login(username, password)
+
+            server.sendmail(from_email, email, msg.as_string())
+            server.quit()
+            logger.info("Receipt email sent to %s via %s", email, provider.provider_key)
+            return
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "Email provider %s failed for receipt email to %s: %s",
+                provider.provider_key, email, e,
+            )
+            continue
+
+    logger.warning(
+        "All email providers failed for receipt email to %s: %s (token: %s...)",
+        email, last_error, verification_token[:8],
+    )
+    if settings.environment == "development":
+        logger.warning("DEV VERIFICATION URL: %s", verify_url)

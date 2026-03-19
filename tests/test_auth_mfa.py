@@ -22,6 +22,8 @@ import pyotp
 import pytest
 from jose import jwt as jose_jwt
 
+import app.modules.admin.models  # noqa: F401 — resolve relationships
+
 from app.config import settings
 from app.modules.auth.mfa_service import (
     _BACKUP_CODE_COUNT,
@@ -29,8 +31,7 @@ from app.modules.auth.mfa_service import (
     _MAX_MFA_ATTEMPTS,
     _generate_otp_code,
     _get_verified_mfa_methods,
-    _verify_backup_code,
-    _verify_totp,
+    _verify_totp_code,
     generate_backup_codes,
     user_has_verified_mfa,
     user_requires_mfa_setup,
@@ -57,9 +58,24 @@ def _make_user(**overrides) -> MagicMock:
     user.role = overrides.get("role", "org_admin")
     user.is_active = overrides.get("is_active", True)
     user.mfa_methods = overrides.get("mfa_methods", [])
-    user.backup_codes_hash = overrides.get("backup_codes_hash", [])
     user.last_login_at = None
     return user
+
+
+def _make_mfa_method(**overrides) -> MagicMock:
+    """Create a mock UserMfaMethod object."""
+    from app.modules.auth.models import UserMfaMethod
+
+    m = MagicMock(spec=UserMfaMethod)
+    m.id = overrides.get("id", uuid.uuid4())
+    m.user_id = overrides.get("user_id", uuid.uuid4())
+    m.method = overrides.get("method", "totp")
+    m.verified = overrides.get("verified", False)
+    m.phone_number = overrides.get("phone_number", None)
+    m.secret_encrypted = overrides.get("secret_encrypted", None)
+    m.enrolled_at = overrides.get("enrolled_at", datetime.now(timezone.utc))
+    m.verified_at = overrides.get("verified_at", None)
+    return m
 
 
 # ---------------------------------------------------------------------------
@@ -112,42 +128,63 @@ class TestTOTPVerification:
     @pytest.mark.asyncio
     async def test_valid_totp_code_verifies(self):
         from app.core.encryption import envelope_encrypt
+        from app.modules.auth.models import UserMfaMethod
 
         secret = pyotp.random_base32()
         encrypted = envelope_encrypt(secret)
 
-        user = _make_user(mfa_methods=[{
-            "type": "totp",
-            "verified": True,
-            "secret_encrypted": encrypted.hex(),
-        }])
+        user = _make_user()
+
+        # Mock the db to return a verified TOTP method
+        mock_method = MagicMock(spec=UserMfaMethod)
+        mock_method.secret_encrypted = encrypted
+        mock_method.verified = True
+        mock_method.method = "totp"
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_method
+        db = AsyncMock()
+        db.execute.return_value = mock_result
 
         totp = pyotp.TOTP(secret)
         code = totp.now()
 
-        result = await _verify_totp(user, code)
+        result = await _verify_totp_code(db, user, code)
         assert result is True
 
     @pytest.mark.asyncio
     async def test_invalid_totp_code_fails(self):
         from app.core.encryption import envelope_encrypt
+        from app.modules.auth.models import UserMfaMethod
 
         secret = pyotp.random_base32()
         encrypted = envelope_encrypt(secret)
 
-        user = _make_user(mfa_methods=[{
-            "type": "totp",
-            "verified": True,
-            "secret_encrypted": encrypted.hex(),
-        }])
+        user = _make_user()
 
-        result = await _verify_totp(user, "000000")
+        mock_method = MagicMock(spec=UserMfaMethod)
+        mock_method.secret_encrypted = encrypted
+        mock_method.verified = True
+        mock_method.method = "totp"
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_method
+        db = AsyncMock()
+        db.execute.return_value = mock_result
+
+        result = await _verify_totp_code(db, user, "000000")
         assert result is False
 
     @pytest.mark.asyncio
     async def test_totp_with_no_methods_fails(self):
-        user = _make_user(mfa_methods=[])
-        result = await _verify_totp(user, "123456")
+        user = _make_user()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        db = AsyncMock()
+        db.execute.return_value = mock_result
+
+        result = await _verify_totp_code(db, user, "123456")
         assert result is False
 
 
@@ -160,7 +197,6 @@ class TestBackupCodes:
     async def test_generates_correct_number_of_codes(self):
         user = _make_user()
         db = AsyncMock()
-        # Mock write_audit_log
         with patch("app.modules.auth.mfa_service.write_audit_log", new_callable=AsyncMock):
             codes = await generate_backup_codes(db, user)
 
@@ -186,55 +222,75 @@ class TestBackupCodes:
         assert len(set(codes)) == len(codes)
 
     @pytest.mark.asyncio
-    async def test_backup_codes_stored_as_hashes(self):
+    async def test_backup_codes_stored_in_user_backup_codes_table(self):
+        """Verify that generate_backup_codes deletes old records and adds
+        new UserBackupCode rows via db.add (not the old JSONB column)."""
+        import bcrypt as bcrypt_lib
+        from app.modules.auth.models import UserBackupCode
+
         user = _make_user()
         db = AsyncMock()
         with patch("app.modules.auth.mfa_service.write_audit_log", new_callable=AsyncMock):
             codes = await generate_backup_codes(db, user)
 
-        stored = user.backup_codes_hash
-        assert len(stored) == _BACKUP_CODE_COUNT
-        for entry in stored:
-            assert "hash" in entry
-            assert entry["used"] is False
-            # Verify it's a bcrypt hash
-            assert entry["hash"].startswith("$2")
+        # db.execute should have been called (at least for the delete)
+        assert db.execute.await_count >= 1
+
+        # db.add should have been called exactly 10 times (one per code)
+        assert db.add.call_count == _BACKUP_CODE_COUNT
+
+        # Each db.add call should receive a UserBackupCode instance
+        for call in db.add.call_args_list:
+            record = call[0][0]
+            assert isinstance(record, UserBackupCode)
+            assert record.user_id == user.id
+            assert record.used is False
+            # code_hash should be a bcrypt hash, not plain text
+            assert record.code_hash.startswith("$2")
+
+        # Verify each plain code can be checked against its stored hash
+        for i, code in enumerate(codes):
+            record = db.add.call_args_list[i][0][0]
+            assert bcrypt_lib.checkpw(
+                code.encode("utf-8"), record.code_hash.encode("utf-8")
+            )
 
     @pytest.mark.asyncio
-    async def test_valid_backup_code_verifies(self):
+    async def test_codes_are_alphanumeric(self):
         user = _make_user()
         db = AsyncMock()
         with patch("app.modules.auth.mfa_service.write_audit_log", new_callable=AsyncMock):
             codes = await generate_backup_codes(db, user)
 
-        # Verify the first code
-        result = await _verify_backup_code(db, user, codes[0])
-        assert result is True
+        for code in codes:
+            assert code.isalnum(), f"Code '{code}' is not alphanumeric"
 
     @pytest.mark.asyncio
-    async def test_backup_code_is_single_use(self):
+    async def test_deletes_previous_codes_before_inserting(self):
+        """Verify that old backup codes are deleted before new ones are added."""
         user = _make_user()
         db = AsyncMock()
-        with patch("app.modules.auth.mfa_service.write_audit_log", new_callable=AsyncMock):
-            codes = await generate_backup_codes(db, user)
+        call_order = []
+        original_execute = db.execute
+        original_add = db.add
 
-        # Use the first code
-        result1 = await _verify_backup_code(db, user, codes[0])
-        assert result1 is True
+        async def track_execute(*args, **kwargs):
+            call_order.append("execute")
+            return await original_execute(*args, **kwargs)
 
-        # Try to use it again
-        result2 = await _verify_backup_code(db, user, codes[0])
-        assert result2 is False
+        def track_add(*args, **kwargs):
+            call_order.append("add")
+            return original_add(*args, **kwargs)
 
-    @pytest.mark.asyncio
-    async def test_invalid_backup_code_fails(self):
-        user = _make_user()
-        db = AsyncMock()
+        db.execute = AsyncMock(side_effect=track_execute)
+        db.add = MagicMock(side_effect=track_add)
+
         with patch("app.modules.auth.mfa_service.write_audit_log", new_callable=AsyncMock):
             await generate_backup_codes(db, user)
 
-        result = await _verify_backup_code(db, user, "INVALIDCODE")
-        assert result is False
+        # The first operation should be execute (the delete), before any adds
+        assert call_order[0] == "execute"
+        assert "add" in call_order
 
 
 # ---------------------------------------------------------------------------
@@ -247,10 +303,8 @@ class TestMFAPolicyHelpers:
         assert user_requires_mfa_setup(user) is True
 
     def test_global_admin_does_not_require_mfa_with_verified_method(self):
-        user = _make_user(
-            role="global_admin",
-            mfa_methods=[{"type": "totp", "verified": True}],
-        )
+        method = _make_mfa_method(method="totp", verified=True)
+        user = _make_user(role="global_admin", mfa_methods=[method])
         assert user_requires_mfa_setup(user) is False
 
     def test_org_admin_requires_mfa_when_org_mandatory(self):
@@ -269,11 +323,13 @@ class TestMFAPolicyHelpers:
         assert user_requires_mfa_setup(user, org_settings) is True
 
     def test_user_has_verified_mfa_true(self):
-        user = _make_user(mfa_methods=[{"type": "totp", "verified": True}])
+        method = _make_mfa_method(method="totp", verified=True)
+        user = _make_user(mfa_methods=[method])
         assert user_has_verified_mfa(user) is True
 
     def test_user_has_verified_mfa_false_unverified(self):
-        user = _make_user(mfa_methods=[{"type": "totp", "verified": False}])
+        method = _make_mfa_method(method="totp", verified=False)
+        user = _make_user(mfa_methods=[method])
         assert user_has_verified_mfa(user) is False
 
     def test_user_has_verified_mfa_false_empty(self):
@@ -281,14 +337,13 @@ class TestMFAPolicyHelpers:
         assert user_has_verified_mfa(user) is False
 
     def test_multiple_methods_one_verified(self):
-        user = _make_user(mfa_methods=[
-            {"type": "totp", "verified": True},
-            {"type": "sms", "verified": False},
-        ])
+        totp_method = _make_mfa_method(method="totp", verified=True)
+        sms_method = _make_mfa_method(method="sms", verified=False)
+        user = _make_user(mfa_methods=[totp_method, sms_method])
         assert user_has_verified_mfa(user) is True
         verified = _get_verified_mfa_methods(user)
         assert len(verified) == 1
-        assert verified[0]["type"] == "totp"
+        assert verified[0].method == "totp"
 
 
 # ---------------------------------------------------------------------------

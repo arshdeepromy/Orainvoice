@@ -41,7 +41,7 @@ def create_app() -> FastAPI:
         logger.error("Database error on %s %s: %s", request.method, request.url.path, exc)
         detail = str(exc.orig) if hasattr(exc, "orig") and exc.orig else str(exc)
 
-        # Persist to error_log table
+        # Persist to error_log table (best-effort, don't cascade on DB errors)
         try:
             import traceback as tb
             from app.core.errors import log_error, Severity, Category
@@ -54,7 +54,7 @@ def create_app() -> FastAPI:
                     module="sqlalchemy",
                     function_name="exception_handler",
                     message=f"Database error: {detail[:500]}",
-                    stack_trace=tb.format_exc(),
+                    stack_trace=tb.format_exc()[:2000],
                     org_id=getattr(request.state, "org_id", None) if hasattr(request, "state") else None,
                     user_id=getattr(request.state, "user_id", None) if hasattr(request, "state") else None,
                     http_method=request.method,
@@ -62,7 +62,7 @@ def create_app() -> FastAPI:
                 )
                 await session.commit()
         except Exception:
-            logger.warning("Failed to persist DB error to error_log", exc_info=True)
+            pass  # Don't log failure-to-log — avoids cascade
 
         if not settings.debug:
             detail = "A database error occurred"
@@ -76,7 +76,7 @@ def create_app() -> FastAPI:
         logger.error("Unhandled error on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
         detail = str(exc) if settings.debug else "Internal server error"
 
-        # Persist to error_log table
+        # Persist to error_log table (best-effort)
         try:
             import traceback as tb
             from app.core.errors import log_error, Severity, Category
@@ -89,7 +89,7 @@ def create_app() -> FastAPI:
                     module=type(exc).__module__ or "unknown",
                     function_name=type(exc).__name__,
                     message=str(exc)[:500],
-                    stack_trace=tb.format_exc(),
+                    stack_trace=tb.format_exc()[:2000],
                     org_id=getattr(request.state, "org_id", None) if hasattr(request, "state") else None,
                     user_id=getattr(request.state, "user_id", None) if hasattr(request, "state") else None,
                     http_method=request.method,
@@ -97,7 +97,7 @@ def create_app() -> FastAPI:
                 )
                 await session.commit()
         except Exception:
-            logger.warning("Failed to persist error to error_log", exc_info=True)
+            pass  # Don't log failure-to-log
 
         return JSONResponse(
             status_code=500,
@@ -181,6 +181,7 @@ def create_app() -> FastAPI:
     # --- V1 Routers (existing, unchanged) ---
     from app.modules.auth.router import router as auth_router
     from app.modules.admin.router import router as admin_router
+    from app.modules.admin.router import coupon_public_router
     from app.modules.organisations.router import router as org_router
     from app.modules.customers.router import router as customers_router
     from app.modules.vehicles.router import router as vehicles_router
@@ -203,6 +204,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(admin_router, prefix="/api/v1/admin", tags=["admin"])
+    app.include_router(coupon_public_router, prefix="/api/v1/coupons", tags=["coupons"])
     app.include_router(org_router, prefix="/api/v1/org", tags=["organisations"])
     app.include_router(customers_router, prefix="/api/v1/customers", tags=["customers"])
     app.include_router(vehicles_router, prefix="/api/v1/vehicles", tags=["vehicles"])

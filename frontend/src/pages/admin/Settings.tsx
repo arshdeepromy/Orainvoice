@@ -83,6 +83,12 @@ export interface PlatformSettings {
   terms_version: number
   terms_history: TermsVersion[]
   announcement_banner: string
+  signup_billing?: {
+    gst_percentage: number
+    stripe_fee_percentage: number
+    stripe_fee_fixed_cents: number
+    pass_fees_to_customer: boolean
+  }
 }
 
 /* ── Helpers ── */
@@ -616,6 +622,109 @@ function AnnouncementsTab({ onToast }: { onToast: (v: 'success' | 'error', msg: 
 
 /* ── Main Settings Page ── */
 
+function SignupBillingTab({ onToast }: { onToast: (v: 'success' | 'error', msg: string) => void }) {
+  const [form, setForm] = useState({
+    gst_percentage: 15.0,
+    stripe_fee_percentage: 2.9,
+    stripe_fee_fixed_cents: 30,
+    pass_fees_to_customer: true,
+  })
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    apiClient.get('/admin/settings').then(({ data }) => {
+      if (data.signup_billing) setForm(data.signup_billing)
+    }).catch(() => {}).finally(() => setLoading(false))
+  }, [])
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      await apiClient.put('/admin/settings', { signup_billing: form })
+      onToast('success', 'Signup billing config saved')
+    } catch {
+      onToast('error', 'Failed to save billing config')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Preview calculation
+  const planPrice = 60
+  const planCents = planPrice * 100
+  const gstCents = Math.round(planCents * form.gst_percentage / 100)
+  const subtotal = planCents + gstCents
+  const totalWithFees = form.pass_fees_to_customer
+    ? Math.round((subtotal + form.stripe_fee_fixed_cents) / (1 - form.stripe_fee_percentage / 100))
+    : subtotal
+  const feeCents = totalWithFees - subtotal
+
+  if (loading) return <Spinner label="Loading billing config..." />
+
+  return (
+    <div className="space-y-6 max-w-lg">
+      <p className="text-sm text-gray-600">
+        Configure GST and payment processing fees for signup charges. These are applied on top of the plan price.
+      </p>
+
+      <div className="space-y-4">
+        <Input
+          label="GST Percentage"
+          type="number"
+          step="0.5"
+          min="0"
+          max="100"
+          value={String(form.gst_percentage)}
+          onChange={e => setForm(f => ({ ...f, gst_percentage: parseFloat(e.target.value) || 0 }))}
+          helperText="Applied on top of plan price (NZ default: 15%)"
+        />
+        <Input
+          label="Stripe Fee Percentage"
+          type="number"
+          step="0.1"
+          min="0"
+          max="20"
+          value={String(form.stripe_fee_percentage)}
+          onChange={e => setForm(f => ({ ...f, stripe_fee_percentage: parseFloat(e.target.value) || 0 }))}
+          helperText="Stripe's percentage fee per transaction (NZ default: 2.9%)"
+        />
+        <Input
+          label="Stripe Fixed Fee (cents)"
+          type="number"
+          min="0"
+          value={String(form.stripe_fee_fixed_cents)}
+          onChange={e => setForm(f => ({ ...f, stripe_fee_fixed_cents: parseInt(e.target.value) || 0 }))}
+          helperText="Stripe's fixed fee per transaction in cents (NZ default: 30c)"
+        />
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            checked={form.pass_fees_to_customer}
+            onChange={e => setForm(f => ({ ...f, pass_fees_to_customer: e.target.checked }))}
+          />
+          <span>Pass processing fees to customer</span>
+        </label>
+      </div>
+
+      {/* Preview */}
+      <div className="rounded-md border border-gray-200 bg-gray-50 p-4 space-y-1 text-sm">
+        <p className="font-medium text-gray-700 mb-2">Preview (for a ${planPrice} plan):</p>
+        <div className="flex justify-between"><span>Plan price</span><span>${(planCents / 100).toFixed(2)}</span></div>
+        <div className="flex justify-between"><span>GST ({form.gst_percentage}%)</span><span>${(gstCents / 100).toFixed(2)}</span></div>
+        {form.pass_fees_to_customer && (
+          <div className="flex justify-between"><span>Processing fee</span><span>${(feeCents / 100).toFixed(2)}</span></div>
+        )}
+        <div className="flex justify-between font-semibold border-t border-gray-300 pt-1">
+          <span>Customer pays</span><span>${(totalWithFees / 100).toFixed(2)}</span>
+        </div>
+      </div>
+
+      <Button onClick={handleSave} loading={saving}>Save billing config</Button>
+    </div>
+  )
+}
+
 export function Settings() {
   const { toasts, addToast, dismissToast } = useToast()
 
@@ -623,6 +732,7 @@ export function Settings() {
     { id: 'vehicle-db', label: 'Vehicle DB', content: <VehicleDbTab onToast={addToast} /> },
     { id: 'terms', label: 'T&C', content: <TermsTab onToast={addToast} /> },
     { id: 'announcements', label: 'Announcements', content: <AnnouncementsTab onToast={addToast} /> },
+    { id: 'billing', label: 'Signup Billing', content: <SignupBillingTab onToast={addToast} /> },
   ]
 
   return (

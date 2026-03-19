@@ -409,7 +409,11 @@ function ProviderCard({
   const [testNumber, setTestNumber] = useState('')
   const [testMessage, setTestMessage] = useState('Hello from OraInvoice! This is a test SMS.')
   const [testing, setTesting] = useState(false)
+  const [settingMfaDefault, setSettingMfaDefault] = useState(false)
+  const [sendingTestCode, setSendingTestCode] = useState(false)
+  const [testCodeNumber, setTestCodeNumber] = useState('')
   const fields = CREDENTIAL_FIELDS[provider.provider_key] ?? []
+  const isMfaDefault = !!(provider.config as Record<string, unknown>)?.mfa_default
 
   const iconEl = PROVIDER_ICONS[provider.icon ?? ''] ?? PROVIDER_ICONS.phone
 
@@ -623,6 +627,141 @@ function ProviderCard({
                     </Button>
                   </div>
                 </div>
+              )}
+
+              {/* Firebase-specific: Set as MFA default + Send test verification code */}
+              {provider.provider_key === 'firebase_phone_auth' && provider.is_active && provider.credentials_set && (
+                <>
+                  <div className="border-t border-gray-200 pt-4">
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">MFA / Phone Verification Default</h4>
+                    <p className="text-xs text-gray-500 mb-3">
+                      Set Firebase as the default provider for delivering MFA and phone verification codes. All verification SMS will be routed through Firebase.
+                    </p>
+                    {isMfaDefault ? (
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center rounded-full bg-green-100 px-3 py-1 text-sm font-medium text-green-700">
+                          ✓ Default MFA provider
+                        </span>
+                      </div>
+                    ) : (
+                      <Button
+                        onClick={async () => {
+                          setSettingMfaDefault(true)
+                          try {
+                            const res = await apiClient.post(`/api/v2/admin/sms-providers/${provider.provider_key}/set-mfa-default`)
+                            if (res.data.success) {
+                              addToast('success', res.data.message)
+                              onConfigSaved()
+                            } else {
+                              addToast('error', res.data.message || 'Failed to set MFA default')
+                            }
+                          } catch {
+                            addToast('error', 'Failed to set as MFA default provider')
+                          } finally {
+                            setSettingMfaDefault(false)
+                          }
+                        }}
+                        loading={settingMfaDefault}
+                        variant="primary"
+                        className="w-full sm:w-auto"
+                      >
+                        Set as default MFA provider
+                      </Button>
+                    )}
+                  </div>
+
+                  <div className="border-t border-gray-200 pt-4">
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">Send Test Verification Code</h4>
+                    <p className="text-xs text-gray-500 mb-3">
+                      Send a real SMS verification code via Firebase to test end-to-end delivery. Uses invisible reCAPTCHA automatically.
+                    </p>
+                    <div className="space-y-3">
+                      <div className="flex-1 max-w-xs">
+                        <Input
+                          label="Phone number (E.164)"
+                          placeholder="+6421234567"
+                          value={testCodeNumber}
+                          onChange={(e) => setTestCodeNumber(e.target.value)}
+                        />
+                      </div>
+                      {/* Invisible reCAPTCHA container — Firebase attaches here */}
+                      <div id="firebase-recaptcha-container" />
+                      <Button
+                        onClick={async () => {
+                          if (!testCodeNumber.trim()) {
+                            addToast('error', 'Please enter a phone number')
+                            return
+                          }
+
+                          setSendingTestCode(true)
+                          try {
+                            // 1. Fetch real Firebase config from backend
+                            const cfgRes = await apiClient.get(
+                              `/api/v2/admin/sms-providers/firebase_phone_auth/firebase-config`
+                            )
+                            const cfg = cfgRes.data
+                            if (!cfg?.apiKey || !cfg?.projectId) {
+                              addToast('error', 'Firebase config incomplete — save credentials first')
+                              return
+                            }
+
+                            // 2. Dynamically import Firebase SDK (tree-shaken, only loaded when needed)
+                            const { initializeApp, getApps, deleteApp } = await import('firebase/app')
+                            const { getAuth, signInWithPhoneNumber, RecaptchaVerifier } = await import('firebase/auth')
+
+                            // 3. Initialise (or reuse) a Firebase app instance
+                            const firebaseConfig = {
+                              apiKey: cfg.apiKey,
+                              authDomain: cfg.authDomain,
+                              projectId: cfg.projectId,
+                              appId: cfg.appId,
+                            }
+                            const existingApps = getApps()
+                            const testApp = existingApps.find(a => a.name === '__sms_test__')
+                            if (testApp) await deleteApp(testApp)
+                            const app = initializeApp(firebaseConfig, '__sms_test__')
+                            const auth = getAuth(app)
+
+                            // 4. Create invisible reCAPTCHA verifier
+                            const container = document.getElementById('firebase-recaptcha-container')
+                            if (container) container.innerHTML = ''
+                            const recaptchaVerifier = new RecaptchaVerifier(auth, 'firebase-recaptcha-container', {
+                              size: 'invisible',
+                            })
+
+                            // 5. Send the verification code — this triggers a real SMS
+                            const confirmationResult = await signInWithPhoneNumber(auth, testCodeNumber.trim(), recaptchaVerifier)
+                            addToast(
+                              'success',
+                              `Verification code sent to ${testCodeNumber.trim()}. Confirmation ID: ${confirmationResult.verificationId.slice(0, 12)}…`
+                            )
+                          } catch (err: unknown) {
+                            const firebaseErr = err as { code?: string; message?: string }
+                            const code = firebaseErr.code || ''
+                            let msg = firebaseErr.message || 'Failed to send verification code'
+                            if (code === 'auth/invalid-phone-number') {
+                              msg = 'Invalid phone number format. Use E.164 format like +6421234567'
+                            } else if (code === 'auth/too-many-requests') {
+                              msg = 'Too many requests. Wait a few minutes before trying again.'
+                            } else if (code === 'auth/captcha-check-failed') {
+                              msg = 'reCAPTCHA verification failed. Refresh the page and try again.'
+                            } else if (code === 'auth/quota-exceeded') {
+                              msg = 'SMS quota exceeded. Check your Firebase project billing.'
+                            }
+                            addToast('error', msg)
+                          } finally {
+                            setSendingTestCode(false)
+                          }
+                        }}
+                        loading={sendingTestCode}
+                        variant="secondary"
+                        className="w-full sm:w-auto"
+                      >
+                        Send verification code
+                      </Button>
+                    </div>
+                  </div>
+                </>
               )}
             </>
           )}

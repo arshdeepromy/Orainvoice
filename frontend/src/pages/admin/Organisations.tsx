@@ -13,7 +13,7 @@ import apiClient from '@/api/client'
 
 /* ── Types ── */
 
-export type OrgStatus = 'active' | 'trial' | 'suspended' | 'deleted'
+export type OrgStatus = 'active' | 'trial' | 'suspended' | 'deleted' | 'payment_pending'
 export type BillingStatus = 'current' | 'overdue' | 'unpaid' | 'trial'
 
 export interface Organisation {
@@ -39,6 +39,7 @@ export interface Plan {
 const STATUS_BADGE_MAP: Record<OrgStatus, { variant: 'success' | 'info' | 'warning' | 'error' | 'neutral'; label: string }> = {
   active: { variant: 'success', label: 'Active' },
   trial: { variant: 'info', label: 'Trial' },
+  payment_pending: { variant: 'warning', label: 'Payment Pending' },
   suspended: { variant: 'warning', label: 'Suspended' },
   deleted: { variant: 'error', label: 'Deleted' },
 }

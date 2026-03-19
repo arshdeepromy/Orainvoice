@@ -828,7 +828,6 @@ async def update_mfa_policy(
 # Public signup
 # ---------------------------------------------------------------------------
 
-_TRIAL_DAYS = 14
 _SIGNUP_TOKEN_EXPIRY_SECONDS = 48 * 3600  # 48 hours
 
 
@@ -837,17 +836,16 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _compute_trial_end(plan, now: datetime) -> datetime:
+def _compute_trial_end(plan, now: datetime) -> datetime | None:
     """Compute trial end date from plan's trial_duration and trial_duration_unit.
 
-    Falls back to _TRIAL_DAYS if the plan has no trial configured.
+    Returns None if the plan has no trial configured (duration <= 0).
     """
     duration = plan.trial_duration or 0
     unit = plan.trial_duration_unit or "days"
 
     if duration <= 0:
-        # Fallback to default 14-day trial
-        return now + timedelta(days=_TRIAL_DAYS)
+        return None
 
     if unit == "weeks":
         return now + timedelta(weeks=duration)
@@ -856,6 +854,94 @@ def _compute_trial_end(plan, now: datetime) -> datetime:
         return now + timedelta(days=duration * 30)
     else:
         return now + timedelta(days=duration)
+
+
+async def _load_signup_billing_config() -> dict:
+    """Load signup billing config (GST%, Stripe fees) from platform_settings."""
+    from app.core.redis import redis_pool as _redis
+    import json as _json
+
+    # Try Redis cache first
+    cached = await _redis.get("signup_billing_config")
+    if cached:
+        return _json.loads(cached)
+
+    # Fall back to DB
+    from app.core.database import async_session_factory
+    from sqlalchemy import text as sa_text
+
+    defaults = {
+        "gst_percentage": 15.0,
+        "stripe_fee_percentage": 2.9,
+        "stripe_fee_fixed_cents": 30,
+        "pass_fees_to_customer": True,
+    }
+
+    try:
+        async with async_session_factory() as session:
+            row = await session.execute(
+                sa_text("SELECT value FROM platform_settings WHERE key = :k"),
+                {"k": "signup_billing"},
+            )
+            sb_row = row.scalar_one_or_none()
+            if sb_row:
+                val = sb_row if isinstance(sb_row, dict) else _json.loads(sb_row)
+                config = {
+                    "gst_percentage": val.get("gst_percentage", 15.0),
+                    "stripe_fee_percentage": val.get("stripe_fee_percentage", 2.9),
+                    "stripe_fee_fixed_cents": val.get("stripe_fee_fixed_cents", 30),
+                    "pass_fees_to_customer": val.get("pass_fees_to_customer", True),
+                }
+            else:
+                config = defaults
+
+        # Cache for 5 minutes
+        await _redis.setex("signup_billing_config", 300, _json.dumps(config))
+        return config
+    except Exception:
+        return defaults
+
+
+def _compute_billing_breakdown(
+    plan_amount_cents: int,
+    billing_config: dict,
+) -> dict:
+    """Compute GST and Stripe processing fee on top of plan price.
+
+    Returns dict with plan_amount_cents, gst_amount_cents,
+    processing_fee_cents, and total_amount_cents.
+
+    Formula:
+      subtotal = plan_amount + GST
+      processing_fee = (subtotal + fixed_fee) / (1 - stripe_pct/100) - subtotal
+      total = subtotal + processing_fee
+    """
+    gst_pct = billing_config.get("gst_percentage", 15.0)
+    stripe_pct = billing_config.get("stripe_fee_percentage", 2.9)
+    stripe_fixed = billing_config.get("stripe_fee_fixed_cents", 30)
+    pass_fees = billing_config.get("pass_fees_to_customer", True)
+
+    gst_amount_cents = round(plan_amount_cents * gst_pct / 100)
+    subtotal = plan_amount_cents + gst_amount_cents
+
+    if pass_fees and subtotal > 0:
+        # Reverse-engineer the Stripe fee so the net received = subtotal
+        # Stripe takes: (total * stripe_pct/100) + stripe_fixed
+        # We want: total - stripe_fee = subtotal
+        # So: total = (subtotal + stripe_fixed) / (1 - stripe_pct/100)
+        total = round((subtotal + stripe_fixed) / (1 - stripe_pct / 100))
+        processing_fee_cents = total - subtotal
+    else:
+        processing_fee_cents = 0
+        total = subtotal
+
+    return {
+        "plan_amount_cents": plan_amount_cents,
+        "gst_amount_cents": gst_amount_cents,
+        "gst_percentage": gst_pct,
+        "processing_fee_cents": processing_fee_cents,
+        "total_amount_cents": total,
+    }
 
 
 async def public_signup(
@@ -868,19 +954,21 @@ async def public_signup(
     password: str,
     plan_id: uuid.UUID,
     ip_address: str | None = None,
+    base_url: str = "http://localhost",
+    coupon_code: str | None = None,
 ) -> dict:
     """Handle public workshop signup — Requirement 8.6.
 
-    Steps:
-    1. Validate the subscription plan exists, is public, and not archived.
-    2. Check the admin email is not already registered.
-    3. Create the organisation with ``trial`` status and trial period from plan.
-    4. Create an Org_Admin user with hashed password (verified, active).
-    5. Generate a signup token (for onboarding wizard access).
-    6. Write audit log entries.
+    Two code paths based on plan type:
 
-    Returns a dict with org details and a signup token for the frontend 
-    to drive the onboarding wizard. No payment collection during trial.
+    **Paid plan (trial_duration == 0):**
+    Store validated form data in Redis as a Pending_Signup, create a
+    Stripe PaymentIntent (without a Stripe Customer), and return the
+    client secret.  No Organisation or User records are created.
+
+    **Trial plan (trial_duration > 0):**
+    Create Organisation + User immediately, send verification email,
+    return organisation details.
 
     Raises ``ValueError`` on validation failures.
     """
@@ -905,10 +993,321 @@ async def public_signup(
     if email_result.scalar_one_or_none() is not None:
         raise ValueError("A user with this email already exists")
 
-    # 3. Create organisation with trial status
     now = datetime.now(timezone.utc)
     trial_ends_at = _compute_trial_end(plan, now)
 
+    # -----------------------------------------------------------------------
+    # PAID PLAN FLOW — trial_duration == 0
+    # -----------------------------------------------------------------------
+    if not trial_ends_at:
+        plan_amount_cents = int(float(plan.monthly_price_nzd) * 100)
+
+        # $0 plans should skip payment entirely (same as trial flow)
+        if plan_amount_cents == 0 and not coupon_code:
+            org = Organisation(
+                name=org_name,
+                plan_id=plan_id,
+                status="active",
+                storage_quota_gb=plan.storage_quota_gb,
+            )
+            db.add(org)
+            await db.flush()
+
+            from app.modules.auth.password import hash_password as _hash_pw
+
+            admin_user = User(
+                org_id=org.id,
+                email=admin_email,
+                first_name=admin_first_name or None,
+                last_name=admin_last_name or None,
+                role="org_admin",
+                is_active=True,
+                is_email_verified=False,
+                password_hash=_hash_pw(password),
+            )
+            db.add(admin_user)
+            await db.flush()
+
+            signup_token = secrets.token_urlsafe(48)
+            token_hash = _hash_token(signup_token)
+            token_data = json.dumps({
+                "user_id": str(admin_user.id),
+                "email": admin_email,
+                "org_id": str(org.id),
+                "created_at": now.isoformat(),
+                "type": "signup",
+            })
+            await redis_pool.setex(
+                f"signup:{token_hash}",
+                _SIGNUP_TOKEN_EXPIRY_SECONDS,
+                token_data,
+            )
+
+            await write_audit_log(
+                session=db,
+                org_id=org.id,
+                user_id=admin_user.id,
+                action="org.public_signup",
+                entity_type="organisation",
+                entity_id=org.id,
+                after_value={
+                    "name": org_name,
+                    "plan_id": str(plan_id),
+                    "plan_name": plan.name,
+                    "status": "active",
+                    "admin_email": admin_email,
+                    "admin_user_id": str(admin_user.id),
+                    "ip_address": ip_address,
+                },
+                ip_address=ip_address,
+            )
+
+            from app.modules.auth.service import (
+                create_email_verification_token,
+                send_verification_email,
+            )
+            user_name = (
+                f"{admin_first_name} {admin_last_name}".strip()
+                or admin_email.split("@")[0]
+            )
+            verification_token = await create_email_verification_token(
+                admin_user.id, admin_email,
+            )
+            await send_verification_email(
+                db,
+                email=admin_email,
+                user_name=user_name,
+                org_name=org_name,
+                verification_token=verification_token,
+                base_url=base_url,
+            )
+
+            return {
+                "organisation_id": str(org.id),
+                "organisation_name": org_name,
+                "plan_id": str(plan_id),
+                "admin_user_id": str(admin_user.id),
+                "admin_email": admin_email,
+                "requires_payment": False,
+                "payment_amount_cents": 0,
+                "signup_token": signup_token,
+            }
+
+        # --- Coupon discount logic (Req 5.2, 5.3, 5.4) ---
+        coupon_discount_type: str | None = None
+        coupon_discount_value: float | None = None
+
+        if coupon_code:
+            from app.modules.admin.service import validate_coupon
+
+            coupon_result = await validate_coupon(db, coupon_code)
+            if not coupon_result.get("valid"):
+                raise ValueError(
+                    coupon_result.get("error", "Invalid coupon code")
+                )
+
+            coupon_info = coupon_result["coupon"]
+            coupon_discount_type = coupon_info["discount_type"]
+            coupon_discount_value = coupon_info["discount_value"]
+
+            if coupon_discount_type == "trial_extension":
+                # Convert paid plan to trial flow with extended duration
+                # discount_value = number of days for the trial
+                extended_days = int(coupon_discount_value)
+                trial_ends_at = now + timedelta(days=extended_days)
+                # Fall through to the trial plan flow below
+                # (trial_ends_at is now set, so the `if not trial_ends_at`
+                # block will end and the trial flow will execute)
+
+            elif coupon_discount_type == "percentage":
+                plan_amount_cents = round(
+                    plan_amount_cents * (1 - coupon_discount_value / 100)
+                )
+            elif coupon_discount_type == "fixed_amount":
+                discount_cents = int(coupon_discount_value * 100)
+                plan_amount_cents = max(0, plan_amount_cents - discount_cents)
+
+        # If a trial-extension coupon was applied, skip the paid flow
+        # entirely and fall through to the trial plan flow below.
+        if trial_ends_at:
+            pass  # Will be handled by the trial plan flow below
+        elif plan_amount_cents == 0:
+            # Coupon reduced price to zero — create account immediately
+            # (Req 5.3: skip PaymentIntent, return requires_payment=False)
+            org = Organisation(
+                name=org_name,
+                plan_id=plan_id,
+                status="active",
+                storage_quota_gb=plan.storage_quota_gb,
+            )
+            db.add(org)
+            await db.flush()
+
+            from app.modules.auth.password import hash_password as _hash_pw
+
+            admin_user = User(
+                org_id=org.id,
+                email=admin_email,
+                first_name=admin_first_name or None,
+                last_name=admin_last_name or None,
+                role="org_admin",
+                is_active=True,
+                is_email_verified=False,
+                password_hash=_hash_pw(password),
+            )
+            db.add(admin_user)
+            await db.flush()
+
+            signup_token = secrets.token_urlsafe(48)
+            token_hash = _hash_token(signup_token)
+            token_data = json.dumps({
+                "user_id": str(admin_user.id),
+                "email": admin_email,
+                "org_id": str(org.id),
+                "created_at": now.isoformat(),
+                "type": "signup",
+            })
+            await redis_pool.setex(
+                f"signup:{token_hash}",
+                _SIGNUP_TOKEN_EXPIRY_SECONDS,
+                token_data,
+            )
+
+            await write_audit_log(
+                session=db,
+                org_id=org.id,
+                user_id=admin_user.id,
+                action="org.public_signup",
+                entity_type="organisation",
+                entity_id=org.id,
+                after_value={
+                    "name": org_name,
+                    "plan_id": str(plan_id),
+                    "plan_name": plan.name,
+                    "status": "active",
+                    "coupon_code": coupon_code,
+                    "admin_email": admin_email,
+                    "admin_user_id": str(admin_user.id),
+                    "ip_address": ip_address,
+                },
+                ip_address=ip_address,
+            )
+
+            from app.modules.auth.service import (
+                create_email_verification_token,
+                send_verification_email,
+            )
+            user_name = (
+                f"{admin_first_name} {admin_last_name}".strip()
+                or admin_email.split("@")[0]
+            )
+            verification_token = await create_email_verification_token(
+                admin_user.id, admin_email,
+            )
+            await send_verification_email(
+                db,
+                email=admin_email,
+                user_name=user_name,
+                org_name=org_name,
+                verification_token=verification_token,
+                base_url=base_url,
+            )
+
+            return {
+                "organisation_id": str(org.id),
+                "organisation_name": org_name,
+                "plan_id": str(plan_id),
+                "admin_user_id": str(admin_user.id),
+                "admin_email": admin_email,
+                "requires_payment": False,
+                "payment_amount_cents": 0,
+                "signup_token": signup_token,
+            }
+        # --- End coupon discount logic ---
+
+        if not trial_ends_at:
+            # Normal paid flow — compute billing breakdown, store pending signup, create PaymentIntent
+            billing_config = await _load_signup_billing_config()
+            breakdown = _compute_billing_breakdown(plan_amount_cents, billing_config)
+            payment_amount_cents = breakdown["total_amount_cents"]
+
+            from app.modules.auth.pending_signup import replace_pending_signup_for_email
+
+            pending_data = {
+                "org_name": org_name,
+                "admin_email": admin_email,
+                "admin_first_name": admin_first_name,
+                "admin_last_name": admin_last_name,
+                "password": password,
+                "plan_id": str(plan_id),
+                "plan_name": plan.name,
+                "payment_amount_cents": payment_amount_cents,
+                "plan_amount_cents": breakdown["plan_amount_cents"],
+                "gst_amount_cents": breakdown["gst_amount_cents"],
+                "gst_percentage": breakdown["gst_percentage"],
+                "processing_fee_cents": breakdown["processing_fee_cents"],
+                "coupon_code": coupon_code,
+                "coupon_discount_type": coupon_discount_type,
+                "coupon_discount_value": coupon_discount_value,
+                "ip_address": ip_address,
+                "created_at": now.isoformat(),
+            }
+            pending_signup_id = await replace_pending_signup_for_email(
+                admin_email, pending_data,
+            )
+
+            # Create Stripe PaymentIntent WITHOUT a Stripe Customer
+            from app.integrations.stripe_billing import create_payment_intent_no_customer
+
+            try:
+                pi_result = await create_payment_intent_no_customer(
+                    amount_cents=payment_amount_cents,
+                    currency="nzd",
+                    metadata={
+                        "pending_signup_id": pending_signup_id,
+                        "plan_id": str(plan_id),
+                        "signup": "true",
+                    },
+                )
+                stripe_client_secret = pi_result["client_secret"]
+                stripe_pi_id = pi_result["payment_intent_id"]
+            except Exception as exc:
+                logger.warning(
+                    "Stripe PaymentIntent creation failed for %s: %s",
+                    admin_email, exc,
+                )
+                raise ValueError("Payment setup failed. Please try again.")
+
+            # Update the pending signup with the Stripe PI ID
+            from app.modules.auth.pending_signup import get_pending_signup
+            from app.core.redis import redis_pool as _redis
+
+            stored = await get_pending_signup(pending_signup_id)
+            if stored:
+                stored["stripe_payment_intent_id"] = stripe_pi_id
+                import json as _json
+                await _redis.setex(
+                    f"pending_signup:{pending_signup_id}",
+                    1800,
+                    _json.dumps(stored, default=str),
+                )
+
+            return {
+                "requires_payment": True,
+                "pending_signup_id": pending_signup_id,
+                "stripe_client_secret": stripe_client_secret,
+                "payment_amount_cents": payment_amount_cents,
+                "plan_amount_cents": breakdown["plan_amount_cents"],
+                "gst_amount_cents": breakdown["gst_amount_cents"],
+                "gst_percentage": breakdown["gst_percentage"],
+                "processing_fee_cents": breakdown["processing_fee_cents"],
+                "plan_name": plan.name,
+                "admin_email": admin_email,
+            }
+
+    # -----------------------------------------------------------------------
+    # TRIAL PLAN FLOW — trial_duration > 0 (existing logic, unchanged)
+    # -----------------------------------------------------------------------
     org = Organisation(
         name=org_name,
         plan_id=plan_id,
@@ -919,26 +1318,24 @@ async def public_signup(
     db.add(org)
     await db.flush()
 
-    # 4. Create Org_Admin user with hashed password
+    # Create Org_Admin user with hashed password
     from app.modules.auth.password import hash_password
-    
+
     password_hash = hash_password(password)
     admin_user = User(
         org_id=org.id,
         email=admin_email,
+        first_name=admin_first_name or None,
+        last_name=admin_last_name or None,
         role="org_admin",
         is_active=True,
-        is_email_verified=True,  # Email verified since they set password during signup
+        is_email_verified=False,  # Must verify email before login
         password_hash=password_hash,
     )
     db.add(admin_user)
     await db.flush()
 
-    # 5. Skip Stripe during trial signup
-    # Stripe customer and payment method will be created when trial ends
-    # or when user manually adds payment method
-
-    # 6. Generate signup token (stored in Redis, 48h TTL)
+    # Generate signup token (stored in Redis, 48h TTL)
     signup_token = secrets.token_urlsafe(48)
     token_hash = _hash_token(signup_token)
     token_data = json.dumps({
@@ -954,7 +1351,7 @@ async def public_signup(
         token_data,
     )
 
-    # 7. Audit log
+    # Audit log
     await write_audit_log(
         session=db,
         org_id=org.id,
@@ -970,10 +1367,26 @@ async def public_signup(
             "trial_ends_at": trial_ends_at.isoformat(),
             "admin_email": admin_email,
             "admin_user_id": str(admin_user.id),
-            "stripe_customer_id": None,  # Created later when payment needed
             "ip_address": ip_address,
         },
         ip_address=ip_address,
+    )
+
+    # Send verification email
+    from app.modules.auth.service import (
+        create_email_verification_token,
+        send_verification_email,
+    )
+    user_name = f"{admin_first_name} {admin_last_name}".strip() or admin_email.split("@")[0]
+    verification_token = await create_email_verification_token(admin_user.id, admin_email)
+
+    await send_verification_email(
+        db,
+        email=admin_email,
+        user_name=user_name,
+        org_name=org_name,
+        verification_token=verification_token,
+        base_url=base_url,
     )
 
     return {
@@ -983,7 +1396,8 @@ async def public_signup(
         "admin_user_id": str(admin_user.id),
         "admin_email": admin_email,
         "trial_ends_at": trial_ends_at,
-        "stripe_setup_intent_client_secret": None,  # No payment during trial
+        "requires_payment": False,
+        "payment_amount_cents": 0,
         "signup_token": signup_token,
     }
 

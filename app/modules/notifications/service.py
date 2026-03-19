@@ -1825,9 +1825,9 @@ async def process_customer_reminders(db: AsyncSession) -> dict[str, Any]:
         sms_provider_result = await db.execute(
             select(SmsVerificationProvider).where(
                 SmsVerificationProvider.is_active == True,  # noqa: E712
-            )
+            ).order_by(SmsVerificationProvider.is_default.desc(), SmsVerificationProvider.priority)
         )
-        sms_provider = sms_provider_result.scalar_one_or_none()
+        sms_provider = sms_provider_result.scalars().first()
         sms_configured = sms_provider is not None and sms_provider.credentials_encrypted is not None
 
         # Check if email provider is configured
@@ -1838,7 +1838,7 @@ async def process_customer_reminders(db: AsyncSession) -> dict[str, Any]:
                 EmailProvider.credentials_set == True,  # noqa: E712
             ).order_by(EmailProvider.priority)
         )
-        email_configured = email_provider_result.scalar_one_or_none() is not None
+        email_configured = email_provider_result.scalars().first() is not None
 
         # Get org country_code from the organisations table
         country_row = await db.execute(

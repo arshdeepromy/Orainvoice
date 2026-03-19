@@ -340,3 +340,443 @@ async def purchase_storage_addon(
         "additional_monthly_charge_nzd": charge_amount_nzd,
         "previous_quota_gb": previous_quota,
     }
+
+
+# ---------------------------------------------------------------------------
+# Storage add-on v2 — Package-based purchase / resize / remove
+# Requirements: 4.1–4.6, 5.1–5.7, 7.2
+# ---------------------------------------------------------------------------
+
+import logging
+from datetime import datetime, timezone
+
+from app.core.audit import write_audit_log
+from app.modules.admin.models import (
+    OrgStorageAddon,
+    PlatformSetting,
+    StoragePackage,
+)
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_FALLBACK_PRICE_PER_GB_NZD: float = 0.50
+
+
+def _addon_to_dict(addon: OrgStorageAddon) -> dict:
+    """Serialise an OrgStorageAddon row to a plain dict."""
+    package_name = None
+    if addon.storage_package is not None:
+        package_name = addon.storage_package.name
+    return {
+        "id": str(addon.id),
+        "package_name": package_name,
+        "quantity_gb": addon.quantity_gb,
+        "price_nzd_per_month": float(addon.price_nzd_per_month),
+        "is_custom": addon.is_custom,
+        "purchased_at": addon.purchased_at,
+    }
+
+
+async def _get_fallback_price_per_gb(db: AsyncSession) -> float:
+    """Read fallback price_per_gb_nzd from platform_settings.storage_pricing."""
+    result = await db.execute(
+        select(PlatformSetting.value).where(PlatformSetting.key == "storage_pricing")
+    )
+    row = result.scalar_one_or_none()
+    if row and isinstance(row, dict):
+        return float(row.get("price_per_gb_nzd", DEFAULT_FALLBACK_PRICE_PER_GB_NZD))
+    return DEFAULT_FALLBACK_PRICE_PER_GB_NZD
+
+
+async def get_storage_addon_status(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+) -> dict:
+    """Return current add-on status, available packages, fallback price, and quotas.
+
+    Requirements: 4.1–4.5, 5.1–5.2
+    """
+    from sqlalchemy.orm import selectinload
+
+    # Load org with plan
+    org_result = await db.execute(
+        select(Organisation)
+        .options(selectinload(Organisation.plan))
+        .where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org is None:
+        raise ValueError("Organisation not found")
+
+    # Load current add-on (if any) with its package
+    addon_result = await db.execute(
+        select(OrgStorageAddon)
+        .options(selectinload(OrgStorageAddon.storage_package))
+        .where(OrgStorageAddon.org_id == org_id)
+    )
+    addon = addon_result.scalar_one_or_none()
+
+    # Available active packages
+    pkg_result = await db.execute(
+        select(StoragePackage)
+        .where(StoragePackage.is_active.is_(True))
+        .order_by(StoragePackage.sort_order.asc())
+    )
+    packages = pkg_result.scalars().all()
+
+    fallback_price = await _get_fallback_price_per_gb(db)
+
+    base_quota_gb = org.plan.storage_quota_gb
+    addon_gb = addon.quantity_gb if addon else 0
+    total_quota_gb = base_quota_gb + addon_gb
+    storage_used_gb = round(org.storage_used_bytes / (1024 ** 3), 2)
+
+    return {
+        "current_addon": _addon_to_dict(addon) if addon else None,
+        "available_packages": [
+            {
+                "id": str(p.id),
+                "name": p.name,
+                "storage_gb": p.storage_gb,
+                "price_nzd_per_month": float(p.price_nzd_per_month),
+                "description": p.description,
+                "is_active": p.is_active,
+                "sort_order": p.sort_order,
+                "created_at": p.created_at,
+                "updated_at": p.updated_at,
+            }
+            for p in packages
+        ],
+        "fallback_price_per_gb_nzd": fallback_price,
+        "base_quota_gb": base_quota_gb,
+        "total_quota_gb": total_quota_gb,
+        "storage_used_gb": storage_used_gb,
+    }
+
+
+async def purchase_storage_addon_v2(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    package_id: str | None = None,
+    custom_gb: int | None = None,
+    user_id: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Purchase a new storage add-on for an organisation (package-based).
+
+    - Validates org has no existing add-on (409 if exists).
+    - If package_id: loads package, validates active, creates addon record.
+    - If custom_gb: uses fallback price_per_gb_nzd, creates addon with is_custom=True.
+    - Updates org.storage_quota_gb += quantity_gb.
+    - Writes audit log.
+
+    Requirements: 4.1–4.6, 7.2
+    """
+    from sqlalchemy.orm import selectinload
+
+    if not package_id and not custom_gb:
+        raise ValueError("Provide either package_id or custom_gb")
+    if package_id and custom_gb:
+        raise ValueError("Provide either package_id or custom_gb, not both")
+
+    # Check org exists
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org is None:
+        raise ValueError("Organisation not found")
+
+    # Check no existing add-on (conflict)
+    existing = await db.execute(
+        select(OrgStorageAddon).where(OrgStorageAddon.org_id == org_id)
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise ValueError("Organisation already has a storage add-on. Use resize instead.")
+
+    # Determine quantity and price
+    storage_package = None
+    if package_id:
+        pkg_result = await db.execute(
+            select(StoragePackage).where(StoragePackage.id == uuid.UUID(package_id))
+        )
+        storage_package = pkg_result.scalar_one_or_none()
+        if storage_package is None:
+            raise LookupError("Storage package not found")
+        if not storage_package.is_active:
+            raise ValueError("This storage package is no longer available")
+        quantity_gb = storage_package.storage_gb
+        price_nzd = float(storage_package.price_nzd_per_month)
+        is_custom = False
+    else:
+        if custom_gb < 1:
+            raise ValueError("custom_gb must be at least 1")
+        fallback_price = await _get_fallback_price_per_gb(db)
+        quantity_gb = custom_gb
+        price_nzd = round(custom_gb * fallback_price, 2)
+        is_custom = True
+
+    # Create add-on record
+    now = datetime.now(timezone.utc)
+    addon = OrgStorageAddon(
+        org_id=org_id,
+        storage_package_id=storage_package.id if storage_package else None,
+        quantity_gb=quantity_gb,
+        price_nzd_per_month=price_nzd,
+        is_custom=is_custom,
+        purchased_at=now,
+    )
+    db.add(addon)
+    await db.flush()
+
+    # Update org quota
+    previous_quota = org.storage_quota_gb
+    org.storage_quota_gb = previous_quota + quantity_gb
+    await db.flush()
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        action="storage_addon.purchased",
+        org_id=org_id,
+        user_id=user_id,
+        entity_type="org_storage_addon",
+        entity_id=addon.id,
+        ip_address=ip_address,
+        after_value={
+            "quantity_gb": quantity_gb,
+            "price_nzd_per_month": price_nzd,
+            "is_custom": is_custom,
+            "package_id": package_id,
+            "previous_quota_gb": previous_quota,
+            "new_quota_gb": org.storage_quota_gb,
+        },
+    )
+
+    logger.info(
+        "Org %s purchased storage add-on: %d GB ($%.2f/mo), custom=%s",
+        org_id, quantity_gb, price_nzd, is_custom,
+    )
+
+    # Reload to get relationships for response
+    await db.refresh(addon, ["storage_package"])
+    return _addon_to_dict(addon)
+
+
+async def resize_storage_addon(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    package_id: str | None = None,
+    custom_gb: int | None = None,
+    user_id: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Resize an existing storage add-on (upgrade or downgrade).
+
+    - Validates org has existing add-on (404 if not).
+    - Calculates new quantity, validates usage doesn't exceed new total on downgrade.
+    - Updates addon record and org.storage_quota_gb.
+    - Writes audit log with before/after.
+
+    Requirements: 5.1–5.7, 7.2
+    """
+    from sqlalchemy.orm import selectinload
+
+    if not package_id and not custom_gb:
+        raise ValueError("Provide either package_id or custom_gb")
+    if package_id and custom_gb:
+        raise ValueError("Provide either package_id or custom_gb, not both")
+
+    # Load org with plan
+    org_result = await db.execute(
+        select(Organisation)
+        .options(selectinload(Organisation.plan))
+        .where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org is None:
+        raise ValueError("Organisation not found")
+
+    # Load existing add-on
+    addon_result = await db.execute(
+        select(OrgStorageAddon)
+        .options(selectinload(OrgStorageAddon.storage_package))
+        .where(OrgStorageAddon.org_id == org_id)
+    )
+    addon = addon_result.scalar_one_or_none()
+    if addon is None:
+        raise LookupError("No active storage add-on found")
+
+    # Capture before state
+    before = {
+        "quantity_gb": addon.quantity_gb,
+        "price_nzd_per_month": float(addon.price_nzd_per_month),
+        "is_custom": addon.is_custom,
+        "package_id": str(addon.storage_package_id) if addon.storage_package_id else None,
+    }
+
+    # Determine new quantity and price
+    storage_package = None
+    if package_id:
+        pkg_result = await db.execute(
+            select(StoragePackage).where(StoragePackage.id == uuid.UUID(package_id))
+        )
+        storage_package = pkg_result.scalar_one_or_none()
+        if storage_package is None:
+            raise LookupError("Storage package not found")
+        if not storage_package.is_active:
+            raise ValueError("This storage package is no longer available")
+        new_quantity_gb = storage_package.storage_gb
+        new_price_nzd = float(storage_package.price_nzd_per_month)
+        new_is_custom = False
+    else:
+        if custom_gb < 1:
+            raise ValueError("custom_gb must be at least 1")
+        fallback_price = await _get_fallback_price_per_gb(db)
+        new_quantity_gb = custom_gb
+        new_price_nzd = round(custom_gb * fallback_price, 2)
+        new_is_custom = True
+
+    # Validate downgrade: usage must not exceed new total quota
+    old_quantity_gb = addon.quantity_gb
+    if new_quantity_gb < old_quantity_gb:
+        base_quota_gb = org.plan.storage_quota_gb
+        new_total_quota_gb = base_quota_gb + new_quantity_gb
+        storage_used_gb = org.storage_used_bytes / (1024 ** 3)
+        if storage_used_gb > new_total_quota_gb:
+            raise ValueError(
+                f"Current storage usage ({storage_used_gb:.2f} GB) exceeds the new quota "
+                f"({new_total_quota_gb} GB). Free up space first."
+            )
+
+    # Update add-on record
+    addon.storage_package_id = storage_package.id if storage_package else None
+    addon.quantity_gb = new_quantity_gb
+    addon.price_nzd_per_month = new_price_nzd
+    addon.is_custom = new_is_custom
+    await db.flush()
+
+    # Update org quota
+    quota_diff = new_quantity_gb - old_quantity_gb
+    previous_quota = org.storage_quota_gb
+    org.storage_quota_gb = previous_quota + quota_diff
+    await db.flush()
+
+    # After state
+    after = {
+        "quantity_gb": new_quantity_gb,
+        "price_nzd_per_month": new_price_nzd,
+        "is_custom": new_is_custom,
+        "package_id": package_id,
+        "previous_quota_gb": previous_quota,
+        "new_quota_gb": org.storage_quota_gb,
+    }
+
+    await write_audit_log(
+        session=db,
+        action="storage_addon.resized",
+        org_id=org_id,
+        user_id=user_id,
+        entity_type="org_storage_addon",
+        entity_id=addon.id,
+        ip_address=ip_address,
+        before_value=before,
+        after_value=after,
+    )
+
+    direction = "upgraded" if quota_diff > 0 else "downgraded"
+    logger.info(
+        "Org %s %s storage add-on: %d → %d GB",
+        org_id, direction, old_quantity_gb, new_quantity_gb,
+    )
+
+    await db.refresh(addon, ["storage_package"])
+    return _addon_to_dict(addon)
+
+
+async def remove_storage_addon(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Remove the active storage add-on, reverting to plan base quota.
+
+    - Validates usage doesn't exceed base quota.
+    - Deletes addon record, reduces org.storage_quota_gb.
+    - Writes audit log.
+
+    Requirements: 5.7, 7.2
+    """
+    from sqlalchemy.orm import selectinload
+
+    # Load org with plan
+    org_result = await db.execute(
+        select(Organisation)
+        .options(selectinload(Organisation.plan))
+        .where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org is None:
+        raise ValueError("Organisation not found")
+
+    # Load existing add-on
+    addon_result = await db.execute(
+        select(OrgStorageAddon)
+        .options(selectinload(OrgStorageAddon.storage_package))
+        .where(OrgStorageAddon.org_id == org_id)
+    )
+    addon = addon_result.scalar_one_or_none()
+    if addon is None:
+        raise LookupError("No active storage add-on found")
+
+    # Validate usage doesn't exceed base quota
+    base_quota_gb = org.plan.storage_quota_gb
+    storage_used_gb = org.storage_used_bytes / (1024 ** 3)
+    if storage_used_gb > base_quota_gb:
+        raise ValueError(
+            f"Current storage usage ({storage_used_gb:.2f} GB) exceeds the base quota "
+            f"({base_quota_gb} GB). Free up space first."
+        )
+
+    # Capture before state for audit
+    before = {
+        "quantity_gb": addon.quantity_gb,
+        "price_nzd_per_month": float(addon.price_nzd_per_month),
+        "is_custom": addon.is_custom,
+        "package_id": str(addon.storage_package_id) if addon.storage_package_id else None,
+    }
+
+    # Reduce org quota
+    previous_quota = org.storage_quota_gb
+    org.storage_quota_gb = previous_quota - addon.quantity_gb
+    await db.flush()
+
+    # Delete add-on record
+    await db.delete(addon)
+    await db.flush()
+
+    await write_audit_log(
+        session=db,
+        action="storage_addon.removed",
+        org_id=org_id,
+        user_id=user_id,
+        entity_type="org_storage_addon",
+        entity_id=addon.id,
+        ip_address=ip_address,
+        before_value=before,
+        after_value={
+            "previous_quota_gb": previous_quota,
+            "new_quota_gb": org.storage_quota_gb,
+        },
+    )
+
+    logger.info(
+        "Org %s removed storage add-on: -%d GB, quota %d → %d",
+        org_id, addon.quantity_gb, previous_quota, org.storage_quota_gb,
+    )
+
+    return {"message": "Storage add-on removed", "new_quota_gb": org.storage_quota_gb}

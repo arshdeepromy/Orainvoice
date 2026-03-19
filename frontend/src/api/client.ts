@@ -1,6 +1,11 @@
 import axios from 'axios'
 
 let accessToken: string | null = null
+
+/**
+ * Global refresh mutex — ensures only ONE refresh request is in-flight
+ * across the entire app (AuthContext restore + 401 interceptor).
+ */
 let refreshPromise: Promise<string | null> | null = null
 
 export function setAccessToken(token: string | null) {
@@ -9,6 +14,19 @@ export function setAccessToken(token: string | null) {
 
 export function getAccessToken(): string | null {
   return accessToken
+}
+
+/** Check if the current access token is still valid (not expired). */
+export function isAccessTokenValid(): boolean {
+  if (!accessToken) return false
+  try {
+    const base64 = accessToken.split('.')[1]
+    const payload = JSON.parse(atob(base64.replace(/-/g, '+').replace(/_/g, '/')))
+    // Consider expired if less than 60 seconds remaining
+    return payload.exp * 1000 > Date.now() + 60_000
+  } catch {
+    return false
+  }
 }
 
 const apiClient = axios.create({
@@ -33,41 +51,88 @@ apiClient.interceptors.request.use((config) => {
   return config
 })
 
-async function refreshAccessToken(): Promise<string | null> {
-  try {
-    // Refresh token is sent automatically via httpOnly cookie (withCredentials: true)
-    const res = await axios.post<{ access_token: string }>(
-      '/api/v1/auth/token/refresh',
-      {},
-      { withCredentials: true },
-    )
-    const newToken = res.data.access_token
-    setAccessToken(newToken)
-    return newToken
-  } catch {
-    setAccessToken(null)
-    return null
-  }
+/**
+ * Perform a single refresh-token exchange.
+ * Uses raw axios (NOT apiClient) to avoid triggering the 401 interceptor
+ * recursively if the refresh itself returns 401.
+ *
+ * This is the ONLY function that should call /auth/token/refresh.
+ * It deduplicates concurrent callers via `refreshPromise` — if a refresh is
+ * already in-flight, every subsequent caller gets back the same promise
+ * instead of starting a new HTTP request.
+ *
+ * The resolved promise is kept for a short grace period (2s) so that
+ * React StrictMode's unmount→remount cycle reuses the result instead of
+ * firing a second HTTP request.
+ */
+export function doTokenRefresh(): Promise<string | null> {
+  // If a refresh is already in-flight (or recently resolved), reuse it.
+  if (refreshPromise) return refreshPromise
+
+  refreshPromise = (async () => {
+    try {
+      const res = await axios.post<{ access_token: string }>(
+        '/api/v1/auth/token/refresh',
+        {},
+        { withCredentials: true },
+      )
+      const newToken = res.data.access_token
+      setAccessToken(newToken)
+      return newToken
+    } catch {
+      setAccessToken(null)
+      return null
+    }
+  })()
+
+  // Keep the promise cached for 10 seconds after it settles so that
+  // StrictMode's second mount AND Vite HMR invalidation cascades
+  // (which can remount the entire component tree multiple times in
+  // quick succession) reuse the result instead of firing a new request
+  // with the already-rotated (now-revoked) cookie — which would trigger
+  // reuse detection and kill the entire session family.
+  refreshPromise.finally(() => {
+    setTimeout(() => {
+      refreshPromise = null
+    }, 10_000)
+  })
+
+  return refreshPromise
 }
 
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const original = error.config
-    if (error.response?.status === 401 && !original._retry) {
+
+    // Don't intercept 401 from the refresh endpoint itself — that means
+    // the refresh token is truly gone. Let it bubble up normally.
+    const url = original?.url ?? ''
+    const isRefreshCall =
+      url.includes('/auth/token/refresh') ||
+      url.includes('auth/token/refresh')
+
+    // Don't intercept 401 from MFA endpoints — those use mfa_token (not JWT)
+    // and should be handled by the MfaVerify component directly.
+    const isMfaCall =
+      url.includes('/auth/mfa/') ||
+      url.includes('/auth/passkey/login/')
+
+    if (error.response?.status === 401 && !original._retry && !isRefreshCall && !isMfaCall) {
       original._retry = true
 
-      // Deduplicate concurrent refresh calls
-      if (!refreshPromise) {
-        refreshPromise = refreshAccessToken().finally(() => {
-          refreshPromise = null
-        })
-      }
-
-      const newToken = await refreshPromise
+      const newToken = await doTokenRefresh()
       if (newToken) {
         original.headers.Authorization = `Bearer ${newToken}`
         return apiClient(original)
+      }
+
+      // Refresh failed — clear token and redirect to login to avoid
+      // a white/blank page when the session is truly gone (e.g. org deleted).
+      setAccessToken(null)
+      const path = window.location.pathname
+      if (path !== '/login' && path !== '/signup' && path !== '/forgot-password') {
+        window.location.replace('/login')
       }
     }
     return Promise.reject(error)

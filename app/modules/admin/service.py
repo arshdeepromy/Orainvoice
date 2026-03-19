@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.config import settings
-from app.modules.admin.models import AuditLog, Organisation, SmsPackagePurchase, SmsVerificationProvider, SubscriptionPlan
+from app.modules.admin.models import AuditLog, Coupon, Organisation, OrganisationCoupon, OrgStorageAddon, SmsPackagePurchase, SmsVerificationProvider, StoragePackage, SubscriptionPlan
 from app.modules.auth.models import User
 
 logger = logging.getLogger(__name__)
@@ -1070,7 +1070,7 @@ async def send_test_sms(
     config = ConnexusConfig.from_dict(creds)
     client = ConnexusSmsClient(config)
 
-    test_body = custom_message or "BudgetFlow test SMS — Connexus integration verified."
+    test_body = custom_message or "OraInvoice test SMS — Connexus integration verified."
     sms = SmsMessage(to_number=to_number, body=test_body)
     send_result = await client.send(sms)
 
@@ -1305,36 +1305,61 @@ async def test_carjam_connection(
 async def save_stripe_config(
     db: AsyncSession,
     *,
-    platform_account_id: str,
-    webhook_endpoint: str,
-    signing_secret: str,
+    platform_account_id: str | None = None,
+    webhook_endpoint: str | None = None,
+    signing_secret: str | None = None,
+    publishable_key: str | None = None,
+    secret_key: str | None = None,
     updated_by: uuid.UUID,
     ip_address: str | None = None,
 ) -> dict:
     """Save or update the platform-wide Global Stripe configuration.
 
     Stores encrypted in ``integration_configs`` with name='stripe'.
+    Supports partial updates — only provided fields are overwritten.
     Returns non-secret config fields.
     Requirement 48.4.
     """
     from app.modules.admin.models import IntegrationConfig
-    from app.core.encryption import envelope_encrypt
+    from app.core.encryption import envelope_encrypt, envelope_decrypt_str
 
-    config_data = json.dumps({
-        "platform_account_id": platform_account_id,
-        "webhook_endpoint": webhook_endpoint,
-        "signing_secret": signing_secret,
-    })
-    encrypted = envelope_encrypt(config_data)
-
+    # Load existing config to merge with
     result = await db.execute(
         select(IntegrationConfig).where(IntegrationConfig.name == "stripe")
     )
     existing = result.scalar_one_or_none()
 
+    old_config: dict = {}
+    if existing is not None:
+        try:
+            old_config = json.loads(envelope_decrypt_str(existing.config_encrypted))
+        except Exception:
+            pass
+
+    # Merge: new values override old, missing values preserved
+    final_platform_account_id = platform_account_id or old_config.get("platform_account_id", "")
+    final_webhook_endpoint = webhook_endpoint or old_config.get("webhook_endpoint", "")
+
+    config_data_dict: dict = {
+        "platform_account_id": final_platform_account_id,
+        "webhook_endpoint": final_webhook_endpoint,
+        "signing_secret": signing_secret or old_config.get("signing_secret", ""),
+        "publishable_key": publishable_key or old_config.get("publishable_key", ""),
+        "secret_key": secret_key or old_config.get("secret_key", ""),
+    }
+
+    config_data = json.dumps(config_data_dict)
+    encrypted = envelope_encrypt(config_data)
+
     if existing is not None:
         existing.config_encrypted = encrypted
-        existing.is_verified = False
+        # Only reset verification when the critical auth fields change.
+        key_changed = (
+            config_data_dict.get("secret_key") != old_config.get("secret_key", "")
+            or config_data_dict.get("platform_account_id") != old_config.get("platform_account_id", "")
+        )
+        if key_changed:
+            existing.is_verified = False
     else:
         new_config = IntegrationConfig(
             name="stripe",
@@ -1353,18 +1378,24 @@ async def save_stripe_config(
         entity_type="integration_config",
         entity_id=None,
         after_value={
-            "platform_account_last4": platform_account_id[-4:] if len(platform_account_id) >= 4 else platform_account_id,
-            "webhook_endpoint": webhook_endpoint,
+            "platform_account_last4": final_platform_account_id[-4:] if len(final_platform_account_id) >= 4 else final_platform_account_id,
+            "webhook_endpoint": final_webhook_endpoint,
             "ip_address": ip_address,
         },
         ip_address=ip_address,
     )
 
+    # Determine current verified state after potential update
+    current_verified = False
+    if existing is not None:
+        current_verified = existing.is_verified
+
     return {
-        "platform_account_last4": platform_account_id[-4:] if len(platform_account_id) >= 4 else platform_account_id,
-        "webhook_endpoint": webhook_endpoint,
-        "is_verified": False,
+        "platform_account_last4": final_platform_account_id[-4:] if len(final_platform_account_id) >= 4 else final_platform_account_id,
+        "webhook_endpoint": final_webhook_endpoint,
+        "is_verified": current_verified,
     }
+
 
 
 async def test_stripe_connection(
@@ -1413,7 +1444,17 @@ async def test_stripe_connection(
     try:
         import stripe as stripe_lib
 
-        stripe_lib.api_key = settings.stripe_secret_key if hasattr(settings, "stripe_secret_key") else ""
+        # Use stored secret key if available, fall back to env var
+        stored_secret_key = config.get("secret_key", "")
+        stripe_lib.api_key = stored_secret_key or (settings.stripe_secret_key if hasattr(settings, "stripe_secret_key") else "")
+
+        if not stripe_lib.api_key:
+            return {
+                "success": False,
+                "message": "No Stripe secret key configured. Add your secret key (sk_test_... or sk_live_...) in the Stripe settings.",
+                "error": "Missing secret key",
+            }
+
         account = stripe_lib.Account.retrieve(platform_account_id)
 
         if account and account.get("id"):
@@ -1442,10 +1483,72 @@ async def test_stripe_connection(
                 "message": "Stripe account not found.",
                 "error": "Account not found",
             }
-    except (ConnectionError, OSError, ValueError) as exc:
+    except Exception as exc:
         return {
             "success": False,
             "message": f"Stripe connection test failed: {exc}",
+            "error": str(exc),
+        }
+
+
+async def test_stripe_api_keys(
+    db: AsyncSession,
+    *,
+    admin_user_id: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Test the Stripe API keys by retrieving the account balance.
+
+    Uses the stored secret key (with env var fallback) to verify API access.
+    """
+    from app.modules.admin.models import IntegrationConfig
+    from app.core.encryption import envelope_decrypt_str
+
+    result = await db.execute(
+        select(IntegrationConfig).where(IntegrationConfig.name == "stripe")
+    )
+    config_row = result.scalar_one_or_none()
+
+    stored_secret_key = ""
+    if config_row is not None:
+        try:
+            config = json.loads(envelope_decrypt_str(config_row.config_encrypted))
+            stored_secret_key = config.get("secret_key", "")
+        except Exception:
+            pass
+
+    api_key = stored_secret_key or (settings.stripe_secret_key if hasattr(settings, "stripe_secret_key") else "")
+
+    if not api_key:
+        return {
+            "success": False,
+            "message": "No Stripe secret key configured. Enter your secret key (sk_test_... or sk_live_...) and save first.",
+            "error": "Missing secret key",
+        }
+
+    try:
+        import stripe as stripe_lib
+        stripe_lib.api_key = api_key
+        balance = stripe_lib.Balance.retrieve()
+
+        if balance and balance.get("object") == "balance":
+            is_test = api_key.startswith("sk_test_")
+            mode = "test mode" if is_test else "live mode"
+            return {
+                "success": True,
+                "message": f"Stripe API keys verified successfully ({mode}).",
+                "error": None,
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Unexpected response from Stripe API.",
+                "error": "Invalid response",
+            }
+    except Exception as exc:
+        return {
+            "success": False,
+            "message": f"Stripe API key test failed: {exc}",
             "error": str(exc),
         }
 
@@ -1465,7 +1568,7 @@ _SAFE_FIELDS: dict[str, list[str]] = {
 # Maps integration name → list of fields to show as masked (last 4 chars)
 _MASKED_FIELDS: dict[str, list[str]] = {
     "carjam": ["api_key"],
-    "stripe": ["platform_account_id", "signing_secret"],
+    "stripe": ["platform_account_id", "signing_secret", "publishable_key", "secret_key"],
     "smtp": ["api_key"],
     "twilio": ["account_sid", "auth_token"],
 }
@@ -2635,6 +2738,7 @@ async def delete_organisation(
     }
 
 
+
 async def hard_delete_organisation(
     db: AsyncSession,
     *,
@@ -2652,11 +2756,11 @@ async def hard_delete_organisation(
     - All users in the organisation
     - All vehicles, customers, invoices, quotes, etc.
     - All audit logs for the organisation
-    
+
     Requires:
     1. Confirmation token from hard_delete_request
     2. User must type "PERMANENTLY DELETE" to confirm
-    
+
     Requirements 47.2, 47.3.
     """
     from app.core.redis import redis_pool
@@ -2705,35 +2809,61 @@ async def hard_delete_organisation(
     )
     await db.flush()
 
-    # Delete related records (cascade will handle most, but we'll track counts)
-    # Note: The database foreign keys should have ON DELETE CASCADE set up
-    
-    # Count users
+    # Count users before deletion
     user_count_result = await db.execute(
         select(func.count()).select_from(User).where(User.org_id == org_id)
     )
     records_deleted["users"] = user_count_result.scalar()
 
-    # Delete users
-    await db.execute(
-        delete(User).where(User.org_id == org_id)
-    )
+    from sqlalchemy import text
 
-    # Count and delete audit logs (optional - you may want to keep these)
-    # For now, we'll keep audit logs for compliance
-    audit_count_result = await db.execute(
-        select(func.count()).select_from(AuditLog).where(AuditLog.org_id == org_id)
-    )
-    records_deleted["audit_logs_kept"] = audit_count_result.scalar()
+    # Disable FK constraint triggers so deletion order does not matter.
+    # Safe inside a transaction: rolls back on failure, restoring constraints.
+    await db.execute(text("SET session_replication_role = 'replica';"))
 
-    # Delete the organisation (this will cascade to other tables if FK constraints are set up)
-    await db.execute(
-        delete(Organisation).where(Organisation.id == org_id)
-    )
-    
-    records_deleted["organisations"] = 1
+    try:
+        # Find every table that FKs to organisations.id
+        fk_query = text(
+            "SELECT DISTINCT kcu.table_name, kcu.column_name "
+            "FROM information_schema.table_constraints tc "
+            "JOIN information_schema.key_column_usage kcu "
+            "  ON tc.constraint_name = kcu.constraint_name "
+            "JOIN information_schema.referential_constraints rc "
+            "  ON tc.constraint_name = rc.constraint_name "
+            "JOIN information_schema.constraint_column_usage ccu "
+            "  ON rc.unique_constraint_name = ccu.constraint_name "
+            "WHERE tc.constraint_type = 'FOREIGN KEY' "
+            "  AND ccu.table_name = 'organisations' "
+            "  AND ccu.column_name = 'id' "
+            "  AND kcu.table_name != 'organisations' "
+            "ORDER BY kcu.table_name"
+        )
+        fk_result = await db.execute(fk_query)
+        org_child_tables = [(row[0], row[1]) for row in fk_result.all()]
 
-    await db.flush()
+        # Delete users
+        await db.execute(delete(User).where(User.org_id == org_id))
+
+        # Delete from all org-child tables
+        total_child_rows = 0
+        for tbl_name, col_name in org_child_tables:
+            if tbl_name == "users":
+                continue
+            del_result = await db.execute(
+                text(f'DELETE FROM "{tbl_name}" WHERE "{col_name}" = :oid'),
+                {"oid": str(org_id)},
+            )
+            total_child_rows += del_result.rowcount
+        records_deleted["related_rows"] = total_child_rows
+
+        # Delete the organisation itself
+        await db.execute(delete(Organisation).where(Organisation.id == org_id))
+        records_deleted["organisations"] = 1
+
+        await db.flush()
+    finally:
+        # Re-enable FK constraint triggers
+        await db.execute(text("SET session_replication_role = 'origin';"))
 
     return {
         "message": f"Organisation '{org_name}' and all related data permanently deleted from database",
@@ -2741,6 +2871,9 @@ async def hard_delete_organisation(
         "organisation_name": org_name,
         "records_deleted": records_deleted,
     }
+
+
+
 
 
 async def _notify_org_admin_status_change(
@@ -3163,12 +3296,34 @@ async def get_platform_settings(db: AsyncSession) -> dict:
             "price_per_gb_nzd": sp_val.get("price_per_gb_nzd", 0.50),
         }
 
+    # Fetch signup billing config
+    row_sb = await db.execute(
+        sa_text("SELECT key, value FROM platform_settings WHERE key = :k"),
+        {"k": "signup_billing"},
+    )
+    sb_row = row_sb.first()
+    signup_billing = {
+        "gst_percentage": 15.0,
+        "stripe_fee_percentage": 2.9,
+        "stripe_fee_fixed_cents": 30,
+        "pass_fees_to_customer": True,
+    }
+    if sb_row:
+        sb_val = sb_row[1] if isinstance(sb_row[1], dict) else json.loads(sb_row[1])
+        signup_billing = {
+            "gst_percentage": sb_val.get("gst_percentage", 15.0),
+            "stripe_fee_percentage": sb_val.get("stripe_fee_percentage", 2.9),
+            "stripe_fee_fixed_cents": sb_val.get("stripe_fee_fixed_cents", 30),
+            "pass_fees_to_customer": sb_val.get("pass_fees_to_customer", True),
+        }
+
     return {
         "terms_and_conditions": terms_entry,
         "terms_history": terms_history,
         "announcement_banner": announcement_banner,
         "announcement_active": announcement_active,
         "storage_pricing": storage_pricing,
+        "signup_billing": signup_billing,
     }
 
 
@@ -3179,6 +3334,7 @@ async def update_platform_settings(
     announcement_banner: str | None = None,
     announcement_active: bool | None = None,
     storage_pricing: dict | None = None,
+    signup_billing: dict | None = None,
     actor_user_id: uuid.UUID | None = None,
     ip_address: str | None = None,
 ) -> dict:
@@ -3333,6 +3489,39 @@ async def update_platform_settings(
             )
 
         result["storage_pricing"] = new_val
+
+    # --- Signup Billing Config ---------------------------------------------
+    if signup_billing is not None:
+        row = await db.execute(
+            sa_text("SELECT value FROM platform_settings WHERE key = :k FOR UPDATE"),
+            {"k": "signup_billing"},
+        )
+        existing = row.scalar_one_or_none()
+
+        new_val = {
+            "gst_percentage": signup_billing.get("gst_percentage", 15.0),
+            "stripe_fee_percentage": signup_billing.get("stripe_fee_percentage", 2.9),
+            "stripe_fee_fixed_cents": signup_billing.get("stripe_fee_fixed_cents", 30),
+            "pass_fees_to_customer": signup_billing.get("pass_fees_to_customer", True),
+        }
+
+        if existing:
+            await db.execute(
+                sa_text(
+                    "UPDATE platform_settings SET value = :v, updated_at = now() WHERE key = :k"
+                ),
+                {"k": "signup_billing", "v": json.dumps(new_val)},
+            )
+        else:
+            await db.execute(
+                sa_text(
+                    "INSERT INTO platform_settings (key, value, version, updated_at) "
+                    "VALUES (:k, :v, 1, now())"
+                ),
+                {"k": "signup_billing", "v": json.dumps(new_val)},
+            )
+
+        result["signup_billing"] = new_val
 
     return result
 
@@ -4236,3 +4425,667 @@ async def list_public_holidays(
         }
         for h in holidays
     ]
+
+
+
+# ---------------------------------------------------------------------------
+# Coupon service functions
+# ---------------------------------------------------------------------------
+
+
+def calculate_effective_price(
+    plan_price: float,
+    discount_type: str,
+    discount_value: float,
+    is_expired: bool,
+) -> float:
+    """Pure function: compute discounted price.
+
+    Returns plan_price if expired or trial_extension type.
+    Requirements 11.1–11.6.
+    """
+    if is_expired:
+        return plan_price
+    if discount_type == "trial_extension":
+        return plan_price
+    if discount_type == "percentage":
+        return round(plan_price * (1 - discount_value / 100), 2)
+    if discount_type == "fixed_amount":
+        return round(max(0.0, plan_price - discount_value), 2)
+    return plan_price
+
+
+
+def _coupon_to_dict(c: Coupon) -> dict:
+    """Serialise a Coupon ORM instance to a dict matching CouponResponse."""
+    return {
+        "id": str(c.id),
+        "code": c.code,
+        "description": c.description,
+        "discount_type": c.discount_type,
+        "discount_value": float(c.discount_value),
+        "duration_months": c.duration_months,
+        "usage_limit": c.usage_limit,
+        "times_redeemed": c.times_redeemed,
+        "is_active": c.is_active,
+        "starts_at": c.starts_at,
+        "expires_at": c.expires_at,
+        "created_at": c.created_at,
+        "updated_at": c.updated_at,
+    }
+
+
+async def create_coupon(
+    db: AsyncSession,
+    *,
+    code: str,
+    description: str | None = None,
+    discount_type: str,
+    discount_value: float,
+    duration_months: int | None = None,
+    usage_limit: int | None = None,
+    starts_at: datetime | None = None,
+    expires_at: datetime | None = None,
+    created_by: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Create a new coupon. Normalise code to uppercase. Check for duplicates.
+
+    Requirements 2.2, 2.6, 2.7.
+    """
+    normalised_code = code.strip().upper()
+
+    # Check for duplicate code (case-insensitive)
+    existing = await db.execute(
+        select(Coupon).where(func.upper(Coupon.code) == normalised_code)
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise ValueError(f"A coupon with code '{normalised_code}' already exists")
+
+    coupon = Coupon(
+        code=normalised_code,
+        description=description,
+        discount_type=discount_type,
+        discount_value=discount_value,
+        duration_months=duration_months,
+        usage_limit=usage_limit,
+        starts_at=starts_at,
+        expires_at=expires_at,
+    )
+    db.add(coupon)
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        action="coupon.created",
+        user_id=created_by,
+        ip_address=ip_address,
+        entity_type="coupon",
+        entity_id=coupon.id,
+        after_value={"code": normalised_code, "discount_type": discount_type},
+    )
+
+    logger.info("Created coupon %s (%s)", coupon.id, normalised_code)
+
+    await db.refresh(coupon, ["created_at", "updated_at"])
+
+    return _coupon_to_dict(coupon)
+
+
+
+async def list_coupons(
+    db: AsyncSession,
+    *,
+    include_inactive: bool = False,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict:
+    """List coupons with pagination, ordered by created_at desc.
+
+    Requirement 2.1.
+    """
+    query = select(Coupon).order_by(Coupon.created_at.desc())
+    if not include_inactive:
+        query = query.where(Coupon.is_active.is_(True))
+
+    # Total count
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # Paginate
+    offset = (page - 1) * page_size
+    query = query.offset(offset).limit(page_size)
+
+    result = await db.execute(query)
+    coupons = result.scalars().all()
+
+    return {
+        "coupons": [_coupon_to_dict(c) for c in coupons],
+        "total": total,
+    }
+
+
+async def get_coupon(
+    db: AsyncSession,
+    coupon_id: uuid.UUID,
+) -> dict:
+    """Get single coupon with redemption list (joined to organisations for names).
+
+    Requirement 2.3.
+    """
+    result = await db.execute(
+        select(Coupon).where(Coupon.id == coupon_id)
+    )
+    coupon = result.scalar_one_or_none()
+    if coupon is None:
+        raise ValueError("Coupon not found")
+
+    # Fetch redemptions with org names
+    redemptions_result = await db.execute(
+        select(OrganisationCoupon, Organisation.name)
+        .join(Organisation, OrganisationCoupon.org_id == Organisation.id)
+        .where(OrganisationCoupon.coupon_id == coupon_id)
+    )
+    redemption_rows = redemptions_result.all()
+
+    redemptions = [
+        {
+            "id": str(oc.id),
+            "org_id": str(oc.org_id),
+            "organisation_name": org_name,
+            "applied_at": oc.applied_at,
+            "billing_months_used": oc.billing_months_used,
+            "is_expired": oc.is_expired,
+        }
+        for oc, org_name in redemption_rows
+    ]
+
+    data = _coupon_to_dict(coupon)
+    data["redemptions"] = redemptions
+    return data
+
+
+async def update_coupon(
+    db: AsyncSession,
+    coupon_id: uuid.UUID,
+    *,
+    updates: dict,
+    updated_by: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Update coupon fields. Validate usage_limit >= times_redeemed.
+
+    Requirements 2.4, 2.8, 6.3, 6.4.
+    """
+    result = await db.execute(
+        select(Coupon).where(Coupon.id == coupon_id)
+    )
+    coupon = result.scalar_one_or_none()
+    if coupon is None:
+        raise ValueError("Coupon not found")
+
+    # Validate usage_limit constraint
+    if "usage_limit" in updates and updates["usage_limit"] is not None:
+        if updates["usage_limit"] < coupon.times_redeemed:
+            raise ValueError(
+                f"Usage limit cannot be less than current redemptions ({coupon.times_redeemed})"
+            )
+
+    allowed_fields = {
+        "description", "discount_value", "duration_months", "usage_limit",
+        "is_active", "starts_at", "expires_at",
+    }
+
+    before = {}
+    after = {}
+    for field, value in updates.items():
+        if field in allowed_fields and value is not None:
+            before[field] = getattr(coupon, field)
+            setattr(coupon, field, value)
+            after[field] = value
+
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        action="coupon.updated",
+        user_id=updated_by,
+        ip_address=ip_address,
+        entity_type="coupon",
+        entity_id=coupon.id,
+        before_value=_serialise_audit(before),
+        after_value=_serialise_audit(after),
+    )
+
+    logger.info("Updated coupon %s", coupon.id)
+
+    await db.refresh(coupon, ["created_at", "updated_at"])
+
+    return _coupon_to_dict(coupon)
+
+
+
+async def deactivate_coupon(
+    db: AsyncSession,
+    coupon_id: uuid.UUID,
+    *,
+    updated_by: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Set is_active = False (soft delete).
+
+    Requirement 2.5.
+    """
+    result = await db.execute(
+        select(Coupon).where(Coupon.id == coupon_id)
+    )
+    coupon = result.scalar_one_or_none()
+    if coupon is None:
+        raise ValueError("Coupon not found")
+
+    coupon.is_active = False
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        action="coupon.deactivated",
+        user_id=updated_by,
+        ip_address=ip_address,
+        entity_type="coupon",
+        entity_id=coupon.id,
+        after_value={"code": coupon.code, "is_active": False},
+    )
+
+    logger.info("Deactivated coupon %s (%s)", coupon.id, coupon.code)
+
+    await db.refresh(coupon, ["created_at", "updated_at"])
+
+    return _coupon_to_dict(coupon)
+
+
+async def reactivate_coupon(
+    db: AsyncSession,
+    coupon_id: uuid.UUID,
+    *,
+    updated_by: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Set is_active = True.
+
+    Requirement 2.5.
+    """
+    result = await db.execute(
+        select(Coupon).where(Coupon.id == coupon_id)
+    )
+    coupon = result.scalar_one_or_none()
+    if coupon is None:
+        raise ValueError("Coupon not found")
+
+    coupon.is_active = True
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        action="coupon.reactivated",
+        user_id=updated_by,
+        ip_address=ip_address,
+        entity_type="coupon",
+        entity_id=coupon.id,
+        after_value={"code": coupon.code, "is_active": True},
+    )
+
+    logger.info("Reactivated coupon %s (%s)", coupon.id, coupon.code)
+
+    await db.refresh(coupon, ["created_at", "updated_at"])
+
+    return _coupon_to_dict(coupon)
+
+
+
+async def validate_coupon(
+    db: AsyncSession,
+    code: str,
+) -> dict:
+    """Public validation: check is_active, usage_limit, starts_at, expires_at.
+
+    Requirements 3.1–3.3.
+    """
+    normalised_code = code.strip().upper()
+
+    result = await db.execute(
+        select(Coupon).where(func.upper(Coupon.code) == normalised_code)
+    )
+    coupon = result.scalar_one_or_none()
+
+    if coupon is None or not coupon.is_active:
+        return {"valid": False, "error": "Coupon not found"}
+
+    now = datetime.now(timezone.utc)
+
+    if coupon.expires_at is not None and now > coupon.expires_at:
+        return {"valid": False, "error": "Coupon has expired"}
+
+    if coupon.starts_at is not None and now < coupon.starts_at:
+        return {"valid": False, "error": "Coupon is not yet active"}
+
+    if coupon.usage_limit is not None and coupon.times_redeemed >= coupon.usage_limit:
+        return {"valid": False, "error": "Coupon usage limit reached"}
+
+    return {"valid": True, "coupon": _coupon_to_dict(coupon)}
+
+
+
+async def redeem_coupon(
+    db: AsyncSession,
+    *,
+    code: str,
+    org_id: str,
+) -> dict:
+    """Atomic redemption: SELECT FOR UPDATE, check limits, create org_coupon,
+    increment times_redeemed, extend trial if trial_extension type.
+
+    Requirements 3.4–3.8.
+    """
+    normalised_code = code.strip().upper()
+    org_uuid = uuid.UUID(org_id)
+
+    # Lock the coupon row for atomic update
+    result = await db.execute(
+        select(Coupon)
+        .where(func.upper(Coupon.code) == normalised_code)
+        .with_for_update()
+    )
+    coupon = result.scalar_one_or_none()
+
+    if coupon is None or not coupon.is_active:
+        raise ValueError("Coupon not found")
+
+    now = datetime.now(timezone.utc)
+
+    if coupon.expires_at is not None and now > coupon.expires_at:
+        raise ValueError("Coupon has expired")
+
+    if coupon.starts_at is not None and now < coupon.starts_at:
+        raise ValueError("Coupon is not yet active")
+
+    if coupon.usage_limit is not None and coupon.times_redeemed >= coupon.usage_limit:
+        raise ValueError("Coupon usage limit reached")
+
+    # Check org exists
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = org_result.scalar_one_or_none()
+    if org is None:
+        raise ValueError("Organisation not found")
+
+    # Check for duplicate redemption
+    existing_redemption = await db.execute(
+        select(OrganisationCoupon).where(
+            OrganisationCoupon.org_id == org_uuid,
+            OrganisationCoupon.coupon_id == coupon.id,
+        )
+    )
+    if existing_redemption.scalar_one_or_none() is not None:
+        raise ValueError("Coupon already redeemed by this organisation")
+
+    # Create OrganisationCoupon record
+    org_coupon = OrganisationCoupon(
+        org_id=org_uuid,
+        coupon_id=coupon.id,
+        applied_at=now,
+        billing_months_used=0,
+        is_expired=False,
+    )
+    db.add(org_coupon)
+
+    # Increment times_redeemed
+    coupon.times_redeemed = coupon.times_redeemed + 1
+
+    # If trial_extension, extend the organisation's trial
+    if coupon.discount_type == "trial_extension":
+        if org.trial_ends_at is not None:
+            org.trial_ends_at = org.trial_ends_at + timedelta(days=float(coupon.discount_value))
+        else:
+            org.trial_ends_at = now + timedelta(days=float(coupon.discount_value))
+
+    await db.flush()
+
+    return {
+        "message": "Coupon redeemed successfully",
+        "organisation_coupon_id": str(org_coupon.id),
+    }
+
+
+
+async def get_coupon_redemptions(
+    db: AsyncSession,
+    coupon_id: uuid.UUID,
+) -> list[dict]:
+    """List all organisation_coupons for a given coupon.
+
+    Requirement 5.6.
+    """
+    result = await db.execute(
+        select(OrganisationCoupon, Organisation.name)
+        .join(Organisation, OrganisationCoupon.org_id == Organisation.id)
+        .where(OrganisationCoupon.coupon_id == coupon_id)
+    )
+    rows = result.all()
+
+    return [
+        {
+            "id": str(oc.id),
+            "org_id": str(oc.org_id),
+            "organisation_name": org_name,
+            "applied_at": oc.applied_at,
+            "billing_months_used": oc.billing_months_used,
+            "is_expired": oc.is_expired,
+        }
+        for oc, org_name in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Storage Package CRUD  (Requirements 2.1–2.6, 7.1)
+# ---------------------------------------------------------------------------
+
+
+def _storage_package_to_dict(pkg: StoragePackage) -> dict:
+    """Serialise a StoragePackage row to a plain dict."""
+    return {
+        "id": str(pkg.id),
+        "name": pkg.name,
+        "storage_gb": pkg.storage_gb,
+        "price_nzd_per_month": float(pkg.price_nzd_per_month),
+        "description": pkg.description,
+        "is_active": pkg.is_active,
+        "sort_order": pkg.sort_order,
+        "created_at": pkg.created_at,
+        "updated_at": pkg.updated_at,
+    }
+
+
+async def list_storage_packages(
+    db: AsyncSession,
+    *,
+    include_inactive: bool = False,
+) -> list[dict]:
+    """Return storage packages ordered by sort_order ascending.
+
+    Requirements 2.1.
+    """
+    query = select(StoragePackage).order_by(StoragePackage.sort_order.asc())
+    if not include_inactive:
+        query = query.where(StoragePackage.is_active.is_(True))
+
+    result = await db.execute(query)
+    packages = result.scalars().all()
+
+    return [_storage_package_to_dict(p) for p in packages]
+
+
+async def create_storage_package(
+    db: AsyncSession,
+    *,
+    name: str,
+    storage_gb: int,
+    price_nzd_per_month: float,
+    description: str | None = None,
+    sort_order: int = 0,
+    created_by: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Create a new storage package.
+
+    Requirements 2.2, 2.5, 7.1.
+    """
+    if storage_gb <= 0:
+        raise ValueError("storage_gb must be greater than 0")
+    if price_nzd_per_month < 0:
+        raise ValueError("price_nzd_per_month must be >= 0")
+
+    pkg = StoragePackage(
+        name=name,
+        storage_gb=storage_gb,
+        price_nzd_per_month=price_nzd_per_month,
+        description=description,
+        sort_order=sort_order,
+    )
+    db.add(pkg)
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        action="storage_package.created",
+        user_id=created_by,
+        ip_address=ip_address,
+        entity_type="storage_package",
+        entity_id=pkg.id,
+        after_value={
+            "name": name,
+            "storage_gb": storage_gb,
+            "price_nzd_per_month": price_nzd_per_month,
+            "description": description,
+            "sort_order": sort_order,
+        },
+    )
+
+    logger.info("Created storage package %s (%s)", pkg.id, name)
+
+    await db.refresh(pkg, ["created_at", "updated_at"])
+    return _storage_package_to_dict(pkg)
+
+
+async def update_storage_package(
+    db: AsyncSession,
+    package_id: uuid.UUID,
+    *,
+    updated_by: uuid.UUID | None = None,
+    ip_address: str | None = None,
+    **fields: object,
+) -> dict:
+    """Update storage package fields.
+
+    Requirements 2.3, 2.5, 7.1.
+    """
+    result = await db.execute(
+        select(StoragePackage).where(StoragePackage.id == package_id)
+    )
+    pkg = result.scalar_one_or_none()
+    if pkg is None:
+        raise ValueError("Storage package not found")
+
+    allowed_fields = {
+        "name", "storage_gb", "price_nzd_per_month",
+        "description", "is_active", "sort_order",
+    }
+
+    # Validate numeric constraints if provided
+    if "storage_gb" in fields and fields["storage_gb"] is not None:
+        if fields["storage_gb"] <= 0:
+            raise ValueError("storage_gb must be greater than 0")
+    if "price_nzd_per_month" in fields and fields["price_nzd_per_month"] is not None:
+        if fields["price_nzd_per_month"] < 0:
+            raise ValueError("price_nzd_per_month must be >= 0")
+
+    before: dict = {}
+    after: dict = {}
+    for field, value in fields.items():
+        if field in allowed_fields and value is not None:
+            before[field] = getattr(pkg, field)
+            setattr(pkg, field, value)
+            after[field] = value
+
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        action="storage_package.updated",
+        user_id=updated_by,
+        ip_address=ip_address,
+        entity_type="storage_package",
+        entity_id=pkg.id,
+        before_value=_serialise_audit(before),
+        after_value=_serialise_audit(after),
+    )
+
+    logger.info("Updated storage package %s", pkg.id)
+
+    await db.refresh(pkg, ["created_at", "updated_at"])
+    return _storage_package_to_dict(pkg)
+
+
+async def deactivate_storage_package(
+    db: AsyncSession,
+    package_id: uuid.UUID,
+    *,
+    deactivated_by: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Soft-delete a storage package (set is_active = False).
+
+    Always soft-deletes — never hard-deletes — especially when active
+    org_storage_addons reference this package (Requirement 2.6).
+
+    Requirements 2.4, 2.6, 7.1.
+    """
+    result = await db.execute(
+        select(StoragePackage).where(StoragePackage.id == package_id)
+    )
+    pkg = result.scalar_one_or_none()
+    if pkg is None:
+        raise ValueError("Storage package not found")
+
+    # Check for active org references (informational — we still soft-delete)
+    ref_count_result = await db.execute(
+        select(func.count()).select_from(OrgStorageAddon).where(
+            OrgStorageAddon.storage_package_id == package_id
+        )
+    )
+    active_refs = ref_count_result.scalar() or 0
+
+    pkg.is_active = False
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        action="storage_package.deactivated",
+        user_id=deactivated_by,
+        ip_address=ip_address,
+        entity_type="storage_package",
+        entity_id=pkg.id,
+        after_value={
+            "name": pkg.name,
+            "is_active": False,
+            "active_org_references": active_refs,
+        },
+    )
+
+    logger.info(
+        "Deactivated storage package %s (%s), %d active org refs",
+        pkg.id, pkg.name, active_refs,
+    )
+
+    await db.refresh(pkg, ["created_at", "updated_at"])
+    return _storage_package_to_dict(pkg)

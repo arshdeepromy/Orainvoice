@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Union
 
 from fastapi import APIRouter, Depends, Request
@@ -19,10 +20,17 @@ from app.modules.auth.schemas import (
     IPAllowlistUpdateRequest,
     LoginRequest,
     MFABackupCodesResponse,
+    MFAChallengeSendRequest,
+    MFAChallengeResponse,
+    MFADisableRequest,
+    MFASetDefaultRequest,
     MFAEnrolRequest,
     MFAEnrolResponse,
+    MFAEnrolVerifyRequest,
+    MFAMethodStatus,
     MFARequiredResponse,
     MFAVerifyRequest,
+    PasskeyCredentialInfo,
     PasskeyLoginOptionsRequest,
     PasskeyLoginOptionsResponse,
     PasskeyLoginVerifyRequest,
@@ -30,6 +38,8 @@ from app.modules.auth.schemas import (
     PasskeyRegisterOptionsResponse,
     PasskeyRegisterVerifyRequest,
     PasskeyRegisterVerifyResponse,
+    PasskeyRemoveRequest,
+    PasskeyRenameRequest,
     PasswordCheckRequest,
     PasswordCheckResponse,
     PasswordResetBackupCodeSchema,
@@ -47,6 +57,10 @@ from app.modules.auth.schemas import (
     TokenResponse,
     VerifyEmailRequest,
     VerifyEmailResponse,
+    ChangePasswordRequest,
+    ChangePasswordResponse,
+    UpdateProfileRequest,
+    UserProfileResponse,
 )
 from app.modules.auth.service import (
     authenticate_google,
@@ -56,7 +70,10 @@ from app.modules.auth.service import (
     generate_passkey_login_options,
     generate_passkey_register_options,
     invalidate_all_sessions,
+    list_passkey_credentials,
     list_user_sessions,
+    remove_passkey,
+    rename_passkey,
     request_password_reset,
     resend_invitation,
     reset_via_backup_code,
@@ -67,11 +84,18 @@ from app.modules.auth.service import (
     verify_passkey_registration,
 )
 from app.modules.auth.mfa_service import (
+    OTPRateLimitExceeded,
     enrol_mfa,
     generate_backup_codes,
+    verify_enrolment,
     verify_mfa,
+    send_challenge_otp,
+    get_user_mfa_status,
+    disable_mfa_method,
+    set_default_mfa_method,
 )
 from app.modules.organisations.schemas import (
+    ConfirmPaymentRequest,
     PublicSignupRequest,
     PublicSignupResponse,
 )
@@ -200,7 +224,7 @@ async def verify_captcha_endpoint(
 
 @router.post(
     "/login",
-    response_model=Union[TokenResponse, MFARequiredResponse],
+    response_model=Union[TokenResponse, MFAChallengeResponse, MFARequiredResponse],
     responses={401: {"description": "Invalid credentials"}},
     summary="Email/password login",
 )
@@ -228,7 +252,15 @@ async def login(
         )
         # authenticate_user is async
         result = await result
-    except ValueError:
+    except ValueError as exc:
+        error_msg = str(exc)
+        # Pass through the email verification message so the frontend
+        # can offer a "resend verification" link.
+        if "verify your email" in error_msg.lower():
+            return JSONResponse(
+                status_code=401,
+                content={"detail": error_msg},
+            )
         return JSONResponse(
             status_code=401,
             content={"detail": "Invalid credentials"},
@@ -236,7 +268,14 @@ async def login(
 
     # If MFA is required, return the MFA challenge without setting a cookie
     if hasattr(result, 'mfa_required') and result.mfa_required:
-        return result
+        return JSONResponse(
+            content={
+                "mfa_required": True,
+                "mfa_token": result.mfa_token,
+                "methods": result.methods,
+                "default_method": result.default_method,
+            }
+        )
 
     # Set the refresh token as httpOnly cookie
     response = JSONResponse(
@@ -400,7 +439,14 @@ async def login_google(
 
     # If MFA is required, return the MFA challenge without setting a cookie
     if hasattr(result, 'mfa_required') and result.mfa_required:
-        return result
+        return JSONResponse(
+            content={
+                "mfa_required": True,
+                "mfa_token": result.mfa_token,
+                "methods": result.methods,
+                "default_method": result.default_method,
+            }
+        )
 
     # Set the refresh token as httpOnly cookie
     response = JSONResponse(
@@ -477,6 +523,7 @@ async def passkey_register_options(
 
     try:
         options = await generate_passkey_register_options(
+            db=db,
             user=user,
             device_name=payload.device_name,
         )
@@ -522,8 +569,18 @@ async def passkey_register_verify(
             status_code=400,
             content={"detail": str(exc)},
         )
+    except Exception as exc:
+        # py_webauthn raises InvalidRegistrationResponse / InvalidJSONStructure
+        # on verification failures — catch them and return a meaningful error.
+        import logging
+        logging.getLogger(__name__).warning("Passkey registration verify failed: %s", exc)
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Passkey verification failed: {exc}"},
+        )
 
     return PasskeyRegisterVerifyResponse(**result)
+
 
 
 @router.post(
@@ -541,9 +598,28 @@ async def passkey_login_options(
     No authentication required — this is the first step of passkey login.
     """
     try:
+        from app.modules.auth.mfa_service import _get_challenge_session
+        from sqlalchemy import select as sa_select
+        from app.modules.auth.models import User
+
+        # Resolve user from mfa_token challenge session
+        session_data = await _get_challenge_session(payload.mfa_token)
+        if session_data is None:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or expired MFA token"},
+            )
+        user_id = uuid.UUID(session_data["user_id"])
+        user_result = await db.execute(sa_select(User).where(User.id == user_id))
+        user = user_result.scalar_one_or_none()
+        if user is None:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "No account found or account inactive"},
+            )
         options = await generate_passkey_login_options(
             db=db,
-            email=payload.email,
+            user_id=user.id,
         )
     except ValueError as exc:
         return JSONResponse(
@@ -575,10 +651,27 @@ async def passkey_login_verify(
     device_type, browser = _parse_user_agent(user_agent)
 
     try:
+        # Resolve user from mfa_token challenge session
+        from app.modules.auth.mfa_service import _get_challenge_session
+        session_data = await _get_challenge_session(payload.mfa_token)
+        if session_data is None:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or expired MFA token"},
+            )
+
+        credential_response = {
+            "credential_id": payload.credential_id,
+            "authenticator_data": payload.authenticator_data,
+            "client_data_json": payload.client_data_json,
+            "signature": payload.signature,
+            "user_handle": payload.user_handle,
+        }
+
         result = await verify_passkey_login(
             db=db,
-            email=payload.email,
-            credential_response=payload.credential,
+            user_id=uuid.UUID(session_data["user_id"]),
+            credential_response=credential_response,
             ip_address=ip_address,
             device_type=device_type,
             browser=browser,
@@ -587,6 +680,13 @@ async def passkey_login_verify(
         return JSONResponse(
             status_code=401,
             content={"detail": str(exc)},
+        )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Passkey login verify failed: %s", exc)
+        return JSONResponse(
+            status_code=401,
+            content={"detail": f"Passkey authentication failed: {exc}"},
         )
 
     # Set the refresh token as httpOnly cookie
@@ -606,6 +706,132 @@ async def passkey_login_verify(
         path="/",
     )
     return response
+
+
+# ---------------------------------------------------------------------------
+# Passkey management endpoints
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/passkey/credentials",
+    response_model=list[PasskeyCredentialInfo],
+    responses={401: {"description": "Authentication required"}},
+    summary="List registered passkey credentials",
+)
+async def passkey_credentials_list(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return all passkey credentials for the authenticated user.
+
+    Requires a valid JWT access token.
+    """
+    try:
+        user = await _get_current_user(request, db)
+    except (ValueError, Exception):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"},
+        )
+
+    credentials = await list_passkey_credentials(db=db, user=user)
+    return [PasskeyCredentialInfo(**cred) for cred in credentials]
+
+
+@router.patch(
+    "/passkey/credentials/{credential_id}",
+    responses={
+        400: {"description": "Credential not found"},
+        401: {"description": "Authentication required"},
+    },
+    summary="Rename a passkey credential",
+)
+async def passkey_credential_rename(
+    credential_id: str,
+    payload: PasskeyRenameRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Rename a passkey credential's friendly name.
+
+    Requires a valid JWT access token.
+    """
+    try:
+        user = await _get_current_user(request, db)
+    except (ValueError, Exception):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"},
+        )
+
+    try:
+        result = await rename_passkey(
+            db=db,
+            user=user,
+            credential_id=credential_id,
+            new_name=payload.device_name,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    return result
+
+
+@router.delete(
+    "/passkey/credentials/{credential_id}",
+    responses={
+        400: {"description": "Credential not found"},
+        401: {"description": "Authentication required or invalid password"},
+        409: {"description": "Cannot remove last MFA method"},
+    },
+    summary="Remove a passkey credential",
+)
+async def passkey_credential_remove(
+    credential_id: str,
+    payload: PasskeyRemoveRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Remove a passkey credential after password confirmation.
+
+    Requires a valid JWT access token.
+    """
+    try:
+        user = await _get_current_user(request, db)
+    except (ValueError, Exception):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"},
+        )
+
+    try:
+        await remove_passkey(
+            db=db,
+            user=user,
+            credential_id=credential_id,
+            password=payload.password,
+        )
+    except ValueError as exc:
+        error_msg = str(exc)
+        if "password" in error_msg.lower():
+            return JSONResponse(
+                status_code=401,
+                content={"detail": error_msg},
+            )
+        if "cannot disable" in error_msg.lower():
+            return JSONResponse(
+                status_code=409,
+                content={"detail": error_msg},
+            )
+        return JSONResponse(
+            status_code=400,
+            content={"detail": error_msg},
+        )
+
+    return JSONResponse(content={"detail": "Passkey credential removed"})
 
 
 # ---------------------------------------------------------------------------
@@ -646,6 +872,12 @@ async def mfa_enrol(
             method=payload.method,
             phone_number=payload.phone_number,
         )
+    except OTPRateLimitExceeded as exc:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": str(exc)},
+            headers={"Retry-After": str(exc.retry_after)},
+        )
     except ValueError as exc:
         return JSONResponse(
             status_code=400,
@@ -653,6 +885,499 @@ async def mfa_enrol(
         )
 
     return result
+
+
+@router.post(
+    "/mfa/enrol/verify",
+    responses={
+        400: {"description": "Invalid code or missing enrolment"},
+        401: {"description": "Authentication required"},
+    },
+    summary="Verify MFA enrolment code",
+)
+async def mfa_enrol_verify(
+    payload: MFAEnrolVerifyRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Verify the enrolment code to activate an MFA method.
+
+    Requires a valid JWT access token.
+    """
+    try:
+        user = await _get_current_user(request, db)
+    except (ValueError, Exception):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"},
+        )
+
+    try:
+        await verify_enrolment(
+            db=db,
+            user=user,
+            method=payload.method,
+            code=payload.code,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    return JSONResponse(content={"detail": "MFA method verified successfully"})
+
+
+@router.post(
+    "/mfa/enrol/firebase-verify",
+    responses={
+        400: {"description": "Missing enrolment"},
+        401: {"description": "Authentication required"},
+    },
+    summary="Verify SMS MFA enrolment via Firebase Phone Auth",
+)
+async def mfa_enrol_firebase_verify(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Complete SMS MFA enrolment when Firebase Phone Auth is the MFA provider.
+
+    With Firebase Phone Auth, the entire verification happens client-side:
+    the frontend calls signInWithPhoneNumber (Firebase sends its own code),
+    then confirm(code) verifies it.  Once that succeeds, the frontend calls
+    this endpoint to mark the pending SMS enrolment as verified.
+
+    Security: the request is already authenticated via JWT (the user must
+    be logged in).  We also verify that Firebase is actually the configured
+    MFA provider to prevent abuse.
+    """
+    try:
+        user = await _get_current_user(request, db)
+    except (ValueError, Exception):
+        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+
+    # Verify that Firebase is actually the configured MFA provider
+    from app.modules.auth.mfa_service import _resolve_mfa_sms_provider
+
+    provider = await _resolve_mfa_sms_provider(db)
+    if provider is None or provider.provider_key != "firebase_phone_auth":
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Firebase is not the configured MFA SMS provider"},
+        )
+
+    # Mark the pending SMS enrolment as verified
+    from sqlalchemy import select
+    from app.modules.auth.models import UserMfaMethod
+    from datetime import datetime, timezone
+
+    stmt = select(UserMfaMethod).where(
+        UserMfaMethod.user_id == user.id,
+        UserMfaMethod.method == "sms",
+        UserMfaMethod.verified == False,  # noqa: E712
+    )
+    mfa_result = await db.execute(stmt)
+    pending = mfa_result.scalar_one_or_none()
+    if pending is None:
+        return JSONResponse(status_code=400, content={"detail": "No pending SMS enrolment found"})
+
+    pending.verified = True
+    pending.verified_at = datetime.now(timezone.utc)
+
+    from app.core.audit import write_audit_log
+    await write_audit_log(
+        session=db,
+        org_id=user.org_id,
+        user_id=user.id,
+        action="auth.mfa_enrol_verified",
+        entity_type="user",
+        entity_id=user.id,
+        after_value={"method": "sms", "provider": "firebase_phone_auth"},
+    )
+
+    return JSONResponse(content={"detail": "MFA method verified successfully"})
+
+
+@router.post(
+    "/mfa/challenge/send",
+    responses={
+        400: {"description": "Invalid method or MFA token"},
+        429: {"description": "Rate limit exceeded"},
+    },
+    summary="Send MFA challenge OTP",
+)
+async def mfa_challenge_send(
+    payload: MFAChallengeSendRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Send an OTP for the selected method during the MFA login challenge.
+
+    Uses the mfa_token from the login response (not full JWT auth).
+    Rate-limited to 5 sends per method per 15 minutes.
+    """
+    # Extract user_id from the challenge session (not JWT — this is mid-login)
+    from app.modules.auth.mfa_service import _get_challenge_session
+
+    session_data = await _get_challenge_session(payload.mfa_token)
+    if session_data is None:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or expired MFA token"},
+        )
+
+    user_id = session_data["user_id"]
+
+    try:
+        import uuid as _uuid
+
+        await send_challenge_otp(
+            db=db,
+            user_id=_uuid.UUID(user_id),
+            method=payload.method,
+            mfa_token=payload.mfa_token,
+        )
+    except OTPRateLimitExceeded as exc:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": str(exc)},
+            headers={"Retry-After": str(exc.retry_after)},
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    return JSONResponse(content={"detail": "Code sent"})
+
+
+@router.get(
+    "/mfa/provider-config",
+    summary="Get MFA SMS provider configuration (public)",
+)
+async def mfa_provider_config(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return which SMS provider is the MFA default.
+
+    This is a public endpoint (no auth) because it's needed during the
+    MFA challenge flow before the user is fully authenticated.  It only
+    exposes the provider key and, for Firebase, the client-side config
+    needed to initialise the JS SDK.
+    """
+    from app.modules.admin.models import SmsVerificationProvider
+    from sqlalchemy import select
+
+    # Find the provider with mfa_default flag
+    result = await db.execute(
+        select(SmsVerificationProvider).where(
+            SmsVerificationProvider.is_active == True,  # noqa: E712
+        )
+    )
+    providers = result.scalars().all()
+
+    mfa_provider = None
+    for p in providers:
+        if p.config and p.config.get("mfa_default"):
+            mfa_provider = p
+            break
+
+    if mfa_provider is None:
+        # Fall back to default provider, then any active one
+        for p in providers:
+            if p.is_default:
+                mfa_provider = p
+                break
+        if mfa_provider is None and providers:
+            mfa_provider = providers[0]
+
+    if mfa_provider is None:
+        return {"provider": "none", "firebase_config": None}
+
+    resp: dict = {"provider": mfa_provider.provider_key, "firebase_config": None}
+
+    if mfa_provider.provider_key == "firebase_phone_auth" and mfa_provider.credentials_encrypted:
+        import json
+        from app.core.encryption import envelope_decrypt_str
+
+        try:
+            creds = json.loads(envelope_decrypt_str(mfa_provider.credentials_encrypted))
+            resp["firebase_config"] = {
+                "apiKey": creds.get("api_key", ""),
+                "projectId": creds.get("project_id", ""),
+                "appId": creds.get("app_id", ""),
+                "authDomain": f"{creds.get('project_id', '')}.firebaseapp.com",
+            }
+        except Exception:
+            pass
+
+    return resp
+
+
+@router.post(
+    "/mfa/provider-config",
+    summary="Get MFA provider config with phone number for Firebase flow",
+)
+async def mfa_provider_config_with_phone(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return MFA provider config plus the user's phone number from the challenge session.
+
+    Requires a valid mfa_token. Returns the phone number so the frontend
+    can use Firebase JS SDK to send the verification code directly.
+    """
+    from app.modules.auth.mfa_service import _get_challenge_session
+
+    body = await request.json()
+    mfa_token = body.get("mfa_token", "")
+    if not mfa_token:
+        return JSONResponse(status_code=400, content={"detail": "mfa_token required"})
+
+    session_data = await _get_challenge_session(mfa_token)
+    if session_data is None:
+        return JSONResponse(status_code=401, content={"detail": "Invalid or expired MFA token"})
+
+    phone_number = session_data.get("phone_number")
+
+    # Get the provider config (same logic as GET endpoint)
+    from app.modules.admin.models import SmsVerificationProvider
+    from sqlalchemy import select as sa_select
+
+    result = await db.execute(
+        sa_select(SmsVerificationProvider).where(
+            SmsVerificationProvider.is_active == True,  # noqa: E712
+        )
+    )
+    providers = result.scalars().all()
+
+    mfa_provider = None
+    for p in providers:
+        if p.config and p.config.get("mfa_default"):
+            mfa_provider = p
+            break
+    if mfa_provider is None:
+        for p in providers:
+            if p.is_default:
+                mfa_provider = p
+                break
+        if mfa_provider is None and providers:
+            mfa_provider = providers[0]
+
+    resp: dict = {"provider": "none", "firebase_config": None, "phone_number": phone_number}
+    if mfa_provider:
+        resp["provider"] = mfa_provider.provider_key
+        if mfa_provider.provider_key == "firebase_phone_auth" and mfa_provider.credentials_encrypted:
+            import json
+            from app.core.encryption import envelope_decrypt_str
+            try:
+                creds = json.loads(envelope_decrypt_str(mfa_provider.credentials_encrypted))
+                resp["firebase_config"] = {
+                    "apiKey": creds.get("api_key", ""),
+                    "projectId": creds.get("project_id", ""),
+                    "appId": creds.get("app_id", ""),
+                    "authDomain": f"{creds.get('project_id', '')}.firebaseapp.com",
+                }
+            except Exception:
+                pass
+
+    return resp
+
+
+@router.post(
+    "/mfa/firebase-verify",
+    summary="Complete MFA via Firebase Phone Auth verification",
+)
+async def mfa_firebase_verify(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Complete MFA challenge when Firebase Phone Auth was used.
+
+    With Firebase Phone Auth, the entire SMS verification happens client-side.
+    The frontend calls signInWithPhoneNumber + confirm(code).  Once that
+    succeeds, it calls this endpoint with the mfa_token to complete login.
+
+    Security: the mfa_token proves the user started a valid login flow.
+    Firebase Phone Auth verification happened client-side.  We also verify
+    that Firebase is the configured MFA provider.
+    """
+    from app.modules.auth.mfa_service import _get_challenge_session, _resolve_mfa_sms_provider
+
+    body = await request.json()
+    mfa_token = body.get("mfa_token", "")
+
+    if not mfa_token:
+        return JSONResponse(status_code=400, content={"detail": "Missing mfa_token"})
+
+    session_data = await _get_challenge_session(mfa_token)
+    if session_data is None:
+        return JSONResponse(status_code=401, content={"detail": "Invalid or expired MFA token"})
+
+    user_id = session_data["user_id"]
+
+    # Verify that Firebase is actually the configured MFA provider
+    provider = await _resolve_mfa_sms_provider(db)
+    if provider is None or provider.provider_key != "firebase_phone_auth":
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Firebase is not the configured MFA SMS provider"},
+        )
+
+    # Token is valid — complete the MFA flow
+    # Reuse verify_mfa with firebase_verified=True to skip code check
+    ip_address = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    device_type, browser = _parse_user_agent(user_agent)
+
+    try:
+        result = await verify_mfa(
+            db=db,
+            mfa_token=mfa_token,
+            code="",
+            method="sms",
+            ip_address=ip_address,
+            device_type=device_type,
+            browser=browser,
+            firebase_verified=True,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    response = JSONResponse(
+        content={
+            "access_token": result.access_token,
+            "refresh_token": result.refresh_token,
+            "token_type": result.token_type,
+        }
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=result.refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=30 * 24 * 3600,
+        path="/",
+    )
+    return response
+
+
+@router.get(
+    "/mfa/methods",
+    response_model=list[MFAMethodStatus],
+    responses={401: {"description": "Authentication required"}},
+    summary="List MFA method statuses",
+)
+async def mfa_methods_list(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the status of all MFA methods for the current user.
+
+    Requires a valid JWT access token.
+    """
+    try:
+        user = await _get_current_user(request, db)
+    except (ValueError, Exception):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"},
+        )
+
+    return await get_user_mfa_status(db=db, user=user)
+
+
+@router.delete(
+    "/mfa/methods/{method}",
+    responses={
+        400: {"description": "Invalid method"},
+        401: {"description": "Authentication required or invalid password"},
+        409: {"description": "Cannot disable last MFA method"},
+    },
+    summary="Disable an MFA method",
+)
+async def mfa_method_disable(
+    method: str,
+    payload: MFADisableRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Disable (remove) an MFA method after password confirmation.
+
+    Requires a valid JWT access token.
+    """
+    try:
+        user = await _get_current_user(request, db)
+    except (ValueError, Exception):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"},
+        )
+
+    try:
+        await disable_mfa_method(
+            db=db,
+            user=user,
+            method=method,
+            password=payload.password,
+        )
+    except ValueError as exc:
+        error_msg = str(exc)
+        if "password" in error_msg.lower():
+            return JSONResponse(
+                status_code=401,
+                content={"detail": error_msg},
+            )
+        if "cannot disable" in error_msg.lower():
+            return JSONResponse(
+                status_code=409,
+                content={"detail": error_msg},
+            )
+        return JSONResponse(
+            status_code=400,
+            content={"detail": error_msg},
+        )
+
+    return JSONResponse(content={"detail": f"MFA method '{method}' disabled"})
+
+
+@router.put(
+    "/mfa/default",
+    responses={
+        400: {"description": "Invalid or unverified method"},
+        401: {"description": "Authentication required"},
+    },
+    summary="Set default MFA method",
+)
+async def mfa_set_default(
+    payload: MFASetDefaultRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Set the user's preferred/default MFA method.
+
+    The default method is pre-selected during the MFA challenge flow.
+    Requires a valid JWT access token.
+    """
+    try:
+        user = await _get_current_user(request, db)
+    except (ValueError, Exception):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"},
+        )
+
+    try:
+        await set_default_mfa_method(db=db, user=user, method=payload.method)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    return JSONResponse(content={"detail": f"Default MFA method set to '{payload.method}'"})
 
 
 @router.post(
@@ -696,6 +1421,7 @@ async def mfa_verify(
             return JSONResponse(
                 status_code=429,
                 content={"detail": error_msg},
+                headers={"Retry-After": "900"},
             )
         if "token" in error_msg.lower():
             return JSONResponse(
@@ -1349,6 +2075,45 @@ async def resend_invite(
 
 
 @router.get(
+    "/signup-config",
+    summary="Get signup billing configuration (GST, Stripe fees)",
+)
+async def get_signup_config(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return GST percentage and Stripe fee config for the signup page.
+
+    No authentication required. Used by the public signup page to
+    display price breakdowns.
+    """
+    from sqlalchemy import text as sa_text
+    import json as _json
+
+    row = await db.execute(
+        sa_text("SELECT value FROM platform_settings WHERE key = :k"),
+        {"k": "signup_billing"},
+    )
+    sb_row = row.scalar_one_or_none()
+
+    config = {
+        "gst_percentage": 15.0,
+        "stripe_fee_percentage": 2.9,
+        "stripe_fee_fixed_cents": 30,
+        "pass_fees_to_customer": True,
+    }
+    if sb_row:
+        val = sb_row if isinstance(sb_row, dict) else _json.loads(sb_row)
+        config = {
+            "gst_percentage": val.get("gst_percentage", 15.0),
+            "stripe_fee_percentage": val.get("stripe_fee_percentage", 2.9),
+            "stripe_fee_fixed_cents": val.get("stripe_fee_fixed_cents", 30),
+            "pass_fees_to_customer": val.get("pass_fees_to_customer", True),
+        }
+
+    return config
+
+
+@router.get(
     "/plans",
     response_model=PublicPlanListResponse,
     summary="List public subscription plans",
@@ -1448,6 +2213,11 @@ async def signup(
         )
 
     try:
+        # Derive base URL from request origin for verification email links
+        origin = request.headers.get("origin") or ""
+        from app.config import settings as _settings
+        base_url = origin or _settings.frontend_base_url or "http://localhost"
+
         result = await public_signup(
             db,
             org_name=payload.org_name,
@@ -1457,6 +2227,8 @@ async def signup(
             password=payload.password,
             plan_id=plan_uuid,
             ip_address=ip_address,
+            base_url=base_url,
+            coupon_code=payload.coupon_code,
         )
         # Commit the transaction after successful signup
         await db.commit()
@@ -1474,7 +2246,502 @@ async def signup(
             content={"detail": "An error occurred during signup. Please try again."},
         )
 
+    if result.get("trial_ends_at"):
+        msg = "Signup successful — trial started"
+    elif result.get("requires_payment"):
+        msg = "Signup successful — complete payment to activate"
+    else:
+        msg = "Signup successful — subscription active"
+
     return PublicSignupResponse(
-        message="Signup successful — 14-day trial started",
+        message=msg,
         **result,
     )
+
+
+@router.post(
+    "/signup/confirm-payment",
+    summary="Confirm payment after signup and activate the organisation",
+    responses={
+        200: {"description": "Payment confirmed, organisation activated"},
+        400: {"description": "Invalid payment or organisation"},
+    },
+)
+async def confirm_signup_payment(
+    payload: ConfirmPaymentRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Called by the frontend after Stripe confirms the PaymentIntent.
+
+    Retrieves the Pending_Signup from Redis using pending_signup_id,
+    verifies the PaymentIntent status with Stripe, creates the Stripe
+    Customer, Organisation, User, and saves the payment method.
+
+    Requirements: 1.2, 1.3, 1.4, 7.1, 7.2
+    """
+    import json as _json
+    import secrets as _secrets
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    import stripe as stripe_lib
+    from sqlalchemy import select
+
+    from app.core.audit import write_audit_log
+    from app.core.redis import redis_pool
+    from app.integrations.stripe_billing import _ensure_stripe_key, create_stripe_customer
+    from app.modules.admin.models import Organisation, SubscriptionPlan
+    from app.modules.auth.models import User
+    from app.modules.auth.pending_signup import delete_pending_signup, get_pending_signup
+    from app.modules.billing.models import OrgPaymentMethod
+
+    payment_intent_id = payload.payment_intent_id
+    pending_signup_id = payload.pending_signup_id
+
+    # 1. Retrieve Pending_Signup from Redis
+    pending = await get_pending_signup(pending_signup_id)
+    if pending is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid or expired signup session. Please start over."},
+        )
+
+    # 2. Verify PaymentIntent status with Stripe
+    try:
+        await _ensure_stripe_key()
+        intent = stripe_lib.PaymentIntent.retrieve(payment_intent_id)
+    except Exception as exc:
+        logger.error("Failed to verify PaymentIntent %s: %s", payment_intent_id, exc)
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Could not verify payment with Stripe"},
+        )
+
+    if intent.status != "succeeded":
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Payment not completed. Status: {intent.status}"},
+        )
+
+    # 3. Create Stripe Customer (now that payment is confirmed)
+    admin_email = pending["admin_email"]
+    admin_first = pending.get("admin_first_name", "")
+    admin_last = pending.get("admin_last_name", "")
+    customer_name = f"{admin_first} {admin_last}".strip() or admin_email.split("@")[0]
+
+    try:
+        stripe_customer_id = await create_stripe_customer(
+            email=admin_email,
+            name=customer_name,
+            metadata={"pending_signup_id": pending_signup_id},
+        )
+    except Exception as exc:
+        logger.error("Failed to create Stripe customer for %s: %s", admin_email, exc)
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Could not create payment profile. Please try again."},
+        )
+
+    # 4. Create Organisation (status=active) and User in DB
+    plan_id = _uuid.UUID(pending["plan_id"])
+
+    # Look up plan for storage_quota_gb
+    plan_result = await db.execute(
+        select(SubscriptionPlan).where(SubscriptionPlan.id == plan_id)
+    )
+    plan = plan_result.scalar_one_or_none()
+    storage_quota_gb = plan.storage_quota_gb if plan else 5
+
+    org = Organisation(
+        name=pending["org_name"],
+        plan_id=plan_id,
+        status="active",
+        stripe_customer_id=stripe_customer_id,
+        storage_quota_gb=storage_quota_gb,
+    )
+    db.add(org)
+    await db.flush()
+
+    # Hash the raw password from the pending signup data
+    from app.modules.auth.password import hash_password as _hash_pw
+    raw_password = pending.get("password", "")
+    password_hash = _hash_pw(raw_password) if raw_password else pending.get("password_hash")
+
+    admin_user = User(
+        org_id=org.id,
+        email=admin_email,
+        first_name=pending.get("admin_first_name"),
+        last_name=pending.get("admin_last_name"),
+        role="org_admin",
+        is_active=True,
+        is_email_verified=False,
+        password_hash=password_hash,
+    )
+    db.add(admin_user)
+    await db.flush()
+
+    # 5. Link payment to Stripe customer and save payment method
+    try:
+        pm_id = intent.payment_method
+        if pm_id:
+            # Attach the payment method to the new Stripe customer
+            stripe_lib.PaymentMethod.attach(pm_id, customer=stripe_customer_id)
+            # Set as default payment method for the customer
+            stripe_lib.Customer.modify(
+                stripe_customer_id,
+                invoice_settings={"default_payment_method": pm_id},
+            )
+            # Update the PaymentIntent to link it to the customer
+            # so Stripe shows the charge under this customer
+            stripe_lib.PaymentIntent.modify(
+                payment_intent_id,
+                customer=stripe_customer_id,
+            )
+
+            pm_obj = stripe_lib.PaymentMethod.retrieve(pm_id)
+            card = pm_obj.get("card") or {}
+            payment_method_record = OrgPaymentMethod(
+                org_id=org.id,
+                stripe_payment_method_id=pm_id,
+                brand=card.get("brand", "unknown"),
+                last4=card.get("last4", "0000"),
+                exp_month=card.get("exp_month", 0),
+                exp_year=card.get("exp_year", 0),
+                is_default=True,
+                is_verified=True,
+            )
+            db.add(payment_method_record)
+            await db.flush()
+    except Exception as exc:
+        logger.error(
+            "Failed to save signup payment method for org %s: %s",
+            org.id,
+            exc,
+        )
+
+    # 6. Delete Pending_Signup from Redis (prevent replay)
+    await delete_pending_signup(pending_signup_id)
+
+    ip_address = request.client.host if request.client else None
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        org_id=org.id,
+        user_id=admin_user.id,
+        action="org.payment_confirmed",
+        entity_type="organisation",
+        entity_id=org.id,
+        after_value={
+            "name": pending["org_name"],
+            "plan_id": str(plan_id),
+            "plan_name": pending.get("plan_name", ""),
+            "status": "active",
+            "admin_email": admin_email,
+            "admin_user_id": str(admin_user.id),
+            "stripe_customer_id": stripe_customer_id,
+            "payment_intent_id": payment_intent_id,
+            "ip_address": ip_address,
+        },
+        ip_address=ip_address,
+    )
+
+    # Generate verification token using the standard email_verify: key
+    from app.modules.auth.service import create_email_verification_token
+
+    verification_token = await create_email_verification_token(
+        admin_user.id, admin_email,
+    )
+
+    # 7. Send receipt email with verification link (Requirements 4.1, 4.2)
+    origin = request.headers.get("origin") or ""
+    from app.config import settings as _settings
+    base_url = origin or _settings.frontend_base_url or "http://localhost"
+
+    plan_name = pending.get("plan_name", "Paid Plan")
+    payment_amount_cents = pending.get("payment_amount_cents", 0)
+    plan_amount_cents = pending.get("plan_amount_cents", 0)
+    gst_amount_cents = pending.get("gst_amount_cents", 0)
+    gst_percentage = pending.get("gst_percentage", 0)
+    processing_fee_cents = pending.get("processing_fee_cents", 0)
+    user_name = f"{admin_first} {admin_last}".strip() or admin_email.split("@")[0]
+
+    from app.modules.auth.service import send_receipt_email
+
+    try:
+        await send_receipt_email(
+            db,
+            email=admin_email,
+            user_name=user_name,
+            org_name=pending["org_name"],
+            plan_name=plan_name,
+            amount_cents=payment_amount_cents,
+            plan_amount_cents=plan_amount_cents,
+            gst_amount_cents=gst_amount_cents,
+            gst_percentage=gst_percentage,
+            processing_fee_cents=processing_fee_cents,
+            verification_token=verification_token,
+            base_url=base_url,
+        )
+    except Exception as exc:
+        logger.warning("Failed to send receipt email to %s: %s", admin_email, exc)
+
+    await db.commit()
+
+    return JSONResponse(
+        content={
+            "detail": "Payment confirmed. Your account is now active.",
+            "status": "active",
+            "organisation_id": str(org.id),
+            "admin_email": admin_email,
+        },
+    )
+
+
+
+@router.get(
+    "/stripe-publishable-key",
+    summary="Get the Stripe publishable key for the frontend",
+)
+async def get_stripe_publishable_key():
+    """Return the Stripe publishable key so the frontend can initialise Stripe.js.
+
+    This is a public endpoint — the publishable key is not secret.
+    """
+    from app.integrations.stripe_billing import get_stripe_publishable_key as _get_key
+
+    key = await _get_key()
+    if not key:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Stripe is not configured"},
+        )
+    return {"publishable_key": key}
+
+
+# ---------------------------------------------------------------------------
+# Signup email verification (Req 8.7)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/verify-signup-email",
+    responses={
+        400: {"description": "Invalid or expired token"},
+    },
+    summary="Verify signup email address",
+)
+async def verify_signup_email_endpoint(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Verify a signup email using the token from the verification link.
+
+    Marks the email as verified and returns a JWT pair so the user
+    is logged in immediately.
+    """
+    from app.modules.auth.service import verify_signup_email
+
+    body = await request.json()
+    token = body.get("token")
+    if not token:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Verification token is required"},
+        )
+
+    ip_address = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    device_type, browser = _parse_user_agent(user_agent)
+
+    try:
+        result = await verify_signup_email(
+            db,
+            token=token,
+            ip_address=ip_address,
+            device_type=device_type,
+            browser=browser,
+        )
+        await db.commit()
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    response = JSONResponse(
+        content={
+            "message": "Email verified successfully",
+            "access_token": result["access_token"],
+            "refresh_token": result["refresh_token"],
+        }
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=result["refresh_token"],
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@router.post(
+    "/resend-verification",
+    summary="Resend signup verification email",
+)
+async def resend_verification_endpoint(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Resend the verification email for a user who hasn't verified yet.
+
+    Always returns success to avoid leaking whether the email exists.
+    """
+    from app.modules.auth.service import resend_verification_email
+
+    body = await request.json()
+    email = body.get("email", "").strip().lower()
+    if not email:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Email is required"},
+        )
+
+    # Use the request origin to build the verification URL
+    origin = request.headers.get("origin") or request.headers.get("referer", "")
+    # Strip path from referer to get base URL
+    if origin and "/" in origin.split("//", 1)[-1]:
+        origin = origin.rsplit("/", 1)[0] if not origin.endswith("/") else origin.rstrip("/")
+
+    from app.config import settings
+    base_url = origin or settings.frontend_base_url or "http://localhost"
+
+    result = await resend_verification_email(
+        db,
+        email=email,
+        base_url=base_url,
+    )
+    await db.commit()
+
+    return JSONResponse(content=result)
+
+
+# ---------------------------------------------------------------------------
+# User profile endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/me", response_model=UserProfileResponse)
+async def get_profile(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the current user's profile."""
+    user = await _get_current_user(request, db)
+    # Query verified MFA methods from normalised table
+    from sqlalchemy import select
+    from app.modules.auth.models import UserMfaMethod
+    result = await db.execute(
+        select(UserMfaMethod.method).where(
+            UserMfaMethod.user_id == user.id,
+            UserMfaMethod.verified.is_(True),
+        )
+    )
+    verified_methods = [row[0] for row in result.all()]
+    return UserProfileResponse(
+        id=str(user.id),
+        email=user.email,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        role=user.role,
+        mfa_methods=verified_methods,
+        has_password=user.password_hash is not None,
+    )
+
+
+@router.put("/me", response_model=UserProfileResponse)
+async def update_profile(
+    payload: UpdateProfileRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update the current user's name."""
+    user = await _get_current_user(request, db)
+
+    if payload.first_name is not None:
+        user.first_name = payload.first_name.strip()[:100] if payload.first_name.strip() else None
+    if payload.last_name is not None:
+        user.last_name = payload.last_name.strip()[:100] if payload.last_name.strip() else None
+
+    await db.flush()
+
+    # Query verified MFA methods from normalised table
+    from sqlalchemy import select
+    from app.modules.auth.models import UserMfaMethod
+    result = await db.execute(
+        select(UserMfaMethod.method).where(
+            UserMfaMethod.user_id == user.id,
+            UserMfaMethod.verified.is_(True),
+        )
+    )
+    verified_methods = [row[0] for row in result.all()]
+    return UserProfileResponse(
+        id=str(user.id),
+        email=user.email,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        role=user.role,
+        mfa_methods=verified_methods,
+        has_password=user.password_hash is not None,
+    )
+
+
+@router.post("/change-password", response_model=ChangePasswordResponse)
+async def change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Change the current user's password."""
+    from app.modules.auth.password import hash_password, verify_password
+
+    user = await _get_current_user(request, db)
+
+    # Must have an existing password to change it
+    if not user.password_hash:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Account does not have a password set. Use password reset instead."},
+        )
+
+    if not verify_password(payload.current_password, user.password_hash):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Current password is incorrect."},
+        )
+
+    if payload.current_password == payload.new_password:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "New password must be different from current password."},
+        )
+
+    # Basic strength check (same rules as frontend)
+    pw = payload.new_password
+    if (
+        len(pw) < 8
+        or not any(c.isupper() for c in pw)
+        or not any(c.islower() for c in pw)
+        or not any(c.isdigit() for c in pw)
+        or all(c.isalnum() for c in pw)
+    ):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Password does not meet strength requirements."},
+        )
+
+    user.password_hash = hash_password(payload.new_password)
+
+    return ChangePasswordResponse(message="Password changed successfully.")

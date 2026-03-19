@@ -2,10 +2,12 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
+import apiClient from '@/api/client'
 import { Button, Input, AlertBanner, Spinner } from '@/components/ui'
+import { MfaModal } from '@/components/auth/MfaModal'
 
 export function Login() {
-  const { login, loginWithGoogle, loginWithPasskey, mfaPending, isLoading } =
+  const { login, loginWithGoogle, loginWithPasskey, isLoading } =
     useAuth()
   const navigate = useNavigate()
 
@@ -14,6 +16,9 @@ export function Login() {
   const [remember, setRemember] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [resendingVerification, setResendingVerification] = useState(false)
+  const [resendSuccess, setResendSuccess] = useState(false)
+  const [showMfaModal, setShowMfaModal] = useState(false)
 
   if (isLoading) {
     return (
@@ -26,11 +31,12 @@ export function Login() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     setError(null)
+    setResendSuccess(false)
     setSubmitting(true)
     try {
-      await login({ email, password, remember })
-      if (!mfaPending) navigate('/')
-      else navigate('/auth/mfa-verify')
+      const { mfaRequired } = await login({ email, password, remember })
+      if (!mfaRequired) navigate('/')
+      else setShowMfaModal(true)
     } catch (err: unknown) {
       const msg =
         err instanceof Error ? err.message : 'Invalid email or password'
@@ -40,12 +46,30 @@ export function Login() {
     }
   }
 
+  async function handleResendVerification() {
+    if (!email) return
+    setResendingVerification(true)
+    try {
+      await apiClient.post('/auth/resend-verification', { email })
+      setResendSuccess(true)
+    } catch {
+      // Still show success to avoid leaking info
+      setResendSuccess(true)
+    } finally {
+      setResendingVerification(false)
+    }
+  }
+
+  const isEmailNotVerified = error?.includes('verify your email')
+
   async function handleGoogle() {
     setError(null)
     try {
       // In production, this would use the Google Identity Services SDK
       // to obtain an id_token before calling loginWithGoogle
-      await loginWithGoogle('')
+      const { mfaRequired } = await loginWithGoogle('')
+      if (mfaRequired) setShowMfaModal(true)
+      else navigate('/')
     } catch {
       setError('Google sign-in failed. Please try again.')
     }
@@ -61,17 +85,6 @@ export function Login() {
     }
   }
 
-  <p className="text-center text-sm text-gray-600">
-    Don&apos;t have an account?{' '}
-    <Link
-      to="/signup"
-      className="font-medium text-blue-600 hover:text-blue-500"
-    >
-      Sign up
-    </Link>
-  </p>
-
-
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
       <div className="w-full max-w-md space-y-6 rounded-xl bg-white p-8 shadow-lg">
@@ -85,8 +98,26 @@ export function Login() {
         </div>
 
         {error && (
-          <AlertBanner variant="error" onDismiss={() => setError(null)}>
-            {error}
+          <AlertBanner variant={isEmailNotVerified ? 'warning' : 'error'} onDismiss={() => setError(null)}>
+            <div>
+              <p>{error}</p>
+              {isEmailNotVerified && (
+                <div className="mt-2">
+                  {resendSuccess ? (
+                    <p className="text-sm text-green-700">Verification email sent. Check your inbox.</p>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleResendVerification}
+                      disabled={resendingVerification}
+                      className="text-sm font-medium text-blue-700 hover:text-blue-800 underline"
+                    >
+                      {resendingVerification ? 'Sending...' : 'Resend verification email'}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </AlertBanner>
         )}
 
@@ -214,6 +245,12 @@ export function Login() {
           </Link>
         </p>
       </div>
+
+      <MfaModal
+        open={showMfaModal}
+        onClose={() => setShowMfaModal(false)}
+        onSuccess={() => navigate('/')}
+      />
     </div>
   )
 }

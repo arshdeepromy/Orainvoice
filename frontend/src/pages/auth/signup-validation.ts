@@ -23,6 +23,18 @@ export function validateSignupForm(data: SignupFormData): Record<string, string>
 
   if (!data.password || data.password.length < 8 || data.password.length > 128) {
     errors.password = 'Password must be between 8 and 128 characters'
+  } else if (!/[A-Z]/.test(data.password)) {
+    errors.password = 'Password must include an uppercase letter'
+  } else if (!/[a-z]/.test(data.password)) {
+    errors.password = 'Password must include a lowercase letter'
+  } else if (!/\d/.test(data.password)) {
+    errors.password = 'Password must include a number'
+  } else if (!/[^A-Za-z0-9]/.test(data.password)) {
+    errors.password = 'Password must include a special character'
+  }
+
+  if (data.password && data.confirm_password !== data.password) {
+    errors.confirm_password = 'Passwords do not match'
   }
 
   if (!data.captcha_code || data.captcha_code.length !== 6) {
@@ -39,8 +51,16 @@ export function validateSignupForm(data: SignupFormData): Record<string, string>
 export function validateVerifyEmailForm(password: string, confirmPassword: string): Record<string, string> {
   const errors: Record<string, string> = {}
 
-  if (password.length < 10) {
-    errors.password = 'Password must be at least 10 characters'
+  if (password.length < 8) {
+    errors.password = 'Password must be at least 8 characters'
+  } else if (!/[A-Z]/.test(password)) {
+    errors.password = 'Password must include an uppercase letter'
+  } else if (!/[a-z]/.test(password)) {
+    errors.password = 'Password must include a lowercase letter'
+  } else if (!/\d/.test(password)) {
+    errors.password = 'Password must include a number'
+  } else if (!/[^A-Za-z0-9]/.test(password)) {
+    errors.password = 'Password must include a special character'
   }
 
   if (password !== confirmPassword) {

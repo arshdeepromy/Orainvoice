@@ -2128,7 +2128,7 @@ async def duplicate_invoice(
 
 from dateutil.relativedelta import relativedelta
 
-from app.modules.quotes.models import RecurringSchedule
+from app.modules.recurring_invoices.models import RecurringSchedule
 
 
 _FREQUENCY_DELTAS = {
@@ -2151,11 +2151,12 @@ def _schedule_to_dict(schedule: RecurringSchedule) -> dict:
         "frequency": schedule.frequency,
         "line_items": schedule.line_items or [],
         "auto_issue": schedule.auto_issue,
-        "is_active": schedule.is_active,
-        "next_due_date": schedule.next_due_at.date() if schedule.next_due_at else None,
-        "last_generated_at": schedule.last_generated_at,
-        "notes": schedule.notes,
-        "created_by": schedule.created_by,
+        "is_active": schedule.status == "active",
+        "status": schedule.status,
+        "next_due_date": schedule.next_generation_date.isoformat() if schedule.next_generation_date else None,
+        "start_date": schedule.start_date.isoformat() if schedule.start_date else None,
+        "end_date": schedule.end_date.isoformat() if schedule.end_date else None,
+        "auto_email": schedule.auto_email,
         "created_at": schedule.created_at,
         "updated_at": schedule.updated_at,
     }
@@ -2195,21 +2196,15 @@ async def create_recurring_schedule(
     if not line_items:
         raise ValueError("At least one line item is required")
 
-    next_due_dt = datetime(
-        next_due_date.year, next_due_date.month, next_due_date.day,
-        tzinfo=timezone.utc,
-    )
-
     schedule = RecurringSchedule(
         org_id=org_id,
         customer_id=customer_id,
         frequency=frequency,
         line_items=line_items,
-        next_due_at=next_due_dt,
+        start_date=next_due_date,
+        next_generation_date=next_due_date,
         auto_issue=auto_issue,
-        is_active=True,
-        notes=notes,
-        created_by=user_id,
+        status="active",
     )
     db.add(schedule)
     await db.flush()
@@ -2262,7 +2257,7 @@ async def update_recurring_schedule(
     if schedule is None:
         raise ValueError("Recurring schedule not found in this organisation")
 
-    if not schedule.is_active:
+    if schedule.status != "active":
         raise ValueError("Cannot update a cancelled schedule")
 
     before = _schedule_to_dict(schedule)
@@ -2278,16 +2273,10 @@ async def update_recurring_schedule(
         schedule.line_items = line_items
 
     if next_due_date is not None:
-        schedule.next_due_at = datetime(
-            next_due_date.year, next_due_date.month, next_due_date.day,
-            tzinfo=timezone.utc,
-        )
+        schedule.next_generation_date = next_due_date
 
     if auto_issue is not None:
         schedule.auto_issue = auto_issue
-
-    if notes is not None:
-        schedule.notes = notes
 
     await db.flush()
 
@@ -2321,7 +2310,7 @@ async def list_recurring_schedules(
     ).order_by(RecurringSchedule.created_at.desc())
 
     if active_only:
-        stmt = stmt.where(RecurringSchedule.is_active.is_(True))
+        stmt = stmt.where(RecurringSchedule.status == "active")
 
     result = await db.execute(stmt)
     schedules = list(result.scalars().all())
@@ -2336,7 +2325,7 @@ async def pause_recurring_schedule(
     schedule_id: uuid.UUID,
     ip_address: str | None = None,
 ) -> dict:
-    """Pause an active recurring schedule (sets is_active=False, reversible).
+    """Pause an active recurring schedule (sets status='paused', reversible).
 
     Requirements: 60.3
     """
@@ -2350,10 +2339,10 @@ async def pause_recurring_schedule(
     if schedule is None:
         raise ValueError("Recurring schedule not found in this organisation")
 
-    if not schedule.is_active:
+    if schedule.status != "active":
         raise ValueError("Schedule is already paused or cancelled")
 
-    schedule.is_active = False
+    schedule.status = "paused"
     await db.flush()
 
     await write_audit_log(
@@ -2363,8 +2352,8 @@ async def pause_recurring_schedule(
         action="recurring_schedule.paused",
         entity_type="recurring_schedule",
         entity_id=schedule.id,
-        before_value={"is_active": True},
-        after_value={"is_active": False},
+        before_value={"status": "active"},
+        after_value={"status": "paused"},
         ip_address=ip_address,
     )
 
@@ -2393,7 +2382,7 @@ async def cancel_recurring_schedule(
     if schedule is None:
         raise ValueError("Recurring schedule not found in this organisation")
 
-    schedule.is_active = False
+    schedule.status = "cancelled"
     await db.flush()
 
     await write_audit_log(
@@ -2403,8 +2392,8 @@ async def cancel_recurring_schedule(
         action="recurring_schedule.cancelled",
         entity_type="recurring_schedule",
         entity_id=schedule.id,
-        before_value={"is_active": True},
-        after_value={"is_active": False},
+        before_value={"status": schedule.status},
+        after_value={"status": "cancelled"},
         ip_address=ip_address,
     )
 
@@ -2480,7 +2469,7 @@ async def generate_recurring_invoice(
     """Generate an invoice from a recurring schedule.
 
     Creates a Draft or Issued invoice (based on auto_issue flag) using the
-    schedule's line items, then advances next_due_at by the frequency delta.
+    schedule's line items, then advances next_generation_date by the frequency delta.
 
     Requirements: 60.2, 60.4
     """
@@ -2494,7 +2483,7 @@ async def generate_recurring_invoice(
     if schedule is None:
         raise ValueError("Recurring schedule not found in this organisation")
 
-    if not schedule.is_active:
+    if schedule.status != "active":
         raise ValueError("Cannot generate invoice from inactive schedule")
 
     # Use create_invoice to generate the invoice
@@ -2506,7 +2495,6 @@ async def generate_recurring_invoice(
         customer_id=schedule.customer_id,
         status=status,
         line_items_data=schedule.line_items or [],
-        notes_internal=schedule.notes,
         ip_address=ip_address,
     )
 
@@ -2519,10 +2507,9 @@ async def generate_recurring_invoice(
         invoice.recurring_schedule_id = schedule.id
         await db.flush()
 
-    # Advance next_due_at
+    # Advance next_generation_date
     delta = _FREQUENCY_DELTAS[schedule.frequency]
-    schedule.next_due_at = schedule.next_due_at + delta
-    schedule.last_generated_at = datetime.now(timezone.utc)
+    schedule.next_generation_date = schedule.next_generation_date + delta
     await db.flush()
 
     await write_audit_log(
@@ -2536,7 +2523,7 @@ async def generate_recurring_invoice(
         after_value={
             "invoice_id": str(invoice_data["id"]),
             "status": status,
-            "next_due_date": str(schedule.next_due_at.date()),
+            "next_due_date": str(schedule.next_generation_date.isoformat()),
         },
         ip_address=ip_address,
     )

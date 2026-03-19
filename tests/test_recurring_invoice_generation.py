@@ -14,7 +14,7 @@ Requirements: 60.2, 60.4
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -31,7 +31,7 @@ from app.modules.invoices.service import (
     generate_recurring_invoice,
     _notify_org_admins_recurring_invoice,
 )
-from app.modules.quotes.models import RecurringSchedule
+from app.modules.recurring_invoices.models import RecurringSchedule
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +72,7 @@ def _make_mock_schedule(
     org_id: uuid.UUID,
     customer_id: uuid.UUID,
     *,
-    is_active: bool = True,
+    status: str = "active",
     frequency: str = "monthly",
     auto_issue: bool = False,
 ) -> MagicMock:
@@ -84,11 +84,11 @@ def _make_mock_schedule(
     sched.frequency = frequency
     sched.line_items = _sample_line_items()
     sched.auto_issue = auto_issue
-    sched.is_active = is_active
-    sched.next_due_at = datetime(2025, 2, 1, tzinfo=timezone.utc)
-    sched.last_generated_at = None
-    sched.notes = "Monthly service"
-    sched.created_by = uuid.uuid4()
+    sched.auto_email = False
+    sched.status = status
+    sched.start_date = date(2025, 2, 1)
+    sched.end_date = None
+    sched.next_generation_date = date(2025, 2, 1)
     sched.created_at = datetime.now(timezone.utc)
     sched.updated_at = datetime.now(timezone.utc)
     return sched

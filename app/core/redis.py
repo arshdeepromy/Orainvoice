@@ -18,7 +18,10 @@ from app.config import settings
 redis_pool: aioredis.Redis = aioredis.from_url(
     settings.redis_url,
     decode_responses=True,
-    max_connections=50,
+    max_connections=200,
+    socket_timeout=3,
+    socket_connect_timeout=1,
+    retry_on_timeout=True,
 )
 
 

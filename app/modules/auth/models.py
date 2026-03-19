@@ -3,6 +3,9 @@
 Tables:
 - users: org users and global admins (RLS enabled)
 - sessions: user sessions with refresh token rotation (RLS enabled)
+- user_mfa_methods: normalised MFA method enrolments per user
+- user_passkey_credentials: WebAuthn/FIDO2 passkey credentials per user
+- user_backup_codes: single-use backup recovery codes per user
 """
 
 from __future__ import annotations
@@ -11,13 +14,17 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
+    Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
@@ -43,6 +50,8 @@ class User(Base):
         nullable=True,
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    first_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     is_active: Mapped[bool] = mapped_column(
@@ -51,13 +60,9 @@ class User(Base):
     is_email_verified: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
-    mfa_methods: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, server_default="'[]'"
-    )
-    backup_codes_hash: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    passkey_credentials: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, server_default="'[]'"
-    )
+    # NOTE: mfa_methods, backup_codes_hash, and passkey_credentials JSONB
+    # columns were removed in migration 0098 and replaced by normalised
+    # tables: user_mfa_methods, user_backup_codes, user_passkey_credentials.
     google_oauth_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     branch_ids: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default="'[]'"
@@ -99,6 +104,15 @@ class User(Base):
     # Relationships
     organisation = relationship("Organisation", back_populates="users")
     sessions: Mapped[list[Session]] = relationship(back_populates="user")
+    mfa_methods: Mapped[list[UserMfaMethod]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", lazy="raise",
+    )
+    passkey_credentials: Mapped[list[UserPasskeyCredential]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", lazy="raise",
+    )
+    backup_codes: Mapped[list[UserBackupCode]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", lazy="raise",
+    )
 
 
 class Session(Base):
@@ -140,3 +154,138 @@ class Session(Base):
 
     # Relationships
     user: Mapped[User] = relationship(back_populates="sessions")
+
+    __table_args__ = (
+        Index("idx_sessions_refresh_token_hash", "refresh_token_hash"),
+        Index("idx_sessions_family_id", "family_id"),
+        Index("idx_sessions_user_id", "user_id"),
+        Index("idx_sessions_expires_at", "expires_at"),
+    )
+
+
+class UserMfaMethod(Base):
+    """Normalised MFA method enrolment — one row per (user, method) pair."""
+
+    __tablename__ = "user_mfa_methods"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    method: Mapped[str] = mapped_column(String(10), nullable=False)
+    verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False,
+    )
+    phone_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    secret_encrypted: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True,
+    )
+    enrolled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "method", name="uq_user_mfa_method"),
+        CheckConstraint(
+            "method IN ('totp', 'sms', 'email', 'passkey')",
+            name="chk_method",
+        ),
+        Index("idx_user_mfa_methods_user", "user_id"),
+    )
+
+    # Relationships
+    user: Mapped[User] = relationship(back_populates="mfa_methods")
+
+
+class UserPasskeyCredential(Base):
+    """WebAuthn/FIDO2 passkey credential stored per user."""
+
+    __tablename__ = "user_passkey_credentials"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    credential_id: Mapped[str] = mapped_column(
+        String(512), nullable=False, unique=True,
+    )
+    public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    public_key_alg: Mapped[int] = mapped_column(Integer, nullable=False)
+    sign_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0", default=0,
+    )
+    device_name: Mapped[str] = mapped_column(
+        String(50), nullable=False, server_default="'My Passkey'", default="My Passkey",
+    )
+    flagged: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+    __table_args__ = (
+        Index("idx_passkey_creds_user", "user_id"),
+        Index("idx_passkey_creds_credential_id", "credential_id"),
+    )
+
+    # Relationships
+    user: Mapped[User] = relationship(back_populates="passkey_credentials")
+
+
+class UserBackupCode(Base):
+    """Single-use backup recovery code (bcrypt-hashed)."""
+
+    __tablename__ = "user_backup_codes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    code_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    used: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+    __table_args__ = (
+        Index("idx_backup_codes_user", "user_id"),
+    )
+
+    # Relationships
+    user: Mapped[User] = relationship(back_populates="backup_codes")

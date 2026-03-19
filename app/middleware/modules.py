@@ -2,7 +2,7 @@
 
 Checks whether the requested API endpoint belongs to a module that is
 disabled for the requesting organisation. Returns HTTP 403 if the module
-is disabled.
+is disabled. Results are cached in Redis per-org for 60 seconds.
 
 Runs after AuthMiddleware (which populates request.state.org_id).
 
@@ -11,6 +11,7 @@ Runs after AuthMiddleware (which populates request.state.org_id).
 
 from __future__ import annotations
 
+import json
 import logging
 
 from starlette.requests import Request
@@ -19,8 +20,13 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.core.modules import ModuleService, CORE_MODULES
 from app.core.database import async_session_factory
+from app.core.redis import redis_pool
 
 logger = logging.getLogger(__name__)
+
+# Cache module enablement per-org for 60 seconds
+_MODULE_CACHE_TTL = 60
+_MODULE_CACHE_PREFIX = "mod:"
 
 # ---------------------------------------------------------------------------
 # URL path prefix → module slug mapping
@@ -96,10 +102,7 @@ class ModuleMiddleware:
             return
 
         try:
-            async with async_session_factory() as session:
-                async with session.begin():
-                    svc = ModuleService(session)
-                    enabled = await svc.is_enabled(org_id, module_slug)
+            enabled = await self._is_module_enabled_cached(str(org_id), module_slug)
         except Exception:
             logger.exception("Module check failed for %s/%s", org_id, module_slug)
             # Fail open — don't block requests if the check itself fails
@@ -118,3 +121,41 @@ class ModuleMiddleware:
             return
 
         await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _is_module_enabled_cached(org_id: str, module_slug: str) -> bool:
+        """Check module enablement with Redis cache."""
+        cache_key = f"{_MODULE_CACHE_PREFIX}{org_id}"
+
+        # Try Redis cache — stored as JSON dict {slug: bool}
+        try:
+            cached = await redis_pool.get(cache_key)
+            if cached is not None:
+                module_map = json.loads(cached)
+                if module_slug in module_map:
+                    return module_map[module_slug]
+        except Exception:
+            pass  # Fall through to DB
+
+        # Cache miss — load all modules for this org and cache
+        try:
+            async with async_session_factory() as session:
+                async with session.begin():
+                    svc = ModuleService(session)
+                    enabled = await svc.is_enabled(org_id, module_slug)
+        except Exception:
+            raise
+
+        # We only cache the single result here; the full map gets built over time
+        try:
+            # Merge with existing cache if present
+            existing = {}
+            raw = await redis_pool.get(cache_key)
+            if raw:
+                existing = json.loads(raw)
+            existing[module_slug] = enabled
+            await redis_pool.setex(cache_key, _MODULE_CACHE_TTL, json.dumps(existing))
+        except Exception:
+            pass
+
+        return enabled

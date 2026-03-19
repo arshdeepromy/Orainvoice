@@ -121,7 +121,7 @@ class Organisation(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('trial','active','grace_period','suspended','deleted')",
+            "status IN ('trial','active','payment_pending','grace_period','suspended','deleted')",
             name="ck_organisations_status",
         ),
     )
@@ -130,6 +130,8 @@ class Organisation(Base):
     plan: Mapped[SubscriptionPlan] = relationship(back_populates="organisations")
     users: Mapped[list] = relationship("User", back_populates="organisation")
     sms_package_purchases: Mapped[list[SmsPackagePurchase]] = relationship(back_populates="organisation")
+    organisation_coupons: Mapped[list[OrganisationCoupon]] = relationship(back_populates="organisation")
+    organisation_storage_addon: Mapped["OrgStorageAddon | None"] = relationship(back_populates="organisation", uselist=False)
 
 
 # ---------------------------------------------------------------------------
@@ -443,3 +445,142 @@ class PublicHoliday(Base):
         UniqueConstraint("country_code", "holiday_date", "name", name="uq_public_holidays_country_date_name"),
         Index("ix_public_holidays_country_year", "country_code", "year"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Coupons
+# ---------------------------------------------------------------------------
+
+class Coupon(Base):
+    """Coupon definitions managed by Global Admin."""
+
+    __tablename__ = "coupons"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
+    )
+    code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    discount_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    discount_value: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
+    duration_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    usage_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    times_redeemed: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "discount_type IN ('percentage', 'fixed_amount', 'trial_extension')",
+            name="ck_coupons_discount_type",
+        ),
+        Index("ix_coupons_code", "code"),
+    )
+
+    # Relationships
+    organisation_coupons: Mapped[list[OrganisationCoupon]] = relationship(back_populates="coupon")
+
+
+# ---------------------------------------------------------------------------
+# Organisation Coupons (join table)
+# ---------------------------------------------------------------------------
+
+class OrganisationCoupon(Base):
+    """Tracks which coupon was applied to which organisation."""
+
+    __tablename__ = "organisation_coupons"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False
+    )
+    coupon_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("coupons.id"), nullable=False
+    )
+    applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    billing_months_used: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    is_expired: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "coupon_id", name="uq_organisation_coupons_org_coupon"),
+    )
+
+    # Relationships
+    coupon: Mapped[Coupon] = relationship(back_populates="organisation_coupons")
+    organisation: Mapped[Organisation] = relationship()
+
+
+# ---------------------------------------------------------------------------
+# Storage Packages
+# ---------------------------------------------------------------------------
+
+class StoragePackage(Base):
+    """Storage package tiers configured by Global Admin."""
+
+    __tablename__ = "storage_packages"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    storage_gb: Mapped[int] = mapped_column(Integer, nullable=False)
+    price_nzd_per_month: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    org_storage_addons: Mapped[list["OrgStorageAddon"]] = relationship(back_populates="storage_package")
+
+
+# ---------------------------------------------------------------------------
+# Org Storage Add-ons
+# ---------------------------------------------------------------------------
+
+class OrgStorageAddon(Base):
+    """Tracks the single active storage add-on per organisation."""
+
+    __tablename__ = "org_storage_addons"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False
+    )
+    storage_package_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("storage_packages.id"), nullable=True
+    )
+    quantity_gb: Mapped[int] = mapped_column(Integer, nullable=False)
+    price_nzd_per_month: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
+    is_custom: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    purchased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("org_id", name="uq_org_storage_addons_org_id"),
+    )
+
+    # Relationships
+    storage_package: Mapped[StoragePackage | None] = relationship(back_populates="org_storage_addons")
+    organisation: Mapped[Organisation] = relationship(back_populates="organisation_storage_addon")

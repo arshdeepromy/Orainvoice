@@ -1,0 +1,21 @@
+# Production overrides for 16GB RAM / 10-core server
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+services:
+  app:
+    environment:
+      - ENVIRONMENT=production
+      - PYTHONUNBUFFERED=1
+    # Uses Dockerfile CMD: gunicorn with 4 uvicorn workers
+    # No volume mounts, no reload — production image only
+
+  frontend:
+    # In production, build static assets and serve via nginx
+    # For now, keep the dev server but without volume mounts
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+
+  nginx:
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '0.5'

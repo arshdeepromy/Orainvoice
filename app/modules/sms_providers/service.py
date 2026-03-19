@@ -361,3 +361,174 @@ async def _test_connexus(creds: dict, to_number: str, message: str) -> dict:
 
 
 
+
+async def send_firebase_test_code(
+    db: AsyncSession,
+    *,
+    to_number: str,
+    admin_user_id: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Test Firebase Phone Auth by validating credentials and checking project config.
+
+    Firebase's sendVerificationCode API requires a browser-side reCAPTCHA
+    token, so we can't send an actual SMS from the server. Instead we:
+    1. Validate the API key + project via Firebase Installations API
+    2. Check the project config via the public getProjectConfig endpoint
+    """
+    import httpx
+
+    creds = await get_provider_credentials(db, "firebase_phone_auth")
+    if creds is None:
+        return {
+            "success": False,
+            "message": "Firebase credentials not configured.",
+            "error": "No credentials",
+        }
+
+    api_key = creds.get("api_key", "")
+    project_id = creds.get("project_id", "")
+    app_id = creds.get("app_id", "")
+
+    if not api_key or not project_id:
+        return {
+            "success": False,
+            "message": "Firebase credentials incomplete (need project_id and api_key).",
+            "error": "Missing credentials",
+        }
+
+    # Step 1: Validate credentials via Firebase Installations API
+    install_url = f"https://firebaseinstallations.googleapis.com/v1/projects/{project_id}/installations"
+    install_payload = {
+        "appId": app_id or "unknown",
+        "authVersion": "FIS_v2",
+        "sdkVersion": "w:0.6.4",
+    }
+    install_headers = {"x-goog-api-key": api_key}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            install_resp = await http.post(install_url, json=install_payload, headers=install_headers)
+    except httpx.TimeoutException:
+        return {
+            "success": False,
+            "message": "Connection to Firebase timed out.",
+            "error": "Timeout",
+        }
+
+    if install_resp.status_code in (401, 403):
+        return {
+            "success": False,
+            "message": "Firebase API key is invalid or restricted.",
+            "error": f"HTTP {install_resp.status_code}",
+        }
+
+    if install_resp.status_code != 200:
+        return {
+            "success": False,
+            "message": f"Firebase credential check returned status {install_resp.status_code}.",
+            "error": f"HTTP {install_resp.status_code}",
+        }
+
+    # Step 2: Check project config via public endpoint
+    public_config_url = (
+        f"https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig?key={api_key}"
+    )
+    authorized_domains = []
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            config_resp = await http.get(public_config_url)
+        if config_resp.status_code == 200:
+            config_data = config_resp.json()
+            authorized_domains = config_data.get("authorizedDomains", [])
+    except Exception:
+        pass  # Non-critical — credentials already validated
+
+    await write_audit_log(
+        session=db,
+        org_id=None,
+        user_id=admin_user_id,
+        action="admin.firebase_test_code_verified",
+        entity_type="sms_verification_provider",
+        entity_id=None,
+        after_value={
+            "to_number": to_number,
+            "project_id": project_id,
+            "credentials_valid": True,
+            "authorized_domains": authorized_domains[:5],
+        },
+        ip_address=ip_address,
+    )
+
+    domains_info = ""
+    if authorized_domains:
+        domains_info = f" Authorized domains: {', '.join(authorized_domains[:3])}."
+
+    return {
+        "success": True,
+        "message": (
+            f"Firebase credentials verified for project '{project_id}'.{domains_info} "
+            f"Phone Auth SMS to {to_number} will be delivered when triggered from the app "
+            f"(requires invisible reCAPTCHA in the browser). "
+            f"Add test phone numbers in Firebase Console → Authentication → Phone → "
+            f"Phone numbers for testing."
+        ),
+        "error": None,
+    }
+
+
+
+async def set_mfa_default_provider(
+    db: AsyncSession,
+    *,
+    provider_key: str,
+    admin_user_id: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Set a provider as the default for MFA/phone verification delivery.
+
+    This stores a flag in the provider's config indicating it should be
+    used for all MFA and phone verification code delivery.
+    """
+    result = await db.execute(
+        select(SmsVerificationProvider).where(
+            SmsVerificationProvider.provider_key == provider_key
+        )
+    )
+    provider = result.scalar_one_or_none()
+    if provider is None:
+        return {"success": False, "message": "Provider not found"}
+
+    if not provider.is_active:
+        return {"success": False, "message": "Provider must be active before setting as MFA default"}
+
+    # Clear mfa_default from all providers
+    all_result = await db.execute(select(SmsVerificationProvider))
+    for p in all_result.scalars().all():
+        cfg = dict(p.config) if p.config else {}
+        if cfg.get("mfa_default"):
+            cfg.pop("mfa_default", None)
+            p.config = cfg
+
+    # Set this provider as MFA default
+    config = dict(provider.config) if provider.config else {}
+    config["mfa_default"] = True
+    provider.config = config
+
+    await db.flush()
+
+    await write_audit_log(
+        session=db,
+        org_id=None,
+        user_id=admin_user_id,
+        action="admin.sms_provider_set_mfa_default",
+        entity_type="sms_verification_provider",
+        entity_id=provider.id,
+        after_value={"provider_key": provider_key},
+        ip_address=ip_address,
+    )
+
+    return {
+        "success": True,
+        "message": f"'{provider.display_name}' is now the default MFA/phone verification provider.",
+    }

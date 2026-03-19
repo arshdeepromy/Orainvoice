@@ -271,14 +271,20 @@ class CarjamTestResponse(BaseModel):
 class StripeConfigRequest(BaseModel):
     """PUT /api/v1/admin/integrations/stripe request body."""
 
-    platform_account_id: str = Field(
-        ..., min_length=1, description="Stripe platform account ID"
+    platform_account_id: str | None = Field(
+        default=None, min_length=1, description="Stripe platform account ID"
     )
-    webhook_endpoint: str = Field(
-        ..., min_length=1, description="Stripe webhook endpoint URL"
+    webhook_endpoint: str | None = Field(
+        default=None, min_length=1, description="Stripe webhook endpoint URL"
     )
-    signing_secret: str = Field(
-        ..., min_length=1, description="Stripe webhook signing secret"
+    signing_secret: str | None = Field(
+        default=None, min_length=1, description="Stripe webhook signing secret"
+    )
+    publishable_key: str | None = Field(
+        default=None, description="Stripe publishable key (pk_test_... or pk_live_...)"
+    )
+    secret_key: str | None = Field(
+        default=None, description="Stripe secret key (sk_test_... or sk_live_...)"
     )
 
 
@@ -770,6 +776,15 @@ class StoragePricingConfig(BaseModel):
     price_per_gb_nzd: float = 0.50
 
 
+class SignupBillingConfig(BaseModel):
+    """GST and Stripe fee configuration for signup billing."""
+
+    gst_percentage: float = Field(default=15.0, description="GST percentage applied to plan price")
+    stripe_fee_percentage: float = Field(default=2.9, description="Stripe fee percentage")
+    stripe_fee_fixed_cents: int = Field(default=30, description="Stripe fixed fee per transaction in cents")
+    pass_fees_to_customer: bool = Field(default=True, description="Whether to pass Stripe fees to customer")
+
+
 class PlatformSettingsResponse(BaseModel):
     """GET /api/v1/admin/settings response."""
 
@@ -778,6 +793,7 @@ class PlatformSettingsResponse(BaseModel):
     announcement_banner: str | None = None
     announcement_active: bool = False
     storage_pricing: StoragePricingConfig = Field(default_factory=StoragePricingConfig)
+    signup_billing: SignupBillingConfig = Field(default_factory=SignupBillingConfig)
 
 
 class PlatformSettingsUpdateRequest(BaseModel):
@@ -798,6 +814,9 @@ class PlatformSettingsUpdateRequest(BaseModel):
     storage_pricing: StoragePricingConfig | None = Field(
         None, description="Storage pricing configuration"
     )
+    signup_billing: SignupBillingConfig | None = Field(
+        None, description="GST and Stripe fee configuration for signup"
+    )
 
 
 class PlatformSettingsUpdateResponse(BaseModel):
@@ -808,6 +827,7 @@ class PlatformSettingsUpdateResponse(BaseModel):
     announcement_banner: str | None = None
     announcement_active: bool | None = None
     storage_pricing: StoragePricingConfig | None = None
+    signup_billing: SignupBillingConfig | None = None
 
 
 class GlobalVehicleSearchResult(BaseModel):
@@ -939,3 +959,150 @@ class IntegrationCostDashboardResponse(BaseModel):
     sms: IntegrationCostCard
     smtp: IntegrationCostCard
     stripe: IntegrationCostCard
+
+
+# ---------------------------------------------------------------------------
+# Coupon System (Req 10.1–10.8)
+# ---------------------------------------------------------------------------
+
+
+class CouponCreateRequest(BaseModel):
+    """POST /api/v1/admin/coupons request body."""
+
+    code: str = Field(..., min_length=3, max_length=50, description="Unique coupon code")
+    description: str | None = Field(None, max_length=255, description="Coupon description")
+    discount_type: str = Field(..., description="Discount type: percentage, fixed_amount, or trial_extension")
+    discount_value: float = Field(..., gt=0, description="Discount value (percentage, NZD amount, or trial days)")
+    duration_months: int | None = Field(None, gt=0, description="Number of billing months the discount applies")
+    usage_limit: int | None = Field(None, gt=0, description="Maximum number of redemptions allowed")
+    starts_at: datetime | None = None
+    expires_at: datetime | None = None
+
+
+class CouponUpdateRequest(BaseModel):
+    """PUT /api/v1/admin/coupons/{id} request body. All fields optional."""
+
+    description: str | None = Field(None, max_length=255, description="Coupon description")
+    discount_value: float | None = Field(None, gt=0, description="Discount value")
+    duration_months: int | None = Field(None, gt=0, description="Number of billing months")
+    usage_limit: int | None = Field(None, gt=0, description="Maximum redemptions")
+    is_active: bool | None = None
+    starts_at: datetime | None = None
+    expires_at: datetime | None = None
+
+
+class CouponResponse(BaseModel):
+    """Single coupon response."""
+
+    id: str
+    code: str
+    description: str | None = None
+    discount_type: str
+    discount_value: float
+    duration_months: int | None = None
+    usage_limit: int | None = None
+    times_redeemed: int = 0
+    is_active: bool = True
+    starts_at: datetime | None = None
+    expires_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CouponListResponse(BaseModel):
+    """GET /api/v1/admin/coupons response."""
+
+    coupons: list[CouponResponse]
+    total: int
+
+
+class CouponRedemptionRow(BaseModel):
+    """Single coupon redemption record."""
+
+    id: str
+    org_id: str
+    organisation_name: str
+    applied_at: datetime
+    billing_months_used: int
+    is_expired: bool
+
+
+class CouponDetailResponse(CouponResponse):
+    """GET /api/v1/admin/coupons/{id} response — coupon with redemptions."""
+
+    redemptions: list[CouponRedemptionRow] = Field(default_factory=list)
+
+
+class CouponValidateRequest(BaseModel):
+    """POST /api/v1/coupons/validate request body."""
+
+    code: str = Field(..., min_length=1, description="Coupon code to validate")
+
+
+class CouponValidateResponse(BaseModel):
+    """POST /api/v1/coupons/validate response."""
+
+    valid: bool
+    coupon: CouponResponse | None = None
+    error: str | None = None
+
+
+class CouponRedeemRequest(BaseModel):
+    """POST /api/v1/coupons/redeem request body."""
+
+    code: str = Field(..., min_length=1, description="Coupon code to redeem")
+    org_id: str = Field(..., description="Organisation UUID to apply the coupon to")
+
+
+class CouponRedeemResponse(BaseModel):
+    """POST /api/v1/coupons/redeem response."""
+
+    message: str
+    organisation_coupon_id: str
+
+
+# ---------------------------------------------------------------------------
+# Storage Package schemas — Requirements: 2.1–2.5
+# ---------------------------------------------------------------------------
+
+
+class StoragePackageCreateRequest(BaseModel):
+    """POST /api/v1/admin/storage-packages request body."""
+
+    name: str = Field(..., min_length=1, max_length=100, description="Package name")
+    storage_gb: int = Field(..., gt=0, description="Storage amount in GB")
+    price_nzd_per_month: float = Field(..., ge=0, description="Monthly price in NZD")
+    description: str | None = Field(None, max_length=255, description="Optional description")
+    sort_order: int = Field(default=0, description="Display sort order")
+
+
+class StoragePackageUpdateRequest(BaseModel):
+    """PUT /api/v1/admin/storage-packages/{id} request body. All fields optional."""
+
+    name: str | None = Field(None, min_length=1, max_length=100, description="Package name")
+    storage_gb: int | None = Field(None, gt=0, description="Storage amount in GB")
+    price_nzd_per_month: float | None = Field(None, ge=0, description="Monthly price in NZD")
+    description: str | None = Field(None, max_length=255, description="Optional description")
+    is_active: bool | None = Field(None, description="Whether the package is active")
+    sort_order: int | None = Field(None, description="Display sort order")
+
+
+class StoragePackageResponse(BaseModel):
+    """Single storage package response."""
+
+    id: str
+    name: str
+    storage_gb: int
+    price_nzd_per_month: float
+    description: str | None
+    is_active: bool
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class StoragePackageListResponse(BaseModel):
+    """GET /api/v1/admin/storage-packages response."""
+
+    packages: list[StoragePackageResponse]
+    total: int

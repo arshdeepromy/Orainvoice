@@ -43,9 +43,11 @@ _PUBLIC_READ_ONLY_PATHS: set[str] = {
     "/api/v1/auth/plans",
     "/api/v1/auth/captcha",
     "/api/v1/auth/verify-captcha",
+    "/api/v1/auth/stripe-publishable-key",
     "/api/v2/auth/plans",
     "/api/v2/auth/captcha",
     "/api/v2/auth/verify-captcha",
+    "/api/v2/auth/stripe-publishable-key",
 }
 
 # Default password reset limit per IP per minute.
@@ -101,15 +103,13 @@ class RateLimitMiddleware:
         self._redis = redis
 
     async def _get_redis(self) -> Redis | None:
-        """Lazily connect to Redis; retry on failure."""
+        """Return the shared Redis pool; no per-request connection creation."""
         if self._redis is not None:
             return self._redis
 
         try:
-            self._redis = Redis.from_url(
-                settings.redis_url,
-                decode_responses=True,
-            )
+            from app.core.redis import redis_pool
+            self._redis = redis_pool
             await self._redis.ping()
         except Exception:
             logger.warning("Redis unavailable — rate limiter will fail open for this request")

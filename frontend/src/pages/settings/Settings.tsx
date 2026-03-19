@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { OrgSettings } from './OrgSettings'
 import { BranchManagement } from './BranchManagement'
 import { UserManagement } from './UserManagement'
@@ -8,11 +9,12 @@ import CurrencySettings from './CurrencySettings'
 import { LanguageSwitcher } from './LanguageSwitcher'
 import PrinterSettings from './PrinterSettings'
 import { WebhookManagement } from './WebhookManagement'
-import { FeatureFlagSettings } from './FeatureFlagSettings'
 import { ModuleConfiguration } from './ModuleConfiguration'
 import NotificationsPage from '../notifications/NotificationsPage'
+import { Profile } from './Profile'
 
 type SettingsSection =
+  | 'profile'
   | 'organisation'
   | 'branches'
   | 'users'
@@ -22,11 +24,11 @@ type SettingsSection =
   | 'language'
   | 'printer'
   | 'webhooks'
-  | 'feature-flags'
   | 'modules'
   | 'notifications'
 
 const NAV_ITEMS: { id: SettingsSection; label: string; icon: string }[] = [
+  { id: 'profile', label: 'Profile', icon: '👤' },
   { id: 'organisation', label: 'Organisation', icon: '⚙' },
   { id: 'branches', label: 'Branches', icon: '🏢' },
   { id: 'users', label: 'Users', icon: '👥' },
@@ -36,12 +38,12 @@ const NAV_ITEMS: { id: SettingsSection; label: string; icon: string }[] = [
   { id: 'language', label: 'Language', icon: '🌐' },
   { id: 'printer', label: 'Printer', icon: '🖨' },
   { id: 'webhooks', label: 'Webhooks', icon: '🔗' },
-  { id: 'feature-flags', label: 'Feature Flags', icon: '🚩' },
   { id: 'modules', label: 'Modules', icon: '🧩' },
   { id: 'notifications', label: 'Notifications', icon: '🔔' },
 ]
 
 const SECTION_COMPONENTS: Record<SettingsSection, React.FC> = {
+  profile: Profile,
   organisation: OrgSettings,
   branches: BranchManagement,
   users: UserManagement,
@@ -51,13 +53,19 @@ const SECTION_COMPONENTS: Record<SettingsSection, React.FC> = {
   language: LanguageSwitcher,
   printer: PrinterSettings,
   webhooks: WebhookManagement,
-  'feature-flags': FeatureFlagSettings,
   modules: ModuleConfiguration,
   notifications: NotificationsPage,
 }
 
 export function Settings() {
-  const [active, setActive] = useState<SettingsSection>('organisation')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const initialTab = NAV_ITEMS.some(i => i.id === tabParam) ? (tabParam as SettingsSection) : 'organisation'
+  const [active, setActive] = useState<SettingsSection>(initialTab)
+
+  useEffect(() => {
+    setSearchParams({ tab: active }, { replace: true })
+  }, [active])
   const ActiveComponent = SECTION_COMPONENTS[active]
 
   return (

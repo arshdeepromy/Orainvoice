@@ -199,7 +199,13 @@ class QuoteLineItem(Base):
 
 
 class RecurringSchedule(Base):
-    """Organisation-scoped recurring invoice schedule."""
+    """Organisation-scoped recurring invoice schedule.
+
+    NOTE: The authoritative model lives in app/modules/recurring_invoices/models.py.
+    This duplicate exists only for legacy import compatibility.  Both use
+    extend_existing=True so SQLAlchemy merges them into a single mapper.
+    The column definitions here MUST match the actual DB schema.
+    """
 
     __tablename__ = "recurring_schedules"
 
@@ -219,21 +225,17 @@ class RecurringSchedule(Base):
     line_items: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, server_default="[]"
     )
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    next_generation_date: Mapped[date] = mapped_column(Date, nullable=False)
     auto_issue: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default="true"
+    auto_email: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
     )
-    next_due_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    last_generated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="'active'"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -250,7 +252,9 @@ class RecurringSchedule(Base):
             "frequency IN ('weekly','fortnightly','monthly','quarterly','annually')",
             name="ck_recurring_schedules_frequency",
         ),
+        CheckConstraint(
+            "status IN ('active', 'paused', 'completed', 'cancelled')",
+            name="ck_recurring_schedules_status",
+        ),
         {"extend_existing": True},
     )
-
-    # Relationships removed — V2 model is authoritative for this table

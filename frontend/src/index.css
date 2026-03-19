@@ -5,6 +5,13 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Hide the reCAPTCHA badge — required by Firebase Phone Auth invisible reCAPTCHA.
+   Google's ToS allows hiding it as long as you include their branding text,
+   but for invisible reCAPTCHA the badge is not user-facing. */
+.grecaptcha-badge {
+  visibility: hidden !important;
+}
+
 /* Prevent double-scroll: lock html/body/root to viewport,
    let OrgLayout's <main> be the sole scroll container. */
 html, body, #root {

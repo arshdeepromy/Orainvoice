@@ -1,12 +1,6 @@
 export function registerServiceWorker(): void {
-  if (import.meta.env.DEV) return
-  if (!('serviceWorker' in navigator)) return
-
-  window.addEventListener('load', () => {
-    navigator.serviceWorker
-      .register('/service-worker.js')
-      .catch((err) => {
-        console.error('Service worker registration failed:', err)
-      })
-  })
+  // Service worker is not yet implemented — skip registration.
+  // Attempting to register a non-existent /service-worker.js causes
+  // nginx's SPA fallback to return index.html (text/html), which the
+  // browser rejects with "unsupported MIME type" and logs a console error.
 }

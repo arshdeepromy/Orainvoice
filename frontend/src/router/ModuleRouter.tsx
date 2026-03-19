@@ -54,6 +54,7 @@ const LazyComplianceDashboard = lazy(() => import('@/pages/compliance/Compliance
 const LazyLoyaltyConfig = lazy(() => import('@/pages/loyalty/LoyaltyConfig'))
 const LazyWooCommerceSetup = lazy(() => import('@/pages/ecommerce/WooCommerceSetup'))
 const LazyCataloguePage = lazy(() => import('@/pages/catalogue/CataloguePage'))
+const LazySmsChat = lazy(() => import('@/pages/sms/SmsChat'))
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -260,6 +261,9 @@ const MODULE_ROUTES: Record<string, RouteConfig[]> = {
   catalogue: [
     { path: '/catalogue/*', component: LazyCataloguePage },
   ],
+  sms: [
+    { path: '/sms/*', component: LazySmsChat },
+  ],
 }
 
 /**
@@ -362,34 +366,20 @@ export function ModuleRouter() {
         />
       ))}
 
-      {/* Module routes conditionally rendered with flag gating */}
+      {/* Module routes — module enablement is sufficient, no flag double-gating */}
       {Object.entries(MODULE_ROUTES).map(([moduleSlug, routes]) =>
         enabledModules.includes(moduleSlug)
-          ? routes.map((r) => {
-              const flagKey = getFlagKeyForPath(r.path)
-              if (flagKey) {
-                return (
-                  <Route
-                    key={r.path}
-                    path={r.path}
-                    element={
-                      <FlagGatedRoute flagKey={flagKey} component={r.component} />
-                    }
-                  />
-                )
-              }
-              return (
-                <Route
-                  key={r.path}
-                  path={r.path}
-                  element={
-                    <SuspenseWithBoundary>
-                      <r.component />
-                    </SuspenseWithBoundary>
-                  }
-                />
-              )
-            })
+          ? routes.map((r) => (
+              <Route
+                key={r.path}
+                path={r.path}
+                element={
+                  <SuspenseWithBoundary>
+                    <r.component />
+                  </SuspenseWithBoundary>
+                }
+              />
+            ))
           : null,
       )}
 

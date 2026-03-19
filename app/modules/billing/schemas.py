@@ -5,9 +5,10 @@ Requirements: 41.1, 41.2, 41.3, 41.4, 41.5
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class TrialStatusResponse(BaseModel):
@@ -98,7 +99,62 @@ class BillingDashboardResponse(BaseModel):
     )
     storage_used_gb: float = Field(default=0.0, description="Storage used in GB")
     storage_quota_gb: int = Field(default=0, description="Total storage quota in GB")
+    user_seats: int = Field(default=0, description="User seats included in plan")
+    carjam_lookups_included: int = Field(
+        default=0, description="Carjam lookups included in plan"
+    )
     org_status: str = Field(description="Organisation status")
+    trial_ends_at: datetime | None = Field(
+        default=None, description="UTC timestamp when the trial ends"
+    )
+    # Coupon fields
+    active_coupon_code: str | None = Field(
+        default=None, description="Active coupon code applied to this org"
+    )
+    discount_type: str | None = Field(
+        default=None, description="Coupon discount type (percentage, fixed_amount, trial_extension)"
+    )
+    discount_value: float | None = Field(
+        default=None, description="Coupon discount value"
+    )
+    duration_months: int | None = Field(
+        default=None, description="Coupon duration in months (null = perpetual)"
+    )
+    effective_price_nzd: float | None = Field(
+        default=None, description="Effective monthly price after coupon discount"
+    )
+    coupon_is_expired: bool = Field(
+        default=False, description="Whether the applied coupon has expired"
+    )
+    # SMS usage fields
+    sms_included: bool = Field(
+        default=False, description="Whether SMS is included in the plan"
+    )
+    sms_included_quota: int = Field(
+        default=0, description="SMS messages included in plan per month"
+    )
+    sms_sent_this_month: int = Field(
+        default=0, description="SMS messages sent this billing month"
+    )
+    per_sms_cost_nzd: float = Field(
+        default=0.0, description="Cost per SMS beyond included quota"
+    )
+    sms_overage_charge_nzd: float = Field(
+        default=0.0, description="SMS overage charges accrued this month"
+    )
+    sms_credits_remaining: int = Field(
+        default=0, description="Prepaid SMS credits remaining from package purchases"
+    )
+    # Storage add-on fields — Requirements: 6.1–6.4
+    storage_addon_gb: int | None = Field(
+        default=None, description="Current storage add-on GB (null if no add-on)"
+    )
+    storage_addon_price_nzd: float | None = Field(
+        default=None, description="Storage add-on monthly price in NZD"
+    )
+    storage_addon_package_name: str | None = Field(
+        default=None, description="Storage add-on package name (null for custom or no add-on)"
+    )
     past_invoices: list[SubscriptionInvoiceResponse] = Field(
         default_factory=list, description="Past subscription invoices"
     )
@@ -152,4 +208,137 @@ class PlanDowngradeResponse(BaseModel):
     warnings: list[str] = Field(
         default_factory=list,
         description="Warnings about storage or user limits that must be resolved",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Storage add-on schemas — Requirements: 4.1–4.5, 5.1–5.2
+# ---------------------------------------------------------------------------
+
+
+class StorageAddonPurchaseRequest(BaseModel):
+    """POST /api/v1/billing/storage-addon request body.
+
+    Exactly one of package_id or custom_gb must be provided.
+    """
+
+    package_id: str | None = Field(None, description="UUID of the storage package to purchase")
+    custom_gb: int | None = Field(None, gt=0, description="Custom storage amount in GB")
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> StorageAddonPurchaseRequest:
+        if self.package_id and self.custom_gb:
+            raise ValueError("Provide either package_id or custom_gb, not both")
+        if not self.package_id and not self.custom_gb:
+            raise ValueError("Provide either package_id or custom_gb")
+        return self
+
+
+class StorageAddonResizeRequest(BaseModel):
+    """PUT /api/v1/billing/storage-addon request body.
+
+    Exactly one of package_id or custom_gb must be provided.
+    """
+
+    package_id: str | None = Field(None, description="UUID of the storage package to resize to")
+    custom_gb: int | None = Field(None, gt=0, description="Custom storage amount in GB")
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> StorageAddonResizeRequest:
+        if self.package_id and self.custom_gb:
+            raise ValueError("Provide either package_id or custom_gb, not both")
+        if not self.package_id and not self.custom_gb:
+            raise ValueError("Provide either package_id or custom_gb")
+        return self
+
+
+class StorageAddonResponse(BaseModel):
+    """Single storage add-on response."""
+
+    id: str
+    package_name: str | None = Field(description="Package name (null for custom add-ons)")
+    quantity_gb: int
+    price_nzd_per_month: float
+    is_custom: bool
+    purchased_at: datetime
+
+
+class StorageAddonStatusResponse(BaseModel):
+    """GET /api/v1/billing/storage-addon response."""
+
+    current_addon: StorageAddonResponse | None
+    available_packages: list[dict] = Field(
+        description="Available storage packages for purchase/resize"
+    )
+    fallback_price_per_gb_nzd: float
+    base_quota_gb: int
+    total_quota_gb: int
+    storage_used_gb: float
+
+
+# ---------------------------------------------------------------------------
+# Payment method schemas — Requirements: 5.1, 12.3
+# ---------------------------------------------------------------------------
+
+
+class PaymentMethodResponse(BaseModel):
+    """Single payment method for an organisation.
+
+    Requirements: 5.1
+    """
+
+    id: uuid.UUID
+    stripe_payment_method_id: str
+    brand: str
+    last4: str
+    exp_month: int
+    exp_year: int
+    is_default: bool
+    is_verified: bool
+    is_expiring_soon: bool = Field(
+        description="True when card expiry is within 2 months of the current date",
+    )
+
+
+class PaymentMethodListResponse(BaseModel):
+    """Response for GET /billing/payment-methods.
+
+    Requirements: 5.1
+    """
+
+    payment_methods: list[PaymentMethodResponse]
+
+
+class SetupIntentResponse(BaseModel):
+    """Response for POST /billing/setup-intent.
+
+    Requirements: 5.2
+    """
+
+    client_secret: str
+    setup_intent_id: str
+
+
+class StripeTestResult(BaseModel):
+    """Individual result from the Stripe test suite.
+
+    Requirements: 12.3
+    """
+
+    test_name: str
+    category: str = Field(description='Either "api_functions" or "webhook_handlers"')
+    status: str = Field(description='One of "passed", "failed", "skipped"')
+    error_message: str | None = None
+    skip_reason: str | None = None
+
+
+class StripeTestAllResponse(BaseModel):
+    """Response for POST /admin/integrations/stripe/test-all.
+
+    Requirements: 12.3
+    """
+
+    results: list[StripeTestResult]
+    summary: dict = Field(
+        description="Counts: total, passed, failed, skipped",
     )

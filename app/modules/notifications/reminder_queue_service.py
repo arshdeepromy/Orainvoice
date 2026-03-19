@@ -101,13 +101,13 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
             sp = sp_result.scalar_one_or_none()
             sms_allowed = sp.sms_included if sp else False
 
-        # SMS provider check
+        # SMS provider check — pick the default active provider, or any active one
         sms_prov_result = await db.execute(
             select(SmsVerificationProvider).where(
                 SmsVerificationProvider.is_active == True,  # noqa: E712
-            )
+            ).order_by(SmsVerificationProvider.is_default.desc(), SmsVerificationProvider.priority)
         )
-        sms_provider = sms_prov_result.scalar_one_or_none()
+        sms_provider = sms_prov_result.scalars().first()
         sms_configured = (
             sms_provider is not None
             and sms_provider.credentials_encrypted is not None

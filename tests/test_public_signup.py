@@ -1,13 +1,15 @@
-"""Unit tests for Task 6.6 — public signup flow.
+"""Unit tests for public signup flow.
 
 Tests cover:
   - public_signup service: org creation with trial status, 14-day trial,
-    Stripe customer + SetupIntent creation, signup token generation, audit log
+    signup token generation, audit log
   - Validation: invalid plan, archived plan, non-public plan, duplicate email
   - Schema validation for PublicSignupRequest / PublicSignupResponse
   - Auth middleware registers /api/v1/auth/signup as a public path
 
-Requirement 8.6.
+Updated for multi-step signup wizard (Tasks 1-3): public_signup now requires
+a ``password`` parameter and trial plans no longer create Stripe
+Customer/SetupIntent (account is created immediately with verification email).
 """
 
 from __future__ import annotations
@@ -38,14 +40,19 @@ PublicSignupResponse.model_rebuild()
 # Helpers
 # ---------------------------------------------------------------------------
 
+_DEFAULT_PASSWORD = "S3cret!Pass99"
+
+
 def _make_plan(
     plan_id=None,
     name="Starter",
     storage_quota_gb=5,
     is_archived=False,
     is_public=True,
+    trial_duration=14,
+    trial_duration_unit="days",
 ):
-    """Create a mock SubscriptionPlan."""
+    """Create a mock SubscriptionPlan (trial plan by default)."""
     plan = MagicMock(spec=SubscriptionPlan)
     plan.id = plan_id or uuid.uuid4()
     plan.name = name
@@ -56,6 +63,8 @@ def _make_plan(
     plan.enabled_modules = []
     plan.is_public = is_public
     plan.is_archived = is_archived
+    plan.trial_duration = trial_duration
+    plan.trial_duration_unit = trial_duration_unit
     return plan
 
 
@@ -89,9 +98,13 @@ class TestPublicSignupSchemas:
             admin_first_name="Jane",
             admin_last_name="Doe",
             plan_id=str(uuid.uuid4()),
+            password=_DEFAULT_PASSWORD,
+            captcha_code="123456",
         )
         assert req.org_name == "Test Workshop"
         assert req.admin_email == "admin@test.co.nz"
+        assert req.password == _DEFAULT_PASSWORD
+        assert req.captcha_code == "123456"
 
     def test_empty_org_name_rejected(self):
         with pytest.raises(Exception):
@@ -101,6 +114,8 @@ class TestPublicSignupSchemas:
                 admin_first_name="Jane",
                 admin_last_name="Doe",
                 plan_id=str(uuid.uuid4()),
+                password=_DEFAULT_PASSWORD,
+                captcha_code="123456",
             )
 
     def test_invalid_email_rejected(self):
@@ -111,6 +126,8 @@ class TestPublicSignupSchemas:
                 admin_first_name="Jane",
                 admin_last_name="Doe",
                 plan_id=str(uuid.uuid4()),
+                password=_DEFAULT_PASSWORD,
+                captcha_code="123456",
             )
 
     def test_empty_first_name_rejected(self):
@@ -121,57 +138,72 @@ class TestPublicSignupSchemas:
                 admin_first_name="",
                 admin_last_name="Doe",
                 plan_id=str(uuid.uuid4()),
+                password=_DEFAULT_PASSWORD,
+                captcha_code="123456",
             )
 
-    def test_response_model(self):
+    def test_response_model_trial(self):
+        """Trial plan response — organisation_id and signup_token present."""
         resp = PublicSignupResponse(
             message="Signup successful",
+            admin_email="admin@test.co.nz",
             organisation_id=str(uuid.uuid4()),
             organisation_name="Workshop",
             plan_id=str(uuid.uuid4()),
             admin_user_id=str(uuid.uuid4()),
-            admin_email="admin@test.co.nz",
             trial_ends_at=datetime.now(timezone.utc),
-            stripe_setup_intent_client_secret="seti_secret_123",
             signup_token="tok_abc",
         )
-        assert resp.stripe_setup_intent_client_secret == "seti_secret_123"
+        assert resp.requires_payment is False
+        assert resp.organisation_id is not None
         assert resp.signup_token == "tok_abc"
+        assert resp.pending_signup_id is None
+
+    def test_response_model_paid(self):
+        """Paid plan response — pending_signup_id and stripe_client_secret present."""
+        resp = PublicSignupResponse(
+            message="Signup successful — complete payment to activate",
+            admin_email="admin@test.co.nz",
+            requires_payment=True,
+            payment_amount_cents=4900,
+            pending_signup_id="abc-123",
+            stripe_client_secret="pi_secret_123",
+            plan_name="Professional",
+        )
+        assert resp.requires_payment is True
+        assert resp.pending_signup_id == "abc-123"
+        assert resp.stripe_client_secret == "pi_secret_123"
+        assert resp.plan_name == "Professional"
+        assert resp.organisation_id is None
 
 
 # ---------------------------------------------------------------------------
-# Service tests
+# Service tests — trial plan flow
 # ---------------------------------------------------------------------------
 
 
 class TestPublicSignup:
-    """Test the public_signup service function."""
+    """Test the public_signup service function (trial plan flow)."""
 
     @pytest.mark.asyncio
-    @patch("app.core.audit.write_audit_log", new_callable=AsyncMock)
-    @patch("app.integrations.stripe_billing.create_setup_intent", new_callable=AsyncMock)
-    @patch("app.integrations.stripe_billing.create_stripe_customer", new_callable=AsyncMock)
+    @patch("app.modules.organisations.service.write_audit_log", new_callable=AsyncMock)
+    @patch("app.modules.auth.service.send_verification_email", new_callable=AsyncMock)
+    @patch("app.modules.auth.service.create_email_verification_token", new_callable=AsyncMock)
     @patch("app.core.redis.redis_pool")
     async def test_successful_signup(
-        self, mock_redis, mock_stripe_customer, mock_setup_intent, mock_audit
+        self, mock_redis, mock_create_token, mock_send_email, mock_audit
     ):
         from app.modules.organisations.service import public_signup
 
         plan = _make_plan()
         db = _mock_db_session()
 
-        # First execute returns plan, second returns None (no existing user)
         db.execute = AsyncMock(side_effect=[
             _mock_scalar_result(plan),
             _mock_scalar_result(None),
         ])
-
-        mock_stripe_customer.return_value = "cus_test_123"
-        mock_setup_intent.return_value = {
-            "setup_intent_id": "seti_test_123",
-            "client_secret": "seti_secret_test_123",
-        }
         mock_redis.setex = AsyncMock()
+        mock_create_token.return_value = "verify_token_abc"
 
         result = await public_signup(
             db,
@@ -179,27 +211,28 @@ class TestPublicSignup:
             admin_email="owner@workshop.co.nz",
             admin_first_name="John",
             admin_last_name="Smith",
+            password=_DEFAULT_PASSWORD,
             plan_id=plan.id,
             ip_address="203.0.113.1",
         )
 
         assert result["organisation_name"] == "My Workshop"
         assert result["admin_email"] == "owner@workshop.co.nz"
-        assert result["stripe_setup_intent_client_secret"] == "seti_secret_test_123"
+        assert result["requires_payment"] is False
         assert "signup_token" in result
         assert result["trial_ends_at"] is not None
 
-        # Verify org was added to DB
+        # Verify org + user were added to DB
         assert db.add.call_count >= 2  # org + user
-        assert db.flush.call_count >= 3  # org, user, stripe_customer_id update
+        assert db.flush.call_count >= 2  # org, user
 
     @pytest.mark.asyncio
-    @patch("app.core.audit.write_audit_log", new_callable=AsyncMock)
-    @patch("app.integrations.stripe_billing.create_setup_intent", new_callable=AsyncMock)
-    @patch("app.integrations.stripe_billing.create_stripe_customer", new_callable=AsyncMock)
+    @patch("app.modules.organisations.service.write_audit_log", new_callable=AsyncMock)
+    @patch("app.modules.auth.service.send_verification_email", new_callable=AsyncMock)
+    @patch("app.modules.auth.service.create_email_verification_token", new_callable=AsyncMock)
     @patch("app.core.redis.redis_pool")
     async def test_trial_ends_in_14_days(
-        self, mock_redis, mock_stripe_customer, mock_setup_intent, mock_audit
+        self, mock_redis, mock_create_token, mock_send_email, mock_audit
     ):
         from app.modules.organisations.service import public_signup
 
@@ -209,12 +242,8 @@ class TestPublicSignup:
             _mock_scalar_result(plan),
             _mock_scalar_result(None),
         ])
-        mock_stripe_customer.return_value = "cus_test"
-        mock_setup_intent.return_value = {
-            "setup_intent_id": "seti_test",
-            "client_secret": "seti_secret",
-        }
         mock_redis.setex = AsyncMock()
+        mock_create_token.return_value = "verify_token"
 
         before = datetime.now(timezone.utc)
         result = await public_signup(
@@ -223,6 +252,7 @@ class TestPublicSignup:
             admin_email="a@b.co.nz",
             admin_first_name="A",
             admin_last_name="B",
+            password=_DEFAULT_PASSWORD,
             plan_id=plan.id,
         )
         after = datetime.now(timezone.utc)
@@ -245,6 +275,7 @@ class TestPublicSignup:
                 admin_email="a@b.co.nz",
                 admin_first_name="A",
                 admin_last_name="B",
+                password=_DEFAULT_PASSWORD,
                 plan_id=uuid.uuid4(),
             )
 
@@ -263,6 +294,7 @@ class TestPublicSignup:
                 admin_email="a@b.co.nz",
                 admin_first_name="A",
                 admin_last_name="B",
+                password=_DEFAULT_PASSWORD,
                 plan_id=plan.id,
             )
 
@@ -281,6 +313,7 @@ class TestPublicSignup:
                 admin_email="a@b.co.nz",
                 admin_first_name="A",
                 admin_last_name="B",
+                password=_DEFAULT_PASSWORD,
                 plan_id=plan.id,
             )
 
@@ -303,16 +336,17 @@ class TestPublicSignup:
                 admin_email="taken@test.co.nz",
                 admin_first_name="A",
                 admin_last_name="B",
+                password=_DEFAULT_PASSWORD,
                 plan_id=plan.id,
             )
 
     @pytest.mark.asyncio
-    @patch("app.core.audit.write_audit_log", new_callable=AsyncMock)
-    @patch("app.integrations.stripe_billing.create_setup_intent", new_callable=AsyncMock)
-    @patch("app.integrations.stripe_billing.create_stripe_customer", new_callable=AsyncMock)
+    @patch("app.modules.organisations.service.write_audit_log", new_callable=AsyncMock)
+    @patch("app.modules.auth.service.send_verification_email", new_callable=AsyncMock)
+    @patch("app.modules.auth.service.create_email_verification_token", new_callable=AsyncMock)
     @patch("app.core.redis.redis_pool")
     async def test_org_created_with_trial_status(
-        self, mock_redis, mock_stripe_customer, mock_setup_intent, mock_audit
+        self, mock_redis, mock_create_token, mock_send_email, mock_audit
     ):
         from app.modules.organisations.service import public_signup
 
@@ -322,12 +356,8 @@ class TestPublicSignup:
             _mock_scalar_result(plan),
             _mock_scalar_result(None),
         ])
-        mock_stripe_customer.return_value = "cus_test"
-        mock_setup_intent.return_value = {
-            "setup_intent_id": "seti_test",
-            "client_secret": "seti_secret",
-        }
         mock_redis.setex = AsyncMock()
+        mock_create_token.return_value = "verify_token"
 
         await public_signup(
             db,
@@ -335,6 +365,7 @@ class TestPublicSignup:
             admin_email="trial@test.co.nz",
             admin_first_name="A",
             admin_last_name="B",
+            password=_DEFAULT_PASSWORD,
             plan_id=plan.id,
         )
 
@@ -346,13 +377,14 @@ class TestPublicSignup:
         assert org_added.trial_ends_at is not None
 
     @pytest.mark.asyncio
-    @patch("app.core.audit.write_audit_log", new_callable=AsyncMock)
-    @patch("app.integrations.stripe_billing.create_setup_intent", new_callable=AsyncMock)
-    @patch("app.integrations.stripe_billing.create_stripe_customer", new_callable=AsyncMock)
+    @patch("app.modules.organisations.service.write_audit_log", new_callable=AsyncMock)
+    @patch("app.modules.auth.service.send_verification_email", new_callable=AsyncMock)
+    @patch("app.modules.auth.service.create_email_verification_token", new_callable=AsyncMock)
     @patch("app.core.redis.redis_pool")
-    async def test_stripe_customer_and_setup_intent_created(
-        self, mock_redis, mock_stripe_customer, mock_setup_intent, mock_audit
+    async def test_verification_email_sent(
+        self, mock_redis, mock_create_token, mock_send_email, mock_audit
     ):
+        """Trial signup sends a verification email."""
         from app.modules.organisations.service import public_signup
 
         plan = _make_plan()
@@ -361,42 +393,31 @@ class TestPublicSignup:
             _mock_scalar_result(plan),
             _mock_scalar_result(None),
         ])
-        mock_stripe_customer.return_value = "cus_stripe_123"
-        mock_setup_intent.return_value = {
-            "setup_intent_id": "seti_stripe_123",
-            "client_secret": "seti_secret_stripe_123",
-        }
         mock_redis.setex = AsyncMock()
+        mock_create_token.return_value = "verify_token_123"
 
-        result = await public_signup(
+        await public_signup(
             db,
             org_name="Workshop",
             admin_email="a@b.co.nz",
             admin_first_name="A",
             admin_last_name="B",
+            password=_DEFAULT_PASSWORD,
             plan_id=plan.id,
         )
 
-        # Stripe customer created with correct args
-        mock_stripe_customer.assert_called_once()
-        call_kwargs = mock_stripe_customer.call_args[1]
-        assert call_kwargs["email"] == "a@b.co.nz"
-        assert call_kwargs["name"] == "Workshop"
-
-        # SetupIntent created with the customer ID
-        mock_setup_intent.assert_called_once()
-        si_kwargs = mock_setup_intent.call_args[1]
-        assert si_kwargs["customer_id"] == "cus_stripe_123"
-
-        assert result["stripe_setup_intent_client_secret"] == "seti_secret_stripe_123"
+        mock_create_token.assert_called_once()
+        mock_send_email.assert_called_once()
+        send_kwargs = mock_send_email.call_args[1]
+        assert send_kwargs["email"] == "a@b.co.nz"
 
     @pytest.mark.asyncio
-    @patch("app.core.audit.write_audit_log", new_callable=AsyncMock)
-    @patch("app.integrations.stripe_billing.create_setup_intent", new_callable=AsyncMock)
-    @patch("app.integrations.stripe_billing.create_stripe_customer", new_callable=AsyncMock)
+    @patch("app.modules.organisations.service.write_audit_log", new_callable=AsyncMock)
+    @patch("app.modules.auth.service.send_verification_email", new_callable=AsyncMock)
+    @patch("app.modules.auth.service.create_email_verification_token", new_callable=AsyncMock)
     @patch("app.core.redis.redis_pool")
     async def test_signup_token_stored_in_redis(
-        self, mock_redis, mock_stripe_customer, mock_setup_intent, mock_audit
+        self, mock_redis, mock_create_token, mock_send_email, mock_audit
     ):
         from app.modules.organisations.service import public_signup
 
@@ -406,12 +427,8 @@ class TestPublicSignup:
             _mock_scalar_result(plan),
             _mock_scalar_result(None),
         ])
-        mock_stripe_customer.return_value = "cus_test"
-        mock_setup_intent.return_value = {
-            "setup_intent_id": "seti_test",
-            "client_secret": "seti_secret",
-        }
         mock_redis.setex = AsyncMock()
+        mock_create_token.return_value = "verify_token"
 
         result = await public_signup(
             db,
@@ -419,6 +436,7 @@ class TestPublicSignup:
             admin_email="a@b.co.nz",
             admin_first_name="A",
             admin_last_name="B",
+            password=_DEFAULT_PASSWORD,
             plan_id=plan.id,
         )
 
@@ -436,11 +454,11 @@ class TestPublicSignup:
 
     @pytest.mark.asyncio
     @patch("app.modules.organisations.service.write_audit_log", new_callable=AsyncMock)
-    @patch("app.integrations.stripe_billing.create_setup_intent", new_callable=AsyncMock)
-    @patch("app.integrations.stripe_billing.create_stripe_customer", new_callable=AsyncMock)
+    @patch("app.modules.auth.service.send_verification_email", new_callable=AsyncMock)
+    @patch("app.modules.auth.service.create_email_verification_token", new_callable=AsyncMock)
     @patch("app.core.redis.redis_pool")
     async def test_audit_log_written(
-        self, mock_redis, mock_stripe_customer, mock_setup_intent, mock_audit
+        self, mock_redis, mock_create_token, mock_send_email, mock_audit
     ):
         from app.modules.organisations.service import public_signup
 
@@ -450,12 +468,8 @@ class TestPublicSignup:
             _mock_scalar_result(plan),
             _mock_scalar_result(None),
         ])
-        mock_stripe_customer.return_value = "cus_test"
-        mock_setup_intent.return_value = {
-            "setup_intent_id": "seti_test",
-            "client_secret": "seti_secret",
-        }
         mock_redis.setex = AsyncMock()
+        mock_create_token.return_value = "verify_token"
 
         await public_signup(
             db,
@@ -463,6 +477,7 @@ class TestPublicSignup:
             admin_email="a@b.co.nz",
             admin_first_name="A",
             admin_last_name="B",
+            password=_DEFAULT_PASSWORD,
             plan_id=plan.id,
             ip_address="203.0.113.1",
         )

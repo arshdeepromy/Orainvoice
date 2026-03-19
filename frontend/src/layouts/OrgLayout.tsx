@@ -97,9 +97,9 @@ export function OrgLayout() {
 
   const visibleNavItems = useMemo(
     () => navItems.filter((item) => {
-      // Check module enablement
-      if (item.module && !isEnabled(item.module)) return false
-      // Check feature flag — if flagKey is set, the flag must be true
+      // If the item has a module gate, module enablement is sufficient
+      if (item.module) return isEnabled(item.module)
+      // Items without a module gate fall back to feature flag check
       if (item.flagKey && !flags[item.flagKey]) return false
       return true
     }),
@@ -108,9 +108,9 @@ export function OrgLayout() {
 
   const visibleQuickActions = useMemo(
     () => quickActions.filter((action) => {
-      // Check module enablement
-      if (action.module && !isEnabled(action.module)) return false
-      // Check feature flag
+      // If the action has a module gate, module enablement is sufficient
+      if (action.module) return isEnabled(action.module)
+      // Items without a module gate fall back to feature flag check
       if (action.flagKey && !flags[action.flagKey]) return false
       return true
     }),
@@ -340,6 +340,15 @@ export function OrgLayout() {
                   <p className="text-xs text-gray-500 truncate">{user?.email}</p>
                 </div>
                 <div className="py-1">
+                  <button
+                    onClick={() => { setUserMenuOpen(false); navigate('/settings?tab=profile') }}
+                    className="flex w-full items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors min-h-[44px]"
+                  >
+                    <svg className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                    Profile
+                  </button>
                   <button
                     onClick={() => { setUserMenuOpen(false); navigate('/settings') }}
                     className="flex w-full items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors min-h-[44px]"

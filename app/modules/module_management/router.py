@@ -121,6 +121,10 @@ async def enable_module(
     svc = ModuleService(db)
     additionally_enabled = await svc.enable_module(org_id, slug, enabled_by=user_id)
 
+    # Commit before cache invalidation so the refetch sees committed data
+    await db.commit()
+    await svc._invalidate_cache(org_id)
+
     msg = f"Module '{slug}' enabled."
     if additionally_enabled:
         msg += f" Dependencies also enabled: {', '.join(additionally_enabled)}."
@@ -196,6 +200,11 @@ async def disable_module(
         )
 
     await svc.force_disable_module(org_id, slug)
+
+    # Commit before cache invalidation so the refetch sees committed data
+    await db.commit()
+    await svc._invalidate_cache(org_id)
+
     return DisableModuleResponse(
         slug=slug,
         disabled=True,

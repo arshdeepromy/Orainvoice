@@ -1,4 +1,4 @@
-import { Component, type ReactNode, lazy, Suspense } from 'react'
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { TenantProvider } from '@/contexts/TenantContext'
@@ -6,7 +6,17 @@ import { ModuleProvider } from '@/contexts/ModuleContext'
 import { FeatureFlagProvider } from '@/contexts/FeatureFlagContext'
 import { LocaleProvider } from '@/contexts/LocaleContext'
 import { Spinner } from '@/components/ui'
-import { Login, MfaVerify, PasswordResetRequest, PasswordResetComplete, Signup, VerifyEmail } from '@/pages/auth'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { Login, MfaVerify, PasswordResetRequest, PasswordResetComplete, VerifyEmail } from '@/pages/auth'
+
+/* Signup is lazy-loaded because it imports @stripe/stripe-js and
+   @stripe/react-stripe-js at the top level.  Eager loading would pull
+   those heavy Stripe bundles into the initial chunk and — critically —
+   if an ad-blocker or network issue blocks the Stripe script, the
+   entire App module fails to evaluate, crashing every page. */
+const LazySignup = lazy(() =>
+  import('@/pages/auth/SignupWizard').then((m) => ({ default: m.SignupWizard })),
+)
 import { AdminLayout } from '@/layouts/AdminLayout'
 import { OrgLayout } from '@/layouts/OrgLayout'
 import { Dashboard } from '@/pages/dashboard'
@@ -113,37 +123,15 @@ function LazyFallback() {
   )
 }
 
-/** Catch rendering errors so the page doesn't go blank */
-class ErrorBoundary extends Component<
-  { children: ReactNode },
-  { error: Error | null }
-> {
-  state: { error: Error | null } = { error: null }
-  static getDerivedStateFromError(error: Error) {
-    return { error }
-  }
-  render() {
-    if (this.state.error) {
-      return (
-        <div style={{ padding: 32, fontFamily: 'sans-serif' }}>
-          <h1 style={{ color: '#dc2626' }}>Something went wrong</h1>
-          <pre style={{ whiteSpace: 'pre-wrap', marginTop: 16, color: '#374151' }}>
-            {this.state.error.message}
-          </pre>
-          <pre style={{ whiteSpace: 'pre-wrap', marginTop: 8, fontSize: 12, color: '#6b7280' }}>
-            {this.state.error.stack}
-          </pre>
-          <button
-            onClick={() => window.location.reload()}
-            style={{ marginTop: 16, padding: '8px 16px', cursor: 'pointer' }}
-          >
-            Reload
-          </button>
-        </div>
-      )
-    }
-    return this.props.children
-  }
+/** Wrap a lazy-loaded page with Suspense + page-level error boundary */
+function SafePage({ children, name }: { children: React.ReactNode; name?: string }) {
+  return (
+    <ErrorBoundary level="page" name={name ?? 'page'}>
+      <Suspense fallback={<LazyFallback />}>
+        {children}
+      </Suspense>
+    </ErrorBoundary>
+  )
 }
 
 function RequireAuth() {
@@ -225,32 +213,32 @@ function AppRoutes() {
     <Routes>
       {/* Guest routes */}
       <Route element={<GuestOnly />}>
-        <Route path="/login" element={<Login />} />
-        <Route path="/mfa-verify" element={<MfaVerify />} />
-        <Route path="/forgot-password" element={<PasswordResetRequest />} />
-        <Route path="/reset-password" element={<PasswordResetComplete />} />
-        <Route path="/signup" element={<Signup />} />
-        <Route path="/verify-email" element={<VerifyEmail />} />
+        <Route path="/login" element={<SafePage name="login"><Login /></SafePage>} />
+        <Route path="/mfa-verify" element={<SafePage name="mfa-verify"><MfaVerify /></SafePage>} />
+        <Route path="/forgot-password" element={<SafePage name="forgot-password"><PasswordResetRequest /></SafePage>} />
+        <Route path="/reset-password" element={<SafePage name="reset-password"><PasswordResetComplete /></SafePage>} />
+        <Route path="/signup" element={<SafePage name="signup"><LazySignup /></SafePage>} />
+        <Route path="/verify-email" element={<SafePage name="verify-email"><VerifyEmail /></SafePage>} />
       </Route>
 
       {/* Global admin routes */}
       <Route element={<RequireAuth />}>
         <Route element={<RequireGlobalAdmin />}>
           <Route path="/admin" element={<AdminLayout />}>
-            <Route path="dashboard" element={<Dashboard />} />
-            <Route path="organisations" element={<Organisations />} />
-            <Route path="users" element={<UserManagement />} />
-            <Route path="plans" element={<SubscriptionPlans />} />
-            <Route path="feature-flags" element={<FeatureFlags />} />
-            <Route path="analytics" element={<AnalyticsDashboard />} />
-            <Route path="settings" element={<AdminSettings />} />
-            <Route path="errors" element={<ErrorLog />} />
-            <Route path="notifications" element={<NotificationManager />} />
-            <Route path="branding" element={<BrandingConfig />} />
-            <Route path="migration" element={<MigrationTool />} />
-            <Route path="audit-log" element={<AuditLog />} />
-            <Route path="reports" element={<AdminReports />} />
-            <Route path="integrations" element={<Integrations />} />
+            <Route path="dashboard" element={<SafePage name="admin-dashboard"><Dashboard /></SafePage>} />
+            <Route path="organisations" element={<SafePage name="admin-organisations"><Organisations /></SafePage>} />
+            <Route path="users" element={<SafePage name="admin-users"><UserManagement /></SafePage>} />
+            <Route path="plans" element={<SafePage name="admin-plans"><SubscriptionPlans /></SafePage>} />
+            <Route path="feature-flags" element={<SafePage name="admin-feature-flags"><FeatureFlags /></SafePage>} />
+            <Route path="analytics" element={<SafePage name="admin-analytics"><AnalyticsDashboard /></SafePage>} />
+            <Route path="settings" element={<SafePage name="admin-settings"><AdminSettings /></SafePage>} />
+            <Route path="errors" element={<SafePage name="admin-errors"><ErrorLog /></SafePage>} />
+            <Route path="notifications" element={<SafePage name="admin-notifications"><NotificationManager /></SafePage>} />
+            <Route path="branding" element={<SafePage name="admin-branding"><BrandingConfig /></SafePage>} />
+            <Route path="migration" element={<SafePage name="admin-migration"><MigrationTool /></SafePage>} />
+            <Route path="audit-log" element={<SafePage name="admin-audit-log"><AuditLog /></SafePage>} />
+            <Route path="reports" element={<SafePage name="admin-reports"><AdminReports /></SafePage>} />
+            <Route path="integrations" element={<SafePage name="admin-integrations"><Integrations /></SafePage>} />
             <Route index element={<Navigate to="dashboard" replace />} />
           </Route>
         </Route>
@@ -259,129 +247,129 @@ function AppRoutes() {
         <Route element={<OrgLayout />}>
           <Route
             path="/dashboard"
-            element={isGlobalAdmin && !sessionStorage.getItem('admin_view_as_org') ? <Navigate to="/admin/dashboard" replace /> : <Dashboard />}
+            element={isGlobalAdmin && !sessionStorage.getItem('admin_view_as_org') ? <Navigate to="/admin/dashboard" replace /> : <SafePage name="dashboard"><Dashboard /></SafePage>}
           />
 
           {/* Customers */}
-          <Route path="/customers" element={<Suspense fallback={<LazyFallback />}><CustomerList /></Suspense>} />
-          <Route path="/customers/new" element={<Suspense fallback={<LazyFallback />}><CustomerCreate /></Suspense>} />
-          <Route path="/customers/:id" element={<Suspense fallback={<LazyFallback />}><CustomerProfile /></Suspense>} />
+          <Route path="/customers" element={<SafePage name="customers"><CustomerList /></SafePage>} />
+          <Route path="/customers/new" element={<SafePage name="customer-create"><CustomerCreate /></SafePage>} />
+          <Route path="/customers/:id" element={<SafePage name="customer-profile"><CustomerProfile /></SafePage>} />
 
           {/* Vehicles */}
-          <Route path="/vehicles" element={<Suspense fallback={<LazyFallback />}><VehicleList /></Suspense>} />
-          <Route path="/vehicles/:id" element={<Suspense fallback={<LazyFallback />}><VehicleProfile /></Suspense>} />
+          <Route path="/vehicles" element={<SafePage name="vehicles"><VehicleList /></SafePage>} />
+          <Route path="/vehicles/:id" element={<SafePage name="vehicle-profile"><VehicleProfile /></SafePage>} />
 
           {/* Invoices */}
-          <Route path="/invoices" element={<Suspense fallback={<LazyFallback />}><InvoiceList /></Suspense>} />
-          <Route path="/invoices/new" element={<Suspense fallback={<LazyFallback />}><InvoiceCreate /></Suspense>} />
-          <Route path="/invoices/:id/edit" element={<Suspense fallback={<LazyFallback />}><InvoiceCreate /></Suspense>} />
-          <Route path="/invoices/:id" element={<Suspense fallback={<LazyFallback />}><InvoiceList /></Suspense>} />
+          <Route path="/invoices" element={<SafePage name="invoices"><InvoiceList /></SafePage>} />
+          <Route path="/invoices/new" element={<SafePage name="invoice-create"><InvoiceCreate /></SafePage>} />
+          <Route path="/invoices/:id/edit" element={<SafePage name="invoice-edit"><InvoiceCreate /></SafePage>} />
+          <Route path="/invoices/:id" element={<SafePage name="invoice-detail"><InvoiceList /></SafePage>} />
 
           {/* Quotes */}
-          <Route path="/quotes" element={<Suspense fallback={<LazyFallback />}><QuoteList /></Suspense>} />
-          <Route path="/quotes/new" element={<Suspense fallback={<LazyFallback />}><QuoteCreate /></Suspense>} />
-          <Route path="/quotes/:id/edit" element={<Suspense fallback={<LazyFallback />}><QuoteCreate /></Suspense>} />
-          <Route path="/quotes/:id" element={<Suspense fallback={<LazyFallback />}><QuoteDetailRoute /></Suspense>} />
+          <Route path="/quotes" element={<SafePage name="quotes"><QuoteList /></SafePage>} />
+          <Route path="/quotes/new" element={<SafePage name="quote-create"><QuoteCreate /></SafePage>} />
+          <Route path="/quotes/:id/edit" element={<SafePage name="quote-edit"><QuoteCreate /></SafePage>} />
+          <Route path="/quotes/:id" element={<SafePage name="quote-detail"><QuoteDetailRoute /></SafePage>} />
 
           {/* Job Cards */}
-          <Route path="/job-cards" element={<Suspense fallback={<LazyFallback />}><JobCardList /></Suspense>} />
-          <Route path="/job-cards/new" element={<Suspense fallback={<LazyFallback />}><JobCardCreate /></Suspense>} />
-          <Route path="/job-cards/:id" element={<Suspense fallback={<LazyFallback />}><JobCardDetail /></Suspense>} />
+          <Route path="/job-cards" element={<SafePage name="job-cards"><JobCardList /></SafePage>} />
+          <Route path="/job-cards/new" element={<SafePage name="job-card-create"><JobCardCreate /></SafePage>} />
+          <Route path="/job-cards/:id" element={<SafePage name="job-card-detail"><JobCardDetail /></SafePage>} />
 
           {/* Bookings */}
-          <Route path="/bookings" element={<Suspense fallback={<LazyFallback />}><BookingCalendarPage /></Suspense>} />
+          <Route path="/bookings" element={<SafePage name="bookings"><BookingCalendarPage /></SafePage>} />
 
           {/* Inventory */}
-          <Route path="/inventory" element={<Suspense fallback={<LazyFallback />}><InventoryPage /></Suspense>} />
+          <Route path="/inventory" element={<SafePage name="inventory"><InventoryPage /></SafePage>} />
 
           {/* Reports */}
-          <Route path="/reports" element={<Suspense fallback={<LazyFallback />}><ReportsPage /></Suspense>} />
+          <Route path="/reports" element={<SafePage name="reports"><ReportsPage /></SafePage>} />
 
           {/* Settings */}
-          <Route path="/settings" element={<Suspense fallback={<LazyFallback />}><OrgSettingsPage /></Suspense>} />
+          <Route path="/settings" element={<SafePage name="settings"><OrgSettingsPage /></SafePage>} />
 
           {/* Notifications */}
-          <Route path="/notifications" element={<Suspense fallback={<LazyFallback />}><NotificationsPage /></Suspense>} />
+          <Route path="/notifications" element={<SafePage name="notifications"><NotificationsPage /></SafePage>} />
 
           {/* Staff */}
-          <Route path="/staff" element={<Suspense fallback={<LazyFallback />}><StaffList /></Suspense>} />
+          <Route path="/staff" element={<SafePage name="staff"><StaffList /></SafePage>} />
 
           {/* Projects */}
-          <Route path="/projects" element={<Suspense fallback={<LazyFallback />}><ProjectList /></Suspense>} />
-          <Route path="/projects/:id" element={<Suspense fallback={<LazyFallback />}><ProjectDashboardRoute /></Suspense>} />
+          <Route path="/projects" element={<SafePage name="projects"><ProjectList /></SafePage>} />
+          <Route path="/projects/:id" element={<SafePage name="project-detail"><ProjectDashboardRoute /></SafePage>} />
 
           {/* Expenses */}
-          <Route path="/expenses" element={<Suspense fallback={<LazyFallback />}><ExpenseList /></Suspense>} />
+          <Route path="/expenses" element={<SafePage name="expenses"><ExpenseList /></SafePage>} />
 
           {/* Time Tracking */}
-          <Route path="/time-tracking" element={<Suspense fallback={<LazyFallback />}><TimeSheet /></Suspense>} />
+          <Route path="/time-tracking" element={<SafePage name="time-tracking"><TimeSheet /></SafePage>} />
 
           {/* POS */}
-          <Route path="/pos" element={<Suspense fallback={<LazyFallback />}><POSScreen /></Suspense>} />
+          <Route path="/pos" element={<SafePage name="pos"><POSScreen /></SafePage>} />
 
           {/* Schedule */}
-          <Route path="/schedule" element={<Suspense fallback={<LazyFallback />}><ScheduleCalendar /></Suspense>} />
+          <Route path="/schedule" element={<SafePage name="schedule"><ScheduleCalendar /></SafePage>} />
 
           {/* Recurring Invoices */}
-          <Route path="/recurring" element={<Suspense fallback={<LazyFallback />}><RecurringList /></Suspense>} />
+          <Route path="/recurring" element={<SafePage name="recurring"><RecurringList /></SafePage>} />
 
           {/* Purchase Orders */}
-          <Route path="/purchase-orders" element={<Suspense fallback={<LazyFallback />}><POList /></Suspense>} />
+          <Route path="/purchase-orders" element={<SafePage name="purchase-orders"><POList /></SafePage>} />
 
           {/* Data Import/Export */}
-          <Route path="/data" element={<Suspense fallback={<LazyFallback />}><DataPage /></Suspense>} />
+          <Route path="/data" element={<SafePage name="data"><DataPage /></SafePage>} />
 
           {/* Construction */}
-          <Route path="/progress-claims" element={<Suspense fallback={<LazyFallback />}><ProgressClaimList /></Suspense>} />
-          <Route path="/variations" element={<Suspense fallback={<LazyFallback />}><VariationList /></Suspense>} />
-          <Route path="/retentions" element={<Suspense fallback={<LazyFallback />}><RetentionSummary /></Suspense>} />
+          <Route path="/progress-claims" element={<SafePage name="progress-claims"><ProgressClaimList /></SafePage>} />
+          <Route path="/variations" element={<SafePage name="variations"><VariationList /></SafePage>} />
+          <Route path="/retentions" element={<SafePage name="retentions"><RetentionSummary /></SafePage>} />
 
           {/* Floor Plan / Tables */}
-          <Route path="/floor-plan" element={<Suspense fallback={<LazyFallback />}><FloorPlan /></Suspense>} />
+          <Route path="/floor-plan" element={<SafePage name="floor-plan"><FloorPlan /></SafePage>} />
 
           {/* Kitchen Display */}
-          <Route path="/kitchen" element={<Suspense fallback={<LazyFallback />}><KitchenDisplay /></Suspense>} />
+          <Route path="/kitchen" element={<SafePage name="kitchen"><KitchenDisplay /></SafePage>} />
 
           {/* Franchise */}
-          <Route path="/franchise" element={<Suspense fallback={<LazyFallback />}><FranchiseDashboard /></Suspense>} />
-          <Route path="/locations" element={<Suspense fallback={<LazyFallback />}><LocationList /></Suspense>} />
-          <Route path="/stock-transfers" element={<Suspense fallback={<LazyFallback />}><StockTransfers /></Suspense>} />
+          <Route path="/franchise" element={<SafePage name="franchise"><FranchiseDashboard /></SafePage>} />
+          <Route path="/locations" element={<SafePage name="locations"><LocationList /></SafePage>} />
+          <Route path="/stock-transfers" element={<SafePage name="stock-transfers"><StockTransfers /></SafePage>} />
 
           {/* Assets */}
-          <Route path="/assets" element={<Suspense fallback={<LazyFallback />}><AssetList /></Suspense>} />
-          <Route path="/assets/:id" element={<Suspense fallback={<LazyFallback />}><AssetDetailRoute /></Suspense>} />
+          <Route path="/assets" element={<SafePage name="assets"><AssetList /></SafePage>} />
+          <Route path="/assets/:id" element={<SafePage name="asset-detail"><AssetDetailRoute /></SafePage>} />
 
           {/* Compliance */}
-          <Route path="/compliance" element={<Suspense fallback={<LazyFallback />}><ComplianceDashboard /></Suspense>} />
+          <Route path="/compliance" element={<SafePage name="compliance"><ComplianceDashboard /></SafePage>} />
 
           {/* Loyalty */}
-          <Route path="/loyalty" element={<Suspense fallback={<LazyFallback />}><LoyaltyConfig /></Suspense>} />
+          <Route path="/loyalty" element={<SafePage name="loyalty"><LoyaltyConfig /></SafePage>} />
 
           {/* Ecommerce */}
-          <Route path="/ecommerce" element={<Suspense fallback={<LazyFallback />}><WooCommerceSetup /></Suspense>} />
+          <Route path="/ecommerce" element={<SafePage name="ecommerce"><WooCommerceSetup /></SafePage>} />
 
           {/* Setup Wizard */}
-          <Route path="/setup" element={<Suspense fallback={<LazyFallback />}><SetupWizard /></Suspense>} />
+          <Route path="/setup" element={<SafePage name="setup"><SetupWizard /></SafePage>} />
 
           {/* Jobs v2 */}
-          <Route path="/jobs" element={<Suspense fallback={<LazyFallback />}><JobsPage /></Suspense>} />
-          <Route path="/jobs/board" element={<Suspense fallback={<LazyFallback />}><JobBoard /></Suspense>} />
-          <Route path="/jobs/:id" element={<Suspense fallback={<LazyFallback />}><JobDetailRoute /></Suspense>} />
+          <Route path="/jobs" element={<SafePage name="jobs"><JobsPage /></SafePage>} />
+          <Route path="/jobs/board" element={<SafePage name="job-board"><JobBoard /></SafePage>} />
+          <Route path="/jobs/:id" element={<SafePage name="job-detail"><JobDetailRoute /></SafePage>} />
 
           {/* Items */}
-          <Route path="/items" element={<Suspense fallback={<LazyFallback />}><ItemsPage /></Suspense>} />
+          <Route path="/items" element={<SafePage name="items"><ItemsPage /></SafePage>} />
 
           {/* Catalogue */}
-          <Route path="/catalogue" element={<Suspense fallback={<LazyFallback />}><CataloguePage /></Suspense>} />
+          <Route path="/catalogue" element={<SafePage name="catalogue"><CataloguePage /></SafePage>} />
 
           {/* Onboarding */}
-          <Route path="/onboarding" element={<Suspense fallback={<LazyFallback />}><OnboardingWizard /></Suspense>} />
+          <Route path="/onboarding" element={<SafePage name="onboarding"><OnboardingWizard /></SafePage>} />
 
           {/* Staff detail */}
-          <Route path="/staff/:id" element={<Suspense fallback={<LazyFallback />}><StaffDetailRoute /></Suspense>} />
+          <Route path="/staff/:id" element={<SafePage name="staff-detail"><StaffDetailRoute /></SafePage>} />
 
           {/* Franchise location detail */}
-          <Route path="/locations/:id" element={<Suspense fallback={<LazyFallback />}><LocationDetailRoute /></Suspense>} />
+          <Route path="/locations/:id" element={<SafePage name="location-detail"><LocationDetailRoute /></SafePage>} />
 
           {/* Catch-all */}
           <Route
@@ -392,7 +380,7 @@ function AppRoutes() {
       </Route>
 
       {/* Customer portal (public, token-based access) */}
-      <Route path="/portal/:token" element={<Suspense fallback={<LazyFallback />}><PortalPage /></Suspense>} />
+      <Route path="/portal/:token" element={<SafePage name="portal"><PortalPage /></SafePage>} />
 
       {/* Fallback */}
       <Route
@@ -407,7 +395,7 @@ function AppRoutes() {
 
 function App() {
   return (
-    <ErrorBoundary>
+    <ErrorBoundary level="app" name="root">
       <BrowserRouter>
         <LocaleProvider>
           <AuthProvider>

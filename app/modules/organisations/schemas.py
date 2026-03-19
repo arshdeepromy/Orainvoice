@@ -479,6 +479,9 @@ class PublicSignupRequest(BaseModel):
     captcha_code: str = Field(
         ..., min_length=6, max_length=6, description="CAPTCHA verification code"
     )
+    coupon_code: str | None = Field(
+        None, max_length=100, description="Optional coupon code for signup discount"
+    )
 
 
 class OrgCarjamUsageResponse(BaseModel):
@@ -494,17 +497,58 @@ class OrgCarjamUsageResponse(BaseModel):
 
 
 class PublicSignupResponse(BaseModel):
-    """Response after a successful public signup."""
+    """Response after a successful public signup.
+
+    For paid plans (requires_payment=True): returns pending_signup_id,
+    stripe_client_secret, plan_name, and payment_amount_cents so the
+    frontend can proceed to the payment step. No Organisation or User
+    records exist yet.
+
+    For trial plans (requires_payment=False): returns organisation_id,
+    admin_user_id, trial_ends_at, and signup_token as before.
+    """
 
     message: str
-    organisation_id: str
-    organisation_name: str
-    plan_id: str
-    admin_user_id: str
+    requires_payment: bool = False
+    payment_amount_cents: int = 0
     admin_email: str
-    trial_ends_at: datetime
-    stripe_setup_intent_client_secret: str | None  # None during trial period
-    signup_token: str
+
+    # Billing breakdown (present when requires_payment is True)
+    plan_amount_cents: int = 0
+    gst_amount_cents: int = 0
+    processing_fee_cents: int = 0
+    gst_percentage: float = 0.0
+
+    # Present when requires_payment is True (paid plan deferred flow)
+    pending_signup_id: str | None = None
+    stripe_client_secret: str | None = None
+    plan_name: str | None = None
+
+    # Present when requires_payment is False (trial plan immediate flow)
+    organisation_id: str | None = None
+    organisation_name: str | None = None
+    plan_id: str | None = None
+    admin_user_id: str | None = None
+    trial_ends_at: datetime | None = None
+    signup_token: str | None = None
+
+
+
+
+class ConfirmPaymentRequest(BaseModel):
+    """POST /api/v1/auth/signup/confirm-payment request body.
+
+    Uses pending_signup_id (not organisation_id) to look up the
+    Pending_Signup from Redis, preventing callers from referencing
+    arbitrary organisations.
+
+    Requirements: 7.1
+    """
+
+    payment_intent_id: str = Field(..., description="Stripe PaymentIntent ID")
+    pending_signup_id: str = Field(
+        ..., description="UUID of the pending signup stored in Redis"
+    )
 
 
 class SalespersonItem(BaseModel):

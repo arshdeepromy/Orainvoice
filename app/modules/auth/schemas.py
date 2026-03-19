@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class LoginRequest(BaseModel):
@@ -73,7 +73,8 @@ class PasskeyRegisterVerifyResponse(BaseModel):
 
 class PasskeyLoginOptionsRequest(BaseModel):
     """POST /api/v1/auth/passkey/login/options request body."""
-    email: EmailStr
+    mfa_token: str
+    email: EmailStr | None = None  # deprecated, kept for backwards compat
 
 
 class PasskeyLoginOptionsResponse(BaseModel):
@@ -83,9 +84,12 @@ class PasskeyLoginOptionsResponse(BaseModel):
 
 class PasskeyLoginVerifyRequest(BaseModel):
     """POST /api/v1/auth/passkey/login/verify request body."""
-    email: EmailStr
-    credential: dict
-    """Dict with keys: client_data_b64, authenticator_b64, signature_b64, credential_id_b64"""
+    mfa_token: str
+    credential_id: str
+    authenticator_data: str
+    client_data_json: str
+    signature: str
+    user_handle: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +106,11 @@ class MFAEnrolResponse(BaseModel):
     """MFA enrolment response with method-specific setup data."""
     method: str
     qr_uri: str | None = None
+    secret: str | None = None  # TOTP manual entry fallback
     message: str
+    provider: str | None = None  # SMS provider key (e.g. "connexus", "firebase_phone_auth")
+    firebase_config: dict | None = None  # Firebase client config when provider is firebase
+    phone_number: str | None = None  # Phone number for Firebase client-side flow
 
 
 class MFAVerifyRequest(BaseModel):
@@ -116,6 +124,66 @@ class MFABackupCodesResponse(BaseModel):
     """Response containing generated backup codes (one-time display)."""
     codes: list[str]
 
+
+class MFAMethodStatus(BaseModel):
+    """Status of a single MFA method for the current user."""
+    method: str
+    enabled: bool
+    verified_at: datetime | None = None
+    phone_number: str | None = None  # Masked, e.g. "***1234"
+    is_default: bool = False
+
+
+class MFAChallengeResponse(BaseModel):
+    """Response when MFA verification is needed (Redis-based challenge session)."""
+    mfa_required: bool = True
+    mfa_token: str
+    methods: list[str]  # ["totp", "sms", "email", "passkey"]
+    default_method: str | None = None  # user's preferred method
+
+
+class MFAChallengeSendRequest(BaseModel):
+    """POST /api/v1/auth/mfa/challenge/send request body."""
+    mfa_token: str
+    method: str  # "sms" or "email"
+
+
+class MFADisableRequest(BaseModel):
+    """DELETE /api/v1/auth/mfa/methods/{method} request body."""
+    password: str
+
+
+class MFASetDefaultRequest(BaseModel):
+    """PUT /api/v1/auth/mfa/default request body."""
+    method: str  # "totp", "sms", "email", "passkey"
+
+
+class MFAEnrolVerifyRequest(BaseModel):
+    """POST /api/v1/auth/mfa/enrol/verify request body."""
+    method: str  # "totp", "sms", "email"
+    code: str  # 6-digit verification code
+
+
+# ---------------------------------------------------------------------------
+# Passkey management schemas
+# ---------------------------------------------------------------------------
+
+class PasskeyCredentialInfo(BaseModel):
+    """Info for a single registered passkey credential."""
+    credential_id: str
+    device_name: str
+    created_at: datetime
+    last_used_at: datetime | None = None
+
+
+class PasskeyRenameRequest(BaseModel):
+    """PATCH /api/v1/auth/passkey/credentials/{credential_id} request body."""
+    device_name: str = Field(..., max_length=50)
+
+
+class PasskeyRemoveRequest(BaseModel):
+    """DELETE /api/v1/auth/passkey/credentials/{credential_id} request body."""
+    password: str
 
 
 # ---------------------------------------------------------------------------
@@ -274,3 +342,68 @@ class PublicPlanResponse(BaseModel):
 class PublicPlanListResponse(BaseModel):
     """GET /api/v1/auth/plans response."""
     plans: list[PublicPlanResponse]
+
+
+    # ---------------------------------------------------------------------------
+    # User profile schemas
+    # ---------------------------------------------------------------------------
+
+    class UserProfileResponse(BaseModel):
+        """GET /api/v1/auth/me response."""
+        id: str
+        email: str
+        first_name: str | None = None
+        last_name: str | None = None
+        role: str
+        mfa_methods: list[str] = []
+        has_password: bool = False
+
+
+    class UpdateProfileRequest(BaseModel):
+        """PUT /api/v1/auth/me request body."""
+        first_name: str | None = None
+        last_name: str | None = None
+
+
+    class ChangePasswordRequest(BaseModel):
+        """POST /api/v1/auth/change-password request body."""
+        current_password: str
+        new_password: str
+
+
+    class ChangePasswordResponse(BaseModel):
+        """POST /api/v1/auth/change-password response."""
+        message: str
+
+
+
+# ---------------------------------------------------------------------------
+# User profile schemas
+# ---------------------------------------------------------------------------
+
+class UserProfileResponse(BaseModel):
+    """GET /api/v1/auth/me response."""
+    id: str
+    email: str
+    first_name: str | None = None
+    last_name: str | None = None
+    role: str
+    mfa_methods: list[str] = []
+    has_password: bool = False
+
+
+class UpdateProfileRequest(BaseModel):
+    """PUT /api/v1/auth/me request body."""
+    first_name: str | None = None
+    last_name: str | None = None
+
+
+class ChangePasswordRequest(BaseModel):
+    """POST /api/v1/auth/change-password request body."""
+    current_password: str
+    new_password: str
+
+
+class ChangePasswordResponse(BaseModel):
+    """POST /api/v1/auth/change-password response."""
+    message: str

@@ -1,4 +1,4 @@
-# Development overrides — hot-reload, exposed DB/Redis ports for tooling
+# Development overrides — hot-reload backend, source-mounted frontend
 services:
   postgres:
     ports:
@@ -22,6 +22,8 @@ services:
       --host 0.0.0.0
       --port 8000
       --reload
+      --reload-exclude "tests/*"
+      --reload-exclude "scripts/*"
 
   frontend:
     volumes:
@@ -32,5 +34,7 @@ services:
       - ./frontend/tsconfig.json:/app/tsconfig.json:delegated
       - ./frontend/tailwind.config.js:/app/tailwind.config.js:delegated
       - ./frontend/postcss.config.js:/app/postcss.config.js:delegated
-      - ./frontend/package.json:/app/package.json:delegated
-      - frontend_node_modules:/app/node_modules
+      - ./frontend/watch-build.sh:/app/watch-build.sh:delegated
+      - frontend_dist:/app/dist
+    # Watch source files and rebuild on change (uses Node fs.watch, works on Alpine)
+    command: ["sh", "/app/watch-build.sh"]

@@ -531,6 +531,211 @@ async def sync_public_holidays_task() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 13. Check card expiry and send notifications (Req 9.1–9.6)
+# ---------------------------------------------------------------------------
+
+async def check_card_expiry_task() -> dict:
+    """Daily task: notify org admins about cards expiring within 2 months.
+
+    Selects only default cards or sole cards for their org.
+    Skips cards where expiry_notified_at is already set.
+    Wraps each org's processing in try/except for isolation.
+
+    Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6
+    """
+    from sqlalchemy import select, func as sa_func, update as sa_update
+    from app.core.database import async_session_factory
+    from app.modules.billing.models import OrgPaymentMethod
+    from app.modules.auth.models import User
+    from app.modules.notifications.service import log_email_sent
+
+    notified = 0
+    errors = 0
+
+    try:
+        now = datetime.now(timezone.utc)
+        current_year = now.year
+        current_month = now.month
+
+        # Compute the 2-month-ahead boundary (month/year)
+        boundary_month = current_month + 2
+        boundary_year = current_year
+        if boundary_month > 12:
+            boundary_month -= 12
+            boundary_year += 1
+
+        async with async_session_factory() as session:
+            # Query cards expiring within 2 months that haven't been notified yet.
+            # A card expiring in month M/year Y expires at end of that month.
+            # We want cards where (exp_year, exp_month) <= (boundary_year, boundary_month)
+            # AND the card hasn't already expired (exp_year, exp_month) >= (current_year, current_month).
+            result = await session.execute(
+                select(OrgPaymentMethod).where(
+                    OrgPaymentMethod.expiry_notified_at.is_(None),
+                    # Card hasn't already expired
+                    (
+                        (OrgPaymentMethod.exp_year > current_year)
+                        | (
+                            (OrgPaymentMethod.exp_year == current_year)
+                            & (OrgPaymentMethod.exp_month >= current_month)
+                        )
+                    ),
+                    # Card expires within 2 months
+                    (
+                        (OrgPaymentMethod.exp_year < boundary_year)
+                        | (
+                            (OrgPaymentMethod.exp_year == boundary_year)
+                            & (OrgPaymentMethod.exp_month <= boundary_month)
+                        )
+                    ),
+                )
+            )
+            candidates = list(result.scalars().all())
+
+        # Group candidates by org_id for sole-card check
+        org_cards: dict[uuid.UUID, list] = {}
+        for card in candidates:
+            org_cards.setdefault(card.org_id, []).append(card)
+
+        # Get total card counts per org to determine sole cards
+        org_total_counts: dict[uuid.UUID, int] = {}
+        if org_cards:
+            async with async_session_factory() as session:
+                for oid in org_cards:
+                    count_result = await session.execute(
+                        select(sa_func.count(OrgPaymentMethod.id)).where(
+                            OrgPaymentMethod.org_id == oid
+                        )
+                    )
+                    org_total_counts[oid] = count_result.scalar() or 0
+
+        for org_id, cards in org_cards.items():
+            try:
+                total_cards = org_total_counts.get(org_id, 0)
+                is_sole_org = total_cards == 1
+
+                for card in cards:
+                    # Only notify for default cards or sole cards
+                    if not card.is_default and not is_sole_org:
+                        continue
+
+                    # Find an org admin to notify
+                    async with async_session_factory() as session:
+                        admin_result = await session.execute(
+                            select(User).where(
+                                User.org_id == org_id,
+                                User.role == "org_admin",
+                                User.is_active.is_(True),
+                            ).limit(1)
+                        )
+                        admin_user = admin_result.scalar_one_or_none()
+
+                    if admin_user is None or not admin_user.email:
+                        logger.warning(
+                            "No active org admin for org %s — skipping card expiry notification",
+                            org_id,
+                        )
+                        continue
+
+                    # Build notification content (Req 9.3)
+                    exp_display = f"{card.exp_month:02d}/{card.exp_year}"
+                    brand_display = card.brand.capitalize() if card.brand else "Card"
+                    subject = (
+                        f"Your {brand_display} ending in {card.last4} expires {exp_display}"
+                    )
+                    billing_link = "/settings/billing"
+                    html_body = (
+                        f"<p>Your {brand_display} card ending in {card.last4} "
+                        f"expires {exp_display}.</p>"
+                        f'<p>Please <a href="{billing_link}">update your payment method</a> '
+                        f"to avoid any interruption to your subscription.</p>"
+                    )
+                    text_body = (
+                        f"Your {brand_display} card ending in {card.last4} "
+                        f"expires {exp_display}. "
+                        f"Please visit {billing_link} to update your payment method."
+                    )
+
+                    # Log and send notification
+                    async with async_session_factory() as session:
+                        async with session.begin():
+                            log_entry = await log_email_sent(
+                                session,
+                                org_id=org_id,
+                                recipient=admin_user.email,
+                                template_type="card_expiry_warning",
+                                subject=subject,
+                                status="queued",
+                                channel="email",
+                            )
+
+                    from app.tasks.notifications import send_email_task
+                    send_result = await send_email_task(
+                        str(org_id),
+                        log_entry["id"],
+                        admin_user.email,
+                        "",
+                        subject,
+                        html_body,
+                        text_body,
+                        None,
+                        None,
+                        "card_expiry_warning",
+                    )
+
+                    if send_result.get("success"):
+                        # Mark as notified so we don't re-send (Req 9.4)
+                        async with async_session_factory() as session:
+                            async with session.begin():
+                                await session.execute(
+                                    sa_update(OrgPaymentMethod)
+                                    .where(OrgPaymentMethod.id == card.id)
+                                    .values(expiry_notified_at=datetime.now(timezone.utc))
+                                )
+                        notified += 1
+                    else:
+                        logger.warning(
+                            "Failed to send card expiry notification for card %s org %s: %s",
+                            card.id, org_id, send_result.get("error", "unknown"),
+                        )
+                        errors += 1
+
+            except Exception as exc:
+                logger.exception(
+                    "Error processing card expiry for org %s: %s", org_id, exc
+                )
+                errors += 1
+
+        if notified > 0 or errors > 0:
+            logger.info("Card expiry check: %d notified, %d errors", notified, errors)
+        return {"notified": notified, "errors": errors}
+    except Exception as exc:
+        logger.exception("Failed to check card expiry: %s", exc)
+        return {"error": str(exc)}
+
+
+async def cleanup_stale_sessions_task() -> dict:
+    """Delete revoked and expired sessions to keep the table lean.
+
+    At scale, token rotation creates one new row per refresh and revokes the
+    old one.  Without cleanup the table grows unbounded.  This task runs
+    every hour and removes sessions that are either revoked or past their
+    expiry, keeping only active sessions.
+    """
+    from app.core.database import async_session_factory
+    from sqlalchemy import text
+
+    async with async_session_factory() as session:
+        result = await session.execute(text(
+            "DELETE FROM sessions WHERE is_revoked = true OR expires_at < now()"
+        ))
+        await session.commit()
+        return {"deleted": result.rowcount}
+
+
+
+
+# ---------------------------------------------------------------------------
 # Lightweight in-process scheduler
 # ---------------------------------------------------------------------------
 
@@ -550,6 +755,8 @@ _DAILY_TASKS: list[tuple] = [
     (process_customer_reminders_scheduled, 86400, "customer_reminders"),
     (process_reminder_queue_scheduled, 60, "reminder_queue_worker"),
     (sync_public_holidays_task, 15552000, "sync_public_holidays"),  # every ~6 months
+    (cleanup_stale_sessions_task, 3600, "cleanup_sessions"),  # every hour
+    (check_card_expiry_task, 86400, "check_card_expiry"),  # daily
 ]
 
 _stop_event: asyncio.Event | None = None

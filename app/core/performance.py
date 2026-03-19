@@ -41,10 +41,10 @@ class DBPoolConfig:
     total connections = pool_size × worker_count + max_overflow × worker_count.
     """
 
-    pool_size: int = 20
+    pool_size: int = 30
     """Steady-state connections per worker."""
 
-    max_overflow: int = 10
+    max_overflow: int = 15
     """Extra connections allowed above pool_size under burst load."""
 
     pool_pre_ping: bool = True
@@ -53,7 +53,7 @@ class DBPoolConfig:
     pool_recycle_seconds: int = 1_800
     """Recycle connections after 30 minutes to avoid server-side timeouts."""
 
-    pool_timeout_seconds: int = 30
+    pool_timeout_seconds: int = 5
     """Seconds to wait for a connection from the pool before raising."""
 
 
@@ -68,13 +68,13 @@ DB_POOL_CONFIG = DBPoolConfig()
 class RedisPoolConfig:
     """Redis connection pool settings."""
 
-    max_connections: int = 50
+    max_connections: int = 200
     """Max connections in the shared Redis pool."""
 
-    socket_timeout_seconds: float = 5.0
+    socket_timeout_seconds: float = 3.0
     """Timeout for individual Redis commands."""
 
-    socket_connect_timeout_seconds: float = 2.0
+    socket_connect_timeout_seconds: float = 1.0
     """Timeout for establishing a new Redis connection."""
 
 
