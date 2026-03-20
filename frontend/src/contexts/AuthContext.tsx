@@ -63,7 +63,7 @@ interface AuthContextValue {
   loginWithPasskey: () => Promise<{ mfaRequired: boolean }>
   logout: () => Promise<void>
   completeMfa: (code: string, method: string) => Promise<void>
-  completeFirebaseMfa: () => Promise<void>
+  completeFirebaseMfa: (firebaseIdToken: string) => Promise<void>
   refreshProfile: () => Promise<void>
   isGlobalAdmin: boolean
   isOrgAdmin: boolean
@@ -267,9 +267,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   const completeFirebaseMfa = useCallback(
-    async () => {
+    async (firebaseIdToken: string) => {
       const res = await apiClient.post('/auth/mfa/firebase-verify', {
         mfa_token: mfaSessionToken,
+        firebase_id_token: firebaseIdToken,
       })
       handleAuthResponse(res.data)
     },

@@ -237,6 +237,16 @@ class TestTerminateSession:
 # enforce_session_limit tests
 # ---------------------------------------------------------------------------
 
+def _mock_redis_lock():
+    """Return a patch context manager that mocks the Redis lock for enforce_session_limit."""
+    mock_lock = AsyncMock()
+    mock_lock.acquire.return_value = True
+    mock_lock.release.return_value = True
+    mock_pool = MagicMock()
+    mock_pool.lock.return_value = mock_lock
+    return patch("app.core.redis.redis_pool", mock_pool), mock_lock
+
+
 class TestEnforceSessionLimit:
     @pytest.mark.asyncio
     async def test_no_revocation_under_limit(self):
@@ -254,9 +264,13 @@ class TestEnforceSessionLimit:
         db = AsyncMock()
         db.execute.return_value = mock_result
 
-        revoked = await enforce_session_limit(db=db, user_id=user_id, max_sessions=5)
+        redis_patch, mock_lock = _mock_redis_lock()
+        with redis_patch:
+            revoked = await enforce_session_limit(db=db, user_id=user_id, max_sessions=5)
         assert revoked == 0
         assert all(s.is_revoked is False for s in sessions)
+        mock_lock.acquire.assert_awaited_once()
+        mock_lock.release.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_revokes_oldest_when_at_limit(self):
@@ -279,7 +293,9 @@ class TestEnforceSessionLimit:
         db = AsyncMock()
         db.execute.return_value = mock_result
 
-        revoked = await enforce_session_limit(db=db, user_id=user_id, max_sessions=3)
+        redis_patch, mock_lock = _mock_redis_lock()
+        with redis_patch:
+            revoked = await enforce_session_limit(db=db, user_id=user_id, max_sessions=3)
         assert revoked == 1
         assert sessions[0].is_revoked is True
         assert sessions[1].is_revoked is False
@@ -305,7 +321,9 @@ class TestEnforceSessionLimit:
         db = AsyncMock()
         db.execute.return_value = mock_result
 
-        revoked = await enforce_session_limit(db=db, user_id=user_id, max_sessions=2)
+        redis_patch, mock_lock = _mock_redis_lock()
+        with redis_patch:
+            revoked = await enforce_session_limit(db=db, user_id=user_id, max_sessions=2)
         assert revoked == 4
         for i in range(4):
             assert sessions[i].is_revoked is True
@@ -327,7 +345,8 @@ class TestEnforceSessionLimit:
         db = AsyncMock()
         db.execute.return_value = mock_result
 
-        with patch("app.modules.auth.service.settings") as mock_settings:
+        redis_patch, _ = _mock_redis_lock()
+        with redis_patch, patch("app.modules.auth.service.settings") as mock_settings:
             mock_settings.max_sessions_per_user = 5
             revoked = await enforce_session_limit(db=db, user_id=user_id)
 
@@ -344,10 +363,43 @@ class TestEnforceSessionLimit:
         db = AsyncMock()
         db.execute.return_value = mock_result
 
-        revoked = await enforce_session_limit(
-            db=db, user_id=uuid.uuid4(), max_sessions=5
-        )
+        redis_patch, _ = _mock_redis_lock()
+        with redis_patch:
+            revoked = await enforce_session_limit(
+                db=db, user_id=uuid.uuid4(), max_sessions=5
+            )
         assert revoked == 0
+
+    @pytest.mark.asyncio
+    async def test_lock_acquire_failure_raises(self):
+        """ValueError raised when Redis lock cannot be acquired."""
+        from app.modules.auth.service import enforce_session_limit
+
+        mock_lock = AsyncMock()
+        mock_lock.acquire.return_value = False
+        mock_pool = MagicMock()
+        mock_pool.lock.return_value = mock_lock
+
+        db = AsyncMock()
+
+        with patch("app.core.redis.redis_pool", mock_pool):
+            with pytest.raises(ValueError, match="Could not acquire session lock"):
+                await enforce_session_limit(db=db, user_id=uuid.uuid4(), max_sessions=5)
+
+    @pytest.mark.asyncio
+    async def test_lock_released_on_exception(self):
+        """Redis lock is released even when session logic raises."""
+        from app.modules.auth.service import enforce_session_limit
+
+        redis_patch, mock_lock = _mock_redis_lock()
+
+        db = AsyncMock()
+        db.execute.side_effect = RuntimeError("DB error")
+
+        with redis_patch:
+            with pytest.raises(RuntimeError, match="DB error"):
+                await enforce_session_limit(db=db, user_id=uuid.uuid4(), max_sessions=5)
+        mock_lock.release.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

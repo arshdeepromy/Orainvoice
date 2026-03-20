@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7
     refresh_token_remember_days: int = 30
 
+    # --- JWT RS256 Migration (REM-22) ---
+    jwt_rs256_private_key_path: str = ""  # Path to RSA private key PEM
+    jwt_rs256_public_key_path: str = ""   # Path to RSA public key PEM
+
     # --- Stripe ---
     stripe_secret_key: str = ""
     stripe_publishable_key: str = ""
@@ -70,6 +74,15 @@ class Settings(BaseSettings):
     webauthn_rp_id: str = "localhost"
     webauthn_rp_name: str = "OraInvoice"
     webauthn_origin: str = "http://localhost:5173"
+
+    # --- Firebase ---
+    firebase_project_id: str = ""
+
+    # --- Connexus Webhooks ---
+    connexus_webhook_secret: str = ""
+
+    # --- Portal Token TTL (REM-15) ---
+    portal_token_ttl_days: int = 90
 
     # --- Encryption ---
     encryption_master_key: str = "change-me-in-production"

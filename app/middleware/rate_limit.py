@@ -8,8 +8,10 @@ Enforces three tiers of rate limiting using Redis sorted sets:
 When a limit is exceeded the middleware returns HTTP 429 with a
 ``Retry-After`` header.
 
-When Redis is unavailable the middleware fails closed — returning
-HTTP 503 (Service Unavailable) to prevent unlimited unthrottled access.
+When Redis is unavailable the middleware uses a bifurcated strategy:
+  * Auth endpoints (/auth/, /login, /mfa/, /password-reset/): fail closed
+    with HTTP 503 (Service Unavailable) to prevent brute-force attacks.
+  * Non-auth endpoints: fail open to maintain application availability.
 
 Implemented as pure ASGI middleware to avoid request body stream corruption.
 """
@@ -112,7 +114,7 @@ class RateLimitMiddleware:
             self._redis = redis_pool
             await self._redis.ping()
         except Exception:
-            logger.warning("Redis unavailable — rate limiter will fail open for this request")
+            logger.warning("Redis unavailable — rate limiter cannot connect")
             self._redis = None
         return self._redis
 
@@ -125,19 +127,43 @@ class RateLimitMiddleware:
         redis = await self._get_redis()
 
         if not redis:
-            # Fail open — allow the request through when Redis is unavailable.
-            # Logging the event so operators can investigate.
-            logger.warning("Rate limiter Redis unavailable — allowing request through")
+            path = request.url.path
+            if is_auth_endpoint(path):
+                # Fail closed for auth endpoints — block to prevent brute-force.
+                logger.error(
+                    "Rate limiter Redis unavailable — blocking auth request: %s", path,
+                )
+                response = JSONResponse(
+                    status_code=503,
+                    content={"detail": "Service temporarily unavailable. Please try again shortly."},
+                )
+                await response(scope, receive, send)
+                return
+            # Fail open for non-auth endpoints to maintain availability.
+            logger.warning("Rate limiter Redis unavailable — allowing non-auth request through: %s", path)
             await self.app(scope, receive, send)
             return
 
         try:
             await self._apply_rate_limits(scope, receive, send, request, redis)
         except Exception:
-            # Redis went away mid-request — fail open.
-            logger.warning("Rate limiter Redis error during check — allowing request through")
+            # Redis went away mid-request — bifurcate response.
             self._redis = None  # Reset so next request retries connection
-            await self.app(scope, receive, send)
+            path = request.url.path
+            if is_auth_endpoint(path):
+                logger.error(
+                    "Rate limiter Redis error during check — blocking auth request: %s", path,
+                )
+                response = JSONResponse(
+                    status_code=503,
+                    content={"detail": "Service temporarily unavailable. Please try again shortly."},
+                )
+                await response(scope, receive, send)
+            else:
+                logger.warning(
+                    "Rate limiter Redis error during check — allowing non-auth request through: %s", path,
+                )
+                await self.app(scope, receive, send)
 
     async def _apply_rate_limits(
         self, scope: Scope, receive: Receive, send: Send, request: Request, redis: Redis,

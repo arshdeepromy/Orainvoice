@@ -15,7 +15,8 @@ import time
 from typing import Any
 
 import httpx
-from jose import jwt, JWTError
+import jwt
+from jwt.exceptions import InvalidTokenError
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ async def verify_firebase_id_token(
     # Decode header to get the key ID (kid)
     try:
         unverified_header = jwt.get_unverified_header(id_token)
-    except JWTError as e:
+    except InvalidTokenError as e:
         raise ValueError(f"Invalid token header: {e}")
 
     if unverified_header.get("alg") != "RS256":
@@ -130,7 +131,7 @@ async def verify_firebase_id_token(
             audience=project_id,
             issuer=expected_issuer,
         )
-    except JWTError as e:
+    except InvalidTokenError as e:
         raise ValueError(f"Token verification failed: {e}")
 
     # sub must be non-empty

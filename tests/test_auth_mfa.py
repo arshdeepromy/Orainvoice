@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pyotp
 import pytest
-from jose import jwt as jose_jwt
+import jwt as jose_jwt
 
 import app.modules.admin.models  # noqa: F401 — resolve relationships
 

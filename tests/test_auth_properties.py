@@ -456,7 +456,14 @@ class TestProperty10SessionLimitEnforcement:
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_mock_scalars_all(sessions))
 
-        revoked = await enforce_session_limit(db=db, user_id=user_id, max_sessions=max_sessions)
+        mock_lock = AsyncMock()
+        mock_lock.acquire.return_value = True
+        mock_lock.release.return_value = True
+        mock_pool = MagicMock()
+        mock_pool.lock.return_value = mock_lock
+
+        with patch("app.core.redis.redis_pool", mock_pool):
+            revoked = await enforce_session_limit(db=db, user_id=user_id, max_sessions=max_sessions)
 
         # Count sessions that are still active (not revoked by the function)
         still_active = sum(1 for s in sessions if not s.is_revoked)

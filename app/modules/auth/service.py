@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 import logging
+import random
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -256,7 +258,7 @@ async def authenticate_user(
 
 def create_access_token_mfa_pending(user_id: uuid.UUID) -> str:
     """Create a short-lived token indicating MFA is still required."""
-    from jose import jwt as jose_jwt
+    import jwt
 
     now = datetime.now(timezone.utc)
     payload = {
@@ -265,7 +267,7 @@ def create_access_token_mfa_pending(user_id: uuid.UUID) -> str:
         "iat": now,
         "exp": now + timedelta(minutes=5),
     }
-    return jose_jwt.encode(
+    return jwt.encode(
         payload, settings.jwt_secret, algorithm=settings.jwt_algorithm
     )
 
@@ -296,18 +298,144 @@ async def _audit_failed_login(
     )
 
 
+
 async def _send_permanent_lockout_email(email: str) -> None:
     """Send an email alert when an account is permanently locked.
 
-    In production this dispatches via the notification infrastructure.
-    For now we log the intent.
+    Uses the same SMTP email-provider infrastructure as other transactional
+    emails.  Wrapped in a top-level try/except so a delivery failure never
+    blocks the lockout process (Requirement 7.3).
     """
-    logger.warning(
-        "Account permanently locked — unlock email queued for %s",
-        email,
-    )
-    # TODO: Replace with Celery task dispatching a real email via
-    # app.integrations.brevo once the Notification_Module is implemented.
+    try:
+        import smtplib
+        import json as _json
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        from sqlalchemy import select as _select
+        from app.modules.admin.models import EmailProvider
+        from app.core.encryption import envelope_decrypt_str
+        from app.core.database import async_session_factory
+
+        support_url = f"{settings.frontend_base_url}/support"
+        platform_name = "WorkshopPro NZ"
+        reason = "Too many failed login attempts (10 consecutive failures)."
+
+        subject = f"Your {platform_name} account has been locked"
+
+        html_body = f"""
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: #1f2937; font-size: 24px; margin: 0;">{platform_name}</h1>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+            Your account has been permanently locked.
+          </p>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+            <strong>Reason:</strong> {reason}
+          </p>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+            If you did not make these login attempts, please contact our support
+            team immediately to secure your account:
+          </p>
+
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="{support_url}"
+               style="display: inline-block; padding: 14px 32px; background-color: #2563eb;
+                      color: #ffffff; text-decoration: none; border-radius: 8px;
+                      font-size: 16px; font-weight: 600;">
+              Contact Support
+            </a>
+          </div>
+
+          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;" />
+
+          <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+            {platform_name} — Workshop management made simple
+          </p>
+        </div>
+        """
+
+        text_body = (
+            f"Your {platform_name} account has been locked.\n\n"
+            f"Reason: {reason}\n\n"
+            f"If you did not make these login attempts, please contact support "
+            f"immediately to secure your account:\n"
+            f"{support_url}\n"
+        )
+
+        async with async_session_factory() as session:
+            provider_result = await session.execute(
+                _select(EmailProvider)
+                .where(
+                    EmailProvider.is_active == True,
+                    EmailProvider.credentials_set == True,
+                )
+                .order_by(EmailProvider.priority)
+            )
+            providers = list(provider_result.scalars().all())
+
+        if not providers:
+            logger.warning(
+                "No active email provider configured — cannot send lockout email to %s",
+                email,
+            )
+            return
+
+        last_error = None
+        for provider in providers:
+            try:
+                creds_json = envelope_decrypt_str(provider.credentials_encrypted)
+                credentials = _json.loads(creds_json)
+
+                smtp_host = provider.smtp_host
+                smtp_port = provider.smtp_port or 587
+                smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
+                username = credentials.get("username") or credentials.get("api_key", "")
+                password = credentials.get("password") or credentials.get("api_key", "")
+
+                config = provider.config or {}
+                from_email = config.get("from_email") or username
+                from_name = config.get("from_name") or platform_name
+
+                msg = MIMEMultipart("alternative")
+                msg["From"] = f"{from_name} <{from_email}>"
+                msg["To"] = email
+                msg["Subject"] = subject
+                msg.attach(MIMEText(text_body, "plain"))
+                msg.attach(MIMEText(html_body, "html"))
+
+                if smtp_encryption == "ssl":
+                    server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+                else:
+                    server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+                    if smtp_encryption == "tls":
+                        server.starttls()
+
+                if username and password:
+                    server.login(username, password)
+
+                server.sendmail(from_email, email, msg.as_string())
+                server.quit()
+                logger.info("Lockout email sent to %s via %s", email, provider.provider_key)
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Email provider %s failed for lockout email to %s: %s",
+                    provider.provider_key, email, e,
+                )
+                continue
+
+        logger.warning(
+            "All email providers failed for lockout email to %s: %s",
+            email, last_error,
+        )
+    except Exception:
+        logger.exception("Failed to send lockout email to %s", email)
+
 
 
 async def check_ip_allowlist(
@@ -1560,34 +1688,52 @@ async def enforce_session_limit(
 ) -> int:
     """Ensure active sessions don't exceed the configured maximum.
 
+    Acquires a Redis distributed lock keyed on ``session_lock:{user_id}``
+    before checking the session count to prevent race conditions from
+    concurrent login attempts.
+
     If the active session count is >= ``max_sessions``, revokes the
     oldest session(s) to make room for one new session.
 
     Returns the number of sessions revoked.
+
+    Raises ``ValueError`` if the lock cannot be acquired within 5 seconds.
     """
     from sqlalchemy import and_
 
-    if max_sessions is None:
-        max_sessions = settings.max_sessions_per_user
+    from app.core.redis import redis_pool
 
-    now = datetime.now(timezone.utc)
-    result = await db.execute(
-        select(Session).where(
-            and_(
-                Session.user_id == user_id,
-                Session.is_revoked == False,  # noqa: E712
-                Session.expires_at > now,
-            )
-        ).order_by(Session.created_at.asc())
-    )
-    active_sessions = result.scalars().all()
+    lock_key = f"session_lock:{user_id}"
+    lock = redis_pool.lock(lock_key, timeout=5, blocking_timeout=5)
 
-    revoked = 0
-    while len(active_sessions) - revoked >= max_sessions:
-        active_sessions[revoked].is_revoked = True
-        revoked += 1
+    if not await lock.acquire():
+        raise ValueError("Could not acquire session lock. Please try again.")
 
-    return revoked
+    try:
+        if max_sessions is None:
+            max_sessions = settings.max_sessions_per_user
+
+        now = datetime.now(timezone.utc)
+        result = await db.execute(
+            select(Session).where(
+                and_(
+                    Session.user_id == user_id,
+                    Session.is_revoked == False,  # noqa: E712
+                    Session.expires_at > now,
+                )
+            ).order_by(Session.created_at.asc())
+        )
+        active_sessions = result.scalars().all()
+
+        revoked = 0
+        while len(active_sessions) - revoked >= max_sessions:
+            active_sessions[revoked].is_revoked = True
+            revoked += 1
+
+        return revoked
+    finally:
+        await lock.release()
+
 
 # ---------------------------------------------------------------------------
 # Password recovery (Task 4.8)
@@ -1636,7 +1782,9 @@ async def request_password_reset(
     )
 
     if user is None or not user.is_active:
-        # Silently return — uniform response
+        # Random delay to match real processing time — mitigates timing
+        # side-channel that could reveal whether an email exists (REM-18).
+        await asyncio.sleep(random.uniform(0.5, 1.5))
         return
 
     # Generate a secure reset token

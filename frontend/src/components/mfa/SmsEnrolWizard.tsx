@@ -197,7 +197,10 @@ export function SmsEnrolWizard({ onComplete, onCancel }: SmsEnrolWizardProps) {
       if (isFirebase && firebaseConfirmationRef.current) {
         // Firebase handles its own code verification via confirm()
         try {
-          await firebaseConfirmationRef.current.confirm(code)
+          const confirmResult = await firebaseConfirmationRef.current.confirm(code) as { user: { getIdToken: () => Promise<string> } }
+          const firebaseIdToken = await confirmResult.user.getIdToken()
+          // Firebase verified the code — tell the backend to mark enrolment as verified
+          await apiClient.post('/auth/mfa/enrol/firebase-verify', { firebase_id_token: firebaseIdToken })
         } catch (fbErr: unknown) {
           const firebaseErr = fbErr as { code?: string; message?: string }
           console.error('Firebase confirm error:', firebaseErr.code, firebaseErr.message)
@@ -214,8 +217,6 @@ export function SmsEnrolWizard({ onComplete, onCancel }: SmsEnrolWizardProps) {
           }
           return
         }
-        // Firebase verified the code — tell the backend to mark enrolment as verified
-        await apiClient.post('/auth/mfa/enrol/firebase-verify')
         firebaseConfirmationRef.current = null
       } else if (isFirebase && !firebaseConfirmationRef.current) {
         setError('Verification session lost. Please request a new code.')

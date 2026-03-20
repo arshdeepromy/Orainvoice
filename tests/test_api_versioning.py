@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 
 from app.config import settings
 from app.middleware.api_version import (

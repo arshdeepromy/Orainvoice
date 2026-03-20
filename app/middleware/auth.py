@@ -7,12 +7,20 @@ Implemented as pure ASGI middleware (not BaseHTTPMiddleware) to avoid
 request body stream corruption when stacked with many middleware layers.
 """
 
-from jose import JWTError, jwt
+import logging
+import uuid as _uuid
+from datetime import datetime, timezone
+
+import jwt
+from jwt.exceptions import InvalidTokenError
+from sqlalchemy import select
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Paths that do not require authentication.
 PUBLIC_PATHS: set[str] = {
@@ -79,10 +87,22 @@ PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/v2/public/",
 )
 
+# Portal prefixes that require token expiry validation (REM-15).
+_PORTAL_PREFIXES: tuple[str, ...] = (
+    "/api/v1/portal/",
+    "/api/v2/portal/",
+)
+
 # Paths considered "auth endpoints" for stricter rate limiting.
 AUTH_ENDPOINT_PREFIXES: tuple[str, ...] = (
     "/api/v1/auth/",
     "/api/v2/auth/",
+)
+
+# Paths that are global-admin-only (not tenant-scoped).
+_ADMIN_ONLY_PREFIXES: tuple[str, ...] = (
+    "/api/v1/admin/",
+    "/api/v2/admin/",
 )
 
 
@@ -96,6 +116,23 @@ def _is_public(path: str) -> bool:
 def is_auth_endpoint(path: str) -> bool:
     """Return True if the path is an authentication endpoint."""
     return any(path.startswith(prefix) for prefix in AUTH_ENDPOINT_PREFIXES)
+
+
+def _is_tenant_scoped(path: str) -> bool:
+    """Return True if the path is a tenant-scoped endpoint.
+
+    Tenant-scoped endpoints are non-public, non-auth, non-admin paths that
+    operate on organisation-specific data and require an org context.
+    Paths in GLOBAL_ADMIN_DENIED_PREFIXES are excluded because RBAC already
+    blocks global admins from those paths.
+    """
+    if _is_public(path):
+        return False
+    if is_auth_endpoint(path):
+        return False
+    if any(path.startswith(p) for p in _ADMIN_ONLY_PREFIXES):
+        return False
+    return True
 
 
 class AuthMiddleware:
@@ -116,6 +153,13 @@ class AuthMiddleware:
         path = request.url.path
 
         if _is_public(path):
+            # REM-15: Check portal token expiry for portal paths.
+            if any(path.startswith(prefix) for prefix in _PORTAL_PREFIXES):
+                expired_response = await self._check_portal_token_expiry(path)
+                if expired_response is not None:
+                    await expired_response(scope, receive, send)
+                    return
+
             request.state.user_id = None
             request.state.org_id = None
             request.state.role = None
@@ -135,12 +179,24 @@ class AuthMiddleware:
 
         token = auth_header.split(" ", 1)[1]
         try:
-            payload = jwt.decode(
-                token,
-                settings.jwt_secret,
-                algorithms=[settings.jwt_algorithm],
-            )
-        except JWTError:
+            # REM-22: Use dual-algorithm verification (RS256 first, HS256 fallback)
+            # during the migration period.
+            from app.modules.auth.jwt import _get_verification_keys
+
+            verification_keys = _get_verification_keys()
+            payload = None
+            last_error: Exception | None = None
+            for key, algorithms in reversed(verification_keys):
+                try:
+                    payload = jwt.decode(token, key, algorithms=algorithms)
+                    break
+                except InvalidTokenError as exc:
+                    last_error = exc
+                    continue
+
+            if payload is None:
+                raise last_error  # type: ignore[misc]
+        except InvalidTokenError:
             response = JSONResponse(
                 status_code=401,
                 content={"detail": "Invalid or expired token"},
@@ -166,4 +222,91 @@ class AuthMiddleware:
         request.state.assigned_location_ids = payload.get("assigned_location_ids", [])
         request.state.franchise_group_id = payload.get("franchise_group_id")
 
+        # REM-10: Global admin org context enforcement.
+        # Global admins accessing tenant-scoped endpoints must have an active
+        # org context stored in Redis. Without it, return 403.
+        if role == "global_admin" and _is_tenant_scoped(path):
+            try:
+                from app.core.redis import redis_pool
+
+                redis_key = f"admin_org_ctx:{user_id}"
+                active_org_id = await redis_pool.get(redis_key)
+                if not active_org_id:
+                    response = JSONResponse(
+                        status_code=403,
+                        content={"detail": "Organisation context required"},
+                    )
+                    await response(scope, receive, send)
+                    return
+                # Inject the org context into request.state so downstream
+                # handlers can use it for tenant-scoped queries.
+                request.state.org_id = active_org_id
+            except Exception:
+                logger.warning(
+                    "Failed to check org context for global_admin user %s",
+                    user_id,
+                    exc_info=True,
+                )
+                response = JSONResponse(
+                    status_code=403,
+                    content={"detail": "Organisation context required"},
+                )
+                await response(scope, receive, send)
+                return
+
         await self.app(scope, receive, send)
+
+    # ------------------------------------------------------------------
+    # REM-15: Portal token expiry check
+    # ------------------------------------------------------------------
+
+    async def _check_portal_token_expiry(self, path: str) -> JSONResponse | None:
+        """Return a 401 JSONResponse if the portal token in *path* has expired.
+
+        Returns ``None`` when the token is still valid or when the token
+        cannot be parsed (let the downstream handler deal with it).
+        """
+        # Extract the token segment — first path component after the prefix.
+        token_str: str | None = None
+        for prefix in _PORTAL_PREFIXES:
+            if path.startswith(prefix):
+                remainder = path[len(prefix):]
+                token_str = remainder.split("/")[0]
+                break
+
+        if not token_str:
+            return None
+
+        try:
+            token_uuid = _uuid.UUID(token_str)
+        except (ValueError, AttributeError):
+            return None  # Let the downstream handler return a proper 400.
+
+        try:
+            from app.core.database import async_session_factory
+            from app.modules.customers.models import Customer
+
+            async with async_session_factory() as db:
+                result = await db.execute(
+                    select(Customer.portal_token_expires_at).where(
+                        Customer.portal_token == token_uuid
+                    )
+                )
+                row = result.first()
+                if row is None:
+                    return None  # Unknown token — downstream will 400.
+
+                expires_at = row[0]
+                if expires_at is not None and expires_at < datetime.now(timezone.utc):
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": "Portal token has expired"},
+                    )
+        except Exception:
+            logger.warning(
+                "Failed to check portal token expiry for %s",
+                token_str,
+                exc_info=True,
+            )
+
+        return None

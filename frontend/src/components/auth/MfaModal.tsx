@@ -330,8 +330,9 @@ export function MfaModal({ open, onClose, onSuccess }: MfaModalProps) {
     try {
       // If Firebase was used to send the code, verify via Firebase then complete MFA
       if (method === 'sms' && firebaseConfirmationRef.current) {
-        await firebaseConfirmationRef.current.confirm(code)
-        await completeFirebaseMfa()
+        const confirmResult = await firebaseConfirmationRef.current.confirm(code)
+        const firebaseIdToken = await confirmResult.user.getIdToken()
+        await completeFirebaseMfa(firebaseIdToken)
         firebaseConfirmationRef.current = null
       } else {
         await completeMfa(code, method)

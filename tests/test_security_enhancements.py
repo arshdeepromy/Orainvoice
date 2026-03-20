@@ -106,7 +106,7 @@ class TestCSPHeaders:
         assert "frame-ancestors 'none'" in csp
 
     def test_csp_connect_src_allowlist(self, client):
-        """connect-src should only allow self and Stripe API."""
+        """connect-src should allow self, Stripe API, and Firebase domains."""
         resp = client.get("/test")
         csp = resp.headers["Content-Security-Policy"]
         connect_directive = [
@@ -117,6 +117,9 @@ class TestCSPHeaders:
         allowed = connect_directive[0]
         assert "'self'" in allowed
         assert "https://api.stripe.com" in allowed
+        assert "https://identitytoolkit.googleapis.com" in allowed
+        assert "https://www.googleapis.com" in allowed
+        assert "https://firebaseinstallations.googleapis.com" in allowed
         # No wildcard origins
         assert "* " not in allowed
 

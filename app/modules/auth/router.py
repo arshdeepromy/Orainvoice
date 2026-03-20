@@ -949,8 +949,12 @@ async def mfa_enrol_firebase_verify(
 
     Security: the request is already authenticated via JWT (the user must
     be logged in).  We also verify that Firebase is actually the configured
-    MFA provider to prevent abuse.
+    MFA provider to prevent abuse.  The server now verifies the Firebase ID
+    token server-side (REM-01) and checks that the phone_number claim
+    matches the pending enrolment phone number.
     """
+    from app.config import settings
+
     try:
         user = await _get_current_user(request, db)
     except (ValueError, Exception):
@@ -965,6 +969,25 @@ async def mfa_enrol_firebase_verify(
             status_code=400,
             content={"detail": "Firebase is not the configured MFA SMS provider"},
         )
+
+    # Extract firebase_id_token from request body
+    body = await request.json()
+    firebase_id_token = body.get("firebase_id_token", "")
+
+    # --- REM-01: Server-side Firebase ID token verification ---
+    if firebase_id_token:
+        from app.core.firebase_token import verify_firebase_id_token
+
+        try:
+            claims = await verify_firebase_id_token(
+                firebase_id_token, settings.firebase_project_id
+            )
+        except ValueError as exc:
+            logger.warning("Firebase token verification failed during enrolment: %s", exc)
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or missing Firebase ID token"},
+            )
 
     # Mark the pending SMS enrolment as verified
     from sqlalchemy import select
@@ -981,6 +1004,14 @@ async def mfa_enrol_firebase_verify(
     if pending is None:
         return JSONResponse(status_code=400, content={"detail": "No pending SMS enrolment found"})
 
+    # Compare phone_number claim against pending enrolment phone
+    if firebase_id_token and pending.phone_number:
+        if claims.get("phone_number") != pending.phone_number:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Phone number mismatch"},
+            )
+
     pending.verified = True
     pending.verified_at = datetime.now(timezone.utc)
 
@@ -996,6 +1027,7 @@ async def mfa_enrol_firebase_verify(
     )
 
     return JSONResponse(content={"detail": "MFA method verified successfully"})
+
 
 
 @router.post(
@@ -1200,13 +1232,15 @@ async def mfa_firebase_verify(
     succeeds, it calls this endpoint with the mfa_token to complete login.
 
     Security: the mfa_token proves the user started a valid login flow.
-    Firebase Phone Auth verification happened client-side.  We also verify
-    that Firebase is the configured MFA provider.
+    The server now verifies the Firebase ID token server-side (REM-01)
+    and checks that the phone_number claim matches the challenge session.
     """
     from app.modules.auth.mfa_service import _get_challenge_session, _resolve_mfa_sms_provider
+    from app.config import settings
 
     body = await request.json()
     mfa_token = body.get("mfa_token", "")
+    firebase_id_token = body.get("firebase_id_token", "")
 
     if not mfa_token:
         return JSONResponse(status_code=400, content={"detail": "Missing mfa_token"})
@@ -1224,6 +1258,29 @@ async def mfa_firebase_verify(
             status_code=400,
             content={"detail": "Firebase is not the configured MFA SMS provider"},
         )
+
+    # --- REM-01: Server-side Firebase ID token verification ---
+    if firebase_id_token:
+        from app.core.firebase_token import verify_firebase_id_token
+
+        try:
+            claims = await verify_firebase_id_token(
+                firebase_id_token, settings.firebase_project_id
+            )
+        except ValueError as exc:
+            logger.warning("Firebase token verification failed: %s", exc)
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or missing Firebase ID token"},
+            )
+
+        # Compare phone_number claim against challenge session phone
+        session_phone = session_data.get("phone_number")
+        if session_phone and claims.get("phone_number") != session_phone:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Phone number mismatch"},
+            )
 
     # Token is valid — complete the MFA flow
     # Reuse verify_mfa with firebase_verified=True to skip code check
@@ -1262,6 +1319,7 @@ async def mfa_firebase_verify(
         path="/",
     )
     return response
+
 
 
 @router.get(

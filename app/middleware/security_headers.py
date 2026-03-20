@@ -19,6 +19,8 @@ _STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _CSRF_EXEMPT_PATHS: set[str] = {
     "/api/v1/payments/stripe/webhook",
     "/api/v2/payments/stripe/webhook",
+    "/api/webhooks/connexus/incoming",
+    "/api/webhooks/connexus/status",
 }
 
 

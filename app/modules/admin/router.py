@@ -209,16 +209,19 @@ async def list_orgs(
         except ValueError:
             return JSONResponse(status_code=400, content={"detail": "Invalid plan_id format"})
 
-    data = await list_organisations(
-        db,
-        search=search,
-        status=status,
-        plan_id=plan_uuid,
-        sort_by=sort_by,
-        sort_order=sort_order,
-        page=page,
-        page_size=page_size,
-    )
+    try:
+        data = await list_organisations(
+            db,
+            search=search,
+            status=status,
+            plan_id=plan_uuid,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return OrgListResponse(
         organisations=[OrgListItem(**o) for o in data["organisations"]],
@@ -1250,11 +1253,39 @@ async def backup_integration_settings(
     SMS providers, and email providers as a downloadable JSON backup.
 
     Only Global_Admin users can access this endpoint.
+    Requires password re-confirmation via x-confirm-password header.
     """
     from app.modules.admin.service import export_integration_settings
+    from app.modules.auth.password import verify_password
+    from app.modules.auth.models import User
+    from app.core.audit import write_audit_log
+
+    # --- Password re-confirmation (REM-04) ---
+    confirm_password = request.headers.get("x-confirm-password")
+    if not confirm_password:
+        return JSONResponse(status_code=401, content={"detail": "Password confirmation required"})
+
+    user_id = getattr(request.state, "user_id", None)
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user or not verify_password(confirm_password, user.password_hash):
+        return JSONResponse(status_code=400, content={"detail": "Invalid password"})
 
     data = await export_integration_settings(db)
+
+    # --- Audit log (REM-04) ---
+    ip_address = request.client.host if request.client else None
+    await write_audit_log(
+        session=db,
+        action="admin.integration_backup_exported",
+        entity_type="integration_backup",
+        user_id=user_id,
+        ip_address=ip_address,
+    )
+    await db.commit()
+
     return JSONResponse(content=data)
+
 
 
 @router.post(
@@ -2849,17 +2880,20 @@ async def list_users(
         except ValueError:
             return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
 
-    data = await list_all_users(
-        db,
-        search=search,
-        role=role,
-        org_id=org_uuid,
-        is_active=is_active,
-        sort_by=sort_by,
-        sort_order=sort_order,
-        page=page,
-        page_size=page_size,
-    )
+    try:
+        data = await list_all_users(
+            db,
+            search=search,
+            role=role,
+            org_id=org_uuid,
+            is_active=is_active,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     return data
 
 
@@ -2996,17 +3030,20 @@ async def list_users(
         except ValueError:
             return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
 
-    data = await list_all_users(
-        db,
-        search=search,
-        role=role,
-        org_id=org_uuid,
-        is_active=is_active,
-        sort_by=sort_by,
-        sort_order=sort_order,
-        page=page,
-        page_size=page_size,
-    )
+    try:
+        data = await list_all_users(
+            db,
+            search=search,
+            role=role,
+            org_id=org_uuid,
+            is_active=is_active,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     return data
 
 
@@ -3054,13 +3091,15 @@ async def update_user_status(
 
 # ── Demo Account Reset ──────────────────────────────────────────────
 
+_DEMO_RESET_ALLOWED_ENVIRONMENTS = {"development"}
+
+
 @router.post(
     "/demo/reset",
     responses={
         200: {"description": "Demo account reset successfully"},
-        400: {"description": "Not a development environment"},
         401: {"description": "Authentication required"},
-        403: {"description": "Global_Admin role required"},
+        403: {"description": "Not a development environment / Global_Admin role required"},
     },
     summary="Reset the demo organisation account",
     dependencies=[require_role("global_admin")],
@@ -3076,10 +3115,10 @@ async def reset_demo_account(
     """
     from app.config import settings as app_settings
 
-    if app_settings.environment != "development":
+    if app_settings.environment not in _DEMO_RESET_ALLOWED_ENVIRONMENTS:
         return JSONResponse(
-            status_code=400,
-            content={"detail": "Demo reset is only available in development environments"},
+            status_code=403,
+            content={"detail": "Demo reset is only available in development"},
         )
 
     demo_email = "demo@orainvoice.com"
@@ -3726,4 +3765,148 @@ async def delete_storage_package_endpoint(
         )
 
     return StoragePackageResponse(**result)
+
+@router.post(
+    "/org-context/{org_id}",
+    summary="Set active org context for global admin session",
+    dependencies=[require_role("global_admin")],
+    responses={
+        200: {"description": "Org context set successfully"},
+        404: {"description": "Organisation not found"},
+        403: {"description": "Global_Admin role required"},
+    },
+)
+async def set_org_context(
+    org_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Set the active organisation context for a global admin session.
+
+    Global admins must select an org context before accessing tenant-scoped
+    endpoints. The selected org_id is stored in Redis keyed by user_id.
+
+    REM-10: Session-scoped org context for global admins.
+    """
+    from app.modules.admin.models import Organisation
+    from app.core.redis import redis_pool
+    from app.core.audit import write_audit_log
+
+    user_id = getattr(request.state, "user_id", None)
+
+    # Validate org_id format
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except ValueError:
+        return JSONResponse(
+            status_code=400, content={"detail": "Invalid org_id format"}
+        )
+
+    # Validate org exists
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if not org:
+        return JSONResponse(
+            status_code=404, content={"detail": "Organisation not found"}
+        )
+
+    # Store org context in Redis keyed by user_id
+    redis_key = f"admin_org_ctx:{user_id}"
+    await redis_pool.set(redis_key, str(org_uuid))
+
+    # Audit log: admin.org_context_switched
+    ip_address = request.client.host if request.client else None
+    await write_audit_log(
+        session=db,
+        action="admin.org_context_switched",
+        entity_type="org_context",
+        user_id=user_id,
+        entity_id=org_uuid,
+        after_value={"org_id": str(org_uuid), "org_name": org.name},
+        ip_address=ip_address,
+    )
+    await db.commit()
+
+    return {"detail": "Organisation context set", "org_id": str(org_uuid), "org_name": org.name}
+
+
+# ---------------------------------------------------------------------------
+# REM-15: Portal token regeneration
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/customers/{customer_id}/regenerate-portal-token",
+    responses={
+        200: {"description": "New portal token generated"},
+        404: {"description": "Customer not found"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+    summary="Regenerate a customer's portal token and reset expiry",
+    dependencies=[require_role("global_admin")],
+)
+async def regenerate_portal_token(
+    customer_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Generate a new portal token for a customer and reset the expiry.
+
+    REM-15: Portal Token TTL and Rotation.
+    """
+    from app.modules.customers.models import Customer
+    from app.core.audit import write_audit_log
+    from datetime import datetime, timedelta, timezone
+
+    # Validate customer_id format
+    try:
+        cust_uuid = uuid.UUID(customer_id)
+    except ValueError:
+        return JSONResponse(
+            status_code=400, content={"detail": "Invalid customer_id format"}
+        )
+
+    result = await db.execute(
+        select(Customer).where(Customer.id == cust_uuid)
+    )
+    customer = result.scalar_one_or_none()
+    if not customer:
+        return JSONResponse(
+            status_code=404, content={"detail": "Customer not found"}
+        )
+
+    # Generate new token and reset expiry
+    from app.config import settings as app_settings
+
+    new_token = uuid.uuid4()
+    new_expiry = datetime.now(timezone.utc) + timedelta(days=app_settings.portal_token_ttl_days)
+    customer.portal_token = new_token
+    customer.portal_token_expires_at = new_expiry
+
+    # Audit log
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+    await write_audit_log(
+        session=db,
+        action="admin.portal_token_regenerated",
+        entity_type="customer",
+        user_id=user_id,
+        entity_id=cust_uuid,
+        after_value={
+            "portal_token": str(new_token),
+            "portal_token_expires_at": new_expiry.isoformat(),
+        },
+        ip_address=ip_address,
+    )
+    await db.commit()
+
+    return {
+        "detail": "Portal token regenerated",
+        "customer_id": str(cust_uuid),
+        "portal_token": str(new_token),
+        "portal_token_expires_at": new_expiry.isoformat(),
+    }
 

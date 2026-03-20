@@ -24,11 +24,13 @@ logger = logging.getLogger(__name__)
 
 def create_app() -> FastAPI:
     """Build and return the FastAPI application instance."""
+    is_dev = settings.environment == "development"
     app = FastAPI(
         title=settings.app_name,
         version="0.1.0",
-        docs_url="/docs" if settings.debug else None,
-        redoc_url="/redoc" if settings.debug else None,
+        docs_url="/docs" if is_dev else None,
+        redoc_url="/redoc" if is_dev else None,
+        openapi_url="/openapi.json" if is_dev else None,
     )
 
     # ------------------------------------------------------------------

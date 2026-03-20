@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from jose import jwt as jose_jwt
+import jwt as jose_jwt
 
 from app.config import settings
 from app.modules.auth.jwt import (
@@ -75,7 +75,7 @@ class TestJWTUtils:
         assert payload["org_id"] is None
 
     def test_decode_expired_token_raises(self):
-        from jose import JWTError
+        from jwt.exceptions import InvalidTokenError
 
         payload = {
             "user_id": "u1",
@@ -89,11 +89,11 @@ class TestJWTUtils:
         token = jose_jwt.encode(
             payload, settings.jwt_secret, algorithm=settings.jwt_algorithm
         )
-        with pytest.raises(JWTError):
+        with pytest.raises(InvalidTokenError):
             decode_access_token(token)
 
     def test_decode_non_access_token_raises(self):
-        from jose import JWTError
+        from jwt.exceptions import InvalidTokenError
 
         payload = {
             "user_id": "u1",
@@ -104,7 +104,7 @@ class TestJWTUtils:
         token = jose_jwt.encode(
             payload, settings.jwt_secret, algorithm=settings.jwt_algorithm
         )
-        with pytest.raises(JWTError, match="not an access token"):
+        with pytest.raises(InvalidTokenError, match="not an access token"):
             decode_access_token(token)
 
     def test_refresh_token_is_random_string(self):

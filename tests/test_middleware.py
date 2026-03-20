@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 
 from app.config import settings
 from app.middleware.auth import AuthMiddleware
@@ -137,15 +137,50 @@ class TestAuthMiddleware:
         assert "required claims" in resp.json()["detail"]
 
     def test_global_admin_no_org_id(self):
+        """Global admin without org context on tenant-scoped endpoint gets 403."""
         app = _build_app([AuthMiddleware])
         client = TestClient(app)
         token = _make_token(user_id="ga1", org_id=None, role="global_admin")
+        with patch("app.core.redis.redis_pool") as mock_redis:
+            mock_redis.get = AsyncMock(return_value=None)
+            resp = client.get(
+                "/api/v1/invoices",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 403
+        assert "Organisation context required" in resp.json()["detail"]
+
+    def test_global_admin_with_org_context(self):
+        """Global admin with org context set in Redis can access tenant-scoped endpoints."""
+        app = _build_app([AuthMiddleware])
+        client = TestClient(app)
+        token = _make_token(user_id="ga2", org_id=None, role="global_admin")
+        with patch("app.core.redis.redis_pool") as mock_redis:
+            mock_redis.get = AsyncMock(return_value="org-from-redis")
+            resp = client.get(
+                "/api/v1/invoices",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["org_id"] == "org-from-redis"
+
+    def test_global_admin_on_admin_path_no_org_context_needed(self):
+        """Global admin accessing admin-only paths doesn't need org context."""
+        app = _build_app([AuthMiddleware])
+
+        @app.get("/api/v1/admin/settings")
+        async def admin_settings(request: Request):
+            return {"ok": True}
+
+        client = TestClient(app)
+        token = _make_token(user_id="ga3", org_id=None, role="global_admin")
+        # No Redis mock needed — admin paths skip org context check
         resp = client.get(
-            "/api/v1/invoices",
+            "/api/v1/admin/settings",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
-        assert resp.json()["org_id"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -168,12 +203,13 @@ class TestTenantMiddleware:
         app = _build_app([TenantMiddleware, AuthMiddleware])
         client = TestClient(app)
         token = _make_token(org_id=None, role="global_admin")
-        resp = client.get(
-            "/api/v1/protected",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+        with patch("app.core.redis.redis_pool") as mock_redis:
+            mock_redis.get = AsyncMock(return_value="org-ctx-123")
+            resp = client.get(
+                "/api/v1/protected",
+                headers={"Authorization": f"Bearer {token}"},
+            )
         assert resp.status_code == 200
-        assert resp.json()["current_org_id"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,30 @@ logger = logging.getLogger(__name__)
 
 _INVITE_TOKEN_EXPIRY_SECONDS = 48 * 3600  # 48 hours
 
+# ---------------------------------------------------------------------------
+# Dynamic SQL column name whitelist (REM-21)
+# ---------------------------------------------------------------------------
+_ALLOWED_SORT_COLUMNS: dict[str, set[str]] = {
+    "organisations": {"created_at", "updated_at", "name", "status"},
+    "users": {"created_at", "email", "role", "last_login_at", "is_active"},
+    "invoices": {"created_at", "total", "status", "due_date"},
+}
+
+
+def validate_column_name(table: str, column: str) -> str:
+    """Return *column* unchanged if it is in the allowlist for *table*.
+
+    Raises ``ValueError`` and logs a warning when the column is not permitted,
+    preventing SQL-injection via dynamic column names.
+    """
+    allowed = _ALLOWED_SORT_COLUMNS.get(table, set())
+    if column not in allowed:
+        logger.warning(
+            "Rejected dynamic column name: table=%s, column=%s", table, column
+        )
+        raise ValueError(f"Invalid column name: {column}")
+    return column
+
 
 def _hash_invite_token(token: str) -> str:
     """SHA-256 hash of an invitation token for storage."""
@@ -819,6 +843,14 @@ async def save_smtp_config(
     if provider not in valid_providers:
         raise ValueError(f"Provider must be one of: {', '.join(valid_providers)}")
 
+    # SSRF protection: validate the SMTP host is not a private/internal address
+    if host:
+        from app.core.url_validation import validate_url_for_ssrf
+
+        ok, reason = validate_url_for_ssrf(f"https://{host}")
+        if not ok:
+            raise ValueError(f"SMTP host rejected: {reason}")
+
     config_data = json.dumps({
         "provider": provider,
         "api_key": api_key,
@@ -1132,6 +1164,14 @@ async def save_carjam_config(
             "global_rate_limit_per_minute": 60,
         }
 
+    # SSRF protection: validate the endpoint URL before persisting
+    if endpoint_url is not None:
+        from app.core.url_validation import validate_url_for_ssrf
+
+        ok, reason = validate_url_for_ssrf(endpoint_url)
+        if not ok:
+            raise ValueError(f"Carjam endpoint URL rejected: {reason}")
+
     # Update only provided fields
     if api_key is not None:
         current_data["api_key"] = api_key
@@ -1339,6 +1379,14 @@ async def save_stripe_config(
     # Merge: new values override old, missing values preserved
     final_platform_account_id = platform_account_id or old_config.get("platform_account_id", "")
     final_webhook_endpoint = webhook_endpoint or old_config.get("webhook_endpoint", "")
+
+    # SSRF protection: validate the webhook endpoint URL before persisting
+    if webhook_endpoint:
+        from app.core.url_validation import validate_url_for_ssrf
+
+        ok, reason = validate_url_for_ssrf(webhook_endpoint)
+        if not ok:
+            raise ValueError(f"Stripe webhook endpoint rejected: {reason}")
 
     config_data_dict: dict = {
         "platform_account_id": final_platform_account_id,
@@ -2368,7 +2416,8 @@ async def list_organisations(
     count_result = await db.execute(count_q)
     total = count_result.scalar() or 0
 
-    # Sorting
+    # Sorting — validate against allowlist (REM-21)
+    validate_column_name("organisations", sort_by)
     allowed_sort_fields = {
         "created_at": Organisation.created_at,
         "updated_at": Organisation.updated_at,
@@ -3937,9 +3986,8 @@ async def list_all_users(
 
     where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-    allowed_sorts = {"created_at", "email", "role", "last_login_at", "is_active"}
-    if sort_by not in allowed_sorts:
-        sort_by = "created_at"
+    # Validate sort column against allowlist (REM-21)
+    validate_column_name("users", sort_by)
     order_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
 
     count_sql = sa_text(f"SELECT COUNT(*) FROM users u WHERE {where_clause}")
@@ -5095,6 +5143,13 @@ async def deactivate_storage_package(
 # Integration Settings Backup / Restore
 # ---------------------------------------------------------------------------
 
+_REDACTED_FIELDS = {"api_key", "auth_token", "password", "secret", "token", "credentials"}
+
+
+def _redact_config(config_dict: dict) -> dict:
+    """Mask sensitive fields in a config dictionary with ***REDACTED***."""
+    return {k: "***REDACTED***" if k in _REDACTED_FIELDS else v for k, v in config_dict.items()}
+
 
 async def export_integration_settings(
     db: AsyncSession,
@@ -5117,7 +5172,7 @@ async def export_integration_settings(
         except Exception:
             config_data = {}
         backup["integrations"][row.name] = {
-            "config": config_data,
+            "config": _redact_config(config_data),
             "is_verified": row.is_verified,
         }
 
@@ -5132,13 +5187,13 @@ async def export_integration_settings(
             "is_active": row.is_active,
             "is_default": row.is_default,
             "priority": row.priority,
-            "config": row.config or {},
+            "config": _redact_config(row.config) if row.config else {},
             "credentials_set": row.credentials_set,
         }
         # Include decrypted credentials if set
         if row.credentials_encrypted:
             try:
-                entry["credentials"] = json.loads(envelope_decrypt_str(row.credentials_encrypted))
+                entry["credentials"] = _redact_config(json.loads(envelope_decrypt_str(row.credentials_encrypted)))
             except Exception:
                 entry["credentials"] = None
         else:
@@ -5157,12 +5212,12 @@ async def export_integration_settings(
             "smtp_encryption": row.smtp_encryption,
             "priority": row.priority,
             "is_active": row.is_active,
-            "config": row.config or {},
+            "config": _redact_config(row.config) if row.config else {},
             "credentials_set": row.credentials_set,
         }
         if row.credentials_encrypted:
             try:
-                entry["credentials"] = json.loads(envelope_decrypt_str(row.credentials_encrypted))
+                entry["credentials"] = _redact_config(json.loads(envelope_decrypt_str(row.credentials_encrypted)))
             except Exception:
                 entry["credentials"] = None
         else:

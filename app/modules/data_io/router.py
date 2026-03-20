@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import write_audit_log
 from app.core.database import get_db_session
 from app.modules.auth.rbac import require_role
 from app.modules.data_io.schemas import (
@@ -340,6 +341,21 @@ async def export_customers(
 
     csv_content = await export_customers_csv(db, org_id)
 
+    # Audit log (REM-06)
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="data_io.customers_exported",
+        entity_type="export",
+        entity_id=None,
+        after_value={"format": "csv", "ip_address": ip_address},
+        ip_address=ip_address,
+    )
+    await db.commit()
+
     import io as _io
     return StreamingResponse(
         _io.StringIO(csv_content),
@@ -374,6 +390,21 @@ async def export_vehicles(
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
 
     csv_content = await export_vehicles_csv(db, org_id)
+
+    # Audit log (REM-06)
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="data_io.vehicles_exported",
+        entity_type="export",
+        entity_id=None,
+        after_value={"format": "csv", "ip_address": ip_address},
+        ip_address=ip_address,
+    )
+    await db.commit()
 
     import io as _io
     return StreamingResponse(
@@ -411,6 +442,21 @@ async def export_invoices(
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
 
     csv_content = await export_invoices_csv(db, org_id, date_from, date_to)
+
+    # Audit log (REM-06)
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="data_io.invoices_exported",
+        entity_type="export",
+        entity_id=None,
+        after_value={"format": "csv", "ip_address": ip_address},
+        ip_address=ip_address,
+    )
+    await db.commit()
 
     import io as _io
     return StreamingResponse(
