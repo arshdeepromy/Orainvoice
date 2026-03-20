@@ -7,34 +7,45 @@
 
 ---
 
+## Infrastructure Context
+
+The production deployment sits behind a domain-restricting reverse proxy (e.g., Cloudflare, AWS ALB) that only forwards traffic for the configured domain. This mitigates several findings:
+
+- **REM-05** (Nginx X-Forwarded-For spoofing) — The reverse proxy is the sole source of `X-Forwarded-For`. External clients cannot inject spoofed headers because the proxy overwrites them. Severity downgraded from Medium to Low (defense-in-depth only). Moved to S3.
+- **REM-09** (CORS localhost origins) — The reverse proxy rejects requests to non-configured domains before they reach the backend. A browser on `localhost` cannot complete a CORS preflight against the production domain because the proxy enforces the domain allowlist at the network level. **Marked as not required.**
+
+All other findings remain applicable — the reverse proxy does not affect application-layer logic (MFA bypass, rate limiting, webhook forgery, SSRF outbound, audit logging, etc.).
+
+---
+
 ## Consolidated Finding Map
 
 Many findings appear in both reports. This table maps them to a single remediation item.
 
-| ID | Description | OWASP | Pentest | Severity | Sprint |
-|----|-------------|-------|---------|----------|--------|
-| REM-01 | Firebase MFA bypass — no server-side ID token verification | FINDING-08 | PENTEST-01, PENTEST-06 | Critical | S0 |
-| REM-02 | Rate limiter fails open when Redis is down | FINDING-09, FINDING-17 | PENTEST-02 | Critical | S0 |
-| REM-03 | Connexus webhooks — no HMAC signature verification | FINDING-16 | PENTEST-03 | High | S1 |
-| REM-04 | Integration backup exports decrypted secrets | FINDING-01 | PENTEST-04 | High | S1 |
-| REM-05 | Nginx trusts all X-Forwarded-For sources | FINDING-11 | PENTEST-05 | Medium | S1 |
-| REM-06 | Data export endpoints lack audit logging | FINDING-02 | PENTEST-08 | High | S1 |
-| REM-07 | Account lockout email notification not implemented | FINDING-15 | PENTEST-09 | High | S2 |
-| REM-08 | MFA brute-force when rate limiter is down | FINDING-14 | — | High | S0 (fixed by REM-02) |
-| REM-09 | CORS allows localhost origins in production | FINDING-10 | — | Medium | S2 |
-| REM-10 | Global admin bypasses all tenant isolation | FINDING-03 | — | Medium | S3 |
-| REM-11 | No encryption key rotation mechanism | FINDING-04 | — | Medium | S3 |
-| REM-12 | python-jose library unmaintained | FINDING-13 | — | Medium | S2 |
-| REM-13 | SSRF via custom integration endpoint URLs | FINDING-18 | — | Medium | S2 |
-| REM-14 | CSRF exemption gap on Connexus webhooks | — | PENTEST-07 | Low | S1 (with REM-03) |
-| REM-15 | Portal token has no TTL | — | PENTEST-10 | Medium | S3 |
-| REM-16 | Session limit enforcement race condition | — | PENTEST-11 | Low | S3 |
-| REM-17 | Demo reset endpoint environment guard | — | PENTEST-12 | Low | S2 |
-| REM-18 | Password reset timing side-channel | — | PENTEST-13 | Low | S3 |
-| REM-19 | CSP missing Firebase domains | — | PENTEST-14 | Low | S0 (with REM-01) |
-| REM-20 | Swagger UI accessible in production | FINDING-12 | — | Low | S2 |
-| REM-21 | Dynamic SQL column name whitelist | FINDING-06 | — | Low | S3 |
-| REM-22 | JWT HS256 → RS256 migration | FINDING-05 | — | Low | S3 |
+| ID | Description | OWASP | Pentest | Severity | Sprint | Status |
+|----|-------------|-------|---------|----------|--------|--------|
+| REM-01 | Firebase MFA bypass — no server-side ID token verification | FINDING-08 | PENTEST-01, PENTEST-06 | Critical | S0 | Required |
+| REM-02 | Rate limiter fails open when Redis is down | FINDING-09, FINDING-17 | PENTEST-02 | Critical | S0 | Required |
+| REM-03 | Connexus webhooks — no HMAC signature verification | FINDING-16 | PENTEST-03 | High | S1 | Required |
+| REM-04 | Integration backup exports decrypted secrets | FINDING-01 | PENTEST-04 | High | S1 | Required |
+| REM-05 | Nginx trusts all X-Forwarded-For sources | FINDING-11 | PENTEST-05 | ~~Medium~~ Low | ~~S1~~ S3 | Mitigated by reverse proxy — defense-in-depth only |
+| REM-06 | Data export endpoints lack audit logging | FINDING-02 | PENTEST-08 | High | S1 | Required |
+| REM-07 | Account lockout email notification not implemented | FINDING-15 | PENTEST-09 | High | S2 | Required |
+| REM-08 | MFA brute-force when rate limiter is down | FINDING-14 | — | High | S0 (fixed by REM-02) | Required |
+| REM-09 | CORS allows localhost origins in production | FINDING-10 | — | ~~Medium~~ | ~~S2~~ | **Not required** — reverse proxy blocks non-configured domains |
+| REM-10 | Global admin bypasses all tenant isolation | FINDING-03 | — | Medium | S3 | Required |
+| REM-11 | No encryption key rotation mechanism | FINDING-04 | — | Medium | S3 | Required |
+| REM-12 | python-jose library unmaintained | FINDING-13 | — | Medium | S2 | Required |
+| REM-13 | SSRF via custom integration endpoint URLs | FINDING-18 | — | Medium | S2 | Required (outbound, not affected by reverse proxy) |
+| REM-14 | CSRF exemption gap on Connexus webhooks | — | PENTEST-07 | Low | S1 (with REM-03) | Required |
+| REM-15 | Portal token has no TTL | — | PENTEST-10 | Medium | S3 | Required |
+| REM-16 | Session limit enforcement race condition | — | PENTEST-11 | Low | S3 | Required |
+| REM-17 | Demo reset endpoint environment guard | — | PENTEST-12 | Low | S2 | Required |
+| REM-18 | Password reset timing side-channel | — | PENTEST-13 | Low | S3 | Required |
+| REM-19 | CSP missing Firebase domains | — | PENTEST-14 | Low | S0 (with REM-01) | Required |
+| REM-20 | Swagger UI accessible in production | FINDING-12 | — | Low | S2 | Required (reverse proxy doesn't block specific paths) |
+| REM-21 | Dynamic SQL column name whitelist | FINDING-06 | — | Low | S3 | Required |
+| REM-22 | JWT HS256 → RS256 migration | FINDING-05 | — | Low | S3 | Required |
 
 ---
 
@@ -290,34 +301,9 @@ async def backup_integrations(
 
 ---
 
-### REM-05: Restrict Nginx X-Forwarded-For Trust
+### ~~REM-05: Restrict Nginx X-Forwarded-For Trust~~ → Moved to S3 (defense-in-depth)
 
-**Fixes:** FINDING-11, PENTEST-05  
-**Effort:** Low (30 minutes)  
-**Risk Reduction:** Medium → Resolved
-
-**Files to modify:**
-1. `nginx/nginx.conf`
-
-**Implementation:**
-
-```nginx
-# Replace:
-#   set_real_ip_from 0.0.0.0/0;
-# With your actual proxy/load balancer ranges:
-
-# Docker internal network
-set_real_ip_from 172.16.0.0/12;
-set_real_ip_from 10.0.0.0/8;
-
-# If behind Cloudflare, add their IP ranges:
-# set_real_ip_from 173.245.48.0/20;
-# set_real_ip_from 103.21.244.0/22;
-# ... (full list at https://www.cloudflare.com/ips/)
-
-# If behind AWS ALB:
-# set_real_ip_from 10.0.0.0/8;  # VPC CIDR
-```
+> **Mitigated by reverse proxy.** The domain-restricting reverse proxy is the sole source of `X-Forwarded-For` headers. External clients cannot spoof IPs because the proxy overwrites the header before forwarding. The nginx `set_real_ip_from 0.0.0.0/0` is still sloppy and should be tightened to only trust the reverse proxy's IP range as defense-in-depth, but this is no longer an exploitable attack vector. See S3 for the low-priority cleanup.
 
 ---
 
@@ -390,30 +376,9 @@ async def _send_permanent_lockout_email(email: str) -> None:
 
 ---
 
-### REM-09: Block Localhost CORS Origins in Production
+### ~~REM-09: Block Localhost CORS Origins in Production~~ → Not Required
 
-**Fixes:** FINDING-10  
-**Effort:** Low (30 minutes)
-
-**Files to modify:**
-1. `app/config.py`
-
-**Implementation:**
-
-```python
-@model_validator(mode="after")
-def _validate_secrets_not_default(self) -> "Settings":
-    if self.environment in ("production", "staging"):
-        # Existing secret checks ...
-
-        # Reject localhost CORS origins in production
-        localhost_origins = [o for o in self.cors_origins if "localhost" in o]
-        if localhost_origins:
-            raise ValueError(
-                f"CORS origins contain localhost entries in {self.environment}: {localhost_origins}"
-            )
-    return self
-```
+> **Mitigated by reverse proxy.** The domain-restricting reverse proxy rejects requests to non-configured domains at the network level. A browser on `localhost:5173` cannot complete a CORS preflight against the production API because the proxy never forwards the request. No code change needed.
 
 ---
 
@@ -605,15 +570,36 @@ Only needed if the platform grows to microservices. Current single-backend archi
 
 ---
 
+### REM-05: Restrict Nginx X-Forwarded-For Trust (Defense-in-Depth)
+
+**Fixes:** FINDING-11, PENTEST-05  
+**Effort:** Low (30 minutes)  
+**Risk Reduction:** Low (already mitigated by reverse proxy)
+
+Tighten `set_real_ip_from` to only trust the reverse proxy's IP range instead of `0.0.0.0/0`. Not exploitable with the current reverse proxy in place, but good hygiene.
+
+**Files to modify:**
+1. `nginx/nginx.conf`
+
+```nginx
+# Replace set_real_ip_from 0.0.0.0/0 with the reverse proxy IP range:
+set_real_ip_from 172.16.0.0/12;  # Docker network / reverse proxy
+set_real_ip_from 10.0.0.0/8;     # Internal network
+```
+
+---
+
 ## Summary Timeline
+
+> **Note:** REM-05 and REM-09 are mitigated by the domain-restricting reverse proxy in production. REM-05 is retained as defense-in-depth in S3. REM-09 is removed entirely.
 
 | Sprint | Items | Critical/High Fixed | Effort |
 |--------|-------|-------------------|--------|
 | S0 (This week) | REM-01, REM-02, REM-19 | 2 Critical | ~8 hours |
-| S1 (Weeks 1–2) | REM-03, REM-04, REM-05, REM-06, REM-14 | 3 High | ~10 hours |
-| S2 (Weeks 3–4) | REM-07, REM-09, REM-12, REM-13, REM-17, REM-20 | 1 High | ~10 hours |
-| S3 (Weeks 5+) | REM-10, REM-11, REM-15, REM-16, REM-18, REM-21, REM-22 | 0 | ~20 hours |
+| S1 (Weeks 1–2) | REM-03, REM-04, REM-06, REM-14 | 3 High | ~9 hours |
+| S2 (Weeks 3–4) | REM-07, REM-12, REM-13, REM-17, REM-20 | 1 High | ~9 hours |
+| S3 (Weeks 5+) | REM-05, REM-10, REM-11, REM-15, REM-16, REM-18, REM-21, REM-22 | 0 | ~21 hours |
 
-**Total estimated effort:** ~48 hours across 4 sprints
+**Total estimated effort:** ~47 hours across 4 sprints (saved ~1 hour from REM-09 removal, REM-05 moved to backlog)
 
 After S0 and S1 are complete, all Critical and High severity findings will be resolved. The remaining Medium and Low items in S2/S3 are hardening measures that reduce attack surface but don't represent actively exploitable vulnerabilities.
