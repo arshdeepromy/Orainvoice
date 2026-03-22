@@ -91,6 +91,10 @@ services:
           memory: 2g
           cpus: '2.0'
 
+  postgres:
+    ports:
+      - "5432:5432"
+
   nginx:
     ports:
       - "8999:80"
