@@ -112,6 +112,9 @@ class Organisation(Base):
     locale: Mapped[str] = mapped_column(
         String(10), nullable=False, server_default="'en'"
     )
+    timezone: Mapped[str] = mapped_column(
+        String(50), nullable=False, server_default="'UTC'"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -170,6 +170,14 @@ function formatDate(dateStr: string | null | undefined): string {
   return new Intl.DateTimeFormat('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(dateStr))
 }
 
+function formatDateTime(dateStr: string | null | undefined): string {
+  if (!dateStr) return '—'
+  return new Intl.DateTimeFormat('en-NZ', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true,
+  }).format(new Date(dateStr))
+}
+
 const PAYMENT_TERMS_LABELS: Record<string, string> = {
   due_on_receipt: 'Due on Receipt', net_7: 'Net 7', net_15: 'Net 15',
   net_30: 'Net 30', net_45: 'Net 45', net_60: 'Net 60', net_90: 'Net 90',
@@ -1474,7 +1482,7 @@ export default function InvoiceList() {
                         return (
                           <Fragment key={p.id}>
                           <tr className="border-b border-gray-50">
-                            <td className="py-2 text-gray-900">{formatDate(p.date)}</td>
+                            <td className="py-2 text-gray-900">{formatDateTime(p.date)}</td>
                             <td className="py-2">
                               <Badge variant={badgeType.color === 'green' ? 'success' : 'error'}>{badgeType.label}</Badge>
                             </td>
@@ -1542,7 +1550,7 @@ export default function InvoiceList() {
                           <td className="py-2 font-medium text-blue-600">{cn.reference_number}</td>
                           <td className="py-2 text-right tabular-nums font-medium text-red-600">−{formatNZD(cn.amount)}</td>
                           <td className="py-2 text-gray-700">{cn.reason}</td>
-                          <td className="py-2 text-gray-700">{formatDate(cn.created_at)}</td>
+                          <td className="py-2 text-gray-700">{formatDateTime(cn.created_at)}</td>
                         </tr>
                       ))}
                     </tbody>

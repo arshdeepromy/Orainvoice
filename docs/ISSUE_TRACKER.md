@@ -2987,3 +2987,45 @@ Frontend:
 - `app/modules/invoices/service.py`
 
 **Similar Bugs Found & Fixed**: Same Connexus `"queued"` status would affect any SMS sent during NZ nighttime hours (not just reminders). The fix in the Connexus client covers all SMS sends globally.
+
+---
+
+### ISSUE-085: Invoice timestamps display UTC instead of organisation local timezone
+
+- **Date**: 2026-03-22
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+
+**Symptoms**: Payment dates in invoice detail view, PDF invoices, and credit note timestamps all display in UTC instead of the organisation's local timezone (Pacific/Auckland for NZ orgs). A payment recorded at 3:04 PM NZT shows as 2:04 AM.
+
+**Root Cause**: Three issues:
+
+1. **Organisation model missing `timezone` column mapping** — The `organisations` table has a `timezone` column (set to `Pacific/Auckland` by the setup wizard), but the SQLAlchemy `Organisation` model in `app/modules/admin/models.py` didn't map it. The column existed in the DB but was invisible to the ORM.
+
+2. **Payment/credit note dates serialized as raw UTC** — `get_invoice()` in `app/modules/invoices/service.py` serialized `payment.created_at` and `credit_note.created_at` using `.isoformat()` directly, which outputs UTC timestamps without any timezone conversion.
+
+3. **PDF template rendered raw ISO strings** — The invoice PDF template (`app/templates/pdf/invoice.html`) rendered payment dates as `{{ p.date or '' }}` which displayed raw ISO strings.
+
+4. **Frontend only formatted dates, didn't convert timezone** — `formatDate()` in `InvoiceList.tsx` used `Intl.DateTimeFormat('en-NZ')` which formats the display but doesn't convert UTC to NZT.
+
+**Fix Applied**:
+
+1. Added `timezone: Mapped[str]` column to `Organisation` model in `app/modules/admin/models.py`
+2. Created `app/core/timezone_utils.py` with `to_org_timezone()` and `format_datetime_local()` helpers using Python's `zoneinfo` module
+3. Updated `get_invoice()` to fetch org timezone and convert all payment dates, credit note dates, and invoice timestamps (`created_at`, `voided_at`) to org-local timezone before serialization
+4. Updated `generate_invoice_pdf()` to format `issue_date` and `due_date` as `dd Mon YYYY` strings, and added a `pdfdate` Jinja2 filter for payment dates in the PDF
+5. Updated PDF template to use `{{ p.date | pdfdate }}` filter
+6. Added `formatDateTime()` function to frontend `InvoiceList.tsx` that shows both date and time for payment and credit note timestamps
+7. Added `org_timezone` field to invoice detail API response for frontend use
+
+**Files Changed**:
+- `app/modules/admin/models.py` (added `timezone` column mapping)
+- `app/core/timezone_utils.py` (new — timezone conversion utilities)
+- `app/modules/invoices/service.py` (timezone conversion in `get_invoice`, date formatting in `generate_invoice_pdf`)
+- `app/templates/pdf/invoice.html` (pdfdate filter for payment dates)
+- `frontend/src/pages/invoices/InvoiceList.tsx` (added `formatDateTime`, used for payment/credit note dates)
+
+**Similar Bugs Found & Fixed**: The same UTC display issue would affect any future feature that displays `created_at` timestamps from the database. The `timezone_utils` module provides reusable conversion functions for all modules.
+
+**Related Issues**: None

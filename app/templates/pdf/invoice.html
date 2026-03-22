@@ -412,7 +412,7 @@
     <tbody>
       {% for p in invoice.payments %}
       <tr style="border-bottom:1px solid #f0f0f0;">
-        <td style="padding:6px 8px;">{{ p.date or '' }}</td>
+        <td style="padding:6px 8px;">{{ p.date | pdfdate }}</td>
         <td style="padding:6px 8px;">
           {% if p.is_refund %}
             <span style="color:#dc2626; font-weight:600;">Refund</span>

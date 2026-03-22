@@ -980,6 +980,8 @@ async def get_invoice(
     org = org_result.scalar_one_or_none()
     if org:
         settings = org.settings or {}
+        org_tz = getattr(org, "timezone", None) or "UTC"
+        result["org_timezone"] = org_tz
         result["org_name"] = org.name
         result["org_address"] = ", ".join(filter(None, [
             settings.get("address_unit"),
@@ -1085,10 +1087,29 @@ async def get_invoice(
         for uid, uemail in user_result.all():
             recorder_map[uid] = uemail
 
+    # Org timezone for converting UTC timestamps to local time
+    from app.core.timezone_utils import to_org_timezone
+    org_tz = result.get("org_timezone", "UTC")
+
+    # Convert invoice-level UTC timestamps to org-local ISO strings
+    if result.get("created_at") and hasattr(result["created_at"], "isoformat"):
+        local_dt = to_org_timezone(result["created_at"], org_tz)
+        result["created_at_local"] = local_dt.isoformat() if local_dt else None
+    if result.get("voided_at") and hasattr(result["voided_at"], "isoformat"):
+        local_dt = to_org_timezone(result["voided_at"], org_tz)
+        result["voided_at_local"] = local_dt.isoformat() if local_dt else None
+
     result["payments"] = [
         {
             "id": str(p.id),
-            "date": p.payment_date.isoformat() if hasattr(p, "payment_date") and p.payment_date else (p.created_at.isoformat() if p.created_at else None),
+            "date": (
+                to_org_timezone(
+                    p.payment_date if hasattr(p, "payment_date") and p.payment_date else p.created_at,
+                    org_tz,
+                ).isoformat()
+                if (hasattr(p, "payment_date") and p.payment_date) or p.created_at
+                else None
+            ),
             "amount": float(p.amount),
             "method": p.payment_method if hasattr(p, "payment_method") else "cash",
             "recorded_by": recorder_map.get(p.recorded_by, str(p.recorded_by)) if hasattr(p, "recorded_by") and p.recorded_by else "",
@@ -1110,7 +1131,7 @@ async def get_invoice(
             "reference_number": cn.credit_note_number if hasattr(cn, "credit_note_number") else str(cn.id)[:8],
             "amount": float(cn.amount),
             "reason": cn.reason if hasattr(cn, "reason") else "",
-            "created_at": cn.created_at.isoformat() if cn.created_at else None,
+            "created_at": to_org_timezone(cn.created_at, org_tz).isoformat() if cn.created_at else None,
         }
         for cn in credit_notes
     ]
@@ -2800,6 +2821,17 @@ async def generate_invoice_pdf(
     if org is None:
         raise ValueError("Organisation not found")
 
+    # Format date fields for PDF display using org timezone
+    from app.core.timezone_utils import format_date_local
+    if invoice_dict.get("issue_date"):
+        d = invoice_dict["issue_date"]
+        if hasattr(d, "strftime"):
+            invoice_dict["issue_date"] = d.strftime("%d %b %Y")
+    if invoice_dict.get("due_date"):
+        d = invoice_dict["due_date"]
+        if hasattr(d, "strftime"):
+            invoice_dict["due_date"] = d.strftime("%d %b %Y")
+
     settings = org.settings or {}
     org_context = {
         "name": org.name,
@@ -2861,6 +2893,28 @@ async def generate_invoice_pdf(
     # Render HTML ----------------------------------------------------------
     template_dir = pathlib.Path(__file__).resolve().parent.parent.parent / "templates" / "pdf"
     env = Environment(loader=FileSystemLoader(str(template_dir)), autoescape=True)
+
+    # Add custom date filter for PDF rendering
+    def _pdf_format_date(value):
+        """Format a date/datetime/ISO string for PDF display."""
+        if not value:
+            return ""
+        if isinstance(value, str):
+            # Already formatted string like "22 Mar 2026"
+            if not value.startswith("20") or "T" not in value:
+                return value
+            # ISO string — parse and format
+            try:
+                from datetime import datetime as _dt
+                dt = _dt.fromisoformat(value)
+                return dt.strftime("%d %b %Y %I:%M %p")
+            except (ValueError, TypeError):
+                return value
+        if hasattr(value, "strftime"):
+            return value.strftime("%d %b %Y")
+        return str(value)
+
+    env.filters["pdfdate"] = _pdf_format_date
     template = env.get_template("invoice.html")
 
     html_content = template.render(
