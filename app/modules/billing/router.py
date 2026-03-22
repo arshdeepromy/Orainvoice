@@ -506,7 +506,47 @@ async def list_payment_methods(
     pm_result = await db.execute(
         select(OrgPaymentMethod).where(OrgPaymentMethod.org_id == org_uuid)
     )
-    payment_methods = pm_result.scalars().all()
+    payment_methods = list(pm_result.scalars().all())
+
+    # ── Stripe sync fallback ──
+    # If the local DB has no payment methods but the Stripe customer has
+    # cards attached (e.g. the record was lost during signup), fetch them
+    # from Stripe and persist locally so the billing page shows the card.
+    if not payment_methods and org.stripe_customer_id:
+        try:
+            from app.integrations.stripe_billing import list_payment_methods as stripe_list_pms
+
+            stripe_methods = await stripe_list_pms(customer_id=org.stripe_customer_id)
+            for sm in stripe_methods:
+                new_pm = OrgPaymentMethod(
+                    org_id=org_uuid,
+                    stripe_payment_method_id=sm["id"],
+                    brand=sm.get("brand", "unknown"),
+                    last4=sm.get("last4", "0000"),
+                    exp_month=sm.get("exp_month", 0),
+                    exp_year=sm.get("exp_year", 0),
+                    is_default=(sm == stripe_methods[0]),  # first card = default
+                    is_verified=True,
+                )
+                db.add(new_pm)
+            if stripe_methods:
+                await db.commit()
+                # Re-fetch from DB so we have proper UUIDs
+                pm_result2 = await db.execute(
+                    select(OrgPaymentMethod).where(OrgPaymentMethod.org_id == org_uuid)
+                )
+                payment_methods = list(pm_result2.scalars().all())
+                logger.info(
+                    "Synced %d payment methods from Stripe for org %s",
+                    len(stripe_methods),
+                    org_uuid,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to sync payment methods from Stripe for org %s: %s",
+                org_uuid,
+                exc,
+            )
 
     now = datetime.now(timezone.utc)
     two_months_later = now + relativedelta(months=2)

@@ -30,6 +30,8 @@ from app.modules.admin.schemas import (
     CouponUpdateRequest,
     CouponValidateRequest,
     CouponValidateResponse,
+    CreateGlobalAdminRequest,
+    CreateGlobalAdminResponse,
     ErrorLogStatusUpdateRequest,
     IntegrationConfigGetResponse,
     MrrPlanBreakdown,
@@ -2935,6 +2937,183 @@ async def update_user_status(
         if "not found" in msg.lower():
             return JSONResponse(status_code=404, content={"detail": msg})
         return JSONResponse(status_code=400, content={"detail": msg})
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Global Admin user creation
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/users/global-admin",
+    response_model=CreateGlobalAdminResponse,
+    responses={
+        400: {"description": "Validation error (duplicate email, weak password)"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+    summary="Create a new Global Admin user",
+    dependencies=[require_role("global_admin")],
+)
+async def create_global_admin_user(
+    payload: CreateGlobalAdminRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a new global_admin user with email and password.
+
+    Only existing Global_Admin users can access this endpoint.
+    The new user is created with is_email_verified=True (no verification needed).
+    """
+    from app.modules.admin.service import create_global_admin
+
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    try:
+        result = await create_global_admin(
+            db,
+            email=payload.email,
+            password=payload.password,
+            first_name=payload.first_name,
+            last_name=payload.last_name,
+            created_by=uuid.UUID(user_id) if user_id else uuid.uuid4(),
+            ip_address=ip_address,
+        )
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return CreateGlobalAdminResponse(**result)
+
+
+# ---------------------------------------------------------------------------
+# User management actions — Global Admin
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/users/{user_id}",
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "User not found"},
+    },
+    summary="Permanently delete a user",
+    dependencies=[require_role("global_admin")],
+)
+async def delete_user(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Permanently delete a user and all associated data (MFA, sessions)."""
+    from app.modules.admin.service import delete_user_permanently
+
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid user_id format"})
+
+    actor_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    try:
+        result = await delete_user_permanently(
+            db, uid,
+            deleted_by=uuid.UUID(actor_id) if actor_id else None,
+            ip_address=ip_address,
+        )
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        msg = str(exc)
+        status = 404 if "not found" in msg.lower() else 400
+        return JSONResponse(status_code=status, content={"detail": msg})
+
+    return result
+
+
+@router.post(
+    "/users/{user_id}/reset-password",
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "User not found"},
+    },
+    summary="Send password reset link to user",
+    dependencies=[require_role("global_admin")],
+)
+async def admin_send_password_reset(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Trigger a password reset email for the specified user."""
+    from app.modules.auth.service import request_password_reset
+    from app.modules.auth.models import User
+
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid user_id format"})
+
+    result = await db.execute(select(User).where(User.id == uid))
+    user = result.scalar_one_or_none()
+    if user is None:
+        return JSONResponse(status_code=404, content={"detail": "User not found"})
+
+    ip_address = request.client.host if request.client else None
+    await request_password_reset(db=db, email=user.email, ip_address=ip_address)
+    await db.commit()
+
+    return {"message": f"Password reset link sent to {user.email}"}
+
+
+@router.post(
+    "/users/{user_id}/reset-mfa",
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "User not found"},
+    },
+    summary="Reset all MFA methods for a user",
+    dependencies=[require_role("global_admin")],
+)
+async def admin_reset_mfa(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Clear all MFA methods, passkeys, and backup codes for a user."""
+    from app.modules.admin.service import admin_reset_user_mfa
+
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid user_id format"})
+
+    actor_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    try:
+        result = await admin_reset_user_mfa(
+            db, uid,
+            reset_by=uuid.UUID(actor_id) if actor_id else None,
+            ip_address=ip_address,
+        )
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        msg = str(exc)
+        status = 404 if "not found" in msg.lower() else 400
+        return JSONResponse(status_code=status, content={"detail": msg})
 
     return result
 

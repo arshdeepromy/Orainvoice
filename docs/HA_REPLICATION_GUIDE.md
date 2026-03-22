@@ -326,25 +326,48 @@ If no peer DB settings are stored, the system falls back to the `HA_PEER_DB_URL`
 
 ## Production Deployment Guide
 
-Production HA involves two separate physical machines (e.g. Raspberry Pi nodes) at different locations, connected via VPN.
+Production HA involves two separate physical machines (e.g. Raspberry Pi nodes) deployed at different physical locations, connected via VPN. Each node runs its own independent Docker stack. The standby is never co-located with the primary — that defeats the purpose of disaster recovery.
+
+> **Important:** Do NOT run the standby stack on the same host as the primary. The `docker-compose.ha-standby.yml` file is for local dev testing only. In production, each node is a separate machine at a separate location, each running the standard `docker-compose.yml` + its own Pi override file.
+
+### Architecture
+
+```
+Location A (e.g. Office)              Location B (e.g. DR site)
+┌──────────────────────┐              ┌──────────────────────┐
+│  PRIMARY Pi          │    VPN       │  STANDBY Pi          │
+│  192.168.1.90        │◄────────────►│  192.168.x.x         │
+│                      │              │                      │
+│  docker-compose.yml  │  Logical     │  docker-compose.yml  │
+│  + pi.yml override   │  Replication │  + pi.yml override   │
+│                      │──────────────►                      │
+│  SSL certs (server)  │  (replicator │  SSL certs (server)  │
+│  + CA cert           │   account)   │  + CA cert           │
+└──────────────────────┘              └──────────────────────┘
+```
+
+- SSL certificates secure the replicator DB connection between locations
+- Each node has its own server cert; both share the same CA cert for mutual trust
+- The replicator PostgreSQL user has minimal privileges (REPLICATION + SELECT)
 
 ### Prerequisites
 
-- Two servers with Docker and Docker Compose installed
+- Two servers at different physical locations with Docker and Docker Compose installed
 - VPN connection between both servers (both must be reachable via LAN IPs)
 - Same codebase deployed on both servers
 - Same database schema (alembic migrations) on both servers
 - Unique strong passwords for PostgreSQL on each server
+- SSL certificates generated on each server (shared CA cert)
 
 ### Step 0: Generate SSL Certificates
 
-Before deploying, generate SSL certificates on each server:
+On each server, generate SSL certificates:
 
 ```bash
 bash scripts/generate_pg_certs.sh
 ```
 
-Distribute the `ca.crt` to both servers. Each server keeps its own `server.crt` and `server.key`.
+Copy the `ca.crt` from one server to the other so both have the same CA. Each server keeps its own `server.crt` and `server.key` — these never leave their respective hosts.
 
 ### Step 1: Deploy the Primary Node
 
@@ -362,31 +385,29 @@ The primary node is your existing production server. It should already be runnin
    ```
 4. Create a dedicated replication user via the HA admin UI or SQL (see [Replication User Management](#replication-user-management))
 
-### Step 2: Deploy the Standby Node (New Server)
+### Step 2: Deploy the Standby Node (Separate Server at a Different Location)
+
+The standby runs on a completely separate machine at a different physical location. It uses the same `docker-compose.yml` + a Pi override — NOT the `docker-compose.ha-standby.yml` (that file is for local dev only).
 
 1. Set up the new server with Docker and Docker Compose
 2. Clone/copy the codebase to the new server
 3. Create the standby's `.env` file with:
    - Same `JWT_SECRET`, `JWT_ALGORITHM`, `ENCRYPTION_MASTER_KEY` as primary (so tokens work across nodes)
    - Same `HA_HEARTBEAT_SECRET` as primary
-   - `HA_PEER_DB_URL` pointing to the primary's PostgreSQL (using the replication user):
+   - `HA_PEER_DB_URL` pointing to the primary's PostgreSQL (using the replicator account over SSL):
      ```env
      HA_PEER_DB_URL=postgresql://replicator:<replicator_password>@<primary_lan_ip>:<primary_pg_port>/<db_name>?sslmode=require
      ```
    - Unique `POSTGRES_PASSWORD` for this server's local PostgreSQL
-4. Create a standby compose override (e.g. `docker-compose.pi-standby.yml`) with:
-   - `wal_level=logical` and SSL flags in postgres command
-   - Appropriate resource limits for the hardware
-   - Port mappings that don't conflict with other services
-5. Start the standby stack:
+4. Use the standard compose files with a Pi override:
    ```bash
-   docker compose -f docker-compose.yml -f docker-compose.pi-standby.yml up --build -d
+   docker compose -f docker-compose.yml -f docker-compose.pi.yml up --build -d
    ```
-6. Run migrations:
+5. Run migrations:
    ```bash
    docker exec <standby-app-container> alembic upgrade head
    ```
-7. **Do NOT seed the standby database.** All data comes from replication.
+6. **Do NOT seed the standby database.** All data comes from replication.
 
 ### Step 3: Configure HA via the Frontend
 
@@ -398,7 +419,8 @@ The primary node is your existing production server. It should already be runnin
 5. Log in to the **standby** as a Global Admin
 6. Navigate to Admin > HA Replication
 7. Configure the standby node (name, role=Standby, peer endpoint = primary's URL)
-8. Click "Initialize Replication" to create the subscription and start data sync
+8. Configure Peer Database Settings with the replicator credentials and SSL mode
+9. Click "Initialize Replication" to create the subscription and start data sync
 
 ### Step 4: Verify
 

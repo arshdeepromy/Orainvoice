@@ -119,15 +119,18 @@ ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -
 ## HA Replication (Active-Standby)
 
 ### Architecture
-- Two Raspberry Pi nodes at different physical locations
+- Primary and standby are deployed on separate physical machines at different physical locations
+- Connected via VPN — SSL certs secure the replicator DB connection between sites
 - Primary node: serves all read/write traffic
 - Standby node: receives real-time data via PostgreSQL logical replication
 - Heartbeat service monitors both nodes' health via HTTP
 - DNS/NPM routing is managed manually by the admin
+- `docker-compose.ha-standby.yml` is for LOCAL DEV ONLY — never use it in production
+- In production, both nodes use `docker-compose.yml` + `docker-compose.pi.yml` on their respective hosts
 
 ### Local Dev HA Setup
 
-The dev environment runs two complete stacks on the same machine:
+The dev environment runs two complete stacks on the same machine (for testing only):
 
 | | Primary | Standby |
 |---|---------|---------|
@@ -196,10 +199,9 @@ To update the app with zero downtime:
 10. **Verify both nodes healthy**: check HA Status Panel
 
 ### Key Files
-- `docker-compose.ha-standby.yml` — local dev standby compose
+- `docker-compose.ha-standby.yml` — local dev standby compose (NOT for production)
 - `.env.ha-standby` — local dev standby environment
-- `docker-compose.pi-standby.yml` — production standby compose override
 - `app/modules/ha/` — all HA backend code
 - `frontend/src/components/ha/` — HA frontend components
 - `frontend/src/pages/admin/HAReplication.tsx` — HA admin page
-- `docs/HA_REPLICATION_GUIDE.md` — comprehensive HA guide
+- `docs/HA_REPLICATION_GUIDE.md` — comprehensive HA guide (includes production deployment)

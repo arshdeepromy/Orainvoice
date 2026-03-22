@@ -33,6 +33,28 @@ class ProvisionOrganisationResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Global Admin user creation
+# ---------------------------------------------------------------------------
+
+
+class CreateGlobalAdminRequest(BaseModel):
+    """POST /api/v1/admin/users/global-admin request body."""
+
+    email: EmailStr = Field(..., description="Email for the new Global Admin user")
+    first_name: str | None = Field(None, max_length=100, description="First name")
+    last_name: str | None = Field(None, max_length=100, description="Last name")
+    password: str = Field(..., min_length=8, max_length=128, description="Initial password")
+
+
+class CreateGlobalAdminResponse(BaseModel):
+    """Response after creating a global admin user."""
+
+    message: str
+    user_id: str
+    email: str
+
+
+# ---------------------------------------------------------------------------
 # Carjam usage monitoring (Req 16.1, 16.4)
 # ---------------------------------------------------------------------------
 

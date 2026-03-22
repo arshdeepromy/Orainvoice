@@ -216,6 +216,71 @@ async def _sync_org_modules_from_plan(
     await db.flush()
 
 
+# ---------------------------------------------------------------------------
+# Global Admin user creation
+# ---------------------------------------------------------------------------
+
+
+async def create_global_admin(
+    db: AsyncSession,
+    *,
+    email: str,
+    password: str,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    created_by: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Create a new global_admin user.
+
+    - Validates email uniqueness
+    - Hashes password with bcrypt
+    - Creates user with role=global_admin, org_id=NULL
+    - Writes audit log
+    - Returns user details
+
+    Raises ``ValueError`` on validation failures.
+    """
+    from app.modules.auth.password import hash_password
+
+    # Check email uniqueness
+    existing = await db.execute(select(User).where(User.email == email))
+    if existing.scalar_one_or_none() is not None:
+        raise ValueError("A user with this email already exists")
+
+    user = User(
+        email=email,
+        password_hash=hash_password(password),
+        role="global_admin",
+        org_id=None,
+        first_name=first_name,
+        last_name=last_name,
+        is_active=True,
+        is_email_verified=True,  # Admin-created, no verification needed
+    )
+    db.add(user)
+    await db.flush()
+
+    await write_audit_log(
+        session=db,
+        org_id=None,
+        user_id=created_by,
+        action="create_global_admin",
+        entity_type="user",
+        entity_id=user.id,
+        after_value={"email": email, "role": "global_admin"},
+        ip_address=ip_address,
+    )
+
+    logger.info("Global admin created: %s by %s", email, created_by)
+
+    return {
+        "message": "Global admin user created successfully",
+        "user_id": str(user.id),
+        "email": email,
+    }
+
+
 async def _send_org_admin_invitation_email(
     email: str, token: str, org_name: str
 ) -> None:
@@ -4073,6 +4138,87 @@ async def toggle_user_active(
         "user_id": str(user.id),
         "email": user.email,
         "is_active": user.is_active,
+    }
+
+
+async def delete_user_permanently(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    deleted_by: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Permanently delete a user and all their MFA data, sessions, etc."""
+    from app.modules.auth.models import Session, UserMfaMethod, UserPasskeyCredential, UserBackupCode
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise ValueError("User not found")
+
+    if deleted_by and user.id == deleted_by:
+        raise ValueError("Cannot delete your own account")
+
+    email = user.email
+
+    # Delete related records
+    await db.execute(delete(UserMfaMethod).where(UserMfaMethod.user_id == user_id))
+    await db.execute(delete(UserPasskeyCredential).where(UserPasskeyCredential.user_id == user_id))
+    await db.execute(delete(UserBackupCode).where(UserBackupCode.user_id == user_id))
+    await db.execute(delete(Session).where(Session.user_id == user_id))
+    await db.delete(user)
+    await db.flush()
+
+    await write_audit_log(
+        session=db,
+        org_id=None,
+        user_id=deleted_by,
+        action="admin.user_deleted",
+        entity_type="user",
+        entity_id=user_id,
+        after_value={"email": email, "deleted_permanently": True},
+        ip_address=ip_address,
+    )
+
+    return {"message": f"User {email} permanently deleted", "user_id": str(user_id)}
+
+
+async def admin_reset_user_mfa(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    reset_by: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Clear all MFA methods, passkeys, and backup codes for a user."""
+    from app.modules.auth.models import UserMfaMethod, UserPasskeyCredential, UserBackupCode
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise ValueError("User not found")
+
+    del_mfa = await db.execute(delete(UserMfaMethod).where(UserMfaMethod.user_id == user_id))
+    del_passkeys = await db.execute(delete(UserPasskeyCredential).where(UserPasskeyCredential.user_id == user_id))
+    del_codes = await db.execute(delete(UserBackupCode).where(UserBackupCode.user_id == user_id))
+
+    total = (del_mfa.rowcount or 0) + (del_passkeys.rowcount or 0) + (del_codes.rowcount or 0)
+
+    await write_audit_log(
+        session=db,
+        org_id=user.org_id,
+        user_id=reset_by,
+        action="admin.user_mfa_reset",
+        entity_type="user",
+        entity_id=user_id,
+        after_value={"email": user.email, "methods_removed": total},
+        ip_address=ip_address,
+    )
+
+    return {
+        "message": f"MFA reset for {user.email} — {total} record(s) removed",
+        "user_id": str(user_id),
+        "email": user.email,
     }
 
 

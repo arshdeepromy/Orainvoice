@@ -917,6 +917,7 @@ async def get_vehicle_profile(
 # Live Search & ABCD Fallback
 # ---------------------------------------------------------------------------
 
+
 async def search_vehicles(
     db: AsyncSession,
     *,
@@ -924,36 +925,39 @@ async def search_vehicles(
     limit: int = 10,
     org_id: uuid.UUID | None = None,
 ) -> list[dict]:
-    """Search global_vehicles by rego prefix match.
-    
+    """Search global_vehicles AND org_vehicles by rego prefix match.
+
     Returns up to `limit` results. No API calls, no usage tracking.
     Fast database-only search for live autocomplete.
-    
-    If org_id is provided, also returns linked customers for each vehicle.
+
+    If org_id is provided, also returns linked customers for each vehicle
+    and includes org_vehicles belonging to that org.
     """
     from app.modules.customers.models import Customer
-    from app.modules.vehicles.models import CustomerVehicle
-    
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
+
     query_upper = query.upper().strip()
     logger.info(f"search_vehicles called: query={query_upper}, limit={limit}, org_id={org_id}")
-    
+
     if not query_upper:
         return []
-    
+
+    # --- 1. Search global_vehicles ---
     stmt = (
         select(GlobalVehicle)
         .where(GlobalVehicle.rego.like(f"{query_upper}%"))
         .order_by(GlobalVehicle.rego)
         .limit(limit)
     )
-    
+
     result = await db.execute(stmt)
     vehicles = result.scalars().all()
-    
-    logger.info(f"search_vehicles found {len(vehicles)} results")
-    
+
     results = []
+    seen_regos: set[str] = set()
+
     for v in vehicles:
+        seen_regos.add(v.rego.upper())
         vehicle_data = {
             "id": str(v.id),
             "rego": v.rego,
@@ -966,8 +970,8 @@ async def search_vehicles(
             "service_due_date": v.service_due_date.isoformat() if v.service_due_date else None,
             "linked_customers": [],
         }
-        
-        # If org_id provided, fetch linked customers
+
+        # Fetch linked customers for this global vehicle within the org
         if org_id:
             links_result = await db.execute(
                 select(CustomerVehicle, Customer)
@@ -988,11 +992,70 @@ async def search_vehicles(
                     "display_name": cust.display_name,
                     "company_name": cust.company_name,
                 })
-        
+
         results.append(vehicle_data)
-    
-    logger.info(f"search_vehicles returning: {results}")
+
+    # --- 2. Search org_vehicles (imported/manual) ---
+    if org_id and len(results) < limit:
+        remaining = limit - len(results)
+        org_stmt = (
+            select(OrgVehicle)
+            .where(
+                OrgVehicle.org_id == org_id,
+                OrgVehicle.rego.like(f"{query_upper}%"),
+            )
+            .order_by(OrgVehicle.rego)
+            .limit(remaining)
+        )
+        org_result = await db.execute(org_stmt)
+        org_vehicles = org_result.scalars().all()
+
+        for ov in org_vehicles:
+            # Skip duplicates already found in global_vehicles
+            if ov.rego.upper() in seen_regos:
+                continue
+            seen_regos.add(ov.rego.upper())
+
+            vehicle_data = {
+                "id": str(ov.id),
+                "rego": ov.rego,
+                "make": ov.make,
+                "model": ov.model,
+                "year": ov.year,
+                "colour": ov.colour,
+                "lookup_type": "imported",
+                "odometer": ov.odometer_last_recorded,
+                "service_due_date": ov.service_due_date.isoformat() if ov.service_due_date else None,
+                "linked_customers": [],
+            }
+
+            # Fetch linked customers for this org vehicle
+            links_result = await db.execute(
+                select(CustomerVehicle, Customer)
+                .join(Customer, CustomerVehicle.customer_id == Customer.id)
+                .where(
+                    CustomerVehicle.org_vehicle_id == ov.id,
+                    CustomerVehicle.org_id == org_id,
+                )
+            )
+            for link, cust in links_result.all():
+                vehicle_data["linked_customers"].append({
+                    "id": str(cust.id),
+                    "first_name": cust.first_name,
+                    "last_name": cust.last_name,
+                    "email": cust.email,
+                    "phone": cust.phone,
+                    "mobile_phone": cust.mobile_phone,
+                    "display_name": cust.display_name,
+                    "company_name": cust.company_name,
+                })
+
+            results.append(vehicle_data)
+
+    logger.info(f"search_vehicles found {len(results)} results (global + org)")
     return results
+
+
 
 
 async def list_org_vehicles(

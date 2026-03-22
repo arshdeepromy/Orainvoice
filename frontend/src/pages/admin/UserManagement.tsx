@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -37,6 +37,65 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+function ActionsMenu({
+  user,
+  loading,
+  onToggleActive,
+  onResetPassword,
+  onResetMfa,
+  onDelete,
+}: {
+  user: UserRow
+  loading: boolean
+  onToggleActive: () => void
+  onResetPassword: () => void
+  onResetMfa: () => void
+  onDelete: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const menuItem = (label: string, onClick: () => void, danger = false) => (
+    <button
+      type="button"
+      disabled={loading}
+      onClick={() => { setOpen(false); onClick() }}
+      className={`w-full text-left px-3 py-2 text-sm ${
+        danger
+          ? 'text-red-600 hover:bg-red-50'
+          : 'text-gray-700 hover:bg-gray-100'
+      } disabled:opacity-50`}
+    >
+      {label}
+    </button>
+  )
+
+  return (
+    <div className="relative" ref={ref}>
+      <Button size="sm" variant="secondary" onClick={() => setOpen(!open)} aria-label="User actions">
+        {loading ? <Spinner /> : '⋯'}
+      </Button>
+      {open && (
+        <div className="absolute right-0 z-20 mt-1 w-52 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+          {menuItem(user.is_active ? 'Deactivate' : 'Activate', onToggleActive)}
+          {menuItem('Send Reset Password', onResetPassword)}
+          {menuItem('Reset MFA', onResetMfa)}
+          <div className="border-t border-gray-100 my-1" />
+          {menuItem('Delete Permanently', onDelete, true)}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function UserManagement() {
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get('tab')
@@ -50,6 +109,10 @@ export function UserManagement() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [editModalOpen, setEditModalOpen] = useState(false)
+  const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [createForm, setCreateForm] = useState({ email: '', first_name: '', last_name: '', password: '' })
+  const [createSaving, setCreateSaving] = useState(false)
+  const [createError, setCreateError] = useState('')
   const { toasts, addToast, dismissToast } = useToast()
 
   const ORG_ROLES = ['org_admin', 'franchise_admin', 'location_manager', 'salesperson', 'staff_member']
@@ -105,13 +168,82 @@ export function UserManagement() {
     setPage(1)
   }
 
+  const [deleteConfirm, setDeleteConfirm] = useState<UserRow | null>(null)
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+
   const handleToggleActive = async (user: UserRow) => {
+    setActionLoading(user.id)
     try {
       await apiClient.put(`/admin/users/${user.id}/status`)
       addToast('success', `User ${user.is_active ? 'deactivated' : 'activated'}`)
       fetchUsers()
     } catch {
       addToast('error', 'Failed to update user status')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const handleDeleteUser = async (user: UserRow) => {
+    setActionLoading(user.id)
+    try {
+      await apiClient.delete(`/admin/users/${user.id}`)
+      addToast('success', `User ${user.email} permanently deleted`)
+      setDeleteConfirm(null)
+      fetchUsers()
+    } catch (err: any) {
+      addToast('error', err?.response?.data?.detail || 'Failed to delete user')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const handleResetPassword = async (user: UserRow) => {
+    setActionLoading(user.id)
+    try {
+      await apiClient.post(`/admin/users/${user.id}/reset-password`)
+      addToast('success', `Password reset link sent to ${user.email}`)
+    } catch (err: any) {
+      addToast('error', err?.response?.data?.detail || 'Failed to send reset link')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const handleResetMfa = async (user: UserRow) => {
+    setActionLoading(user.id)
+    try {
+      await apiClient.post(`/admin/users/${user.id}/reset-mfa`)
+      addToast('success', `MFA reset for ${user.email}`)
+    } catch (err: any) {
+      addToast('error', err?.response?.data?.detail || 'Failed to reset MFA')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const handleCreateGlobalAdmin = async () => {
+    if (!createForm.email || !createForm.password) {
+      setCreateError('Email and password are required')
+      return
+    }
+    if (createForm.password.length < 8) {
+      setCreateError('Password must be at least 8 characters')
+      return
+    }
+    setCreateSaving(true)
+    setCreateError('')
+    try {
+      await apiClient.post('/admin/users/global-admin', createForm)
+      addToast('success', `Global admin ${createForm.email} created`)
+      setCreateModalOpen(false)
+      setCreateForm({ email: '', first_name: '', last_name: '', password: '' })
+      fetchUsers()
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || 'Failed to create global admin'
+      setCreateError(msg)
+    } finally {
+      setCreateSaving(false)
     }
   }
 
@@ -152,18 +284,14 @@ export function UserManagement() {
       key: 'id',
       header: 'Actions',
       render: (row) => (
-        <div className="flex gap-2">
-          {tab === 'global' && (
-            <Button size="sm" variant="secondary" onClick={() => setEditModalOpen(true)}>
-              Edit
-            </Button>
-          )}
-          {row.role !== 'global_admin' && (
-            <Button size="sm" variant={row.is_active ? 'danger' : 'secondary'} onClick={() => handleToggleActive(row)}>
-              {row.is_active ? 'Deactivate' : 'Activate'}
-            </Button>
-          )}
-        </div>
+        <ActionsMenu
+          user={row}
+          loading={actionLoading === row.id}
+          onToggleActive={() => handleToggleActive(row)}
+          onResetPassword={() => handleResetPassword(row)}
+          onResetMfa={() => handleResetMfa(row)}
+          onDelete={() => setDeleteConfirm(row)}
+        />
       ),
     },
   ]
@@ -184,7 +312,12 @@ export function UserManagement() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-gray-900">User Management</h1>
-        <span className="text-sm text-gray-500">{total} users total</span>
+        <div className="flex items-center gap-3">
+          {tab === 'global' && (
+            <Button onClick={() => { setCreateError(''); setCreateModalOpen(true) }}>+ Add Global Admin</Button>
+          )}
+          <span className="text-sm text-gray-500">{total} users total</span>
+        </div>
       </div>
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
@@ -250,6 +383,59 @@ export function UserManagement() {
             </div>
             <div className="p-6">
               <Profile />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Global Admin Modal */}
+      {createModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 overflow-y-auto py-8">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 relative">
+            <div className="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-gray-900">Create Global Admin</h2>
+              <button
+                type="button"
+                onClick={() => setCreateModalOpen(false)}
+                className="rounded-md p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+                aria-label="Close"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <Input label="Email *" type="email" value={createForm.email} onChange={(e) => setCreateForm(f => ({ ...f, email: e.target.value }))} placeholder="admin@example.com" />
+              <div className="grid grid-cols-2 gap-3">
+                <Input label="First name" value={createForm.first_name} onChange={(e) => setCreateForm(f => ({ ...f, first_name: e.target.value }))} />
+                <Input label="Last name" value={createForm.last_name} onChange={(e) => setCreateForm(f => ({ ...f, last_name: e.target.value }))} />
+              </div>
+              <Input label="Password *" type="password" value={createForm.password} onChange={(e) => setCreateForm(f => ({ ...f, password: e.target.value }))} placeholder="Min 8 characters" />
+              {createError && <p className="text-sm text-red-600">{createError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="secondary" onClick={() => setCreateModalOpen(false)}>Cancel</Button>
+                <Button onClick={handleCreateGlobalAdmin} loading={createSaving}>Create</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-2">Delete User Permanently</h2>
+            <p className="text-sm text-gray-600 mb-1">
+              This will permanently delete <span className="font-medium">{deleteConfirm.email}</span> and all associated data including MFA, sessions, and audit records.
+            </p>
+            <p className="text-sm text-red-600 font-medium mb-4">This action cannot be undone.</p>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
+              <Button variant="danger" loading={actionLoading === deleteConfirm.id} onClick={() => handleDeleteUser(deleteConfirm)}>
+                Delete Permanently
+              </Button>
             </div>
           </div>
         </div>
