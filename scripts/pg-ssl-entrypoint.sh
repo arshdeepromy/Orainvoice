@@ -20,8 +20,38 @@ if [ -f /pg-certs/server.crt ]; then
     echo "SSL certificates installed at $SSL_DIR"
 else
     echo "WARNING: No SSL certificates found at /pg-certs/ — SSL will be disabled"
-    # Remove ssl flags from args if no certs
-    exec docker-entrypoint.sh "$@"
+    # Remove ssl-related flags from args so postgres starts without SSL
+    FILTERED_ARGS=""
+    SKIP_NEXT=0
+    for arg in "$@"; do
+        if [ "$SKIP_NEXT" = "1" ]; then
+            SKIP_NEXT=0
+            continue
+        fi
+        case "$arg" in
+            ssl=on|ssl_cert_file=*|ssl_key_file=*|ssl_ca_file=*)
+                continue
+                ;;
+            -c)
+                # Peek at next arg — we need to check if it's an ssl flag
+                FILTERED_ARGS="$FILTERED_ARGS $arg"
+                ;;
+            *)
+                # Check if previous was -c and this is an ssl param
+                if echo "$FILTERED_ARGS" | grep -q ' -c$'; then
+                    case "$arg" in
+                        ssl=on|ssl_cert_file=*|ssl_key_file=*|ssl_ca_file=*)
+                            # Remove the trailing -c we just added
+                            FILTERED_ARGS=$(echo "$FILTERED_ARGS" | sed 's/ -c$//')
+                            continue
+                            ;;
+                    esac
+                fi
+                FILTERED_ARGS="$FILTERED_ARGS $arg"
+                ;;
+        esac
+    done
+    exec docker-entrypoint.sh $FILTERED_ARGS
     exit 0
 fi
 
