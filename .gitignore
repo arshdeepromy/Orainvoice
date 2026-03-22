@@ -51,3 +51,7 @@ Thumbs.db
 # Database dumps
 *.dump
 *.sql.gz
+
+# Deploy
+backups/
+deploy-*.log
