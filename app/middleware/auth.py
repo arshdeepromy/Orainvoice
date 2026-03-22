@@ -76,6 +76,8 @@ PUBLIC_PATHS: set[str] = {
     "/api/v2/payments/stripe/webhook",
     "/api/webhooks/connexus/incoming",
     "/api/webhooks/connexus/status",
+    "/api/v1/ha/heartbeat",
+    "/api/v1/ha/status",
 }
 
 # Prefixes that are public (e.g. customer portal tokens).
@@ -103,6 +105,8 @@ AUTH_ENDPOINT_PREFIXES: tuple[str, ...] = (
 _ADMIN_ONLY_PREFIXES: tuple[str, ...] = (
     "/api/v1/admin/",
     "/api/v2/admin/",
+    "/api/v1/ha/",
+    "/api/v2/ha/",
 )
 
 

@@ -2,7 +2,7 @@
 services:
   postgres:
     ports:
-      - "5432:5432"
+      - "5434:5432"
 
   redis:
     ports:
@@ -12,6 +12,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - WATCHFILES_FORCE_POLLING=true
+      - HA_LOCAL_PG_PORT=5434
     volumes:
       - ./app:/app/app:delegated
       - ./alembic:/app/alembic:delegated

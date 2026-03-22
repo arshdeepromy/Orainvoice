@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import apiClient from '@/api/client'
 import { Button, Input, AlertBanner, Spinner } from '@/components/ui'
 import { MfaModal } from '@/components/auth/MfaModal'
+import { NodeStatusIndicator } from '@/components/ha/NodeStatusIndicator'
 
 export function Login() {
   const { login, loginWithGoogle, loginWithPasskey, isLoading } =
@@ -251,6 +252,11 @@ export function Login() {
         onClose={() => setShowMfaModal(false)}
         onSuccess={() => navigate('/')}
       />
+
+      {/* HA node indicator — small, non-intrusive */}
+      <div className="fixed bottom-4 left-4">
+        <NodeStatusIndicator />
+      </div>
     </div>
   )
 }

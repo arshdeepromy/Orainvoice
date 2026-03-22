@@ -18,6 +18,9 @@ env/
 .vscode/
 .idea/
 *.swp
+
+# SSL certificates (contain private keys)
+certs/
 *.swo
 
 # Environment
@@ -44,3 +47,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Database dumps
+*.dump
+*.sql.gz

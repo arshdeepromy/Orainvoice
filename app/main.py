@@ -131,6 +131,10 @@ def create_app() -> FastAPI:
     # 10 → registered first so it runs last (innermost)
     app.add_middleware(TenantMiddleware)
 
+    # 10.5 — HA standby write protection (reject writes on standby)
+    from app.modules.ha.middleware import StandbyWriteProtectionMiddleware
+    app.add_middleware(StandbyWriteProtectionMiddleware)
+
     # 9
     app.add_middleware(ModuleMiddleware)
 
@@ -179,6 +183,7 @@ def create_app() -> FastAPI:
     from app.modules.job_cards import models as _job_card_models  # noqa: F401
     from app.modules.staff import models as _staff_models  # noqa: F401
     from app.modules.sms_chat import models as _sms_chat_models  # noqa: F401
+    from app.modules.ha import models as _ha_models  # noqa: F401
 
     # --- V1 Routers (existing, unchanged) ---
     from app.modules.auth.router import router as auth_router
@@ -433,6 +438,14 @@ def create_app() -> FastAPI:
     from app.modules.admin.migration_router import router as migration_router
     app.include_router(migration_router, prefix="/api/v2/admin/migrations", tags=["v2-admin-migrations"])
 
+    # --- Live database migration router ---
+    from app.modules.admin.live_migration_router import router as live_migration_router
+    app.include_router(live_migration_router, prefix="/api/v1/admin/migration", tags=["admin-live-migration"])
+
+    # --- HA Replication router ---
+    from app.modules.ha.router import router as ha_router
+    app.include_router(ha_router, prefix="/api/v1/ha", tags=["ha"])
+
     # --- I18n module routers ---
     from app.modules.i18n.router import router as i18n_router
     app.include_router(i18n_router, prefix="/api/v2/i18n", tags=["v2-i18n"])
@@ -499,6 +512,36 @@ def create_app() -> FastAPI:
         from app.tasks.scheduled import start_scheduler
         await start_scheduler()
 
+    @app.on_event("startup")
+    async def _start_ha_heartbeat() -> None:
+        from app.modules.ha.service import HAService
+        from app.modules.ha.middleware import set_node_role
+        from app.core.database import async_session_factory
+        try:
+            async with async_session_factory() as session:
+                async with session.begin():
+                    config = await HAService.get_config(session)
+                    if config is not None:
+                        set_node_role(config.role, config.peer_endpoint)
+                        # Start heartbeat if peer is configured
+                        if config.peer_endpoint:
+                            import os
+                            from app.modules.ha.heartbeat import HeartbeatService
+                            from app.modules.ha import service as ha_svc_module
+                            secret = os.environ.get("HA_HEARTBEAT_SECRET", "")
+                            hb = HeartbeatService(
+                                peer_endpoint=config.peer_endpoint,
+                                interval=config.heartbeat_interval_seconds,
+                                secret=secret,
+                            )
+                            ha_svc_module._heartbeat_service = hb
+                            await hb.start()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Could not initialize HA on startup: %s", exc,
+            )
+
     @app.on_event("shutdown")
     async def _stop_connexus_token_refresher() -> None:
         from app.integrations.connexus_sms import _token_refresher
@@ -508,6 +551,13 @@ def create_app() -> FastAPI:
     async def _stop_task_scheduler() -> None:
         from app.tasks.scheduled import stop_scheduler
         await stop_scheduler()
+
+    @app.on_event("shutdown")
+    async def _stop_ha_heartbeat() -> None:
+        from app.modules.ha.service import get_heartbeat_service
+        hb = get_heartbeat_service()
+        if hb is not None:
+            await hb.stop()
 
     return app
 

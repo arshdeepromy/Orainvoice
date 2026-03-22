@@ -31,6 +31,8 @@ const adminNavItems: AdminNavItem[] = [
   { to: '/admin/notifications', label: 'Notifications' },
   { type: 'section', label: 'Tools' },
   { to: '/admin/migration', label: 'Migration Tool', flagKey: 'migration_tool' },
+  { to: '/admin/live-migration', label: 'Live Migration' },
+  { to: '/admin/ha-replication', label: 'HA Replication' },
 ]
 
 export function AdminLayout() {

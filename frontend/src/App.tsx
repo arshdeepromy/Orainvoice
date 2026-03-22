@@ -29,6 +29,8 @@ import { ErrorLog } from '@/pages/admin/ErrorLog'
 import NotificationManager from '@/pages/admin/NotificationManager'
 import { BrandingConfig } from '@/pages/admin/BrandingConfig'
 import { MigrationTool } from '@/pages/admin/MigrationTool'
+import { LiveMigrationTool } from '@/pages/admin/LiveMigrationTool'
+import { HAReplication } from '@/pages/admin/HAReplication'
 import { AuditLog } from '@/pages/admin/AuditLog'
 import { Reports as AdminReports } from '@/pages/admin/Reports'
 import { Integrations } from '@/pages/admin/Integrations'
@@ -236,6 +238,8 @@ function AppRoutes() {
             <Route path="notifications" element={<SafePage name="admin-notifications"><NotificationManager /></SafePage>} />
             <Route path="branding" element={<SafePage name="admin-branding"><BrandingConfig /></SafePage>} />
             <Route path="migration" element={<SafePage name="admin-migration"><MigrationTool /></SafePage>} />
+            <Route path="live-migration" element={<SafePage name="admin-live-migration"><LiveMigrationTool /></SafePage>} />
+            <Route path="ha-replication" element={<SafePage name="admin-ha-replication"><HAReplication /></SafePage>} />
             <Route path="audit-log" element={<SafePage name="admin-audit-log"><AuditLog /></SafePage>} />
             <Route path="reports" element={<SafePage name="admin-reports"><AdminReports /></SafePage>} />
             <Route path="integrations" element={<SafePage name="admin-integrations"><Integrations /></SafePage>} />

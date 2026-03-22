@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
 import { DataTable, type Column } from '@/components/ui/DataTable'
+import { HAStatusPanel } from '@/components/ha/HAStatusPanel'
 
 interface GlobalAdminData {
   platform_mrr?: number
@@ -299,6 +300,9 @@ export function GlobalAdminDashboard() {
           </div>
         </section>
       )}
+
+      {/* HA Cluster Status */}
+      <HAStatusPanel />
     </div>
   )
 }

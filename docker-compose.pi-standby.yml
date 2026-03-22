@@ -1,0 +1,100 @@
+# docker-compose.pi-standby.yml — Raspberry Pi STANDBY node overrides
+# This is the compose override for the standby (secondary) Pi node in the HA cluster.
+# It is identical to docker-compose.pi.yml but includes wal_level=logical for
+# PostgreSQL logical replication subscriber support.
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.pi-standby.yml up --build -d
+
+services:
+  postgres:
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=1GB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "effective_cache_size=3GB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      - "-c"
+      - "max_connections=50"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      - "wal_buffers=16MB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "max_wal_size=512MB"
+      - "-c"
+      - "min_wal_size=128MB"
+      - "-c"
+      - "default_statistics_target=100"
+      - "-c"
+      - "max_parallel_workers_per_gather=2"
+      - "-c"
+      - "max_parallel_workers=4"
+      - "-c"
+      - "max_worker_processes=4"
+      - "-c"
+      - "huge_pages=off"
+      - "-c"
+      - "log_min_duration_statement=500"
+      - "-c"
+      - "jit=off"
+      - "-c"
+      - "idle_in_transaction_session_timeout=30000"
+      - "-c"
+      - "statement_timeout=30000"
+      - "-c"
+      - "wal_level=logical"
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: '2.0'
+    shm_size: '128m'
+
+  redis:
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --tcp-backlog 128
+      --timeout 300
+      --tcp-keepalive 60
+      --lazyfree-lazy-eviction yes
+      --lazyfree-lazy-expire yes
+      --lazyfree-lazy-server-del yes
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+          cpus: '0.5'
+
+  app:
+    command: >
+      gunicorn app.main:app
+      -k uvicorn.workers.UvicornWorker
+      --workers 2
+      --bind 0.0.0.0:8000
+      --timeout 120
+      --graceful-timeout 30
+      --keep-alive 5
+      --max-requests 5000
+      --max-requests-jitter 500
+      --access-logfile -
+      --error-logfile -
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: '2.0'
+
+  nginx:
+    ports:
+      - "8999:80"

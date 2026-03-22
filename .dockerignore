@@ -57,3 +57,6 @@ npm-debug.log
 tmp/
 temp/
 *.tmp
+
+# SSL certificates
+certs/
