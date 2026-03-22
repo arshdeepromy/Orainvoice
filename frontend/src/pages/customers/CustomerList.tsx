@@ -120,7 +120,7 @@ export default function CustomerList() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [pageSize])
 
   /* --- Debounced search --- */
   useEffect(() => {

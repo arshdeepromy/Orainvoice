@@ -123,7 +123,7 @@ export default function VehicleList() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [pageSize])
 
   useEffect(() => { fetchVehicles(page, search) }, [page, pageSize, fetchVehicles]) // eslint-disable-line react-hooks/exhaustive-deps
 

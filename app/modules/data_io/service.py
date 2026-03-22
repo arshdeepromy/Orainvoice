@@ -29,12 +29,25 @@ from app.modules.data_io.schemas import (
 # ---------------------------------------------------------------------------
 
 CUSTOMER_FIELDS: dict[str, dict[str, Any]] = {
-    "first_name": {"required": True, "max_length": 100},
-    "last_name": {"required": True, "max_length": 100},
+    "first_name": {"required": False, "max_length": 100},
+    "last_name": {"required": False, "max_length": 100},
     "email": {"required": False, "max_length": 255, "pattern": r"^[^@\s]+@[^@\s]+\.[^@\s]+$"},
     "phone": {"required": False, "max_length": 50},
+    "mobile_phone": {"required": False, "max_length": 50},
+    "work_phone": {"required": False, "max_length": 50},
+    "company_name": {"required": False, "max_length": 255},
+    "display_name": {"required": False, "max_length": 255},
+    "customer_type": {"required": False, "max_length": 20},
+    "salutation": {"required": False, "max_length": 20},
     "address": {"required": False, "max_length": 5000},
+    "billing_address": {"required": False, "max_length": 5000},
+    "shipping_address": {"required": False, "max_length": 5000},
+    "currency": {"required": False, "max_length": 3},
+    "language": {"required": False, "max_length": 10},
+    "payment_terms": {"required": False, "max_length": 50},
+    "company_id": {"required": False, "max_length": 100},
     "notes": {"required": False, "max_length": 5000},
+    "remarks": {"required": False, "max_length": 5000},
 }
 
 VEHICLE_FIELDS: dict[str, dict[str, Any]] = {
@@ -47,10 +60,35 @@ VEHICLE_FIELDS: dict[str, dict[str, Any]] = {
     "fuel_type": {"required": False, "max_length": 50},
     "engine_size": {"required": False, "max_length": 50},
     "num_seats": {"required": False, "type": "int", "min": 1, "max": 100},
+    "vin": {"required": False, "max_length": 17},
+    "chassis": {"required": False, "max_length": 50},
+    "engine_no": {"required": False, "max_length": 50},
+    "transmission": {"required": False, "max_length": 100},
+    "country_of_origin": {"required": False, "max_length": 50},
+    "number_of_owners": {"required": False, "type": "int", "min": 0, "max": 999},
+    "vehicle_type": {"required": False, "max_length": 50},
+    "power_kw": {"required": False, "type": "int", "min": 0, "max": 9999},
+    "tare_weight": {"required": False, "type": "int", "min": 0, "max": 99999},
+    "gross_vehicle_mass": {"required": False, "type": "int", "min": 0, "max": 99999},
+    "plate_type": {"required": False, "max_length": 20},
+    "submodel": {"required": False, "max_length": 150},
+    "second_colour": {"required": False, "max_length": 50},
+    "wof_expiry": {"required": False, "type": "date"},
+    "registration_expiry": {"required": False, "type": "date"},
+    "service_due_date": {"required": False, "type": "date"},
+    "date_first_registered_nz": {"required": False, "type": "date"},
+    "odometer_last_recorded": {"required": False, "type": "int", "min": 0, "max": 9999999},
 }
 
 # Common aliases for auto-mapping CSV headers → target fields
 _CUSTOMER_ALIASES: dict[str, str] = {
+    "name": "first_name",
+    "customer name": "first_name",
+    "customername": "first_name",
+    "customer_name": "first_name",
+    "full name": "first_name",
+    "fullname": "first_name",
+    "full_name": "first_name",
     "firstname": "first_name",
     "first name": "first_name",
     "first_name": "first_name",
@@ -63,9 +101,40 @@ _CUSTOMER_ALIASES: dict[str, str] = {
     "phone": "phone",
     "phone_number": "phone",
     "phone number": "phone",
-    "mobile": "phone",
+    "mobile": "mobile_phone",
+    "mobile_phone": "mobile_phone",
+    "mobile phone": "mobile_phone",
+    "cell": "mobile_phone",
+    "cell phone": "mobile_phone",
+    "work_phone": "work_phone",
+    "work phone": "work_phone",
+    "workphone": "work_phone",
+    "office phone": "work_phone",
+    "company_name": "company_name",
+    "company name": "company_name",
+    "company": "company_name",
+    "display_name": "display_name",
+    "display name": "display_name",
+    "customer_type": "customer_type",
+    "customer type": "customer_type",
+    "type": "customer_type",
+    "salutation": "salutation",
+    "title": "salutation",
     "address": "address",
+    "billing_address": "billing_address",
+    "billing address": "billing_address",
+    "shipping_address": "shipping_address",
+    "shipping address": "shipping_address",
+    "currency": "currency",
+    "language": "language",
+    "payment_terms": "payment_terms",
+    "payment terms": "payment_terms",
+    "company_id": "company_id",
+    "company id": "company_id",
+    "business number": "company_id",
+    "nzbn": "company_id",
     "notes": "notes",
+    "remarks": "remarks",
 }
 
 _VEHICLE_ALIASES: dict[str, str] = {
@@ -73,11 +142,18 @@ _VEHICLE_ALIASES: dict[str, str] = {
     "registration": "rego",
     "reg": "rego",
     "plate": "rego",
+    "plate number": "rego",
     "make": "make",
     "model": "model",
+    "submodel": "submodel",
+    "sub model": "submodel",
+    "sub_model": "submodel",
     "year": "year",
     "colour": "colour",
     "color": "colour",
+    "second_colour": "second_colour",
+    "second colour": "second_colour",
+    "second color": "second_colour",
     "body_type": "body_type",
     "body type": "body_type",
     "bodytype": "body_type",
@@ -90,6 +166,51 @@ _VEHICLE_ALIASES: dict[str, str] = {
     "num_seats": "num_seats",
     "seats": "num_seats",
     "number of seats": "num_seats",
+    "vin": "vin",
+    "vin number": "vin",
+    "chassis": "chassis",
+    "chassis number": "chassis",
+    "engine_no": "engine_no",
+    "engine no": "engine_no",
+    "engine number": "engine_no",
+    "transmission": "transmission",
+    "gearbox": "transmission",
+    "country_of_origin": "country_of_origin",
+    "country of origin": "country_of_origin",
+    "country": "country_of_origin",
+    "number_of_owners": "number_of_owners",
+    "number of owners": "number_of_owners",
+    "owners": "number_of_owners",
+    "vehicle_type": "vehicle_type",
+    "vehicle type": "vehicle_type",
+    "type": "vehicle_type",
+    "power_kw": "power_kw",
+    "power kw": "power_kw",
+    "power": "power_kw",
+    "kw": "power_kw",
+    "tare_weight": "tare_weight",
+    "tare weight": "tare_weight",
+    "tare": "tare_weight",
+    "gross_vehicle_mass": "gross_vehicle_mass",
+    "gross vehicle mass": "gross_vehicle_mass",
+    "gvm": "gross_vehicle_mass",
+    "plate_type": "plate_type",
+    "plate type": "plate_type",
+    "wof_expiry": "wof_expiry",
+    "wof expiry": "wof_expiry",
+    "wof": "wof_expiry",
+    "registration_expiry": "registration_expiry",
+    "registration expiry": "registration_expiry",
+    "rego expiry": "registration_expiry",
+    "service_due_date": "service_due_date",
+    "service due date": "service_due_date",
+    "service due": "service_due_date",
+    "date_first_registered_nz": "date_first_registered_nz",
+    "date first registered nz": "date_first_registered_nz",
+    "first registered": "date_first_registered_nz",
+    "odometer_last_recorded": "odometer_last_recorded",
+    "odometer": "odometer_last_recorded",
+    "odometer last recorded": "odometer_last_recorded",
 }
 
 
@@ -147,7 +268,13 @@ def _validate_row(
     mapping_dict = {m.csv_column: m.target_field for m in mapping}
 
     for csv_col, target_field in mapping_dict.items():
-        raw_value = row_data.get(csv_col, "").strip()
+        # Support both original CSV headers and already-remapped headers.
+        # The frontend may remap headers to target field names before sending,
+        # so try the original csv_col first, then fall back to target_field.
+        raw_value = row_data.get(csv_col, "")
+        if not raw_value and csv_col != target_field:
+            raw_value = row_data.get(target_field, "")
+        raw_value = raw_value.strip()
         spec = field_specs.get(target_field)
         if spec is None:
             # Unknown target field — skip silently
@@ -232,6 +359,22 @@ def _validate_row(
                 )
                 continue
 
+        # Date type (YYYY-MM-DD)
+        if spec.get("type") == "date":
+            from datetime import date as date_type
+            try:
+                date_type.fromisoformat(raw_value)
+            except ValueError:
+                errors.append(
+                    ImportRowError(
+                        row_number=row_number,
+                        field=target_field,
+                        value=raw_value,
+                        error=f"'{target_field}' must be a valid date (YYYY-MM-DD)",
+                    )
+                )
+                continue
+
         mapped[target_field] = raw_value
 
     # Check required fields that weren't in the mapping at all
@@ -310,14 +453,38 @@ async def commit_customer_import(
             skipped += 1
             continue
 
+        first_raw = mapped_data.get("first_name", "")
+        last_raw = mapped_data.get("last_name")
+        first, last = _split_name(first_raw, last_raw)
+        if not first and not last:
+            errors.append(ImportRowError(
+                row_number=idx, field="first_name", value="",
+                error="At least a name is required",
+            ))
+            skipped += 1
+            continue
+
         customer = Customer(
             org_id=org_id,
-            first_name=mapped_data["first_name"],
-            last_name=mapped_data["last_name"],
+            first_name=first or "",
+            last_name=last or "",
             email=mapped_data.get("email") or None,
             phone=mapped_data.get("phone") or None,
+            mobile_phone=mapped_data.get("mobile_phone") or None,
+            work_phone=mapped_data.get("work_phone") or None,
+            company_name=mapped_data.get("company_name") or None,
+            display_name=mapped_data.get("display_name") or None,
+            customer_type=mapped_data.get("customer_type") or "individual",
+            salutation=mapped_data.get("salutation") or None,
             address=mapped_data.get("address") or None,
+            billing_address={"line1": mapped_data["billing_address"]} if mapped_data.get("billing_address") else {},
+            shipping_address={"line1": mapped_data["shipping_address"]} if mapped_data.get("shipping_address") else {},
+            currency=mapped_data.get("currency") or "NZD",
+            language=mapped_data.get("language") or "en",
+            payment_terms=mapped_data.get("payment_terms") or "due_on_receipt",
+            company_id=mapped_data.get("company_id") or None,
             notes=mapped_data.get("notes") or None,
+            remarks=mapped_data.get("remarks") or None,
         )
         db.add(customer)
         imported += 1
@@ -371,6 +538,25 @@ async def commit_vehicle_import(
             except ValueError:
                 pass
 
+        def _safe_int(key: str) -> int | None:
+            v = mapped_data.get(key)
+            if not v:
+                return None
+            try:
+                return int(v)
+            except ValueError:
+                return None
+
+        def _safe_date(key: str):
+            from datetime import date as date_type
+            v = mapped_data.get(key)
+            if not v:
+                return None
+            try:
+                return date_type.fromisoformat(v)
+            except ValueError:
+                return None
+
         vehicle = OrgVehicle(
             org_id=org_id,
             rego=mapped_data["rego"],
@@ -382,6 +568,24 @@ async def commit_vehicle_import(
             fuel_type=mapped_data.get("fuel_type") or None,
             engine_size=mapped_data.get("engine_size") or None,
             num_seats=seats_val,
+            vin=mapped_data.get("vin") or None,
+            chassis=mapped_data.get("chassis") or None,
+            engine_no=mapped_data.get("engine_no") or None,
+            transmission=mapped_data.get("transmission") or None,
+            country_of_origin=mapped_data.get("country_of_origin") or None,
+            number_of_owners=_safe_int("number_of_owners"),
+            vehicle_type=mapped_data.get("vehicle_type") or None,
+            power_kw=_safe_int("power_kw"),
+            tare_weight=_safe_int("tare_weight"),
+            gross_vehicle_mass=_safe_int("gross_vehicle_mass"),
+            plate_type=mapped_data.get("plate_type") or None,
+            submodel=mapped_data.get("submodel") or None,
+            second_colour=mapped_data.get("second_colour") or None,
+            wof_expiry=_safe_date("wof_expiry"),
+            registration_expiry=_safe_date("registration_expiry"),
+            service_due_date=_safe_date("service_due_date"),
+            date_first_registered_nz=_safe_date("date_first_registered_nz"),
+            odometer_last_recorded=_safe_int("odometer_last_recorded"),
             is_manual_entry=True,
         )
         db.add(vehicle)
@@ -405,6 +609,23 @@ def generate_error_report_csv(errors: list[ImportRowError]) -> str:
     for err in errors:
         writer.writerow([err.row_number, err.field, err.value, err.error])
     return output.getvalue()
+
+
+def _split_name(first_name: str, last_name: str | None) -> tuple[str, str]:
+    """Split a full name into first/last when last_name is missing.
+
+    If last_name is empty but first_name contains multiple words,
+    treat the last word as last_name and everything before as first_name.
+    If only one word, use it as first_name and set last_name to empty string.
+    """
+    last = (last_name or "").strip()
+    first = (first_name or "").strip()
+    if last:
+        return first, last
+    parts = first.split()
+    if len(parts) >= 2:
+        return " ".join(parts[:-1]), parts[-1]
+    return first, ""
 
 
 # ---------------------------------------------------------------------------
@@ -603,3 +824,266 @@ async def export_invoices_csv(
             inv.created_at.isoformat() if inv.created_at else "",
         ])
     return output.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# JSON Bulk Import
+# ---------------------------------------------------------------------------
+
+from app.modules.data_io.schemas import (
+    BulkCustomerItem,
+    BulkVehicleItem,
+    BulkImportError,
+    BulkImportResponse,
+)
+from pydantic import ValidationError
+
+
+async def bulk_import_customers_json(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    items: list[dict],
+) -> BulkImportResponse:
+    """Import customers from a JSON array. Validates each item individually."""
+    imported = 0
+    skipped = 0
+    errors: list[BulkImportError] = []
+
+    for idx, raw in enumerate(items):
+        try:
+            item = BulkCustomerItem(**raw)
+        except ValidationError as exc:
+            for e in exc.errors():
+                field = ".".join(str(loc) for loc in e["loc"]) if e["loc"] else None
+                errors.append(BulkImportError(index=idx, field=field, error=e["msg"]))
+            skipped += 1
+            continue
+
+        first, last = _split_name(item.first_name or "", item.last_name)
+        if not first and not last:
+            errors.append(BulkImportError(
+                index=idx, field="first_name",
+                error="At least a name (first_name or last_name) is required",
+            ))
+            skipped += 1
+            continue
+
+        customer = Customer(
+            org_id=org_id,
+            first_name=first or "",
+            last_name=last or "",
+            email=item.email or None,
+            phone=item.phone or None,
+            mobile_phone=item.mobile_phone or None,
+            work_phone=item.work_phone or None,
+            company_name=item.company_name or None,
+            display_name=item.display_name or None,
+            customer_type=item.customer_type or "individual",
+            salutation=item.salutation or None,
+            address=item.address or None,
+            billing_address={"line1": item.billing_address} if item.billing_address else {},
+            shipping_address={"line1": item.shipping_address} if item.shipping_address else {},
+            currency=item.currency or "NZD",
+            language=item.language or "en",
+            payment_terms=item.payment_terms or "due_on_receipt",
+            company_id=item.company_id or None,
+            notes=item.notes or None,
+            remarks=item.remarks or None,
+        )
+        db.add(customer)
+        imported += 1
+
+    if imported > 0:
+        await db.flush()
+
+    return BulkImportResponse(
+        imported_count=imported,
+        skipped_count=skipped,
+        total_submitted=len(items),
+        errors=errors,
+    )
+
+
+async def bulk_import_vehicles_json(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    items: list[dict],
+) -> BulkImportResponse:
+    """Import vehicles from a JSON array. Validates each item individually."""
+    imported = 0
+    skipped = 0
+    errors: list[BulkImportError] = []
+
+    for idx, raw in enumerate(items):
+        try:
+            item = BulkVehicleItem(**raw)
+        except ValidationError as exc:
+            for e in exc.errors():
+                field = ".".join(str(loc) for loc in e["loc"]) if e["loc"] else None
+                errors.append(BulkImportError(index=idx, field=field, error=e["msg"]))
+            skipped += 1
+            continue
+
+        def _parse_date(val: str | None):
+            from datetime import date as date_type
+            if not val:
+                return None
+            try:
+                return date_type.fromisoformat(val)
+            except ValueError:
+                return None
+
+        vehicle = OrgVehicle(
+            org_id=org_id,
+            rego=item.rego.upper().strip(),
+            make=item.make or None,
+            model=item.model or None,
+            year=item.year,
+            colour=item.colour or None,
+            body_type=item.body_type or None,
+            fuel_type=item.fuel_type or None,
+            engine_size=item.engine_size or None,
+            num_seats=item.num_seats,
+            vin=item.vin or None,
+            chassis=item.chassis or None,
+            engine_no=item.engine_no or None,
+            transmission=item.transmission or None,
+            country_of_origin=item.country_of_origin or None,
+            number_of_owners=item.number_of_owners,
+            vehicle_type=item.vehicle_type or None,
+            power_kw=item.power_kw,
+            tare_weight=item.tare_weight,
+            gross_vehicle_mass=item.gross_vehicle_mass,
+            plate_type=item.plate_type or None,
+            submodel=item.submodel or None,
+            second_colour=item.second_colour or None,
+            wof_expiry=_parse_date(item.wof_expiry),
+            registration_expiry=_parse_date(item.registration_expiry),
+            service_due_date=_parse_date(item.service_due_date),
+            date_first_registered_nz=_parse_date(item.date_first_registered_nz),
+            odometer_last_recorded=item.odometer_last_recorded,
+            is_manual_entry=True,
+        )
+        db.add(vehicle)
+        imported += 1
+
+    if imported > 0:
+        await db.flush()
+
+    return BulkImportResponse(
+        imported_count=imported,
+        skipped_count=skipped,
+        total_submitted=len(items),
+        errors=errors,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sample JSON templates
+# ---------------------------------------------------------------------------
+
+SAMPLE_CUSTOMERS_JSON = [
+    {
+        "first_name": "John",
+        "last_name": "Smith",
+        "email": "john.smith@example.com",
+        "phone": "09 123 4567",
+        "mobile_phone": "021 123 4567",
+        "work_phone": None,
+        "company_name": None,
+        "display_name": None,
+        "customer_type": "individual",
+        "salutation": "Mr",
+        "address": "123 Queen Street, Auckland 1010",
+        "billing_address": None,
+        "shipping_address": None,
+        "currency": "NZD",
+        "language": "en",
+        "payment_terms": "due_on_receipt",
+        "company_id": None,
+        "notes": "Preferred contact by email",
+        "remarks": None,
+    },
+    {
+        "first_name": "Jane",
+        "last_name": "Doe",
+        "email": "jane@acmecorp.co.nz",
+        "phone": "04 987 6543",
+        "mobile_phone": "027 987 6543",
+        "work_phone": "04 987 6500",
+        "company_name": "Acme Corp Ltd",
+        "display_name": "Acme Corp - Jane Doe",
+        "customer_type": "business",
+        "salutation": "Ms",
+        "address": "456 Lambton Quay, Wellington 6011",
+        "billing_address": "PO Box 123, Wellington 6140",
+        "shipping_address": "456 Lambton Quay, Wellington 6011",
+        "currency": "NZD",
+        "language": "en",
+        "payment_terms": "net_30",
+        "company_id": "NZBN-1234567890",
+        "notes": None,
+        "remarks": "Key account",
+    },
+]
+
+SAMPLE_VEHICLES_JSON = [
+    {
+        "rego": "ABC123",
+        "make": "Toyota",
+        "model": "Corolla",
+        "submodel": "GX Hatchback",
+        "year": 2020,
+        "colour": "Silver",
+        "second_colour": None,
+        "body_type": "Sedan",
+        "fuel_type": "Petrol",
+        "engine_size": "1.8L",
+        "num_seats": 5,
+        "vin": "JTDKN3DU5A0123456",
+        "chassis": None,
+        "engine_no": "2ZR-FE-1234567",
+        "transmission": "CVT",
+        "country_of_origin": "Japan",
+        "number_of_owners": 2,
+        "vehicle_type": "Passenger Car/Van",
+        "power_kw": 103,
+        "tare_weight": 1305,
+        "gross_vehicle_mass": 1750,
+        "plate_type": "Personalised",
+        "wof_expiry": "2026-06-15",
+        "registration_expiry": "2026-09-01",
+        "service_due_date": "2026-04-01",
+        "date_first_registered_nz": "2020-03-10",
+        "odometer_last_recorded": 45230,
+    },
+    {
+        "rego": "XYZ789",
+        "make": "Ford",
+        "model": "Ranger",
+        "submodel": "XLT Double Cab",
+        "year": 2022,
+        "colour": "Blue",
+        "second_colour": None,
+        "body_type": "Ute",
+        "fuel_type": "Diesel",
+        "engine_size": "2.0L",
+        "num_seats": 5,
+        "vin": None,
+        "chassis": None,
+        "engine_no": None,
+        "transmission": "Automatic",
+        "country_of_origin": "Thailand",
+        "number_of_owners": 1,
+        "vehicle_type": "Light Goods Vehicle/Van",
+        "power_kw": 157,
+        "tare_weight": 2085,
+        "gross_vehicle_mass": 3200,
+        "plate_type": "Standard",
+        "wof_expiry": "2026-12-01",
+        "registration_expiry": "2027-01-15",
+        "service_due_date": None,
+        "date_first_registered_nz": "2022-07-20",
+        "odometer_last_recorded": 18500,
+    },
+]

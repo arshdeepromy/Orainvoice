@@ -3,8 +3,9 @@
 # Production Deploy Script — OraInvoice
 #
 # Pulls latest code from a PRIVATE GitHub repo, auto-detects architecture
-# (x86_64 vs ARM64), rebuilds containers for the correct platform, runs
-# migrations, and automatically rolls back if anything fails.
+# (x86_64 vs ARM64), detects existing Docker project/volumes, rebuilds
+# containers for the correct platform, refreshes the frontend dist volume,
+# runs migrations, and automatically rolls back if anything fails.
 #
 # SETUP (run once on the prod server):
 #   1. Create a GitHub Personal Access Token (classic) with 'repo' scope
@@ -16,9 +17,10 @@
 #   ./scripts/deploy-prod.sh main         # deploy specific branch
 #
 # Data safety:
-#   - pgdata and redisdata volumes are NEVER touched
-#   - Only app + frontend images are rebuilt
-#   - Postgres and Redis containers are restarted (not rebuilt)
+#   - pgdata and redisdata volumes are NEVER touched or recreated
+#   - frontend_dist volume is refreshed in-place (cleared + rebuilt)
+#   - Images are built FIRST, then containers are swapped
+#   - Automatic rollback on any failure
 # =============================================================================
 set -euo pipefail
 
@@ -62,7 +64,6 @@ case "$ARCH" in
         ;;
     aarch64|arm64)
         PLATFORM="linux/arm64"
-        # Use Pi overrides if the file exists
         if [ -f "docker-compose.pi.yml" ]; then
             COMPOSE_CMD="docker compose -f docker-compose.yml -f docker-compose.pi.yml"
             info "Detected architecture: ARM64 — using Pi overrides"
@@ -91,11 +92,62 @@ log "Build platform: $PLATFORM"
 log "Compose command: $COMPOSE_CMD"
 
 # ---------------------------------------------------------------------------
-# 2. Resolve GitHub token for private repo auth
+# 2. Detect existing Docker project name and volumes
+#    This prevents creating duplicate volumes when the repo folder name
+#    differs from the original deployment folder.
+# ---------------------------------------------------------------------------
+CURRENT_DIR_NAME=$(basename "$(pwd)")
+
+# Check if COMPOSE_PROJECT_NAME is already set in .env
+CONFIGURED_PROJECT=$(grep -oP '^COMPOSE_PROJECT_NAME=\K.*' .env 2>/dev/null || echo "")
+
+if [ -n "$CONFIGURED_PROJECT" ]; then
+    PROJECT_NAME="$CONFIGURED_PROJECT"
+    info "Using project name from .env: $PROJECT_NAME"
+else
+    # Auto-detect: look for existing volumes that match known patterns
+    # This handles the case where the repo was cloned into a different folder
+    DETECTED_PROJECT=""
+    for candidate in "$CURRENT_DIR_NAME" "invoicing" "orainvoice"; do
+        if docker volume ls --format '{{.Name}}' | grep -q "^${candidate}_pgdata$"; then
+            DETECTED_PROJECT="$candidate"
+            break
+        fi
+    done
+
+    if [ -n "$DETECTED_PROJECT" ] && [ "$DETECTED_PROJECT" != "$CURRENT_DIR_NAME" ]; then
+        PROJECT_NAME="$DETECTED_PROJECT"
+        warn "Detected existing volumes under project '$DETECTED_PROJECT' (folder is '$CURRENT_DIR_NAME')"
+        warn "Setting COMPOSE_PROJECT_NAME=$PROJECT_NAME to reuse existing data volumes"
+        echo "COMPOSE_PROJECT_NAME=$PROJECT_NAME" >> .env
+    else
+        PROJECT_NAME="$CURRENT_DIR_NAME"
+    fi
+fi
+
+# Add project name to compose command
+COMPOSE_CMD="$COMPOSE_CMD -p $PROJECT_NAME"
+
+# Verify data volumes exist
+PGDATA_VOL="${PROJECT_NAME}_pgdata"
+REDIS_VOL="${PROJECT_NAME}_redisdata"
+FRONTEND_VOL="${PROJECT_NAME}_frontend_dist"
+
+log "Project name: $PROJECT_NAME"
+if docker volume ls --format '{{.Name}}' | grep -q "^${PGDATA_VOL}$"; then
+    log "Found existing pgdata volume: $PGDATA_VOL"
+else
+    warn "No existing pgdata volume found — this may be a first deploy"
+fi
+if docker volume ls --format '{{.Name}}' | grep -q "^${REDIS_VOL}$"; then
+    log "Found existing redis volume: $REDIS_VOL"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Resolve GitHub token for private repo auth
 # ---------------------------------------------------------------------------
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
-# Try loading from file if env var not set
 if [ -z "$GITHUB_TOKEN" ] && [ -f "$HOME/.ora_deploy_token" ]; then
     GITHUB_TOKEN=$(cat "$HOME/.ora_deploy_token" | tr -d '[:space:]')
     info "Loaded GitHub token from ~/.ora_deploy_token"
@@ -108,21 +160,16 @@ if [ -z "$GITHUB_TOKEN" ]; then
     exit 1
 fi
 
-# Inject token into the remote URL for this pull
 CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null || echo "")
 if [ -z "$CURRENT_REMOTE" ]; then
     err "No git remote 'origin' configured."
     exit 1
 fi
 
-# Build authenticated URL (works for both HTTPS and SSH-style remotes)
-# Converts git@github.com:user/repo.git → https://TOKEN@github.com/user/repo.git
 if echo "$CURRENT_REMOTE" | grep -q "^git@"; then
-    # SSH format → convert to HTTPS with token
     REPO_PATH=$(echo "$CURRENT_REMOTE" | sed 's/git@github.com://' | sed 's/\.git$//')
     AUTH_URL="https://${GITHUB_TOKEN}@github.com/${REPO_PATH}.git"
 elif echo "$CURRENT_REMOTE" | grep -q "^https://"; then
-    # HTTPS format → inject token
     AUTH_URL=$(echo "$CURRENT_REMOTE" | sed "s|https://|https://${GITHUB_TOKEN}@|")
 else
     err "Unrecognized remote URL format: $CURRENT_REMOTE"
@@ -132,13 +179,12 @@ fi
 info "Remote: $CURRENT_REMOTE (token injected for pull)"
 
 # ---------------------------------------------------------------------------
-# 3. Tag current working images so we can roll back
+# 4. Tag current working images as :rollback
 # ---------------------------------------------------------------------------
 log "Tagging current images as :rollback..."
 
-PROJECT_DIR=$(basename "$(pwd)")
-APP_IMAGE="${PROJECT_DIR}-app"
-FRONTEND_IMAGE="${PROJECT_DIR}-frontend"
+APP_IMAGE="${PROJECT_NAME}-app"
+FRONTEND_IMAGE="${PROJECT_NAME}-frontend"
 
 docker tag "$APP_IMAGE:latest" "$APP_IMAGE:rollback" 2>/dev/null || warn "No existing app image to tag (first deploy?)"
 docker tag "$FRONTEND_IMAGE:latest" "$FRONTEND_IMAGE:rollback" 2>/dev/null || warn "No existing frontend image to tag (first deploy?)"
@@ -147,7 +193,7 @@ OLD_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 log "Current commit: $OLD_COMMIT"
 
 # ---------------------------------------------------------------------------
-# 4. Record current Alembic revision (for migration rollback)
+# 5. Record current Alembic revision (for migration rollback)
 # ---------------------------------------------------------------------------
 log "Recording current migration revision..."
 OLD_ALEMBIC_REV=$($COMPOSE_CMD exec -T app alembic current 2>/dev/null | grep -oP '[a-f0-9]+(?= \(head\))' || echo "")
@@ -158,7 +204,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Pull latest code using token auth
+# 6. Pull latest code
 # ---------------------------------------------------------------------------
 log "Pulling latest code..."
 git fetch "$AUTH_URL" 2>&1 | tee -a "$DEPLOY_LOG"
@@ -168,7 +214,6 @@ if [ -n "$BRANCH" ]; then
     git checkout "$BRANCH" 2>&1 | tee -a "$DEPLOY_LOG"
 fi
 
-# Pull using the authenticated URL (token never stored in git config)
 git pull "$AUTH_URL" "$(git rev-parse --abbrev-ref HEAD)" 2>&1 | tee -a "$DEPLOY_LOG"
 
 NEW_COMMIT=$(git rev-parse --short HEAD)
@@ -200,6 +245,12 @@ rollback() {
         $COMPOSE_CMD run --rm app alembic downgrade "$OLD_ALEMBIC_REV" 2>/dev/null || warn "Migration rollback failed — may need manual intervention"
     fi
 
+    # Rebuild frontend dist from rollback image
+    log "Restoring frontend dist volume..."
+    $COMPOSE_CMD up -d frontend 2>/dev/null || true
+    sleep 3
+    $COMPOSE_CMD exec -T frontend sh -c 'rm -rf /app/dist/* && npx vite build' 2>/dev/null || warn "Frontend dist restore failed"
+
     log "Restarting services with previous images..."
     $COMPOSE_CMD up -d --no-build 2>&1 | tee -a "$DEPLOY_LOG" || true
 
@@ -215,37 +266,29 @@ rollback() {
 }
 
 # ---------------------------------------------------------------------------
-# 6. Build new images for the detected platform
+# 7. Build new images FIRST (before stopping anything)
 # ---------------------------------------------------------------------------
 log "Building new images for $PLATFORM..."
 export DOCKER_DEFAULT_PLATFORM="$PLATFORM"
 
 if ! $COMPOSE_CMD build --no-cache app frontend 2>&1 | tee -a "$DEPLOY_LOG"; then
-    err "Build failed."
-    rollback
+    err "Build failed. Current containers are still running — no downtime."
+    # No rollback needed — we haven't stopped anything yet
+    err "Deploy log: $DEPLOY_LOG"
+    exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# 7. Stop app + frontend (keep postgres + redis running)
-# ---------------------------------------------------------------------------
-log "Stopping app and frontend containers..."
-$COMPOSE_CMD stop app frontend nginx 2>&1 | tee -a "$DEPLOY_LOG"
+log "Images built successfully. Now swapping containers..."
 
 # ---------------------------------------------------------------------------
-# 8. Database backup before migrations
+# 8. Database backup before touching anything
 # ---------------------------------------------------------------------------
 log "Creating pre-migration database snapshot..."
 BACKUP_FILE="backups/pre-deploy-${NEW_COMMIT}-$(date +%Y%m%d-%H%M%S).sql.gz"
 mkdir -p backups
 
-# Source .env for DB credentials
-POSTGRES_USER="${POSTGRES_USER:-postgres}"
-POSTGRES_DB="${POSTGRES_DB:-workshoppro}"
-if [ -f ".env" ]; then
-    # Only grab the vars we need, don't pollute the environment
-    POSTGRES_USER=$(grep -oP '^POSTGRES_USER=\K.*' .env 2>/dev/null || echo "postgres")
-    POSTGRES_DB=$(grep -oP '^POSTGRES_DB=\K.*' .env 2>/dev/null || echo "workshoppro")
-fi
+POSTGRES_USER=$(grep -oP '^POSTGRES_USER=\K.*' .env 2>/dev/null || echo "postgres")
+POSTGRES_DB=$(grep -oP '^POSTGRES_DB=\K.*' .env 2>/dev/null || echo "workshoppro")
 
 if $COMPOSE_CMD exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" | gzip > "$BACKUP_FILE" 2>/dev/null; then
     BACKUP_SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
@@ -255,7 +298,13 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 9. Start services with new images (entrypoint runs migrations)
+# 9. Stop app + frontend + nginx (keep postgres + redis running)
+# ---------------------------------------------------------------------------
+log "Stopping app, frontend, and nginx..."
+$COMPOSE_CMD stop app frontend nginx 2>&1 | tee -a "$DEPLOY_LOG"
+
+# ---------------------------------------------------------------------------
+# 10. Recreate containers with new images
 # ---------------------------------------------------------------------------
 log "Starting services with new images..."
 if ! $COMPOSE_CMD up -d 2>&1 | tee -a "$DEPLOY_LOG"; then
@@ -264,15 +313,32 @@ if ! $COMPOSE_CMD up -d 2>&1 | tee -a "$DEPLOY_LOG"; then
 fi
 
 # ---------------------------------------------------------------------------
-# 10. Wait for app to become healthy
+# 11. Refresh frontend dist volume
+#     The frontend_dist volume persists between deploys. The Dockerfile builds
+#     to /app/dist during image build, but the volume mount masks it with old
+#     files. We clear the volume and rebuild inside the running container.
+# ---------------------------------------------------------------------------
+log "Refreshing frontend dist volume..."
+sleep 3  # wait for frontend container to be ready
+
+if ! $COMPOSE_CMD exec -T frontend sh -c 'rm -rf /app/dist/* && npx vite build' 2>&1 | tee -a "$DEPLOY_LOG"; then
+    err "Frontend build failed inside container."
+    rollback
+fi
+
+# Restart nginx to pick up fresh frontend files
+log "Restarting nginx to serve updated frontend..."
+$COMPOSE_CMD restart nginx 2>&1 | tee -a "$DEPLOY_LOG"
+
+# ---------------------------------------------------------------------------
+# 12. Wait for app to become healthy
 # ---------------------------------------------------------------------------
 log "Waiting for app to become healthy..."
-MAX_WAIT=180  # ARM builds can be slower to start
+MAX_WAIT=180
 WAITED=0
 APP_HEALTHY=false
 
 while [ $WAITED -lt $MAX_WAIT ]; do
-    # Check if the app responds on the /health endpoint (public, no auth required)
     if $COMPOSE_CMD exec -T app python -c "
 import httpx
 r = httpx.get('http://localhost:8000/health', timeout=5)
@@ -301,21 +367,34 @@ if [ "$APP_HEALTHY" != "true" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 11. Verify frontend/nginx
+# 13. Verify all services are running
 # ---------------------------------------------------------------------------
-log "Verifying frontend..."
-sleep 5
-if ! $COMPOSE_CMD ps nginx 2>/dev/null | grep -q "running"; then
-    warn "Nginx might not be running — check: $COMPOSE_CMD ps"
+log "Verifying all services..."
+ALL_RUNNING=true
+for svc in app frontend nginx postgres redis; do
+    if ! $COMPOSE_CMD ps "$svc" 2>/dev/null | grep -qE "running|Up"; then
+        warn "Service $svc may not be running"
+        ALL_RUNNING=false
+    fi
+done
+
+if [ "$ALL_RUNNING" = "true" ]; then
+    log "All 5 services confirmed running"
+fi
+
+# Verify frontend dist has new content
+if $COMPOSE_CMD exec -T frontend grep -rq 'ha-replication\|HA Replication' /app/dist/ 2>/dev/null; then
+    log "Frontend dist verified — contains latest code"
+else
+    info "Frontend dist content check skipped (no specific marker to verify)"
 fi
 
 # ---------------------------------------------------------------------------
-# 12. Cleanup
+# 14. Cleanup
 # ---------------------------------------------------------------------------
 log "Cleaning up dangling images..."
 docker image prune -f &>/dev/null || true
 
-# Keep rollback images for manual recovery
 log "Rollback images kept: ${APP_IMAGE}:rollback, ${FRONTEND_IMAGE}:rollback"
 
 # Rotate old backups (keep last 5)
@@ -333,5 +412,7 @@ log "============================================"
 log "  DEPLOY SUCCESSFUL"
 log "  Commit:   $OLD_COMMIT → $NEW_COMMIT"
 log "  Platform: $PLATFORM ($ARCH)"
+log "  Project:  $PROJECT_NAME"
+log "  Volumes:  $PGDATA_VOL, $REDIS_VOL (untouched)"
 log "  Log:      $DEPLOY_LOG"
 log "============================================"

@@ -9,11 +9,12 @@ Tables:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -51,6 +52,27 @@ class OrgVehicle(Base):
     fuel_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     engine_size: Mapped[str | None] = mapped_column(String(50), nullable=True)
     num_seats: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Extended fields (matching GlobalVehicle for parity)
+    wof_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+    registration_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+    odometer_last_recorded: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    service_due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    vin: Mapped[str | None] = mapped_column(String(17), nullable=True)
+    chassis: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    engine_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    transmission: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    country_of_origin: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    number_of_owners: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    vehicle_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    power_kw: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tare_weight: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gross_vehicle_mass: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    date_first_registered_nz: Mapped[date | None] = mapped_column(Date, nullable=True)
+    plate_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    submodel: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    second_colour: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     is_manual_entry: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="true"
     )

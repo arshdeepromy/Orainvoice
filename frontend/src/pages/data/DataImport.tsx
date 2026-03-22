@@ -21,10 +21,9 @@ interface ValidationRow {
 }
 
 interface ImportResult {
-  total: number
-  imported: number
-  skipped: number
-  errors: { row: number; reason: string }[]
+  imported_count: number
+  skipped_count: number
+  errors: { row_number: number; field: string; value: string; error: string }[]
 }
 
 type ImportStep = 'upload' | 'mapping' | 'preview' | 'importing' | 'results'
@@ -35,8 +34,21 @@ const CUSTOMER_FIELDS = [
   { value: 'last_name', label: 'Last Name' },
   { value: 'email', label: 'Email' },
   { value: 'phone', label: 'Phone' },
+  { value: 'mobile_phone', label: 'Mobile Phone' },
+  { value: 'work_phone', label: 'Work Phone' },
+  { value: 'company_name', label: 'Company Name' },
+  { value: 'display_name', label: 'Display Name' },
+  { value: 'customer_type', label: 'Customer Type' },
+  { value: 'salutation', label: 'Salutation' },
   { value: 'address', label: 'Address' },
+  { value: 'billing_address', label: 'Billing Address' },
+  { value: 'shipping_address', label: 'Shipping Address' },
+  { value: 'currency', label: 'Currency' },
+  { value: 'language', label: 'Language' },
+  { value: 'payment_terms', label: 'Payment Terms' },
+  { value: 'company_id', label: 'Company ID / NZBN' },
   { value: 'notes', label: 'Notes' },
+  { value: 'remarks', label: 'Remarks' },
 ]
 
 const VEHICLE_FIELDS = [
@@ -44,11 +56,30 @@ const VEHICLE_FIELDS = [
   { value: 'rego', label: 'Registration' },
   { value: 'make', label: 'Make' },
   { value: 'model', label: 'Model' },
+  { value: 'submodel', label: 'Submodel' },
   { value: 'year', label: 'Year' },
   { value: 'colour', label: 'Colour' },
+  { value: 'second_colour', label: 'Second Colour' },
   { value: 'body_type', label: 'Body Type' },
   { value: 'fuel_type', label: 'Fuel Type' },
   { value: 'engine_size', label: 'Engine Size' },
+  { value: 'num_seats', label: 'Number of Seats' },
+  { value: 'vin', label: 'VIN' },
+  { value: 'chassis', label: 'Chassis' },
+  { value: 'engine_no', label: 'Engine Number' },
+  { value: 'transmission', label: 'Transmission' },
+  { value: 'country_of_origin', label: 'Country of Origin' },
+  { value: 'number_of_owners', label: 'Number of Owners' },
+  { value: 'vehicle_type', label: 'Vehicle Type' },
+  { value: 'power_kw', label: 'Power (kW)' },
+  { value: 'tare_weight', label: 'Tare Weight (kg)' },
+  { value: 'gross_vehicle_mass', label: 'Gross Vehicle Mass (kg)' },
+  { value: 'plate_type', label: 'Plate Type' },
+  { value: 'wof_expiry', label: 'WOF Expiry' },
+  { value: 'registration_expiry', label: 'Registration Expiry' },
+  { value: 'service_due_date', label: 'Service Due Date' },
+  { value: 'date_first_registered_nz', label: 'Date First Registered NZ' },
+  { value: 'odometer_last_recorded', label: 'Odometer' },
 ]
 
 /* ------------------------------------------------------------------ */
@@ -168,8 +199,7 @@ export default function DataImport() {
 
       // Basic validation
       if (importType === 'customers') {
-        if (!data.first_name?.trim()) errors.push('First name is required')
-        if (!data.last_name?.trim()) errors.push('Last name is required')
+        if (!data.first_name?.trim() && !data.last_name?.trim()) errors.push('At least a name is required')
         if (data.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) errors.push('Invalid email format')
       } else {
         if (!data.rego?.trim()) errors.push('Registration is required')
@@ -214,7 +244,7 @@ export default function DataImport() {
       }, 300)
 
       const res = await apiClient.post<ImportResult>(
-        `/data/import/${importType}`,
+        `/data/import/${importType}/commit`,
         formData,
         { headers: { 'Content-Type': 'multipart/form-data' } },
       )
@@ -232,7 +262,7 @@ export default function DataImport() {
   /* ---- Error report download ---- */
   const downloadErrorReport = useCallback(() => {
     if (!importResult?.errors.length) return
-    const lines = ['Row,Reason', ...importResult.errors.map((e) => `${e.row},"${e.reason}"`)]
+    const lines = ['Row,Field,Error', ...importResult.errors.map((e) => `${e.row_number},"${e.field}","${e.error}"`)]
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -448,15 +478,15 @@ export default function DataImport() {
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="rounded-lg border border-gray-200 bg-white p-4 text-center">
-              <p className="text-2xl font-bold text-gray-900">{importResult.total}</p>
+              <p className="text-2xl font-bold text-gray-900">{importResult.imported_count + importResult.skipped_count}</p>
               <p className="text-sm text-gray-500">Total Rows</p>
             </div>
             <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-center">
-              <p className="text-2xl font-bold text-green-700">{importResult.imported}</p>
+              <p className="text-2xl font-bold text-green-700">{importResult.imported_count}</p>
               <p className="text-sm text-green-600">Imported</p>
             </div>
             <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-center">
-              <p className="text-2xl font-bold text-red-700">{importResult.skipped}</p>
+              <p className="text-2xl font-bold text-red-700">{importResult.skipped_count}</p>
               <p className="text-sm text-red-600">Skipped</p>
             </div>
           </div>

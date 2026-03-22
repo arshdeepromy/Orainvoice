@@ -41,14 +41,27 @@ def _extract_org_id(request: Request) -> uuid.UUID | None:
 
 
 def _parse_field_mapping(field_mapping_json: str | None) -> list[FieldMapping] | None:
-    """Parse optional field mapping JSON string from form data."""
+    """Parse optional field mapping JSON string from form data.
+
+    Accepts two formats:
+    - Array of objects: [{"csv_column": "Name", "target_field": "first_name"}, ...]
+    - Flat object: {"Name": "first_name", "Email": "email", ...}
+    """
     if not field_mapping_json:
         return None
     import json
     try:
         raw = json.loads(field_mapping_json)
-        return [FieldMapping(**item) for item in raw]
-    except (json.JSONDecodeError, TypeError, KeyError):
+        if isinstance(raw, list):
+            return [FieldMapping(**item) for item in raw]
+        if isinstance(raw, dict):
+            return [
+                FieldMapping(csv_column=csv_col, target_field=target)
+                for csv_col, target in raw.items()
+                if target  # skip empty/null mappings
+            ]
+        return None
+    except (json.JSONDecodeError, TypeError, KeyError, ValueError):
         return None
 
 
@@ -464,3 +477,166 @@ async def export_invoices(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=invoices_export.csv"},
     )
+
+# ---------------------------------------------------------------------------
+# JSON Bulk Import endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/import/json/customers",
+    response_model=None,
+    responses={
+        200: {"description": "Import results"},
+        400: {"description": "Invalid JSON"},
+        403: {"description": "Org Admin role required"},
+    },
+    summary="Bulk import customers from JSON",
+    description="Upload a JSON array of customer objects to import in bulk. "
+    "Each item is validated independently — valid items are imported, invalid ones are skipped.",
+    dependencies=[require_role("org_admin")],
+)
+async def bulk_import_customers_json_endpoint(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Bulk import customers from a JSON array."""
+    from app.modules.data_io.service import bulk_import_customers_json
+    from app.modules.data_io.schemas import BulkImportResponse
+
+    org_id = _extract_org_id(request)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+
+    if not isinstance(body, list):
+        return JSONResponse(status_code=400, content={
+            "detail": "Request body must be a JSON array of customer objects"
+        })
+
+    if len(body) > 1000:
+        return JSONResponse(status_code=400, content={
+            "detail": "Maximum 1000 records per import"
+        })
+
+    result: BulkImportResponse = await bulk_import_customers_json(db, org_id, body)
+
+    # Audit log
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="data_io.customers_json_imported",
+        entity_type="import",
+        entity_id=None,
+        after_value={
+            "format": "json",
+            "total": result.total_submitted,
+            "imported": result.imported_count,
+            "skipped": result.skipped_count,
+            "ip_address": ip_address,
+        },
+        ip_address=ip_address,
+    )
+    await db.commit()
+
+    return result
+
+
+@router.post(
+    "/import/json/vehicles",
+    response_model=None,
+    responses={
+        200: {"description": "Import results"},
+        400: {"description": "Invalid JSON"},
+        403: {"description": "Org Admin role required"},
+    },
+    summary="Bulk import vehicles from JSON",
+    description="Upload a JSON array of vehicle objects to import in bulk. "
+    "Each item is validated independently — valid items are imported, invalid ones are skipped.",
+    dependencies=[require_role("org_admin")],
+)
+async def bulk_import_vehicles_json_endpoint(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Bulk import vehicles from a JSON array."""
+    from app.modules.data_io.service import bulk_import_vehicles_json
+    from app.modules.data_io.schemas import BulkImportResponse
+
+    org_id = _extract_org_id(request)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+
+    if not isinstance(body, list):
+        return JSONResponse(status_code=400, content={
+            "detail": "Request body must be a JSON array of vehicle objects"
+        })
+
+    if len(body) > 1000:
+        return JSONResponse(status_code=400, content={
+            "detail": "Maximum 1000 records per import"
+        })
+
+    result: BulkImportResponse = await bulk_import_vehicles_json(db, org_id, body)
+
+    # Audit log
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="data_io.vehicles_json_imported",
+        entity_type="import",
+        entity_id=None,
+        after_value={
+            "format": "json",
+            "total": result.total_submitted,
+            "imported": result.imported_count,
+            "skipped": result.skipped_count,
+            "ip_address": ip_address,
+        },
+        ip_address=ip_address,
+    )
+    await db.commit()
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Sample JSON download endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/import/json/sample/customers",
+    summary="Download sample customer JSON template",
+    description="Returns a sample JSON array showing the expected format for bulk customer import.",
+)
+async def download_sample_customers_json():
+    """Return sample customer JSON for users to use as a template."""
+    from app.modules.data_io.service import SAMPLE_CUSTOMERS_JSON
+    return JSONResponse(content=SAMPLE_CUSTOMERS_JSON)
+
+
+@router.get(
+    "/import/json/sample/vehicles",
+    summary="Download sample vehicle JSON template",
+    description="Returns a sample JSON array showing the expected format for bulk vehicle import.",
+)
+async def download_sample_vehicles_json():
+    """Return sample vehicle JSON for users to use as a template."""
+    from app.modules.data_io.service import SAMPLE_VEHICLES_JSON
+    return JSONResponse(content=SAMPLE_VEHICLES_JSON)

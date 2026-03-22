@@ -798,25 +798,48 @@ async def get_vehicle_profile(
     """
     from app.modules.customers.models import Customer
     from app.modules.invoices.models import Invoice
-    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
 
-    # Load the global vehicle
+    is_org_vehicle = False
+
+    # Try global vehicle first
     result = await db.execute(
         select(GlobalVehicle).where(GlobalVehicle.id == vehicle_id)
     )
     vehicle = result.scalar_one_or_none()
+
+    # Fall back to org vehicle if not found in global
     if vehicle is None:
-        raise ValueError(f"Vehicle with id '{vehicle_id}' not found")
+        ov_result = await db.execute(
+            select(OrgVehicle).where(
+                OrgVehicle.id == vehicle_id,
+                OrgVehicle.org_id == org_id,
+            )
+        )
+        vehicle = ov_result.scalar_one_or_none()
+        if vehicle is None:
+            raise ValueError(f"Vehicle with id '{vehicle_id}' not found")
+        is_org_vehicle = True
 
     # Linked customers within this org
-    links_result = await db.execute(
-        select(CustomerVehicle, Customer)
-        .join(Customer, CustomerVehicle.customer_id == Customer.id)
-        .where(
-            CustomerVehicle.global_vehicle_id == vehicle_id,
-            CustomerVehicle.org_id == org_id,
+    if is_org_vehicle:
+        links_result = await db.execute(
+            select(CustomerVehicle, Customer)
+            .join(Customer, CustomerVehicle.customer_id == Customer.id)
+            .where(
+                CustomerVehicle.org_vehicle_id == vehicle_id,
+                CustomerVehicle.org_id == org_id,
+            )
         )
-    )
+    else:
+        links_result = await db.execute(
+            select(CustomerVehicle, Customer)
+            .join(Customer, CustomerVehicle.customer_id == Customer.id)
+            .where(
+                CustomerVehicle.global_vehicle_id == vehicle_id,
+                CustomerVehicle.org_id == org_id,
+            )
+        )
     linked_customers = []
     for link, cust in links_result.all():
         linked_customers.append({
@@ -854,6 +877,10 @@ async def get_vehicle_profile(
     wof_indicator = _compute_expiry_indicator(vehicle.wof_expiry)
     rego_indicator = _compute_expiry_indicator(vehicle.registration_expiry)
 
+    # Build response — handle attribute differences between GlobalVehicle and OrgVehicle
+    lookup_type = getattr(vehicle, "lookup_type", "import" if is_org_vehicle else None)
+    last_pulled = getattr(vehicle, "last_pulled_at", None)
+
     return {
         "id": str(vehicle.id),
         "rego": vehicle.rego,
@@ -867,7 +894,7 @@ async def get_vehicle_profile(
         "seats": vehicle.num_seats,
         "odometer": vehicle.odometer_last_recorded,
         "service_due_date": vehicle.service_due_date.isoformat() if vehicle.service_due_date else None,
-        "last_pulled_at": vehicle.last_pulled_at.isoformat() if vehicle.last_pulled_at else None,
+        "last_pulled_at": last_pulled.isoformat() if last_pulled else None,
         "wof_expiry": wof_indicator,
         "rego_expiry": rego_indicator,
         # Extended fields
@@ -880,7 +907,7 @@ async def get_vehicle_profile(
         "vehicle_type": vehicle.vehicle_type,
         "submodel": vehicle.submodel,
         "second_colour": vehicle.second_colour,
-        "lookup_type": vehicle.lookup_type,
+        "lookup_type": lookup_type,
         "linked_customers": linked_customers,
         "service_history": service_history,
     }
@@ -976,82 +1003,158 @@ async def list_org_vehicles(
     page: int = 1,
     page_size: int = 25,
 ) -> dict:
-    """List all vehicles associated with an org via customer_vehicles links.
+    """List all vehicles associated with an org.
+
+    Includes both:
+    - Global vehicles linked via customer_vehicles
+    - Org vehicles (manual entries / bulk imports)
 
     Returns paginated results with linked customer info, sorted by most
-    recently linked first.
+    recently created/linked first.
     """
-    from sqlalchemy import func as sa_func, distinct
-    from sqlalchemy.orm import aliased
+    from sqlalchemy import func as sa_func, literal, union_all, text as sa_text
     from app.modules.customers.models import Customer
-    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
 
-    # Base query: distinct global vehicles linked to this org
-    base = (
-        select(GlobalVehicle)
+    # --- Build unified vehicle list ---
+    # Source 1: Global vehicles linked to this org
+    global_q = (
+        select(
+            GlobalVehicle.id,
+            GlobalVehicle.rego,
+            GlobalVehicle.make,
+            GlobalVehicle.model,
+            GlobalVehicle.year,
+            GlobalVehicle.colour,
+            GlobalVehicle.body_type,
+            GlobalVehicle.fuel_type,
+            GlobalVehicle.wof_expiry,
+            GlobalVehicle.registration_expiry,
+            GlobalVehicle.service_due_date,
+            GlobalVehicle.created_at,
+            literal("global").label("source"),
+        )
         .join(CustomerVehicle, CustomerVehicle.global_vehicle_id == GlobalVehicle.id)
         .where(CustomerVehicle.org_id == org_id)
+        .distinct()
+    )
+
+    # Source 2: Org vehicles (manual entries / imports)
+    org_q = (
+        select(
+            OrgVehicle.id,
+            OrgVehicle.rego,
+            OrgVehicle.make,
+            OrgVehicle.model,
+            OrgVehicle.year,
+            OrgVehicle.colour,
+            OrgVehicle.body_type,
+            OrgVehicle.fuel_type,
+            OrgVehicle.wof_expiry,
+            OrgVehicle.registration_expiry,
+            OrgVehicle.service_due_date,
+            OrgVehicle.created_at,
+            literal("org").label("source"),
+        )
+        .where(OrgVehicle.org_id == org_id)
     )
 
     if search:
         search_upper = search.upper().strip()
-        base = base.where(
-            GlobalVehicle.rego.ilike(f"%{search_upper}%")
+        search_like = f"%{search_upper}%"
+        global_q = global_q.where(
+            GlobalVehicle.rego.ilike(search_like)
             | GlobalVehicle.make.ilike(f"%{search}%")
             | GlobalVehicle.model.ilike(f"%{search}%")
         )
+        org_q = org_q.where(
+            OrgVehicle.rego.ilike(search_like)
+            | OrgVehicle.make.ilike(f"%{search}%")
+            | OrgVehicle.model.ilike(f"%{search}%")
+        )
 
-    base = base.distinct()
+    combined = union_all(global_q, org_q).subquery()
 
     # Count
-    count_stmt = select(sa_func.count()).select_from(base.subquery())
+    count_stmt = select(sa_func.count()).select_from(combined)
     total = (await db.execute(count_stmt)).scalar() or 0
 
     # Paginate
     offset = (page - 1) * page_size
-    vehicles_stmt = base.order_by(GlobalVehicle.last_pulled_at.desc()).offset(offset).limit(page_size)
-    vehicles = (await db.execute(vehicles_stmt)).scalars().all()
+    rows_stmt = (
+        select(combined)
+        .order_by(combined.c.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    rows = (await db.execute(rows_stmt)).all()
 
     items = []
-    for v in vehicles:
-        # Fetch linked customers for this vehicle in this org
-        links_result = await db.execute(
-            select(Customer)
-            .join(CustomerVehicle, CustomerVehicle.customer_id == Customer.id)
-            .where(
-                CustomerVehicle.global_vehicle_id == v.id,
-                CustomerVehicle.org_id == org_id,
-            )
-        )
-        customers = [
-            {
-                "id": str(c.id),
-                "first_name": c.first_name,
-                "last_name": c.last_name,
-                "email": c.email,
-                "phone": c.phone,
-            }
-            for c in links_result.scalars().all()
-        ]
+    for row in rows:
+        vid = row.id
+        source = row.source
 
-        wof = _compute_expiry_indicator(v.wof_expiry)
-        rego_exp = _compute_expiry_indicator(v.registration_expiry)
+        # Fetch linked customers (only for global vehicles)
+        customers = []
+        if source == "global":
+            links_result = await db.execute(
+                select(Customer)
+                .join(CustomerVehicle, CustomerVehicle.customer_id == Customer.id)
+                .where(
+                    CustomerVehicle.global_vehicle_id == vid,
+                    CustomerVehicle.org_id == org_id,
+                )
+            )
+            customers = [
+                {
+                    "id": str(c.id),
+                    "first_name": c.first_name,
+                    "last_name": c.last_name,
+                    "email": c.email,
+                    "phone": c.phone,
+                }
+                for c in links_result.scalars().all()
+            ]
+        else:
+            # Check if org vehicle is linked to any customer
+            links_result = await db.execute(
+                select(Customer)
+                .join(CustomerVehicle, CustomerVehicle.customer_id == Customer.id)
+                .where(
+                    CustomerVehicle.org_vehicle_id == vid,
+                    CustomerVehicle.org_id == org_id,
+                )
+            )
+            customers = [
+                {
+                    "id": str(c.id),
+                    "first_name": c.first_name,
+                    "last_name": c.last_name,
+                    "email": c.email,
+                    "phone": c.phone,
+                }
+                for c in links_result.scalars().all()
+            ]
+
+        wof = _compute_expiry_indicator(row.wof_expiry)
+        rego_exp = _compute_expiry_indicator(row.registration_expiry)
 
         items.append({
-            "id": str(v.id),
-            "rego": v.rego,
-            "make": v.make,
-            "model": v.model,
-            "year": v.year,
-            "colour": v.colour,
-            "body_type": v.body_type,
-            "fuel_type": v.fuel_type,
+            "id": str(vid),
+            "rego": row.rego,
+            "make": row.make,
+            "model": row.model,
+            "year": row.year,
+            "colour": row.colour,
+            "body_type": row.body_type,
+            "fuel_type": row.fuel_type,
             "wof_indicator": wof["indicator"],
             "wof_expiry_date": wof["date"],
             "rego_indicator": rego_exp["indicator"],
             "rego_expiry_date": rego_exp["date"],
-            "service_due_date": v.service_due_date.isoformat() if v.service_due_date else None,
+            "service_due_date": row.service_due_date.isoformat() if row.service_due_date else None,
             "linked_customers": customers,
+            "source": source,
         })
 
     return {
