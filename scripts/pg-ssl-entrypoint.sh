@@ -18,42 +18,45 @@ if [ -f /pg-certs/server.crt ]; then
     chmod 644 "$SSL_DIR/server.crt" "$SSL_DIR/ca.crt"
     chown postgres:postgres "$SSL_DIR"/*
     echo "SSL certificates installed at $SSL_DIR"
+    # Hand off to the standard postgres entrypoint with all args
+    exec docker-entrypoint.sh "$@"
 else
     echo "WARNING: No SSL certificates found at /pg-certs/ — SSL will be disabled"
-    # Remove ssl-related flags from args so postgres starts without SSL
-    FILTERED_ARGS=""
-    SKIP_NEXT=0
-    for arg in "$@"; do
-        if [ "$SKIP_NEXT" = "1" ]; then
-            SKIP_NEXT=0
-            continue
-        fi
-        case "$arg" in
-            ssl=on|ssl_cert_file=*|ssl_key_file=*|ssl_ca_file=*)
+    # Filter out ssl-related -c flags from args
+    # Args come as: postgres -c shared_buffers=256MB -c ssl=on -c ssl_cert_file=... etc.
+    set -- $(
+        skip_next=0
+        prev=""
+        for arg in "$@"; do
+            if [ "$skip_next" = "1" ]; then
+                skip_next=0
                 continue
-                ;;
-            -c)
-                # Peek at next arg — we need to check if it's an ssl flag
-                FILTERED_ARGS="$FILTERED_ARGS $arg"
-                ;;
-            *)
-                # Check if previous was -c and this is an ssl param
-                if echo "$FILTERED_ARGS" | grep -q ' -c$'; then
-                    case "$arg" in
-                        ssl=on|ssl_cert_file=*|ssl_key_file=*|ssl_ca_file=*)
-                            # Remove the trailing -c we just added
-                            FILTERED_ARGS=$(echo "$FILTERED_ARGS" | sed 's/ -c$//')
-                            continue
-                            ;;
-                    esac
-                fi
-                FILTERED_ARGS="$FILTERED_ARGS $arg"
-                ;;
-        esac
-    done
-    exec docker-entrypoint.sh $FILTERED_ARGS
-    exit 0
+            fi
+            case "$arg" in
+                -c)
+                    prev="$arg"
+                    ;;
+                *)
+                    if [ "$prev" = "-c" ]; then
+                        case "$arg" in
+                            ssl=*|ssl_cert_file=*|ssl_key_file=*|ssl_ca_file=*)
+                                # Skip this -c and its ssl value
+                                prev=""
+                                continue
+                                ;;
+                            *)
+                                printf '%s\n' "$prev"
+                                printf '%s\n' "$arg"
+                                prev=""
+                                ;;
+                        esac
+                    else
+                        printf '%s\n' "$arg"
+                        prev=""
+                    fi
+                    ;;
+            esac
+        done
+    )
+    exec docker-entrypoint.sh "$@"
 fi
-
-# Hand off to the standard postgres entrypoint
-exec docker-entrypoint.sh "$@"
