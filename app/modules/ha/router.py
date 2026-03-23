@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db_session
+from app.core.database import get_db_session, async_session_factory
 from app.core.audit import write_audit_log
 from app.modules.auth.rbac import require_role
 from app.modules.ha.hmac_utils import compute_hmac
@@ -370,35 +370,56 @@ async def demote(
 )
 async def replication_init(
     request: Request,
-    db: AsyncSession = Depends(get_db_session),
 ):
     """Initialize PostgreSQL logical replication.
 
     On a primary node, creates the publication.
     On a standby node, creates the subscription using ``HA_PEER_DB_URL``.
+
+    This endpoint manages its own DB session because the DDL operations
+    (CREATE PUBLICATION / CREATE SUBSCRIPTION) can take longer than the
+    ``idle_in_transaction_session_timeout`` configured on production
+    postgres (30s).  Using ``Depends(get_db_session)`` would leave the
+    session idle inside a transaction while the DDL runs on a separate
+    raw asyncpg connection, causing postgres to kill the idle session
+    and the subsequent cleanup to fail with "underlying connection is
+    closed".
     """
-    config = await HAService.get_config(db)
-    if config is None:
+    # --- Phase 1: read config using a short-lived session ----------------
+    role = None
+    peer_db_url = None
+    try:
+        async with async_session_factory() as db:
+            async with db.begin():
+                config = await HAService.get_config(db)
+                if config is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"detail": "HA is not configured. Use PUT /api/v1/ha/configure first."},
+                    )
+                role = config.role
+                if role == "standby":
+                    peer_db_url = await get_peer_db_url(db)
+    except Exception as exc:
+        logger.error("Failed to read HA config: %s", exc)
+        return JSONResponse(status_code=500, content={"detail": f"Failed to read HA config: {exc}"})
+
+    if role == "standby" and not peer_db_url:
         return JSONResponse(
-            status_code=404,
-            content={"detail": "HA is not configured. Use PUT /api/v1/ha/configure first."},
+            status_code=400,
+            content={"detail": "Peer database connection is not configured. Set peer DB settings in HA configuration or set HA_PEER_DB_URL environment variable."},
         )
 
+    # --- Phase 2: run DDL (no SQLAlchemy session open) -------------------
     try:
-        if config.role == "primary":
-            result = await ReplicationManager.init_primary(db)
-        elif config.role == "standby":
-            peer_db_url = await get_peer_db_url(db)
-            if not peer_db_url:
-                return JSONResponse(
-                    status_code=400,
-                    content={"detail": "Peer database connection is not configured. Set peer DB settings in HA configuration or set HA_PEER_DB_URL environment variable."},
-                )
-            result = await ReplicationManager.init_standby(db, peer_db_url)
+        if role == "primary":
+            result = await ReplicationManager.init_primary(None)
+        elif role == "standby":
+            result = await ReplicationManager.init_standby(None, peer_db_url)
         else:
             return JSONResponse(
                 status_code=400,
-                content={"detail": f"Cannot init replication in '{config.role}' role. Must be 'primary' or 'standby'."},
+                content={"detail": f"Cannot init replication in '{role}' role. Must be 'primary' or 'standby'."},
             )
         return result
     except RuntimeError as exc:
@@ -406,6 +427,7 @@ async def replication_init(
     except Exception as exc:
         logger.error("Replication init error: %s", exc)
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
 
 
 @admin_router.get(
@@ -438,23 +460,86 @@ async def replication_status(db: AsyncSession = Depends(get_db_session)):
 )
 async def replication_resync(
     request: Request,
-    db: AsyncSession = Depends(get_db_session),
 ):
-    """Drop and re-create the subscription with ``copy_data=true`` for a full re-sync."""
-    peer_db_url = await get_peer_db_url(db)
+    """Drop and re-create the subscription with ``copy_data=true`` for a full re-sync.
+
+    Uses the same session-free pattern as replication_init to avoid
+    idle_in_transaction_session_timeout killing the connection.
+    """
+    # --- Phase 1: read peer_db_url using a short-lived session -----------
+    peer_db_url = None
+    try:
+        async with async_session_factory() as db:
+            async with db.begin():
+                peer_db_url = await get_peer_db_url(db)
+    except Exception as exc:
+        logger.error("Failed to read peer DB URL: %s", exc)
+        return JSONResponse(status_code=500, content={"detail": f"Failed to read HA config: {exc}"})
+
     if not peer_db_url:
         return JSONResponse(
             status_code=400,
             content={"detail": "Peer database connection is not configured. Set peer DB settings in HA configuration or set HA_PEER_DB_URL environment variable."},
         )
 
+    # --- Phase 2: run DDL (no SQLAlchemy session open) -------------------
     try:
-        await ReplicationManager.trigger_resync(db, peer_db_url)
+        await ReplicationManager.trigger_resync(None, peer_db_url)
         return {"status": "ok", "message": "Full re-sync initiated"}
     except RuntimeError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except Exception as exc:
         logger.error("Replication resync error: %s", exc)
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@admin_router.post(
+    "/replication/stop",
+    summary="Stop replication (drop publication or subscription)",
+    responses={
+        200: {"description": "Replication stopped"},
+        400: {"description": "Stop failed"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "HA not configured"},
+    },
+)
+async def replication_stop(request: Request):
+    """Stop replication by dropping the publication (primary) or subscription (standby).
+
+    Uses the same session-free pattern as replication_init.
+    """
+    role = None
+    try:
+        async with async_session_factory() as db:
+            async with db.begin():
+                config = await HAService.get_config(db)
+                if config is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"detail": "HA is not configured."},
+                    )
+                role = config.role
+    except Exception as exc:
+        logger.error("Failed to read HA config: %s", exc)
+        return JSONResponse(status_code=500, content={"detail": f"Failed to read HA config: {exc}"})
+
+    try:
+        if role == "primary":
+            await ReplicationManager.drop_publication(None)
+            return {"status": "ok", "message": "Publication dropped"}
+        elif role == "standby":
+            await ReplicationManager.drop_subscription(None)
+            return {"status": "ok", "message": "Subscription dropped"}
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"Cannot stop replication in '{role}' role."},
+            )
+    except RuntimeError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except Exception as exc:
+        logger.error("Replication stop error: %s", exc)
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 

@@ -48,7 +48,7 @@ interface ReplicationStatus {
   is_healthy: boolean
 }
 
-type ModalAction = 'promote' | 'demote' | 'init-replication' | 'resync' | 'maintenance-enter' | 'maintenance-exit' | null
+type ModalAction = 'promote' | 'demote' | 'init-replication' | 'stop-replication' | 'resync' | 'maintenance-enter' | 'maintenance-exit' | null
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -224,6 +224,9 @@ export function HAReplication() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
 
+  // Track whether initial form state has been populated
+  const [formInitialized, setFormInitialized] = useState(false)
+
   const fetchData = useCallback(async () => {
     const [cfg, hist, repl] = await Promise.all([
       safeFetch<HAConfig | null>('/ha/identity', null),
@@ -233,7 +236,8 @@ export function HAReplication() {
     setConfig(cfg)
     setHistory(hist)
     setReplication(repl)
-    if (cfg) {
+    // Only populate form fields on initial load — not on polling refreshes
+    if (cfg && !formInitialized) {
       setFormNodeName(cfg.node_name)
       setFormRole(cfg.role)
       setFormPeerEndpoint(cfg.peer_endpoint || '')
@@ -245,10 +249,10 @@ export function HAReplication() {
       setFormPeerDbName(cfg.peer_db_name || '')
       setFormPeerDbUser(cfg.peer_db_user || '')
       setFormPeerDbSslmode(cfg.peer_db_sslmode || 'disable')
-      // Password is never returned from the API — keep existing form value
+      setFormInitialized(true)
     }
     setLoading(false)
-  }, [])
+  }, [formInitialized])
 
   useEffect(() => {
     fetchData()
@@ -277,6 +281,8 @@ export function HAReplication() {
         peer_db_sslmode: formPeerDbSslmode,
       })
       setSaveSuccess(true)
+      // Re-sync form from server after save
+      setFormInitialized(false)
       await fetchData()
       setTimeout(() => setSaveSuccess(false), 3000)
     } catch (err: unknown) {
@@ -304,7 +310,7 @@ export function HAReplication() {
 
   const handleAction = async () => {
     if (!modalAction) return
-    const needsConfirm = ['promote', 'demote', 'resync'].includes(modalAction)
+    const needsConfirm = ['promote', 'demote', 'resync', 'stop-replication'].includes(modalAction)
     if (needsConfirm && confirmText !== 'CONFIRM') return
 
     setActionLoading(true)
@@ -319,6 +325,9 @@ export function HAReplication() {
           break
         case 'init-replication':
           await apiClient.post('/ha/replication/init')
+          break
+        case 'stop-replication':
+          await apiClient.post('/ha/replication/stop')
           break
         case 'resync':
           await apiClient.post('/ha/replication/resync')
@@ -462,6 +471,7 @@ export function HAReplication() {
     promote: 'Promote to Primary',
     demote: 'Demote to Standby',
     'init-replication': 'Initialize Replication',
+    'stop-replication': 'Stop Replication',
     resync: 'Trigger Full Re-sync',
     'maintenance-enter': 'Enter Maintenance Mode',
     'maintenance-exit': 'Exit Maintenance Mode',
@@ -471,6 +481,7 @@ export function HAReplication() {
     promote: 'This will promote this standby node to primary. It will begin accepting writes.',
     demote: 'This will demote this primary node to standby. It will stop accepting writes.',
     'init-replication': 'This will initialize PostgreSQL logical replication. Run this after configuring both nodes.',
+    'stop-replication': 'This will stop replication by dropping the publication (primary) or subscription (standby). You can re-initialize later.',
     resync: 'This will drop and re-create the replication subscription with a full data copy. Use when replication is broken.',
     'maintenance-enter': 'This will put the node in maintenance mode. Heartbeat checks will report maintenance status.',
     'maintenance-exit': 'This will take the node out of maintenance mode and resume normal operation.',
@@ -833,6 +844,9 @@ export function HAReplication() {
               <Button variant="secondary" size="sm" onClick={() => openModal('init-replication')}>
                 Initialize Replication
               </Button>
+              <Button variant="danger" size="sm" onClick={() => openModal('stop-replication')}>
+                Stop Replication
+              </Button>
               <Button variant="secondary" size="sm" onClick={() => openModal('resync')}>
                 Trigger Re-sync
               </Button>
@@ -940,7 +954,7 @@ export function HAReplication() {
           <div className="flex justify-end gap-3 pt-2">
             <Button variant="secondary" size="sm" onClick={closeModal}>Cancel</Button>
             <Button
-              variant={modalAction === 'demote' || modalAction === 'resync' ? 'danger' : 'primary'}
+              variant={modalAction === 'demote' || modalAction === 'resync' || modalAction === 'stop-replication' ? 'danger' : 'primary'}
               size="sm"
               disabled={needsConfirmText ? (confirmText !== 'CONFIRM' || !reason.trim()) : false}
               loading={actionLoading}
