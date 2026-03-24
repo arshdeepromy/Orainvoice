@@ -32,10 +32,15 @@ _current_org_id: ContextVar[str | None] = ContextVar("_current_org_id", default=
 
 # Enforce SSL for PostgreSQL connections in production/staging (Req 52.1, 52.2)
 _ssl_config = get_database_ssl_config(settings.environment)
+import os as _os
+
+_pool_size = int(_os.environ.get("DB_POOL_SIZE", "30"))
+_max_overflow = int(_os.environ.get("DB_MAX_OVERFLOW", "15"))
+
 _engine_kwargs: dict = {
     "echo": False,            # NEVER echo SQL — massive perf hit
-    "pool_size": 30,          # 30 per worker × 4 workers = 120 steady-state
-    "max_overflow": 15,       # burst to 45 per worker, 180 total (under PG 200 limit)
+    "pool_size": _pool_size,  # default 30; override via DB_POOL_SIZE env var
+    "max_overflow": _max_overflow,  # default 15; override via DB_MAX_OVERFLOW
     "pool_recycle": 1800,     # recycle connections after 30 min
     "pool_pre_ping": True,    # verify connections before checkout
     "pool_timeout": 5,        # fail fast — 5s max wait for a conn

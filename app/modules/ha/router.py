@@ -560,11 +560,19 @@ async def test_db_connection(payload: PeerDBTestRequest):
     Supports SSL mode configuration.
     """
     import asyncpg
+    from urllib.parse import quote_plus
 
-    dsn = f"postgresql://{payload.user}:{payload.password}@{payload.host}:{payload.port}/{payload.dbname}"
+    # Defensive: strip port from host if user accidentally included it (e.g. "192.168.1.90:8999")
+    host = payload.host.strip()
+    if ":" in host:
+        host = host.split(":")[0]
+
+    dsn = f"postgresql://{quote_plus(payload.user)}:{quote_plus(payload.password)}@{host}:{payload.port}/{payload.dbname}"
 
     # Map sslmode to asyncpg ssl parameter
-    ssl_param: object = False
+    # IMPORTANT: asyncpg defaults to attempting SSL negotiation. We must
+    # pass ssl=False explicitly when the user chose "disable".
+    ssl_param: object = False  # False = no SSL at all
     if payload.sslmode == "require":
         import ssl as _ssl
         # require = encrypted but don't verify cert
@@ -578,7 +586,7 @@ async def test_db_connection(payload: PeerDBTestRequest):
         # For verify-full, hostname checking is on by default
 
     try:
-        conn = await asyncpg.connect(dsn, timeout=10, ssl=ssl_param)
+        conn = await asyncpg.connect(dsn, timeout=10, ssl=ssl_param, server_settings={"search_path": "public"})
         try:
             version = await conn.fetchval("SELECT version()")
             wal_level = await conn.fetchval("SHOW wal_level")

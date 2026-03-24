@@ -83,6 +83,8 @@ def _build_peer_db_url(cfg: HAConfig) -> str | None:
 
     Returns ``None`` if the required fields are not all populated.
     """
+    from urllib.parse import quote_plus
+
     if not all([cfg.peer_db_host, cfg.peer_db_name, cfg.peer_db_user, cfg.peer_db_password]):
         return None
     try:
@@ -90,9 +92,13 @@ def _build_peer_db_url(cfg: HAConfig) -> str | None:
     except Exception:
         logger.error("Failed to decrypt peer DB password")
         return None
+    # Defensive: strip port from host if accidentally included
+    host = cfg.peer_db_host.strip()
+    if ":" in host:
+        host = host.split(":")[0]
     port = cfg.peer_db_port or 5432
     sslmode = cfg.peer_db_sslmode or "disable"
-    base = f"postgresql://{cfg.peer_db_user}:{password}@{cfg.peer_db_host}:{port}/{cfg.peer_db_name}"
+    base = f"postgresql://{quote_plus(cfg.peer_db_user)}:{quote_plus(password)}@{host}:{port}/{cfg.peer_db_name}"
     if sslmode and sslmode != "disable":
         base += f"?sslmode={sslmode}"
     return base
