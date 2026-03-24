@@ -709,14 +709,14 @@ async def create_replication_user(
             if exists:
                 # DDL doesn't support $1 params for PASSWORD — use quote_literal via PG
                 await conn.execute(
-                    f"ALTER USER {payload.username} WITH REPLICATION LOGIN PASSWORD '{payload.password.replace(chr(39), chr(39)+chr(39))}'"
+                    f"ALTER USER {payload.username} WITH REPLICATION BYPASSRLS LOGIN PASSWORD '{payload.password.replace(chr(39), chr(39)+chr(39))}'"
                 )
                 msg = f"User '{payload.username}' already exists — password updated"
             else:
                 await conn.execute(
-                    f"CREATE USER {payload.username} WITH REPLICATION LOGIN PASSWORD '{payload.password.replace(chr(39), chr(39)+chr(39))}'"
+                    f"CREATE USER {payload.username} WITH REPLICATION BYPASSRLS LOGIN PASSWORD '{payload.password.replace(chr(39), chr(39)+chr(39))}'"
                 )
-                msg = f"User '{payload.username}' created with REPLICATION privilege"
+                msg = f"User '{payload.username}' created with REPLICATION + BYPASSRLS privilege"
 
             # Grant SELECT on all tables
             await conn.execute(f"GRANT USAGE ON SCHEMA public TO {payload.username}")
