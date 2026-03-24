@@ -22,6 +22,8 @@ services:
     command:
       - "postgres"
       - "-c"
+      - "listen_addresses=*"
+      - "-c"
       - "shared_buffers=4GB"
       - "-c"
       - "work_mem=64MB"
@@ -63,6 +65,8 @@ services:
       - "statement_timeout=30000"
       - "-c"
       - "wal_level=logical"
+      - "-c"
+      - "app.current_org_id="
       - "-c"
       - "ssl=on"
       - "-c"

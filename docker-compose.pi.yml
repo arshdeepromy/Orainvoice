@@ -63,6 +63,8 @@ services:
       - "-c"
       - "max_replication_slots=30"
       - "-c"
+      - "app.current_org_id="
+      - "-c"
       - "ssl=on"
       - "-c"
       - "ssl_cert_file=/var/lib/postgresql/ssl/server.crt"
