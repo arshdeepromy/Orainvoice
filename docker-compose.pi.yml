@@ -5,8 +5,17 @@ services:
   postgres:
     ports:
       - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./certs/pg/primary/server.crt:/pg-certs/server.crt:ro
+      - ./certs/pg/primary/server.key:/pg-certs/server.key:ro
+      - ./certs/pg/ca.crt:/pg-certs/ca.crt:ro
+      - ./scripts/pg-ssl-entrypoint.sh:/pg-ssl-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/pg-ssl-entrypoint.sh"]
     command:
       - "postgres"
+      - "-c"
+      - "listen_addresses=*"
       - "-c"
       - "shared_buffers=1GB"
       - "-c"
@@ -49,6 +58,14 @@ services:
       - "statement_timeout=30000"
       - "-c"
       - "wal_level=logical"
+      - "-c"
+      - "ssl=on"
+      - "-c"
+      - "ssl_cert_file=/var/lib/postgresql/ssl/server.crt"
+      - "-c"
+      - "ssl_key_file=/var/lib/postgresql/ssl/server.key"
+      - "-c"
+      - "ssl_ca_file=/var/lib/postgresql/ssl/ca.crt"
     deploy:
       resources:
         limits:
