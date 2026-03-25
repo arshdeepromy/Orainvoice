@@ -118,7 +118,17 @@ export default function POList() {
       setSupplierMap(map)
       const prods = prodRes.data.products || prodRes.data || []
       setProducts(prods)
-    } catch { /* non-blocking */ }
+    } catch (err) {
+      // Fallback: try the inventory endpoint which is the same table
+      try {
+        const suppRes = await apiClient.get('/inventory/suppliers')
+        const supps: Supplier[] = suppRes.data.suppliers || []
+        setSuppliers(supps)
+        const map: Record<string, string> = {}
+        supps.forEach(s => { map[s.id] = s.name })
+        setSupplierMap(map)
+      } catch { /* non-blocking */ }
+    }
   }, [])
 
   useEffect(() => { fetchOrders() }, [fetchOrders])
@@ -151,10 +161,10 @@ export default function POList() {
     setShowCreate(true)
   }
 
-  // Supplier search helpers
-  const filteredSuppliers = suppliers.filter(s =>
-    s.name.toLowerCase().includes(supplierQuery.toLowerCase())
-  )
+  // Supplier search helpers — show all when query empty, filter when typing
+  const filteredSuppliers = supplierQuery.trim() === ''
+    ? suppliers
+    : suppliers.filter(s => s.name.toLowerCase().includes(supplierQuery.toLowerCase()))
 
   const selectSupplier = (s: Supplier) => {
     setCreateSupplierId(s.id)
@@ -349,7 +359,10 @@ export default function POList() {
                       </button>
                     ))}
                     {filteredSuppliers.length === 0 && supplierQuery.length > 0 && (
-                      <div className="px-3 py-2 text-sm text-gray-500">No suppliers found</div>
+                      <div className="px-3 py-2 text-sm text-gray-500">No suppliers match "{supplierQuery}"</div>
+                    )}
+                    {filteredSuppliers.length === 0 && supplierQuery.length === 0 && suppliers.length === 0 && (
+                      <div className="px-3 py-2 text-sm text-gray-500">No suppliers yet</div>
                     )}
                     <button type="button" onClick={openAddSupplier}
                       className="w-full border-t border-gray-100 px-3 py-2 text-left text-sm font-medium text-blue-600 hover:bg-blue-50">
