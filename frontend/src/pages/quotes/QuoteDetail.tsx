@@ -328,7 +328,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-200">
-                  <th className="text-left py-2 px-2 text-xs font-medium uppercase text-gray-500 w-[45%]">Item Details</th>
+                  <th className="text-left py-2 px-2 text-xs font-medium uppercase text-gray-500 w-[45%]">Details</th>
                   <th className="text-center py-2 px-2 text-xs font-medium uppercase text-gray-500 w-[12%]">Qty</th>
                   <th className="text-right py-2 px-2 text-xs font-medium uppercase text-gray-500 w-[15%]">Rate</th>
                   <th className="text-center py-2 px-2 text-xs font-medium uppercase text-gray-500 w-[10%]">Tax</th>

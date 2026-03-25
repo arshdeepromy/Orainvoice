@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { useAuth } from '@/contexts/AuthContext'
 import { OrgSettings } from './OrgSettings'
 import { BranchManagement } from './BranchManagement'
 import { UserManagement } from './UserManagement'
@@ -27,19 +28,19 @@ type SettingsSection =
   | 'modules'
   | 'notifications'
 
-const NAV_ITEMS: { id: SettingsSection; label: string; icon: string }[] = [
+const NAV_ITEMS: { id: SettingsSection; label: string; icon: string; adminOnly?: boolean }[] = [
   { id: 'profile', label: 'Profile', icon: '👤' },
-  { id: 'organisation', label: 'Organisation', icon: '⚙' },
-  { id: 'branches', label: 'Branches', icon: '🏢' },
-  { id: 'users', label: 'Users', icon: '👥' },
-  { id: 'billing', label: 'Billing', icon: '💳' },
-  { id: 'accounting', label: 'Accounting', icon: '📒' },
-  { id: 'currency', label: 'Currency', icon: '💱' },
-  { id: 'language', label: 'Language', icon: '🌐' },
-  { id: 'printer', label: 'Printer', icon: '🖨' },
-  { id: 'webhooks', label: 'Webhooks', icon: '🔗' },
-  { id: 'modules', label: 'Modules', icon: '🧩' },
-  { id: 'notifications', label: 'Notifications', icon: '🔔' },
+  { id: 'organisation', label: 'Organisation', icon: '⚙', adminOnly: true },
+  { id: 'branches', label: 'Branches', icon: '🏢', adminOnly: true },
+  { id: 'users', label: 'Users', icon: '👥', adminOnly: true },
+  { id: 'billing', label: 'Billing', icon: '💳', adminOnly: true },
+  { id: 'accounting', label: 'Accounting', icon: '📒', adminOnly: true },
+  { id: 'currency', label: 'Currency', icon: '💱', adminOnly: true },
+  { id: 'language', label: 'Language', icon: '🌐', adminOnly: true },
+  { id: 'printer', label: 'Printer', icon: '🖨', adminOnly: true },
+  { id: 'webhooks', label: 'Webhooks', icon: '🔗', adminOnly: true },
+  { id: 'modules', label: 'Modules', icon: '🧩', adminOnly: true },
+  { id: 'notifications', label: 'Notifications', icon: '🔔', adminOnly: true },
 ]
 
 const SECTION_COMPONENTS: Record<SettingsSection, React.FC> = {
@@ -58,9 +59,16 @@ const SECTION_COMPONENTS: Record<SettingsSection, React.FC> = {
 }
 
 export function Settings() {
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'org_admin' || user?.role === 'global_admin'
+  const visibleNavItems = useMemo(
+    () => NAV_ITEMS.filter(item => !item.adminOnly || isAdmin),
+    [isAdmin],
+  )
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get('tab')
-  const initialTab = NAV_ITEMS.some(i => i.id === tabParam) ? (tabParam as SettingsSection) : 'organisation'
+  const defaultTab = isAdmin ? 'organisation' : 'profile'
+  const initialTab = visibleNavItems.some(i => i.id === tabParam) ? (tabParam as SettingsSection) : defaultTab
   const [active, setActive] = useState<SettingsSection>(initialTab)
 
   useEffect(() => {
@@ -76,7 +84,7 @@ export function Settings() {
         className="md:w-56 flex-shrink-0 border-b md:border-b-0 md:border-r border-gray-200 md:sticky md:top-0 md:self-start"
       >
         <ul className="flex md:flex-col gap-1 p-2 overflow-x-auto md:overflow-x-visible md:overflow-y-auto md:max-h-[calc(100vh-10rem)]">
-          {NAV_ITEMS.map((item) => (
+          {visibleNavItems.map((item) => (
             <li key={item.id}>
               <button
                 onClick={() => setActive(item.id)}

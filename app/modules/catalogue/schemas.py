@@ -225,13 +225,26 @@ class PartCreateRequest(BaseModel):
     part_number: Optional[str] = Field(
         None, max_length=100, description="Part number / SKU"
     )
+    description: Optional[str] = Field(None, description="Part description")
+    part_type: str = Field("part", description="'part' or 'tyre'")
+    category_id: Optional[str] = Field(None, description="Category UUID")
+    brand: Optional[str] = Field(None, max_length=100, description="Brand name")
+    supplier_id: Optional[str] = Field(None, description="Supplier UUID")
     default_price: str = Field(
         ..., description="Default price as decimal string (e.g. '29.95')"
     )
     supplier: Optional[str] = Field(
-        None, max_length=255, description="Supplier name (optional)"
+        None, max_length=255, description="Supplier name (legacy, optional)"
     )
     is_active: bool = Field(True, description="Whether the part is active")
+    min_stock_threshold: int = Field(0, ge=0, description="Minimum stock threshold")
+    reorder_quantity: int = Field(0, ge=0, description="Reorder quantity")
+    # Tyre-specific
+    tyre_width: Optional[str] = Field(None, max_length=10)
+    tyre_profile: Optional[str] = Field(None, max_length=10)
+    tyre_rim_dia: Optional[str] = Field(None, max_length=10)
+    tyre_load_index: Optional[str] = Field(None, max_length=10)
+    tyre_speed_index: Optional[str] = Field(None, max_length=10)
 
 
 class PartResponse(BaseModel):
@@ -243,9 +256,21 @@ class PartResponse(BaseModel):
     id: str = Field(..., description="Part UUID")
     name: str = Field(..., description="Part name")
     part_number: Optional[str] = Field(None, description="Part number / SKU")
+    description: Optional[str] = Field(None, description="Part description")
+    part_type: str = Field("part", description="'part' or 'tyre'")
+    category_id: Optional[str] = Field(None, description="Category UUID")
+    category_name: Optional[str] = Field(None, description="Category name")
+    brand: Optional[str] = Field(None, description="Brand name")
+    supplier_id: Optional[str] = Field(None, description="Supplier UUID")
+    supplier_name: Optional[str] = Field(None, description="Supplier name")
     default_price: str = Field(..., description="Default price")
-    supplier: Optional[str] = Field(None, description="Supplier name")
+    supplier: Optional[str] = Field(None, description="Supplier name (legacy)")
     is_active: bool = Field(True, description="Active/inactive status")
+    tyre_width: Optional[str] = Field(None)
+    tyre_profile: Optional[str] = Field(None)
+    tyre_rim_dia: Optional[str] = Field(None)
+    tyre_load_index: Optional[str] = Field(None)
+    tyre_speed_index: Optional[str] = Field(None)
     created_at: str = Field(..., description="ISO 8601 creation timestamp")
     updated_at: str = Field(..., description="ISO 8601 last update timestamp")
 

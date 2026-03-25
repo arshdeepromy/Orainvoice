@@ -2065,7 +2065,13 @@ async def create_invitation(
     )
 
     # Send invitation email
-    await _send_invitation_email(email, invite_token)
+    from app.modules.admin.models import Organisation as _Org
+    _org_r = await db.execute(select(_Org.name).where(_Org.id == org_id))
+    _org_name = _org_r.scalar_one_or_none() or "your organisation"
+    _base_url = getattr(settings, "frontend_base_url", "") or "http://localhost"
+    await _send_invitation_email(
+        email, invite_token, db=db, org_name=_org_name, base_url=_base_url,
+    )
 
     # Audit log
     await write_audit_log(
@@ -2253,7 +2259,13 @@ async def resend_invitation(
     )
 
     # Send invitation email
-    await _send_invitation_email(email, invite_token)
+    from app.modules.admin.models import Organisation as _Org2
+    _org_r2 = await db.execute(select(_Org2.name).where(_Org2.id == org_id))
+    _org_name2 = _org_r2.scalar_one_or_none() or "your organisation"
+    _base_url2 = getattr(settings, "frontend_base_url", "") or "http://localhost"
+    await _send_invitation_email(
+        email, invite_token, db=db, org_name=_org_name2, base_url=_base_url2,
+    )
 
     # Audit log
     await write_audit_log(
@@ -2276,19 +2288,161 @@ async def resend_invitation(
     }
 
 
-async def _send_invitation_email(email: str, token: str) -> None:
+async def _get_email_providers(db: AsyncSession) -> list:
+    """Return active email providers ordered by priority."""
+    from app.modules.admin.models import EmailProvider
+    result = await db.execute(
+        select(EmailProvider)
+        .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
+        .order_by(EmailProvider.priority)
+    )
+    return list(result.scalars().all())
+
+
+async def _send_invitation_email(
+    email: str,
+    token: str,
+    *,
+    db: AsyncSession | None = None,
+    org_name: str = "your organisation",
+    base_url: str = "",
+) -> None:
     """Send an invitation email with the secure signup link.
 
-    In production this dispatches via the notification infrastructure
-    (Brevo/SendGrid). For now we log the intent.
+    Uses the active email provider configured by the global admin.
+    Falls back to logging the URL in development if no provider is set.
     """
-    logger.info(
-        "Invitation email queued for %s with token %s...",
-        email,
-        token[:8],
+    import smtplib
+    import json as _json
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    if not base_url:
+        base_url = getattr(settings, "frontend_base_url", "") or "http://localhost"
+
+    invite_url = f"{base_url}/verify-email?token={token}"
+
+    subject = f"You've been invited to join {org_name} on OraInvoice"
+
+    html_body = f"""
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; margin-bottom: 30px;">
+        <h1 style="color: #1f2937; font-size: 24px; margin: 0;">You're Invited</h1>
+      </div>
+
+      <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+        Hi there,
+      </p>
+
+      <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+        You've been invited to join <strong>{org_name}</strong> on OraInvoice.
+        Click the button below to set your password and get started.
+      </p>
+
+      <div style="text-align: center; margin: 30px 0;">
+        <a href="{invite_url}"
+           style="display: inline-block; padding: 14px 32px; background-color: #2563eb;
+                  color: #ffffff; text-decoration: none; border-radius: 8px;
+                  font-size: 16px; font-weight: 600;">
+          Accept Invitation
+        </a>
+      </div>
+
+      <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+        Or copy and paste this link into your browser:<br/>
+        <a href="{invite_url}" style="color: #2563eb; word-break: break-all;">{invite_url}</a>
+      </p>
+
+      <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+        This invitation expires in 48 hours. If you didn't expect this email,
+        you can safely ignore it.
+      </p>
+
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;" />
+
+      <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+        OraInvoice — Invoicing made simple
+      </p>
+    </div>
+    """
+
+    text_body = (
+        f"You've been invited to join {org_name} on OraInvoice.\n\n"
+        f"Click the link below to set your password and get started:\n"
+        f"{invite_url}\n\n"
+        f"This invitation expires in 48 hours.\n"
     )
-    # TODO: Replace with Celery task dispatching a real email via
-    # app.integrations.brevo once the Notification_Module is implemented.
+
+    # Find active email provider
+    if db is None:
+        from app.core.database import async_session_factory
+        async with async_session_factory() as session:
+            providers = await _get_email_providers(session)
+    else:
+        providers = await _get_email_providers(db)
+
+    if not providers:
+        logger.warning(
+            "No active email provider — cannot send invite to %s (token: %s...)",
+            email, token[:8],
+        )
+        if settings.environment == "development":
+            logger.warning("DEV INVITE URL: %s", invite_url)
+        return
+
+    from app.core.encryption import envelope_decrypt_str
+
+    last_error = None
+    for provider in providers:
+        try:
+            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
+            credentials = _json.loads(creds_json)
+
+            smtp_host = provider.smtp_host
+            smtp_port = provider.smtp_port or 587
+            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
+            username = credentials.get("username") or credentials.get("api_key", "")
+            password = credentials.get("password") or credentials.get("api_key", "")
+
+            config = provider.config or {}
+            from_email = config.get("from_email") or username
+            from_name = config.get("from_name") or "OraInvoice"
+
+            msg = MIMEMultipart("alternative")
+            msg["From"] = f"{from_name} <{from_email}>"
+            msg["To"] = email
+            msg["Subject"] = subject
+            msg.attach(MIMEText(text_body, "plain"))
+            msg.attach(MIMEText(html_body, "html"))
+
+            if smtp_encryption == "ssl":
+                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+            else:
+                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+                if smtp_encryption == "tls":
+                    server.starttls()
+
+            if username and password:
+                server.login(username, password)
+
+            server.sendmail(from_email, email, msg.as_string())
+            server.quit()
+            logger.info("Invitation email sent to %s via %s", email, provider.provider_key)
+            return
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "Email provider %s failed for invite to %s: %s",
+                provider.provider_key, email, e,
+            )
+            continue
+
+    logger.warning(
+        "All email providers failed for invite to %s: %s (token: %s...)",
+        email, last_error, token[:8],
+    )
+    if settings.environment == "development":
+        logger.warning("DEV INVITE URL: %s", invite_url)
 
 
 # ---------------------------------------------------------------------------

@@ -52,9 +52,10 @@ openssl req -new \
 echo "[3/5] Signing primary server certificate with CA..."
 
 # Create SAN extension file for primary (allows connections via multiple hostnames)
+# Includes the primary Pi LAN IP for HA replication over VPN
 cat > "$CERT_DIR/primary/san.cnf" <<EOF
 [v3_req]
-subjectAltName = DNS:postgres,DNS:localhost,DNS:primary-postgres,IP:127.0.0.1
+subjectAltName = DNS:postgres,DNS:localhost,DNS:primary-postgres,IP:127.0.0.1,IP:192.168.1.90
 EOF
 
 openssl x509 -req -days "$DAYS_VALID" \
@@ -75,9 +76,10 @@ openssl req -new \
   -subj "/CN=standby-postgres/O=OraInvoice/C=NZ" 2>/dev/null
 
 # Create SAN extension file for standby
+# Includes the standby Pi LAN IP for HA replication over VPN
 cat > "$CERT_DIR/standby/san.cnf" <<EOF
 [v3_req]
-subjectAltName = DNS:postgres,DNS:localhost,DNS:standby-postgres,IP:127.0.0.1
+subjectAltName = DNS:postgres,DNS:localhost,DNS:standby-postgres,IP:127.0.0.1,IP:192.168.10.87
 EOF
 
 openssl x509 -req -days "$DAYS_VALID" \

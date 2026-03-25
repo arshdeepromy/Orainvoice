@@ -148,6 +148,7 @@ async def create_invoice_endpoint(
             vehicle_odometer=payload.vehicle_odometer,
             global_vehicle_id=payload.global_vehicle_id,
             vehicle_service_due_date=payload.vehicle_service_due_date,
+            vehicle_wof_expiry_date=payload.vehicle_wof_expiry_date,
             vehicles=[v.model_dump() for v in payload.vehicles] if payload.vehicles else None,
             branch_id=payload.branch_id,
             status=effective_status,
@@ -170,23 +171,24 @@ async def create_invoice_endpoint(
     # Commit so the invoice exists before emailing
     await db.commit()
 
-    # Auto-email the invoice PDF when status was "sent"
+    # Auto-email the invoice PDF when status was "sent" — fire-and-forget
     email_status = None
     if should_email:
-        try:
-            from app.core.database import async_session_factory, _set_rls_org_id
-            from app.modules.invoices.service import email_invoice
-            invoice_uuid = result["id"] if isinstance(result["id"], uuid.UUID) else uuid.UUID(str(result["id"]))
-            # Use a fresh session — the original is closed after commit
-            async with async_session_factory() as email_db:
-                async with email_db.begin():
-                    await _set_rls_org_id(email_db, str(org_uuid))
-                    email_result = await email_invoice(email_db, org_id=org_uuid, invoice_id=invoice_uuid)
-            email_status = email_result.get("status", "sent")
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).exception("Auto-email failed for invoice %s: %s", result.get("id"), exc)
-            email_status = "email_failed"
+        import asyncio as _asyncio
+        async def _send_email_bg():
+            try:
+                from app.core.database import async_session_factory, _set_rls_org_id
+                from app.modules.invoices.service import email_invoice
+                invoice_uuid = result["id"] if isinstance(result["id"], uuid.UUID) else uuid.UUID(str(result["id"]))
+                async with async_session_factory() as email_db:
+                    async with email_db.begin():
+                        await _set_rls_org_id(email_db, str(org_uuid))
+                        await email_invoice(email_db, org_id=org_uuid, invoice_id=invoice_uuid)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).exception("Auto-email failed for invoice %s: %s", result.get("id"), exc)
+        _asyncio.create_task(_send_email_bg())
+        email_status = "queued"
 
     invoice_resp = InvoiceResponse(
         **{
@@ -516,16 +518,20 @@ async def update_invoice_endpoint(
 
         await db.commit()
 
-        try:
-            from app.core.database import async_session_factory, _set_rls_org_id
-            from app.modules.invoices.service import email_invoice
-            async with async_session_factory() as email_db:
-                async with email_db.begin():
-                    await _set_rls_org_id(email_db, str(org_uuid))
-                    await email_invoice(email_db, org_id=org_uuid, invoice_id=invoice_id)
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).exception("Auto-email failed for invoice %s: %s", invoice_id, exc)
+        # Send email in background (fire-and-forget)
+        import asyncio as _asyncio
+        async def _send_update_email():
+            try:
+                from app.core.database import async_session_factory, _set_rls_org_id
+                from app.modules.invoices.service import email_invoice
+                async with async_session_factory() as email_db:
+                    async with email_db.begin():
+                        await _set_rls_org_id(email_db, str(org_uuid))
+                        await email_invoice(email_db, org_id=org_uuid, invoice_id=invoice_id)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).exception("Auto-email failed for invoice %s: %s", invoice_id, exc)
+        _asyncio.create_task(_send_update_email())
 
     _exclude = {"line_items", "tax_compliance", "line_item_tax_details"}
     invoice_resp = InvoiceResponse(

@@ -16,6 +16,7 @@ When Redis is unavailable the middleware uses a bifurcated strategy:
 Implemented as pure ASGI middleware to avoid request body stream corruption.
 """
 
+import asyncio
 import logging
 import time
 
@@ -105,18 +106,16 @@ class RateLimitMiddleware:
         self._redis = redis
 
     async def _get_redis(self) -> Redis | None:
-        """Return the shared Redis pool; no per-request connection creation."""
+        """Return the shared Redis pool, cached after first successful ping."""
         if self._redis is not None:
             return self._redis
-
         try:
             from app.core.redis import redis_pool
+            await asyncio.wait_for(redis_pool.ping(), timeout=0.5)
             self._redis = redis_pool
-            await self._redis.ping()
+            return self._redis
         except Exception:
-            logger.warning("Redis unavailable — rate limiter cannot connect")
-            self._redis = None
-        return self._redis
+            return None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":

@@ -178,12 +178,29 @@ def create_app() -> FastAPI:
     # fails with InvalidRequestError when a relationship is first
     # accessed via selectinload.
     # ------------------------------------------------------------------
+    from app.modules.auth import models as _auth_models  # noqa: F401
     from app.modules.admin import models as _admin_models  # noqa: F401
+    from app.modules.organisations import models as _org_models  # noqa: F401
     from app.modules.customers import models as _customer_models  # noqa: F401
+    from app.modules.suppliers import models as _supplier_models  # noqa: F401
+    from app.modules.catalogue import models as _catalogue_models  # noqa: F401
+    from app.modules.inventory import models as _inventory_models  # noqa: F401
+    from app.modules.invoices import models as _invoice_models  # noqa: F401
+    from app.modules.vehicles import models as _vehicle_models  # noqa: F401
+    from app.modules.billing import models as _billing_models  # noqa: F401
     from app.modules.job_cards import models as _job_card_models  # noqa: F401
     from app.modules.staff import models as _staff_models  # noqa: F401
     from app.modules.sms_chat import models as _sms_chat_models  # noqa: F401
     from app.modules.ha import models as _ha_models  # noqa: F401
+    from app.modules.stock import models as _stock_models  # noqa: F401
+    from app.modules.quotes import models as _quote_models  # noqa: F401
+    from app.modules.payments import models as _payment_models  # noqa: F401
+
+    # Force SQLAlchemy to resolve all relationship references now,
+    # while all models are loaded. This prevents lazy mapper configuration
+    # errors during async request handling.
+    from sqlalchemy.orm import configure_mappers
+    configure_mappers()
 
     # --- V1 Routers (existing, unchanged) ---
     from app.modules.auth.router import router as auth_router

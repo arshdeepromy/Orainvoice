@@ -968,6 +968,7 @@ async def search_vehicles(
             "lookup_type": v.lookup_type,
             "odometer": v.odometer_last_recorded,
             "service_due_date": v.service_due_date.isoformat() if v.service_due_date else None,
+            "wof_expiry": v.wof_expiry.isoformat() if v.wof_expiry else None,
             "linked_customers": [],
         }
 
@@ -1026,6 +1027,7 @@ async def search_vehicles(
                 "lookup_type": "imported",
                 "odometer": ov.odometer_last_recorded,
                 "service_due_date": ov.service_due_date.isoformat() if ov.service_due_date else None,
+                "wof_expiry": ov.wof_expiry.isoformat() if ov.wof_expiry else None,
                 "linked_customers": [],
             }
 

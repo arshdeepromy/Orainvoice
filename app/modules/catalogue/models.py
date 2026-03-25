@@ -71,6 +71,24 @@ class ItemsCatalogue(Base):
 ServiceCatalogue = ItemsCatalogue
 
 
+class PartCategory(Base):
+    """Organisation-scoped part category."""
+
+    __tablename__ = "part_categories"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class PartsCatalogue(Base):
     """Organisation-scoped parts catalogue entry."""
 
@@ -87,6 +105,15 @@ class PartsCatalogue(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     part_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    part_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default="part")
+    category_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("part_categories.id"), nullable=True
+    )
+    brand: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    supplier_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=True
+    )
     default_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     current_stock: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
@@ -100,6 +127,12 @@ class PartsCatalogue(Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="true"
     )
+    # Tyre-specific fields
+    tyre_width: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    tyre_profile: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    tyre_rim_dia: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    tyre_load_index: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    tyre_speed_index: Mapped[str | None] = mapped_column(String(10), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -112,6 +145,8 @@ class PartsCatalogue(Base):
 
     # Relationships
     organisation = relationship("Organisation", backref="parts_catalogue_items")
+    category = relationship("PartCategory", backref="parts", lazy="noload")
+    supplier = relationship("Supplier", backref="catalogue_parts", lazy="noload")
     part_suppliers: Mapped[list[PartSupplier]] = relationship(
         back_populates="part"
     )

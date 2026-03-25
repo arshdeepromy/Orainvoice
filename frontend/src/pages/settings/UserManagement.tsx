@@ -79,8 +79,9 @@ export function UserManagement() {
       setInviteForm({ email: '', role: 'salesperson' })
       addToast('success', 'Invitation sent')
       fetchData()
-    } catch {
-      addToast('error', 'Failed to send invitation')
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || 'Failed to send invitation'
+      addToast('error', detail)
     } finally {
       setSaving(false)
     }
@@ -94,6 +95,49 @@ export function UserManagement() {
       fetchData()
     } catch {
       addToast('error', 'Failed to deactivate user')
+    }
+  }
+
+  const [resendingEmail, setResendingEmail] = useState<string | null>(null)
+  const [resendCooldowns, setResendCooldowns] = useState<Record<string, number>>({})
+
+  const resendInvite = async (email: string) => {
+    setResendingEmail(email)
+    try {
+      await apiClient.post('/auth/resend-invite', { email })
+      addToast('success', `Invitation resent to ${email}`)
+      setResendCooldowns(prev => ({ ...prev, [email]: 60 }))
+    } catch {
+      addToast('error', 'Failed to resend invitation')
+    } finally {
+      setResendingEmail(null)
+    }
+  }
+
+  // Countdown timer for resend cooldowns
+  useEffect(() => {
+    const hasActive = Object.values(resendCooldowns).some(v => v > 0)
+    if (!hasActive) return
+    const timer = setInterval(() => {
+      setResendCooldowns(prev => {
+        const next: Record<string, number> = {}
+        for (const [k, v] of Object.entries(prev)) {
+          if (v > 1) next[k] = v - 1
+        }
+        return next
+      })
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [resendCooldowns])
+
+  const deleteUserPermanently = async (userId: string, email: string) => {
+    if (!confirm(`PERMANENTLY delete ${email}? This cannot be undone. Their invoices will be reassigned to you.`)) return
+    try {
+      await apiClient.delete(`/org/users/${userId}/permanent`)
+      addToast('success', `User ${email} permanently deleted`)
+      fetchData()
+    } catch (err: any) {
+      addToast('error', err?.response?.data?.detail || 'Failed to delete user')
     }
   }
 
@@ -130,9 +174,25 @@ export function UserManagement() {
     { key: 'last_login_at', header: 'Last Login', render: (row) => formatDate(row.last_login_at) },
     {
       key: 'actions', header: 'Actions',
-      render: (row) => row.is_active
-        ? <Button size="sm" variant="danger" onClick={() => deactivateUser(row.id)}>Deactivate</Button>
-        : <span className="text-sm text-gray-400">Deactivated</span>,
+      render: (row) => {
+        if (!row.is_active) return (
+          <div className="flex gap-2">
+            <span className="text-sm text-gray-400">Deactivated</span>
+            <Button size="sm" variant="danger" onClick={() => deleteUserPermanently(row.id, row.email)}>Delete</Button>
+          </div>
+        )
+        return (
+          <div className="flex gap-2">
+            {row.is_active && !row.is_email_verified && (
+              resendCooldowns[row.email] > 0
+                ? <span className="text-xs text-gray-500 tabular-nums">Resend in {resendCooldowns[row.email]}s</span>
+                : <Button size="sm" variant="secondary" loading={resendingEmail === row.email} onClick={() => resendInvite(row.email)}>Resend Invite</Button>
+            )}
+            <Button size="sm" variant="danger" onClick={() => deactivateUser(row.id)}>Deactivate</Button>
+            <Button size="sm" variant="danger" onClick={() => deleteUserPermanently(row.id, row.email)}>Delete</Button>
+          </div>
+        )
+      },
     },
   ]
 

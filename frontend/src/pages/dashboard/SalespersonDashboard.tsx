@@ -94,25 +94,31 @@ export function SalespersonDashboard() {
       try {
         const [appointmentsRes, jobCardsRes, invoicesRes, overdueRes] =
           await Promise.all([
-            apiClient.get<Appointment[]>('/bookings', {
+            apiClient.get('/bookings', {
               params: { date: new Date().toISOString().split('T')[0] },
             }),
-            apiClient.get<JobCard[]>('/job-cards', {
+            apiClient.get('/job-cards', {
               params: { status: 'active' },
             }),
-            apiClient.get<Invoice[]>('/invoices', {
+            apiClient.get('/invoices', {
               params: { limit: 10, sort: '-issue_date' },
             }),
-            apiClient.get<Invoice[]>('/invoices', {
+            apiClient.get('/invoices', {
               params: { status: 'overdue' },
             }),
           ])
         if (!cancelled) {
+          const toArr = (d: unknown): unknown[] =>
+            Array.isArray(d) ? d : Array.isArray((d as Record<string, unknown>)?.bookings) ? (d as Record<string, unknown>).bookings as unknown[]
+            : Array.isArray((d as Record<string, unknown>)?.job_cards) ? (d as Record<string, unknown>).job_cards as unknown[]
+            : Array.isArray((d as Record<string, unknown>)?.invoices) ? (d as Record<string, unknown>).invoices as unknown[]
+            : Array.isArray((d as Record<string, unknown>)?.items) ? (d as Record<string, unknown>).items as unknown[]
+            : []
           setData({
-            appointments: appointmentsRes.data,
-            active_job_cards: jobCardsRes.data,
-            recent_invoices: invoicesRes.data,
-            overdue_invoices: overdueRes.data,
+            appointments: toArr(appointmentsRes.data) as Appointment[],
+            active_job_cards: toArr(jobCardsRes.data) as JobCard[],
+            recent_invoices: toArr(invoicesRes.data) as Invoice[],
+            overdue_invoices: toArr(overdueRes.data) as Invoice[],
           })
         }
       } catch {

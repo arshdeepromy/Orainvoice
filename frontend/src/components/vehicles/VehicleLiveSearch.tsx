@@ -39,6 +39,7 @@ interface SearchResult {
   lookup_type: string | null
   odometer?: number | null
   service_due_date?: string | null
+  wof_expiry?: string | null
   linked_customers?: LinkedCustomer[]
 }
 
@@ -127,7 +128,7 @@ export function VehicleLiveSearch({ vehicle, onVehicleFound, onCustomerAutoSelec
       body_type: '',
       fuel_type: '',
       engine_size: '',
-      wof_expiry: null,
+      wof_expiry: result.wof_expiry ?? null,
       registration_expiry: null,
       odometer: result.odometer ?? null,
       service_due_date: result.service_due_date ?? null,

@@ -43,26 +43,16 @@ export function NodeStatusIndicator() {
   const peerUnreachable = status.peer_status === 'unreachable'
 
   return (
-    <div className="inline-flex items-center gap-2 rounded-md bg-gray-50 px-3 py-1.5 text-xs text-gray-600 border border-gray-200">
-      {/* Colored dot */}
+    <div
+      className="inline-flex items-center rounded-md p-1.5"
+      title={`${status.node_name} · ${isPrimary ? 'Primary' : 'Standby'}${peerUnreachable ? ' — Peer unreachable' : ''}`}
+    >
       <span
-        className={`inline-block h-2 w-2 rounded-full ${isPrimary ? 'bg-green-500' : 'bg-amber-500'}`}
-        aria-hidden="true"
+        className={`inline-block h-2.5 w-2.5 rounded-full ${
+          peerUnreachable ? 'bg-red-500' : isPrimary ? 'bg-green-500' : 'bg-amber-500'
+        }`}
+        aria-label={`${isPrimary ? 'Primary' : 'Standby'} node${peerUnreachable ? ', peer unreachable' : ''}`}
       />
-
-      <span className="font-medium">{status.node_name}</span>
-      <span className="text-gray-400">·</span>
-      <span>{isPrimary ? 'Primary' : 'Standby'}</span>
-
-      {/* Standby notice */}
-      {!isPrimary && (
-        <span className="text-amber-600">— Running on backup node</span>
-      )}
-
-      {/* Peer unreachable warning */}
-      {peerUnreachable && (
-        <span className="text-red-600">— Peer unreachable</span>
-      )}
     </div>
   )
 }

@@ -561,6 +561,8 @@ async def invite_user(
             ).model_dump(),
         )
     except ValueError as exc:
+        import logging
+        logging.getLogger(__name__).warning("Invite failed: %s", exc)
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return UserInviteResponse(
@@ -681,6 +683,97 @@ async def delete_user(
         user_id=result["user_id"],
         sessions_invalidated=result["sessions_invalidated"],
     )
+
+
+@router.delete(
+    "/users/{target_user_id}/permanent",
+    responses={
+        200: {"description": "User permanently deleted"},
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    summary="Permanently delete a user",
+    dependencies=[require_role("org_admin")],
+)
+async def delete_user_permanent(
+    target_user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Permanently delete a user from the organisation.
+
+    Reassigns any invoices/credit notes created by this user to the acting
+    admin before deletion to avoid FK constraint violations.
+    """
+    from sqlalchemy import update as sql_update, select, delete
+    from app.core.audit import write_audit_log
+    from app.modules.auth.models import User, Session, UserMfaMethod, UserPasskeyCredential, UserBackupCode
+    from app.modules.invoices.models import Invoice, CreditNote
+
+    acting_user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        acting_uuid = uuid.UUID(acting_user_id) if acting_user_id else None
+        target_uuid = uuid.UUID(target_user_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid UUID format"})
+
+    if acting_uuid and acting_uuid == target_uuid:
+        return JSONResponse(status_code=400, content={"detail": "Cannot delete your own account"})
+
+    # Verify user belongs to this org
+    result = await db.execute(
+        select(User).where(User.id == target_uuid, User.org_id == org_uuid)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        return JSONResponse(status_code=400, content={"detail": "User not found in this organisation"})
+
+    email = user.email
+
+    # Reassign invoices and credit notes to the acting admin
+    if acting_uuid:
+        await db.execute(
+            sql_update(Invoice)
+            .where(Invoice.created_by == target_uuid)
+            .values(created_by=acting_uuid)
+        )
+        await db.execute(
+            sql_update(CreditNote)
+            .where(CreditNote.created_by == target_uuid)
+            .values(created_by=acting_uuid)
+        )
+
+    # Delete related auth records
+    await db.execute(delete(UserMfaMethod).where(UserMfaMethod.user_id == target_uuid))
+    await db.execute(delete(UserPasskeyCredential).where(UserPasskeyCredential.user_id == target_uuid))
+    await db.execute(delete(UserBackupCode).where(UserBackupCode.user_id == target_uuid))
+    await db.execute(delete(Session).where(Session.user_id == target_uuid))
+
+    # Delete the user
+    await db.delete(user)
+
+    await write_audit_log(
+        session=db,
+        org_id=org_uuid,
+        user_id=acting_uuid,
+        action="org.user_deleted_permanently",
+        entity_type="user",
+        entity_id=target_uuid,
+        after_value={"email": email, "deleted_permanently": True},
+        ip_address=ip_address,
+    )
+
+    await db.commit()
+
+    return {"message": f"User {email} permanently deleted", "user_id": str(target_uuid)}
 
 
 @router.put(

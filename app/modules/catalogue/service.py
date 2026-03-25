@@ -248,13 +248,42 @@ get_service = get_item
 
 def _part_to_dict(part: PartsCatalogue) -> dict:
     """Convert a PartsCatalogue ORM instance to a serialisable dict."""
+    # Use getattr with None default to avoid lazy-load greenlet errors
+    cat_name = None
+    sup_name = None
+    sup_id = part.supplier_id
+    cat_id = part.category_id
+    try:
+        cat = getattr(part, "category", None)
+        if cat is not None:
+            cat_name = cat.name
+    except Exception:
+        pass
+    try:
+        sup = getattr(part, "supplier", None)
+        if sup is not None:
+            sup_name = sup.name
+    except Exception:
+        pass
     return {
         "id": str(part.id),
         "name": part.name,
         "part_number": part.part_number,
+        "description": getattr(part, "description", None),
+        "part_type": getattr(part, "part_type", None) or "part",
+        "category_id": str(cat_id) if cat_id else None,
+        "category_name": cat_name,
+        "brand": getattr(part, "brand", None),
+        "supplier_id": str(sup_id) if sup_id else None,
+        "supplier_name": sup_name or getattr(part, "_supplier_name", None),
         "default_price": str(part.default_price),
-        "supplier": getattr(part, "_supplier_name", None),
+        "supplier": getattr(part, "_supplier_name", None) or sup_name,
         "is_active": part.is_active,
+        "tyre_width": getattr(part, "tyre_width", None),
+        "tyre_profile": getattr(part, "tyre_profile", None),
+        "tyre_rim_dia": getattr(part, "tyre_rim_dia", None),
+        "tyre_load_index": getattr(part, "tyre_load_index", None),
+        "tyre_speed_index": getattr(part, "tyre_speed_index", None),
         "created_at": part.created_at.isoformat() if part.created_at else None,
         "updated_at": part.updated_at.isoformat() if part.updated_at else None,
     }
@@ -287,6 +316,11 @@ async def list_parts(
         .limit(limit)
         .offset(offset)
     )
+    from sqlalchemy.orm import selectinload
+    stmt = stmt.options(
+        selectinload(PartsCatalogue.category),
+        selectinload(PartsCatalogue.supplier),
+    )
     result = await db.execute(stmt)
     parts = result.scalars().all()
 
@@ -304,17 +338,23 @@ async def create_part(
     name: str,
     default_price: str,
     part_number: str | None = None,
+    description: str | None = None,
+    part_type: str = "part",
+    category_id: str | None = None,
+    brand: str | None = None,
+    supplier_id: str | None = None,
     supplier: str | None = None,
     is_active: bool = True,
+    min_stock_threshold: int = 0,
+    reorder_quantity: int = 0,
+    tyre_width: str | None = None,
+    tyre_profile: str | None = None,
+    tyre_rim_dia: str | None = None,
+    tyre_load_index: str | None = None,
+    tyre_speed_index: str | None = None,
     ip_address: str | None = None,
 ) -> dict:
     """Create a new parts catalogue entry.
-
-    The ``supplier`` field is stored as a simple text reference on the
-    part record (not a foreign key to the suppliers table) to keep
-    pre-loading lightweight.  Ad-hoc parts per invoice (Req 28.2) are
-    handled at the invoice line-item level and do not require a
-    catalogue entry.
 
     Requirements: 28.1
     """
@@ -330,12 +370,21 @@ async def create_part(
         org_id=org_id,
         name=name,
         part_number=part_number,
+        description=description,
+        part_type=part_type or "part",
+        category_id=uuid.UUID(category_id) if category_id else None,
+        brand=brand,
+        supplier_id=uuid.UUID(supplier_id) if supplier_id else None,
         default_price=price,
+        min_stock_threshold=min_stock_threshold,
+        reorder_quantity=reorder_quantity,
         is_active=is_active,
+        tyre_width=tyre_width,
+        tyre_profile=tyre_profile,
+        tyre_rim_dia=tyre_rim_dia,
+        tyre_load_index=tyre_load_index,
+        tyre_speed_index=tyre_speed_index,
     )
-    # Store supplier name as a transient attribute for the response.
-    # The PartsCatalogue model doesn't have a direct supplier text column,
-    # so we keep it lightweight — supplier linkage is via part_suppliers table.
     part._supplier_name = supplier  # type: ignore[attr-defined]
     db.add(part)
     await db.flush()
@@ -358,7 +407,15 @@ async def create_part(
         ip_address=ip_address,
     )
 
-    return _part_to_dict(part)
+    # Re-fetch with eager loading for the response
+    from sqlalchemy.orm import selectinload
+    result = await db.execute(
+        select(PartsCatalogue)
+        .where(PartsCatalogue.id == part.id)
+        .options(selectinload(PartsCatalogue.category), selectinload(PartsCatalogue.supplier))
+    )
+    loaded_part = result.scalar_one()
+    return _part_to_dict(loaded_part)
 
 
 # ===========================================================================

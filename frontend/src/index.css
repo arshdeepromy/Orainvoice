@@ -12,12 +12,10 @@
   visibility: hidden !important;
 }
 
-/* Prevent double-scroll: lock html/body/root to viewport,
-   let OrgLayout's <main> be the sole scroll container. */
-html, body, #root {
-  height: 100%;
-  overflow: hidden;
-}
+/* OrgLayout and AdminLayout set their own `h-screen overflow-hidden`
+   to prevent double-scroll (ISSUE-051).  No height/overflow constraints
+   needed on html/body/#root — guest pages (signup, login) need native
+   document scrolling. */
 
 /* Global form element styling */
 @layer base {

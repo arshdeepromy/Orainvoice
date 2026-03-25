@@ -18,6 +18,21 @@ if [ -f /pg-certs/server.crt ]; then
     chmod 644 "$SSL_DIR/server.crt" "$SSL_DIR/ca.crt"
     chown postgres:postgres "$SSL_DIR"/*
     echo "SSL certificates installed at $SSL_DIR"
+
+    # Ensure pg_hba.conf allows connections from any IP
+    # (required for HA logical replication and cross-node access)
+    PG_HBA="/var/lib/postgresql/data/pg_hba.conf"
+    if [ -f "$PG_HBA" ]; then
+        if ! grep -q "^host replication all 0.0.0.0/0" "$PG_HBA"; then
+            echo "host replication all 0.0.0.0/0 scram-sha-256" >> "$PG_HBA"
+            echo "Added replication pg_hba rule for external connections"
+        fi
+        if ! grep -q "^host all all 0.0.0.0/0" "$PG_HBA"; then
+            echo "host all all 0.0.0.0/0 scram-sha-256" >> "$PG_HBA"
+            echo "Added general pg_hba rule for external connections"
+        fi
+    fi
+
     # Hand off to the standard postgres entrypoint with all args
     exec docker-entrypoint.sh "$@"
 else

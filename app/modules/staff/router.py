@@ -234,6 +234,23 @@ async def deactivate_staff(
     return {"message": "Staff member deactivated", "id": str(staff_id)}
 
 
+@router.delete("/{staff_id}/permanent", status_code=200, summary="Permanently delete staff member")
+async def delete_staff_permanent(
+    staff_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Permanently delete a staff member record."""
+    org_id = _get_org_id(request)
+    svc = StaffService(db)
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+    await db.delete(staff)
+    await db.flush()
+    return {"message": "Staff member permanently deleted", "id": str(staff_id)}
+
+
 @router.post("/{staff_id}/activate", response_model=StaffMemberResponse, summary="Reactivate staff member")
 async def activate_staff(
     staff_id: UUID,

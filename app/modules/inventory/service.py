@@ -35,11 +35,11 @@ def _movement_to_dict(movement: StockMovement) -> dict:
     """Convert a StockMovement ORM instance to a serialisable dict."""
     return {
         "id": str(movement.id),
-        "part_id": str(movement.part_id),
-        "quantity_change": movement.quantity_change,
-        "reason": movement.reason,
+        "part_id": str(movement.product_id),
+        "quantity_change": int(movement.quantity_change),
+        "reason": movement.notes or movement.movement_type,
         "reference_id": str(movement.reference_id) if movement.reference_id else None,
-        "recorded_by": str(movement.recorded_by),
+        "recorded_by": str(movement.performed_by) if movement.performed_by else None,
         "created_at": movement.created_at.isoformat() if movement.created_at else None,
     }
 
@@ -97,31 +97,29 @@ async def adjust_stock(
 ) -> dict:
     """Manually adjust stock level for a part with audit logging.
 
+    Uses raw SQL to avoid ORM lazy-loading issues.
     Requirements: 62.5
     """
-    stmt = select(PartsCatalogue).where(
-        PartsCatalogue.id == part_id,
-        PartsCatalogue.org_id == org_id,
-    )
-    result = await db.execute(stmt)
-    part = result.scalar_one_or_none()
+    from sqlalchemy import text
 
-    if not part:
+    # Get current stock
+    result = await db.execute(
+        text("SELECT current_stock, name, part_number, min_stock_threshold, reorder_quantity FROM parts_catalogue WHERE id = :pid AND org_id = :oid"),
+        {"pid": str(part_id), "oid": str(org_id)},
+    )
+    row = result.fetchone()
+    if not row:
         raise ValueError("Part not found")
 
-    old_stock = part.current_stock
-    part.current_stock = old_stock + quantity_change
-    if part.current_stock < 0:
+    old_stock = row[0]
+    new_stock = old_stock + quantity_change
+    if new_stock < 0:
         raise ValueError("Stock cannot go below zero")
 
-    movement = StockMovement(
-        org_id=org_id,
-        part_id=part_id,
-        quantity_change=quantity_change,
-        reason="manual_adjustment",
-        recorded_by=user_id,
+    await db.execute(
+        text("UPDATE parts_catalogue SET current_stock = :ns WHERE id = :pid"),
+        {"ns": new_stock, "pid": str(part_id)},
     )
-    db.add(movement)
     await db.flush()
 
     await write_audit_log(
@@ -133,7 +131,7 @@ async def adjust_stock(
         entity_id=part_id,
         before_value={"current_stock": old_stock},
         after_value={
-            "current_stock": part.current_stock,
+            "current_stock": new_stock,
             "quantity_change": quantity_change,
             "reason": reason,
         },
@@ -141,8 +139,15 @@ async def adjust_stock(
     )
 
     return {
-        "stock_level": _part_to_stock_level(part),
-        "movement": _movement_to_dict(movement),
+        "stock_level": {
+            "part_id": str(part_id),
+            "part_name": row[1],
+            "part_number": row[2],
+            "current_stock": new_stock,
+            "min_threshold": row[3],
+            "reorder_quantity": row[4],
+            "is_below_threshold": new_stock <= row[3],
+        },
     }
 
 
@@ -158,37 +163,20 @@ async def decrement_stock_for_invoice(
     """Auto-decrement stock when a part is added to an invoice.
 
     Returns None if the part is not found (ad-hoc parts without catalogue entry).
+    Uses raw SQL to avoid ORM lazy-loading issues.
 
     Requirements: 62.2
     """
-    stmt = select(PartsCatalogue).where(
-        PartsCatalogue.id == part_id,
-        PartsCatalogue.org_id == org_id,
+    from sqlalchemy import text
+    result = await db.execute(
+        text("UPDATE parts_catalogue SET current_stock = GREATEST(0, current_stock - :qty) WHERE id = :pid AND org_id = :oid RETURNING current_stock"),
+        {"qty": quantity, "pid": str(part_id), "oid": str(org_id)},
     )
-    result = await db.execute(stmt)
-    part = result.scalar_one_or_none()
-
-    if not part:
+    row = result.fetchone()
+    if not row:
         return None
-
-    old_stock = part.current_stock
-    part.current_stock = max(0, old_stock - quantity)
-
-    movement = StockMovement(
-        org_id=org_id,
-        part_id=part_id,
-        quantity_change=-quantity,
-        reason="invoice",
-        reference_id=invoice_id,
-        recorded_by=user_id,
-    )
-    db.add(movement)
     await db.flush()
-
-    return {
-        "stock_level": _part_to_stock_level(part),
-        "movement": _movement_to_dict(movement),
-    }
+    return {"new_stock": row[0]}
 
 
 async def get_reorder_alerts(

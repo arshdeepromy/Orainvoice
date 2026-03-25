@@ -230,6 +230,7 @@ async def create_invoice(
     vehicle_odometer: int | None = None,
     global_vehicle_id: uuid.UUID | None = None,
     vehicle_service_due_date: date | None = None,
+    vehicle_wof_expiry_date: date | None = None,
     vehicles: list[dict] | None = None,
     branch_id: uuid.UUID | None = None,
     status: str = "draft",
@@ -405,6 +406,24 @@ async def create_invoice(
 
     # Audit log — record creation with before/after values (Req 23.3)
     audit_action = "invoice.created_draft" if status == "draft" else "invoice.issued"
+
+    # Decrement stock for parts from catalogue (if not draft)
+    if status != "draft":
+        from app.modules.inventory.service import decrement_stock_for_invoice
+        for li in created_line_items:
+            if li.catalogue_item_id and li.quantity:
+                try:
+                    await decrement_stock_for_invoice(
+                        db,
+                        org_id=org_id,
+                        user_id=user_id,
+                        part_id=li.catalogue_item_id,
+                        quantity=int(li.quantity),
+                        invoice_id=invoice.id,
+                    )
+                except Exception:
+                    pass  # Non-blocking — stock decrement is best-effort
+
     await write_audit_log(
         session=db,
         org_id=org_id,
@@ -487,6 +506,17 @@ async def create_invoice(
         gv = gv_result.scalar_one_or_none()
         if gv:
             gv.service_due_date = vehicle_service_due_date
+
+    # Update WOF expiry on the vehicle if provided
+    if vehicle_wof_expiry_date and global_vehicle_id:
+        from app.modules.admin.models import GlobalVehicle
+        if not vehicle_service_due_date:
+            gv_result = await db.execute(
+                select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
+            )
+            gv = gv_result.scalar_one_or_none()
+        if gv:
+            gv.wof_expiry = vehicle_wof_expiry_date
 
     await db.refresh(invoice)
     return _invoice_to_dict(invoice, created_line_items)
@@ -1251,6 +1281,22 @@ async def issue_invoice(
     gst_pct = Decimal(str(org_settings.get("gst_percentage", 15)))
     tax_details = get_line_item_tax_details(line_items, gst_pct)
 
+    # Decrement stock for catalogue parts when issuing
+    from app.modules.inventory.service import decrement_stock_for_invoice
+    for li in line_items:
+        if li.catalogue_item_id and li.quantity:
+            try:
+                await decrement_stock_for_invoice(
+                    db,
+                    org_id=org_id,
+                    user_id=user_id,
+                    part_id=li.catalogue_item_id,
+                    quantity=int(li.quantity),
+                    invoice_id=invoice.id,
+                )
+            except Exception:
+                pass  # Non-blocking
+
     result = _invoice_to_dict(invoice, line_items)
     result["tax_compliance"] = compliance
     result["line_item_tax_details"] = tax_details
@@ -1551,6 +1597,18 @@ async def update_invoice(
         gv = gv_result.scalar_one_or_none()
         if gv:
             gv.service_due_date = vehicle_service_due_date
+
+    # Update WOF expiry on the vehicle if provided
+    vehicle_wof_expiry_date = updates.get("vehicle_wof_expiry_date")
+    if vehicle_wof_expiry_date and global_vehicle_id:
+        from app.modules.admin.models import GlobalVehicle
+        if not vehicle_service_due_date:
+            gv_result = await db.execute(
+                select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
+            )
+            gv = gv_result.scalar_one_or_none()
+        if gv:
+            gv.wof_expiry = vehicle_wof_expiry_date
 
     # Recalculate totals if discount, line items, or financial fields changed
     needs_recalc = (

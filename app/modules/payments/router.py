@@ -100,29 +100,20 @@ async def record_cash_payment_endpoint(
     # Commit the payment so the fresh email session sees updated balances
     await db.commit()
 
-    # Send updated invoice email using a fresh session
-    # (RLS context is lost after the commit above)
-    try:
-        from app.core.database import async_session_factory, _set_rls_org_id
-        from app.modules.invoices.service import email_invoice
-
-        async with async_session_factory() as fresh_session:
-            async with fresh_session.begin():
-                await _set_rls_org_id(fresh_session, str(org_uuid))
-                await email_invoice(
-                    fresh_session,
-                    org_id=org_uuid,
-                    invoice_id=payload.invoice_id,
-                )
-        logger.info(
-            "Payment receipt email sent for invoice %s", payload.invoice_id
-        )
-    except Exception as email_exc:
-        # Payment was recorded successfully — don't fail the request if email fails
-        logger.warning(
-            "Payment recorded but email failed for invoice %s: %s",
-            payload.invoice_id, email_exc,
-        )
+    # Send updated invoice email in background (fire-and-forget)
+    import asyncio as _asyncio
+    async def _send_payment_email():
+        try:
+            from app.core.database import async_session_factory, _set_rls_org_id
+            from app.modules.invoices.service import email_invoice
+            async with async_session_factory() as fresh_session:
+                async with fresh_session.begin():
+                    await _set_rls_org_id(fresh_session, str(org_uuid))
+                    await email_invoice(fresh_session, org_id=org_uuid, invoice_id=payload.invoice_id)
+            logger.info("Payment receipt email sent for invoice %s", payload.invoice_id)
+        except Exception as email_exc:
+            logger.warning("Payment email failed for invoice %s: %s", payload.invoice_id, email_exc)
+    _asyncio.create_task(_send_payment_email())
 
     return result
 

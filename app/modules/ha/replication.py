@@ -33,26 +33,43 @@ class ReplicationManager:
     # ------------------------------------------------------------------
 
     @staticmethod
+    async def _get_raw_conn():
+        """Open a short-lived raw asyncpg connection using the app DSN.
+
+        Disables statement_timeout so long-running replication DDL
+        (CREATE PUBLICATION, CREATE SUBSCRIPTION) won't be killed by
+        the server-level timeout configured in production postgres.
+        """
+        import asyncpg
+        from app.config import settings
+
+        dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        conn = await asyncpg.connect(dsn)
+        await conn.execute("SET statement_timeout = 0")
+        await conn.execute("SET idle_in_transaction_session_timeout = 0")
+        return conn
+
+    @staticmethod
     async def _exec_autocommit(db: AsyncSession, sql: str) -> None:
         """Execute a DDL statement that cannot run inside a transaction.
 
         PostgreSQL publication/subscription DDL (CREATE PUBLICATION,
         CREATE SUBSCRIPTION, etc.) cannot run inside a transaction block.
 
-        SQLAlchemy's async wrapper around asyncpg does not expose
-        ``set_autocommit`` or ``cursor`` on the adapted connection, so we
-        bypass SQLAlchemy entirely and open a short-lived raw asyncpg
-        connection using the same DSN.
+        Uses a short-lived raw asyncpg connection in autocommit mode.
+        The ``db`` parameter is kept for API compatibility but is not used.
+
+        Disables statement_timeout so long-running DDL won't be killed
+        by the server-level timeout configured in production postgres.
         """
         import asyncpg
         from app.config import settings
 
-        # Convert SQLAlchemy URL (postgresql+asyncpg://...) to plain
-        # PostgreSQL DSN that asyncpg understands (postgresql://...).
         dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
-
         conn: asyncpg.Connection = await asyncpg.connect(dsn)
         try:
+            await conn.execute("SET statement_timeout = 0")
+            await conn.execute("SET idle_in_transaction_session_timeout = 0")
             await conn.execute(sql)
         finally:
             await conn.close()
@@ -67,60 +84,55 @@ class ReplicationManager:
     async def init_primary(db: AsyncSession) -> dict:
         """Create a publication for all tables on the primary node, excluding ha_config.
 
-        Uses a dynamic query to build the table list, excluding ha_config
-        so each node keeps its own independent configuration.
+        Uses raw asyncpg connections for all queries to avoid SQLAlchemy
+        session timeout issues during long-running DDL operations.
 
         Returns a dict with the operation result.
         """
-        # Build the publication using a dynamic table list that excludes ha_config
         try:
-            # First check if publication already exists
-            result = await db.execute(
-                text("SELECT pubname FROM pg_publication WHERE pubname = :name"),
-                {"name": ReplicationManager.PUBLICATION_NAME},
-            )
-            existing = result.fetchone()
+            conn = await ReplicationManager._get_raw_conn()
+            try:
+                # Check if publication already exists
+                existing = await conn.fetchval(
+                    "SELECT pubname FROM pg_publication WHERE pubname = $1",
+                    ReplicationManager.PUBLICATION_NAME,
+                )
 
-            if existing:
-                # Check if ha_config is in the publication (legacy fix)
-                check = await db.execute(
-                    text(
+                if existing:
+                    # Check if ha_config is in the publication (legacy fix)
+                    ha_count = await conn.fetchval(
                         "SELECT COUNT(*) FROM pg_publication_tables "
-                        "WHERE pubname = :name AND tablename = 'ha_config'"
-                    ),
-                    {"name": ReplicationManager.PUBLICATION_NAME},
-                )
-                ha_in_pub = (check.scalar() or 0) > 0
-                if not ha_in_pub:
-                    logger.info("Publication '%s' already exists (ha_config excluded)", ReplicationManager.PUBLICATION_NAME)
-                    return {
-                        "status": "ok",
-                        "publication": ReplicationManager.PUBLICATION_NAME,
-                        "message": "Publication already exists",
-                    }
-                # ha_config is in the publication — need to recreate
-                logger.info("Recreating publication to exclude ha_config")
-                await ReplicationManager._exec_autocommit(
-                    db,
-                    f"DROP PUBLICATION {ReplicationManager.PUBLICATION_NAME}",
-                )
+                        "WHERE pubname = $1 AND tablename = 'ha_config'",
+                        ReplicationManager.PUBLICATION_NAME,
+                    )
+                    if not ha_count:
+                        logger.info("Publication '%s' already exists (ha_config excluded)", ReplicationManager.PUBLICATION_NAME)
+                        return {
+                            "status": "ok",
+                            "publication": ReplicationManager.PUBLICATION_NAME,
+                            "message": "Publication already exists",
+                        }
+                    # ha_config is in the publication — need to recreate
+                    logger.info("Recreating publication to exclude ha_config")
+                    await conn.execute(
+                        f"DROP PUBLICATION {ReplicationManager.PUBLICATION_NAME}",
+                    )
 
-            # Get all public tables except ha_config
-            tbl_result = await db.execute(
-                text(
+                # Get all public tables except ha_config
+                tbl_list = await conn.fetchval(
                     "SELECT string_agg(tablename, ', ') "
                     "FROM pg_tables "
-                    "WHERE schemaname = 'public' AND tablename != 'ha_config'"
-                ),
-            )
-            tbl_list = tbl_result.scalar()
-            if not tbl_list:
-                raise RuntimeError("No tables found in public schema")
+                    "WHERE schemaname = 'public' AND tablename != 'ha_config'",
+                )
+                if not tbl_list:
+                    raise RuntimeError("No tables found in public schema")
 
-            await ReplicationManager._exec_autocommit(
-                db,
-                f"CREATE PUBLICATION {ReplicationManager.PUBLICATION_NAME} FOR TABLE {tbl_list}",
-            )
+                await conn.execute(
+                    f"CREATE PUBLICATION {ReplicationManager.PUBLICATION_NAME} FOR TABLE {tbl_list}",
+                )
+            finally:
+                await conn.close()
+
             logger.info("Publication '%s' created (ha_config excluded)", ReplicationManager.PUBLICATION_NAME)
             return {"status": "ok", "publication": ReplicationManager.PUBLICATION_NAME}
         except RuntimeError:

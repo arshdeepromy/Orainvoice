@@ -273,6 +273,7 @@ async def create_payment_intent_no_customer(
         amount=amount_cents,
         currency=currency,
         payment_method_types=["card"],
+        setup_future_usage="off_session",
         metadata=metadata or {},
     )
     logger.info(

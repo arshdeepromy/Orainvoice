@@ -83,7 +83,6 @@ async def list_stock_levels_endpoint(
 
 @router.put(
     "/stock/{part_id}",
-    response_model=StockAdjustmentResponse,
     responses={
         401: {"description": "Authentication required"},
         403: {"description": "Org_Admin role required"},

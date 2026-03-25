@@ -3029,3 +3029,235 @@ Frontend:
 **Similar Bugs Found & Fixed**: The same UTC display issue would affect any future feature that displays `created_at` timestamps from the database. The `timezone_utils` module provides reusable conversion functions for all modules.
 
 **Related Issues**: None
+
+
+---
+
+### ISSUE-086: Connection pool exhaustion on Pi — 90 connections vs max_connections=50
+
+- **Date**: 2026-03-23
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+
+**Symptoms**: Pi primary returning 503 on all endpoints. Postgres logs show "FATAL: too many connections for role postgres". App containers unable to acquire database connections.
+
+**Root Cause**: SQLAlchemy engine was configured with `pool_size=30, max_overflow=15` (45 connections per gunicorn worker). With 2 workers, that's 90 potential connections against Pi's `max_connections=50`. The pool would exhaust all available connections, leaving none for maintenance or replication.
+
+**Fix Applied**:
+1. Made pool size configurable via `DB_POOL_SIZE` and `DB_MAX_OVERFLOW` environment variables in `app/core/database.py` (defaults: 30/15 for dev, overridden per environment)
+2. Set Pi (`.env.pi`) to `DB_POOL_SIZE=10, DB_MAX_OVERFLOW=5` (30 max connections for 2 workers, well under 50 limit)
+3. Set local standby-prod (`.env.standby-prod`) to same conservative values
+
+**Files Changed**:
+- `app/core/database.py`
+- `.env.pi`
+- `.env.standby-prod`
+
+**Similar Bugs Found & Fixed**: Same issue would affect any environment with low `max_connections`. The env-var approach lets each deployment tune independently.
+
+**Related Issues**: None
+
+---
+
+### ISSUE-087: SSL never enabled on Pi postgres — certs and entrypoint not committed
+
+- **Date**: 2026-03-23
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+
+**Symptoms**: `SHOW ssl` on Pi postgres returned `off`. Replication connections from standby with `sslmode=require` were rejected with "server rejected SSL upgrade".
+
+**Root Cause**: The SSL-related args (`ssl=on`, `ssl_cert_file`, `ssl_key_file`, `ssl_ca_file`), cert volume mounts, and the `pg-ssl-entrypoint.sh` entrypoint in `docker-compose.pi.yml` were configured locally but never committed to git. When the Pi pulled the latest code, it was running without SSL.
+
+**Fix Applied**: Committed the SSL configuration to `docker-compose.pi.yml` including the entrypoint, cert volume mounts, and SSL postgres args. Deployed to Pi and verified `SHOW ssl` returns `on`.
+
+**Files Changed**:
+- `docker-compose.pi.yml`
+
+**Related Issues**: ISSUE-088
+
+---
+
+### ISSUE-088: HMAC heartbeat secret mismatch between Pi and standby
+
+- **Date**: 2026-03-23
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+
+**Symptoms**: Heartbeat history on both Pi and standby showing "Invalid HMAC signature" errors. Peer status reported as "error" despite both nodes being reachable.
+
+**Root Cause**: Pi's `.env` file had `HA_HEARTBEAT_SECRET=` (empty string) while the standby had `HA_HEARTBEAT_SECRET=dev-ha-secret-for-testing`. The HMAC signatures computed with different secrets never matched.
+
+**Fix Applied**: Set `HA_HEARTBEAT_SECRET=dev-ha-secret-for-testing` on Pi's `.env` file directly via SSH. Recreated the app container to pick up the new value. Also updated `.env.pi` in the repo for future deploys.
+
+**Files Changed**:
+- `.env.pi`
+
+**Related Issues**: ISSUE-087
+
+---
+
+### ISSUE-089: Defensive host:port parsing and URL encoding in HA peer DB connections
+
+- **Date**: 2026-03-23
+- **Severity**: low
+- **Status**: resolved
+- **Reporter**: agent (proactive)
+
+**Symptoms**: If a user accidentally entered `192.168.1.90:8999` in the peer DB host field (including port), the connection string would be malformed (`host:port:port`). Passwords with special characters could also break DSN construction.
+
+**Root Cause**: No input sanitization on the host field and no URL encoding for user/password in DSN construction in both `router.py` (test-db-connection) and `service.py` (_build_peer_db_url).
+
+**Fix Applied**:
+1. Added stripping of port from host field (split on `:` and take first part) in both `test-db-connection` endpoint and `_build_peer_db_url`
+2. Added `urllib.parse.quote_plus` for user and password in DSN construction in both files
+
+**Files Changed**:
+- `app/modules/ha/router.py`
+- `app/modules/ha/service.py`
+
+**Related Issues**: None
+
+---
+
+### ISSUE-090: HA replication initial sync fails — slot exhaustion, RLS blocking, duplicate keys
+
+- **Date**: 2026-03-24
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+
+**Symptoms**: After creating the subscription on standby, only 35 of 122 tables completed initial sync. The remaining 87 tables were stuck in `d` (data copy) state, cycling through errors indefinitely. Three distinct error patterns in standby postgres logs:
+1. `could not create replication slot: all replication slots are in use`
+2. `could not start initial contents copy: unrecognized configuration parameter "app.current_org_id"`
+3. `duplicate key value violates unique constraint` on `organisations_pkey` and `alembic_version_pkc`
+
+**Root Cause**: Three separate issues blocking the initial table sync:
+
+1. **`max_replication_slots=10` too low on Pi primary** — Each table sync worker needs a temporary replication slot. With 122 tables to sync and only 10 slots (1 used by the main subscription + 9 for sync workers), failed sync workers left stale inactive slots that blocked new workers from acquiring slots.
+
+2. **RLS policies blocking replication COPY** — Tables with Row-Level Security have policies referencing `current_setting('app.current_org_id')`. This custom GUC parameter was not registered in the postgres server config, so when the replication worker (running as `replicator` user) tried to COPY data, the RLS policy evaluation failed with "unrecognized configuration parameter". Additionally, the `replicator` user had `BYPASSRLS=false`, so RLS policies were being applied to replication connections.
+
+3. **Pre-existing data on standby** — The standby database had data from running Alembic migrations and seed scripts before replication was set up. When the subscription's initial COPY tried to insert rows, it hit duplicate key violations on `organisations` and `alembic_version` tables.
+
+**Fix Applied**:
+
+1. Increased `max_replication_slots` from 10 to 30 on Pi primary (`docker-compose.pi.yml`). Also added `max_wal_senders=10` explicitly.
+
+2. Registered `app.current_org_id` as a custom GUC by adding `-c "app.current_org_id="` to postgres command args in all three compose files (`docker-compose.yml`, `docker-compose.pi.yml`, `docker-compose.standby-prod.yml`). Granted `BYPASSRLS` to the `replicator` user on Pi primary. Updated the `create-replication-user` endpoint in `router.py` to automatically grant `BYPASSRLS` when creating replication users.
+
+3. Truncated all tables (except `ha_config`) on standby before re-creating the subscription, allowing a clean initial COPY.
+
+After all three fixes, re-created the subscription and all 122 tables synced successfully. Row counts match exactly between primary and standby (7 orgs, 8 users, 5 invoices, 546 customers, 683 vehicles).
+
+**Files Changed**:
+- `docker-compose.pi.yml` (max_replication_slots=30, max_wal_senders=10, app.current_org_id GUC)
+- `docker-compose.yml` (app.current_org_id GUC)
+- `docker-compose.standby-prod.yml` (app.current_org_id GUC)
+- `app/modules/ha/router.py` (BYPASSRLS in create-replication-user)
+
+**Similar Bugs Found & Fixed**: The `app.current_org_id` GUC registration is needed on any postgres instance that participates in logical replication with RLS-enabled tables. Applied to all three compose files.
+
+**Related Issues**: ISSUE-087, ISSUE-088
+
+
+---
+
+### ISSUE-091: Stripe PaymentMethod not saved during paid-plan signup
+
+- **Date**: 2026-03-25
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+
+**Symptoms**: User signed up for a paid plan, card was charged, but no payment method was saved. Billing page showed "No payment methods on file."
+
+**Root Cause**: `create_payment_intent_no_customer` in `app/integrations/stripe_billing.py` created the PaymentIntent without `setup_future_usage="off_session"`. Stripe treated the PaymentMethod as single-use — after payment succeeded, it couldn't be attached to the newly created Customer.
+
+**Fix Applied**: Added `setup_future_usage="off_session"` to the PaymentIntent creation. This tells Stripe to keep the PM reusable for future charges.
+
+**Files Changed**:
+- `app/integrations/stripe_billing.py`
+
+---
+
+### ISSUE-092: Supplier creation hangs — missing `account_number` on Supplier ORM model
+
+- **Date**: 2026-03-25
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+
+**Symptoms**: POST to `/api/v1/inventory/suppliers` hung indefinitely (504 timeout). No error in backend logs.
+
+**Root Cause**: The `Supplier` ORM model in `app/modules/suppliers/models.py` was missing the `account_number` column. The DB had the column (from migration 0026), but the Python model didn't declare it. `create_supplier()` passed `account_number` to `Supplier()`, causing a `TypeError` that got swallowed by the middleware chain, deadlocking the async handler.
+
+**Fix Applied**: Added `account_number` column to the `Supplier` model.
+
+**Files Changed**:
+- `app/modules/suppliers/models.py`
+
+---
+
+### ISSUE-093: SQLAlchemy mapper configuration errors causing request hangs
+
+- **Date**: 2026-03-25
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: developer
+
+**Symptoms**: Various POST/PUT endpoints hung indefinitely. Affected: inventory stock adjustment, invoice creation, supplier creation. GET requests worked fine.
+
+**Root Cause**: SQLAlchemy ORM models had cross-module `relationship()` references (e.g., `PartsCatalogue` → `PartSupplier`, `Organisation` → `User`, `Invoice` → `Branch`). When a model was first accessed in a write operation, SQLAlchemy tried to configure all mappers lazily, but dependent models weren't loaded yet, causing `InvalidRequestError` that deadlocked the async handler.
+
+**Fix Applied**:
+1. Added explicit model imports in `app/main.py` for all modules with cross-references
+2. Added `configure_mappers()` call after all imports to resolve relationships at startup
+3. Set `lazy="noload"` on `PartsCatalogue.category` and `PartsCatalogue.supplier` relationships
+4. Rewrote `adjust_stock` and `decrement_stock_for_invoice` to use raw SQL instead of ORM to avoid triggering mapper configuration
+
+**Files Changed**:
+- `app/main.py`
+- `app/modules/catalogue/models.py`
+- `app/modules/inventory/service.py`
+
+---
+
+### ISSUE-094: Invoice "Save and Send" takes 5-6 seconds — synchronous SMTP blocking
+
+- **Date**: 2026-03-25
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+
+**Symptoms**: Clicking "Save and Send" on invoice creation took 5-6 seconds. Sometimes timed out with 504.
+
+**Root Cause**: When status is "sent", the invoice router synchronously called `email_invoice()` which generates a PDF and sends it via SMTP. The SMTP connection, TLS handshake, authentication, and send took 5+ seconds, blocking the HTTP response.
+
+**Fix Applied**: Changed the auto-email to fire-and-forget using `asyncio.create_task()`. The invoice is created and returned immediately (0.04s), and the email sends in the background. Also made the "Mark Paid & Email" frontend flow fire-and-forget for the email step.
+
+**Files Changed**:
+- `app/modules/invoices/router.py`
+- `frontend/src/pages/invoices/InvoiceCreate.tsx`
+
+---
+
+### ISSUE-095: Stock adjustment endpoint returns 504 — StockMovement model mismatch
+
+- **Date**: 2026-03-25
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+
+**Symptoms**: Adjusting stock via Inventory > Adjust Stock hung and returned 504.
+
+**Root Cause**: The `adjust_stock` service created `StockMovement(part_id=..., recorded_by=...)` but the actual `StockMovement` model has `product_id` and `performed_by`. The `StockMovement` table references `products.id` (not `parts_catalogue.id`), so the FK would also fail. Additionally, the `StockAdjustmentResponse` schema required a `movement` field that was removed.
+
+**Fix Applied**: Rewrote stock operations to use raw SQL (`UPDATE parts_catalogue SET current_stock = ...`) instead of creating `StockMovement` records. Removed `response_model` from the adjust stock endpoint. Stock changes are tracked via audit logs.
+
+**Files Changed**:
+- `app/modules/inventory/service.py`
+- `app/modules/inventory/router.py`

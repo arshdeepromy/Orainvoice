@@ -6,7 +6,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import apiClient from '../../api/client'
-import { Button } from '../../components/ui'
+import { Button, Modal } from '../../components/ui'
 import WorkSchedule, { type WeekSchedule } from '../../components/WorkSchedule'
 
 interface StaffMember {
@@ -83,6 +83,10 @@ export default function StaffList() {
   // Work schedule for modal
   const [schedule, setSchedule] = useState<WeekSchedule>({ ...DEFAULT_SCHEDULE })
 
+  // "Also create as user" state
+  const [createAsUser, setCreateAsUser] = useState(false)
+  const [userRole, setUserRole] = useState<'org_admin' | 'salesperson'>('salesperson')
+
   // Inline duplicate warnings
   const [dupWarnings, setDupWarnings] = useState<Record<string, string | undefined>>({})
   const dupTimers = useState<Record<string, ReturnType<typeof setTimeout>>>({})[0]
@@ -138,6 +142,8 @@ export default function StaffList() {
     setSchedule({ ...DEFAULT_SCHEDULE })
     setFormError('')
     setDupWarnings({})
+    setCreateAsUser(false)
+    setUserRole('salesperson')
     setShowModal(true)
   }
 
@@ -187,6 +193,23 @@ export default function StaffList() {
         await apiClient.put(`/staff/${editingId}`, payload, { baseURL: '/api/v2' })
       } else {
         await apiClient.post('/staff', payload, { baseURL: '/api/v2' })
+        // If "Also create as user" is checked, send invite via existing user invite flow
+        if (createAsUser && form.email.trim()) {
+          try {
+            await apiClient.post('/org/users/invite', { email: form.email.trim(), role: userRole })
+          } catch (inviteErr: any) {
+            const detail = inviteErr?.response?.data?.detail || ''
+            // Don't fail the whole operation if invite fails — staff was already created
+            if (detail.includes('already exists')) {
+              setFormError('Staff created, but user invite skipped — email already has an account.')
+            } else {
+              setFormError('Staff created, but failed to send user invite. You can invite them from Settings > Users.')
+            }
+            setSaving(false)
+            fetchStaff()
+            return
+          }
+        }
       }
       setShowModal(false)
       fetchStaff()
@@ -203,6 +226,36 @@ export default function StaffList() {
       await apiClient.delete(`/staff/${id}`, { baseURL: '/api/v2' })
       fetchStaff()
     } catch { /* non-blocking */ }
+  }
+
+  // Delete confirmation modal state
+  const [deleteTarget, setDeleteTarget] = useState<StaffMember | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteAlsoUser, setDeleteAlsoUser] = useState(true)
+
+  const handleDeleteStaff = async () => {
+    if (!deleteTarget) return
+    const member = deleteTarget
+    setDeleting(true)
+    try {
+      await apiClient.delete(`/staff/${member.id}/permanent`, { baseURL: '/api/v2' })
+      if (deleteAlsoUser && member.email) {
+        try {
+          const usersRes = await apiClient.get('/org/users')
+          const users = (usersRes.data as any)?.users || usersRes.data || []
+          const matchedUser = Array.isArray(users) ? users.find((u: any) => u.email === member.email) : null
+          if (matchedUser) {
+            await apiClient.delete(`/org/users/${matchedUser.id}/permanent`)
+          }
+        } catch { /* user delete is best-effort */ }
+      }
+      setDeleteTarget(null)
+      fetchStaff()
+    } catch (err: any) {
+      setFormError(err?.response?.data?.detail || 'Failed to delete staff member')
+    } finally {
+      setDeleting(false)
+    }
   }
 
   const handleActivate = async (id: string) => {
@@ -310,6 +363,8 @@ export default function StaffList() {
                             <button onClick={() => handleActivate(member.id)}
                               className="text-sm text-emerald-600 hover:text-emerald-800">Activate</button>
                           )}
+                          <button onClick={() => { setDeleteTarget(member); setDeleteAlsoUser(!!member.email) }}
+                            className="text-sm text-red-600 hover:text-red-800">Delete</button>
                         </div>
                       </td>
                     </tr>
@@ -434,6 +489,38 @@ export default function StaffList() {
                   ))}
                 </select>
               </div>
+
+              {/* Also create as user — only for new staff */}
+              {!editingId && (
+                <div className="rounded-md border border-gray-200 bg-gray-50 p-4 space-y-3">
+                  <label className="flex items-center gap-2 text-sm font-medium text-gray-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={createAsUser}
+                      onChange={(e) => setCreateAsUser(e.target.checked)}
+                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    Also create as a user (sends invite email)
+                  </label>
+                  {createAsUser && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">User Role</label>
+                      <select
+                        value={userRole}
+                        onChange={(e) => setUserRole(e.target.value as 'org_admin' | 'salesperson')}
+                        className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="salesperson">Salesperson</option>
+                        <option value="org_admin">Org Admin</option>
+                      </select>
+                      {!form.email.trim() && (
+                        <p className="mt-1 text-xs text-amber-600">Email is required to send an invite</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <WorkSchedule schedule={schedule} onChange={setSchedule} />
               {formError && <p className="text-sm text-red-600">{formError}</p>}
             </div>
@@ -444,6 +531,47 @@ export default function StaffList() {
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Delete Staff Member">
+        {deleteTarget && (
+          <div className="space-y-4">
+            <div className="rounded-md border border-red-200 bg-red-50 p-4">
+              <p className="text-sm text-red-800">
+                This will permanently delete <span className="font-semibold">{deleteTarget.first_name} {deleteTarget.last_name || ''}</span>.
+                This action cannot be undone.
+              </p>
+              <p className="mt-2 text-sm text-red-700">
+                Any invoices, quotes, or other data they created will be preserved and remain accessible.
+              </p>
+            </div>
+
+            {deleteTarget.email && (
+              <label className="flex items-start gap-3 rounded-md border border-gray-200 bg-gray-50 p-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={deleteAlsoUser}
+                  onChange={(e) => setDeleteAlsoUser(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                />
+                <div>
+                  <p className="text-sm font-medium text-gray-900">Also delete user account</p>
+                  <p className="text-xs text-gray-500">
+                    Remove the login account for {deleteTarget.email}. They will no longer be able to sign in.
+                  </p>
+                </div>
+              </label>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="secondary" size="sm" onClick={() => setDeleteTarget(null)}>Cancel</Button>
+              <Button variant="danger" size="sm" onClick={handleDeleteStaff} loading={deleting}>
+                Delete permanently
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

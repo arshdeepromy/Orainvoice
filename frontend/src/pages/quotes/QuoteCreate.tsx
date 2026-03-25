@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import apiClient from '../../api/client'
-import { Button } from '../../components/ui'
+import { Button, Modal } from '../../components/ui'
 import { useModules } from '../../contexts/ModuleContext'
 
 /* ------------------------------------------------------------------ */
@@ -661,6 +661,60 @@ export default function QuoteCreate() {
 
   // Line item management
   const addLineItem = () => setLineItems(prev => [...prev, newLineItem()])
+
+  // Parts catalogue picker
+  const [partsPickerOpen, setPartsPickerOpen] = useState(false)
+  const [catalogueParts, setCatalogueParts] = useState<{id:string;name:string;part_number:string|null;default_price:string;part_type:string;brand:string|null;tyre_width:string|null;tyre_profile:string|null;tyre_rim_dia:string|null}[]>([])
+  const [partsLoading, setPartsLoading] = useState(false)
+  const [partsSearch, setPartsSearch] = useState('')
+
+  // Labour rates picker
+  const [labourPickerOpen, setLabourPickerOpen] = useState(false)
+  const [labourRates, setLabourRates] = useState<{id:string;name:string;hourly_rate:string}[]>([])
+  const [labourLoading, setLabourLoading] = useState(false)
+
+  const vehiclesEnabled = isEnabled('vehicles')
+
+  const openPartsPicker = async () => {
+    setPartsPickerOpen(true); setPartsSearch(''); setPartsLoading(true)
+    try {
+      const res = await apiClient.get('/catalogue/parts')
+      setCatalogueParts((res.data as any).parts || [])
+    } catch { setCatalogueParts([]) }
+    finally { setPartsLoading(false) }
+  }
+
+  const addPartLineItem = (part: typeof catalogueParts[0]) => {
+    const desc = part.part_type === 'tyre' && part.tyre_width
+      ? `${part.name} (${part.tyre_width}/${part.tyre_profile}R${part.tyre_rim_dia})`
+      : part.name
+    setLineItems(prev => [...prev, {
+      ...newLineItem(),
+      description: desc,
+      rate: parseFloat(part.default_price) || 0,
+      amount: parseFloat(part.default_price) || 0,
+    }])
+    setPartsPickerOpen(false)
+  }
+
+  const openLabourPicker = async () => {
+    setLabourPickerOpen(true); setLabourLoading(true)
+    try {
+      const res = await apiClient.get('/catalogue/labour-rates')
+      setLabourRates((res.data as any).labour_rates || [])
+    } catch { setLabourRates([]) }
+    finally { setLabourLoading(false) }
+  }
+
+  const addLabourLineItem = (rate: typeof labourRates[0]) => {
+    setLineItems(prev => [...prev, {
+      ...newLineItem(),
+      description: `Labour: ${rate.name}`,
+      rate: parseFloat(rate.hourly_rate) || 0,
+      amount: parseFloat(rate.hourly_rate) || 0,
+    }])
+    setLabourPickerOpen(false)
+  }
   const updateLineItem = (index: number, updated: LineItem) => {
     setLineItems(prev => prev.map((item, i) => i === index ? updated : item))
   }
@@ -852,16 +906,15 @@ export default function QuoteCreate() {
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
 
-          {/* Item Table — matches InvoiceCreate layout */}
+          {/* Line Items */}
           <div>
-            <h3 className="text-sm font-medium text-gray-700 mb-3">Item Table</h3>
             {errors.lineItems && <p className="text-sm text-red-600 mb-2">{errors.lineItems}</p>}
 
             <div className="overflow-visible border border-gray-200 rounded-lg">
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    <th className="py-3 px-2">Item Details</th>
+                    <th className="py-3 px-2">Details</th>
                     <th className="py-3 px-2 w-24">Quantity</th>
                     <th className="py-3 px-2 w-32">Rate</th>
                     <th className="py-3 px-2 w-36">Tax</th>
@@ -888,6 +941,12 @@ export default function QuoteCreate() {
 
             <div className="flex gap-3 mt-3">
               <Button variant="secondary" size="sm" onClick={addLineItem}>+ Add New Row</Button>
+              {vehiclesEnabled && (
+                <>
+                  <Button variant="secondary" size="sm" onClick={openPartsPicker}>+ Add Parts</Button>
+                  <Button variant="secondary" size="sm" onClick={openLabourPicker}>+ Labour Charge</Button>
+                </>
+              )}
             </div>
           </div>
 
@@ -985,6 +1044,60 @@ export default function QuoteCreate() {
           </div>
         </div>
       </div>
+
+      {/* Parts Catalogue Picker */}
+      <Modal open={partsPickerOpen} onClose={() => setPartsPickerOpen(false)} title="Add Part from Catalogue">
+        <div className="space-y-3">
+          <input type="text" placeholder="Search parts..." value={partsSearch} onChange={e => setPartsSearch(e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+          {partsLoading ? (
+            <div className="py-8 text-center text-sm text-gray-500">Loading parts...</div>
+          ) : (
+            <div className="max-h-64 overflow-y-auto divide-y divide-gray-100">
+              {catalogueParts
+                .filter(p => !partsSearch || p.name.toLowerCase().includes(partsSearch.toLowerCase()) || (p.part_number && p.part_number.toLowerCase().includes(partsSearch.toLowerCase())))
+                .map(part => (
+                  <button key={part.id} onClick={() => addPartLineItem(part)}
+                    className="w-full text-left px-3 py-2.5 hover:bg-blue-50 flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium text-gray-900">{part.name}</div>
+                      <div className="text-xs text-gray-500">
+                        {part.part_number && <span>{part.part_number} · </span>}
+                        <span className="capitalize">{part.part_type}</span>
+                        {part.brand && <span> · {part.brand}</span>}
+                        {part.part_type === 'tyre' && part.tyre_width && <span> · {part.tyre_width}/{part.tyre_profile}R{part.tyre_rim_dia}</span>}
+                      </div>
+                    </div>
+                    <span className="text-sm font-medium text-gray-900">${part.default_price}</span>
+                  </button>
+                ))}
+              {catalogueParts.length === 0 && !partsLoading && (
+                <div className="py-8 text-center text-sm text-gray-500">No parts in catalogue.</div>
+              )}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* Labour Rate Picker */}
+      <Modal open={labourPickerOpen} onClose={() => setLabourPickerOpen(false)} title="Add Labour Charge">
+        {labourLoading ? (
+          <div className="py-8 text-center text-sm text-gray-500">Loading labour rates...</div>
+        ) : (
+          <div className="max-h-64 overflow-y-auto divide-y divide-gray-100">
+            {labourRates.map(rate => (
+              <button key={rate.id} onClick={() => addLabourLineItem(rate)}
+                className="w-full text-left px-3 py-2.5 hover:bg-blue-50 flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-900">{rate.name}</span>
+                <span className="text-sm font-medium text-gray-900">${rate.hourly_rate}/hr</span>
+              </button>
+            ))}
+            {labourRates.length === 0 && !labourLoading && (
+              <div className="py-8 text-center text-sm text-gray-500">No labour rates configured.</div>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

@@ -36,6 +36,7 @@ from app.modules.catalogue.schemas import (
     ServiceUpdateResponse,
 )
 from app.modules.catalogue.service import (
+    _part_to_dict,
     create_item,
     create_labour_rate,
     create_part,
@@ -44,6 +45,7 @@ from app.modules.catalogue.service import (
     list_parts,
     update_item,
 )
+from app.modules.catalogue.models import PartsCatalogue
 
 router = APIRouter()
 
@@ -551,9 +553,21 @@ async def create_part_endpoint(
             user_id=user_uuid or uuid.uuid4(),
             name=payload.name,
             part_number=payload.part_number,
+            description=payload.description,
+            part_type=payload.part_type,
+            category_id=payload.category_id,
+            brand=payload.brand,
+            supplier_id=payload.supplier_id,
             default_price=payload.default_price,
             supplier=payload.supplier,
             is_active=payload.is_active,
+            min_stock_threshold=payload.min_stock_threshold,
+            reorder_quantity=payload.reorder_quantity,
+            tyre_width=payload.tyre_width,
+            tyre_profile=payload.tyre_profile,
+            tyre_rim_dia=payload.tyre_rim_dia,
+            tyre_load_index=payload.tyre_load_index,
+            tyre_speed_index=payload.tyre_speed_index,
             ip_address=ip_address,
         )
     except ValueError as exc:
@@ -566,6 +580,70 @@ async def create_part_endpoint(
         message="Part created",
         part=PartResponse(**part_data),
     )
+
+
+@router.put(
+    "/parts/{part_id}",
+    response_model=PartResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Part not found"},
+    },
+    summary="Update a parts catalogue entry",
+    dependencies=[require_role("org_admin")],
+)
+async def update_part_endpoint(
+    part_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update an existing part in the catalogue."""
+    from sqlalchemy import select as _sel
+    from sqlalchemy.orm import selectinload
+
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    result = await db.execute(
+        _sel(PartsCatalogue)
+        .where(PartsCatalogue.id == part_id, PartsCatalogue.org_id == org_uuid)
+        .options(selectinload(PartsCatalogue.category), selectinload(PartsCatalogue.supplier))
+    )
+    part = result.scalar_one_or_none()
+    if not part:
+        return JSONResponse(status_code=404, content={"detail": "Part not found"})
+
+    body = await request.json()
+    for field in ["name", "part_number", "description", "part_type", "brand",
+                   "tyre_width", "tyre_profile", "tyre_rim_dia", "tyre_load_index", "tyre_speed_index"]:
+        if field in body:
+            setattr(part, field, body[field])
+    if "default_price" in body:
+        from decimal import Decimal
+        part.default_price = Decimal(str(body["default_price"]))
+    if "category_id" in body:
+        part.category_id = uuid.UUID(body["category_id"]) if body["category_id"] else None
+    if "supplier_id" in body:
+        part.supplier_id = uuid.UUID(body["supplier_id"]) if body["supplier_id"] else None
+    if "is_active" in body:
+        part.is_active = body["is_active"]
+    if "min_stock_threshold" in body:
+        part.min_stock_threshold = int(body["min_stock_threshold"])
+    if "reorder_quantity" in body:
+        part.reorder_quantity = int(body["reorder_quantity"])
+
+    await db.flush()
+
+    # Re-fetch with relationships
+    result2 = await db.execute(
+        _sel(PartsCatalogue).where(PartsCatalogue.id == part_id)
+        .options(selectinload(PartsCatalogue.category), selectinload(PartsCatalogue.supplier))
+    )
+    updated = result2.scalar_one()
+    return _part_to_dict(updated)
 
 
 # ===========================================================================
@@ -666,3 +744,74 @@ async def create_labour_rate_endpoint(
         message="Labour rate created",
         labour_rate=LabourRateResponse(**rate_data),
     )
+
+# ===========================================================================
+# Part Categories endpoints
+# ===========================================================================
+
+
+@router.get(
+    "/part-categories",
+    summary="List part categories for the organisation",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def list_part_categories(
+    request: Request,
+    search: str = Query("", description="Search filter"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List part categories, optionally filtered by search term."""
+    from sqlalchemy import select
+    from app.modules.catalogue.models import PartCategory
+
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    stmt = select(PartCategory).where(PartCategory.org_id == org_uuid)
+    if search.strip():
+        stmt = stmt.where(PartCategory.name.ilike(f"%{search.strip()}%"))
+    stmt = stmt.order_by(PartCategory.name)
+
+    result = await db.execute(stmt)
+    categories = result.scalars().all()
+    return {
+        "categories": [{"id": str(c.id), "name": c.name} for c in categories],
+    }
+
+
+@router.post(
+    "/part-categories",
+    status_code=201,
+    summary="Create a part category",
+    dependencies=[require_role("org_admin")],
+)
+async def create_part_category(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a new part category. Returns existing if name already exists."""
+    from sqlalchemy import select
+    from app.modules.catalogue.models import PartCategory
+
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JSONResponse(status_code=400, content={"detail": "Category name is required"})
+
+    # Check if exists
+    existing = await db.execute(
+        select(PartCategory).where(PartCategory.org_id == org_uuid, PartCategory.name == name)
+    )
+    cat = existing.scalar_one_or_none()
+    if cat:
+        return {"id": str(cat.id), "name": cat.name, "created": False}
+
+    cat = PartCategory(org_id=org_uuid, name=name)
+    db.add(cat)
+    await db.flush()
+    return {"id": str(cat.id), "name": cat.name, "created": True}

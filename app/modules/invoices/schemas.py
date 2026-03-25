@@ -107,6 +107,10 @@ class InvoiceCreateRequest(BaseModel):
         default=None,
         description="Next service due date — saved to the vehicle record"
     )
+    vehicle_wof_expiry_date: date | None = Field(
+        default=None,
+        description="WOF expiry date — saved to the vehicle record"
+    )
     vehicles: list[VehicleItem] | None = Field(
         default=None,
         description="List of vehicles associated with this invoice"
@@ -357,6 +361,7 @@ class UpdateInvoiceRequest(BaseModel):
     vehicle_odometer: int | None = None
     global_vehicle_id: uuid.UUID | None = None
     vehicle_service_due_date: date | None = None
+    vehicle_wof_expiry_date: date | None = None
     vehicles: list[VehicleItem] | None = None
     branch_id: uuid.UUID | None = None
     status: InvoiceStatus | None = None

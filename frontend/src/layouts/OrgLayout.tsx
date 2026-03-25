@@ -22,6 +22,8 @@ interface NavItem {
   module?: string
   /** If set, this nav item is only shown when the feature flag is enabled */
   flagKey?: string
+  /** If true, only org_admin (and global_admin) can see this item */
+  adminOnly?: boolean
 }
 
 const navItems: NavItem[] = [
@@ -35,7 +37,7 @@ const navItems: NavItem[] = [
   { to: '/bookings', label: 'Bookings', icon: BookingsIcon, module: 'bookings', flagKey: 'bookings' },
   { to: '/inventory', label: 'Inventory', icon: InventoryIcon, module: 'inventory', flagKey: 'inventory' },
   { to: '/items', label: 'Items', icon: CatalogueIcon },
-  { to: '/catalogue', label: 'Catalogue', icon: CatalogueIcon, module: 'catalogue' },
+  { to: '/catalogue', label: 'Catalogue', icon: CatalogueIcon, module: 'vehicles' },
   { to: '/staff', label: 'Staff', icon: StaffIcon, module: 'staff', flagKey: 'staff' },
   { to: '/projects', label: 'Projects', icon: ProjectsIcon, module: 'projects', flagKey: 'projects' },
   { to: '/expenses', label: 'Expenses', icon: ExpensesIcon, module: 'expenses', flagKey: 'expenses' },
@@ -58,7 +60,7 @@ const navItems: NavItem[] = [
   { to: '/notifications', label: 'Notifications', icon: NotificationsIcon },
   { to: '/data', label: 'Data', icon: DataIcon },
   { to: '/reports', label: 'Reports', icon: ReportsIcon },
-  { to: '/settings', label: 'Settings', icon: SettingsIcon },
+  { to: '/settings', label: 'Settings', icon: SettingsIcon, adminOnly: true },
 ]
 
 // Quick actions for the header dropdown
@@ -95,15 +97,19 @@ export function OrgLayout() {
     navigate('/admin/organisations')
   }
 
+  const userRole = user?.role
+
   const visibleNavItems = useMemo(
     () => navItems.filter((item) => {
+      // Admin-only items hidden from non-admin roles
+      if (item.adminOnly && userRole !== 'org_admin' && userRole !== 'global_admin') return false
       // If the item has a module gate, module enablement is sufficient
       if (item.module) return isEnabled(item.module)
       // Items without a module gate fall back to feature flag check
       if (item.flagKey && !flags[item.flagKey]) return false
       return true
     }),
-    [isEnabled, flags],
+    [isEnabled, flags, userRole],
   )
 
   const visibleQuickActions = useMemo(
@@ -349,6 +355,7 @@ export function OrgLayout() {
                     </svg>
                     Profile
                   </button>
+                  {(userRole === 'org_admin' || userRole === 'global_admin') && (
                   <button
                     onClick={() => { setUserMenuOpen(false); navigate('/settings') }}
                     className="flex w-full items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors min-h-[44px]"
@@ -359,6 +366,7 @@ export function OrgLayout() {
                     </svg>
                     Settings
                   </button>
+                  )}
                   <button
                     onClick={handleLogout}
                     className="flex w-full items-center gap-3 px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors min-h-[44px]"
