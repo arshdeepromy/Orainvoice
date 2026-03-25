@@ -3,13 +3,10 @@ import StockLevels from './StockLevels'
 import ReorderAlerts from './ReorderAlerts'
 import StockAdjustment from './StockAdjustment'
 import SupplierList from './SupplierList'
-import PurchaseOrders from './PurchaseOrders'
 
 /**
  * Inventory management page with tabbed navigation for stock levels, reorder alerts,
- * stock adjustments, suppliers, and purchase orders.
- *
- * Requirements: 62.1-62.5, 63.1-63.3
+ * stock adjustments, and suppliers.
  */
 export default function InventoryPage() {
   const tabs = [
@@ -17,7 +14,6 @@ export default function InventoryPage() {
     { id: 'alerts', label: 'Reorder Alerts', content: <ReorderAlerts /> },
     { id: 'adjust', label: 'Adjust Stock', content: <StockAdjustment /> },
     { id: 'suppliers', label: 'Suppliers', content: <SupplierList /> },
-    { id: 'purchase-orders', label: 'Purchase Orders', content: <PurchaseOrders /> },
   ]
 
   return (

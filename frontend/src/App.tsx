@@ -72,6 +72,7 @@ const POSScreen = lazy(() => import('@/pages/pos/POSScreen'))
 const ScheduleCalendar = lazy(() => import('@/pages/schedule/ScheduleCalendar'))
 const RecurringList = lazy(() => import('@/pages/recurring/RecurringList'))
 const POList = lazy(() => import('@/pages/purchase-orders/POList'))
+const PODetail = lazy(() => import('@/pages/purchase-orders/PODetail'))
 const DataPage = lazy(() => import('@/pages/data/DataPage'))
 
 /* Construction pages */
@@ -320,6 +321,7 @@ function AppRoutes() {
 
           {/* Purchase Orders */}
           <Route path="/purchase-orders" element={<SafePage name="purchase-orders"><POList /></SafePage>} />
+          <Route path="/purchase-orders/:id" element={<SafePage name="po-detail"><PODetail /></SafePage>} />
 
           {/* Data Import/Export */}
           <Route path="/data" element={<SafePage name="data"><DataPage /></SafePage>} />
