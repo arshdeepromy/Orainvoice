@@ -17,7 +17,8 @@ from pydantic import BaseModel, Field
 # ------------------------------------------------------------------
 
 class POLineCreate(BaseModel):
-    product_id: UUID
+    product_id: UUID | None = None
+    catalogue_item_id: UUID | None = None
     description: str | None = None
     quantity_ordered: Decimal = Field(..., gt=0)
     unit_cost: Decimal = Field(..., ge=0)
@@ -26,7 +27,8 @@ class POLineCreate(BaseModel):
 class POLineResponse(BaseModel):
     id: UUID
     po_id: UUID
-    product_id: UUID
+    product_id: UUID | None = None
+    catalogue_item_id: UUID | None = None
     description: str | None = None
     quantity_ordered: Decimal
     quantity_received: Decimal = Decimal("0")

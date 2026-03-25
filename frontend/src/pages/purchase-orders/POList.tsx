@@ -4,11 +4,21 @@ import apiClient from '@/api/client'
 import { Button, Badge, Spinner, Modal, Input, Select } from '@/components/ui'
 
 interface Supplier { id: string; name: string; contact_name?: string | null; email?: string | null; phone?: string | null; address?: string | null }
-interface Product { id: string; name: string; sku: string | null; cost_price: number }
+interface CataloguePart {
+  id: string; name: string; part_number: string | null; brand: string | null
+  default_price: string; part_type: string; current_stock?: number
+}
+
+// Unified item for the product search (covers both products and catalogue parts)
+interface SearchItem {
+  id: string; name: string; sku: string | null; cost_price: number
+  source: 'product' | 'catalogue'; stock?: number
+}
 
 interface POLine {
   id: string
-  product_id: string
+  product_id: string | null
+  catalogue_item_id?: string | null
   description: string | null
   quantity_ordered: number
   quantity_received: number
@@ -28,7 +38,13 @@ interface PurchaseOrder {
   lines: POLine[]
 }
 
-interface NewLine { product_id: string; description: string; quantity: number; unit_cost: number }
+interface NewLine {
+  product_id: string | null
+  catalogue_item_id: string | null
+  description: string
+  quantity: number
+  unit_cost: number
+}
 
 const STATUS_OPTIONS = [
   { value: '', label: 'All Statuses' },
@@ -63,7 +79,7 @@ export default function POList() {
   const pageSize = 20
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
-  const [products, setProducts] = useState<Product[]>([])
+  const [searchItems, setSearchItems] = useState<SearchItem[]>([])
   const [supplierMap, setSupplierMap] = useState<Record<string, string>>({})
 
   // Create modal
@@ -81,16 +97,25 @@ export default function POList() {
   const [supplierDropdownOpen, setSupplierDropdownOpen] = useState(false)
   const supplierRef = useRef<HTMLDivElement>(null)
 
+  // Product/part search state
+  const [productQuery, setProductQuery] = useState('')
+  const [productDropdownOpen, setProductDropdownOpen] = useState(false)
+  const [selectedItem, setSelectedItem] = useState<SearchItem | null>(null)
+  const productRef = useRef<HTMLDivElement>(null)
+  const [addQty, setAddQty] = useState('')
+  const [addCost, setAddCost] = useState('')
+
   // Add supplier modal
   const [showAddSupplier, setShowAddSupplier] = useState(false)
   const [newSupplier, setNewSupplier] = useState({ name: '', contact_name: '', email: '', phone: '', address: '' })
   const [addSupplierSaving, setAddSupplierSaving] = useState(false)
   const [addSupplierError, setAddSupplierError] = useState('')
 
-  // Add line state
-  const [addProductId, setAddProductId] = useState('')
-  const [addQty, setAddQty] = useState('')
-  const [addCost, setAddCost] = useState('')
+  // Add part modal
+  const [showAddPart, setShowAddPart] = useState(false)
+  const [newPart, setNewPart] = useState({ name: '', part_number: '', brand: '', default_price: '', description: '' })
+  const [addPartSaving, setAddPartSaving] = useState(false)
+  const [addPartError, setAddPartError] = useState('')
 
   const fetchOrders = useCallback(async () => {
     setLoading(true)
@@ -107,19 +132,28 @@ export default function POList() {
 
   const fetchMeta = useCallback(async () => {
     try {
-      const [suppRes, prodRes] = await Promise.all([
+      const [suppRes, partsRes] = await Promise.all([
         apiClient.get('/api/v2/suppliers'),
-        apiClient.get('/api/v2/products', { params: { page_size: 500 } }),
+        apiClient.get('/catalogue/parts', { params: { limit: 500 } }),
       ])
       const supps: Supplier[] = suppRes.data.suppliers || suppRes.data || []
       setSuppliers(supps)
       const map: Record<string, string> = {}
       supps.forEach(s => { map[s.id] = s.name })
       setSupplierMap(map)
-      const prods = prodRes.data.products || prodRes.data || []
-      setProducts(prods)
+
+      // Build unified search items from catalogue parts
+      const parts: CataloguePart[] = partsRes.data.parts || []
+      const items: SearchItem[] = parts.map(p => ({
+        id: p.id,
+        name: p.name,
+        sku: p.part_number,
+        cost_price: Number(p.default_price) || 0,
+        source: 'catalogue' as const,
+      }))
+      setSearchItems(items)
     } catch (err) {
-      // Fallback: try the inventory endpoint which is the same table
+      // Fallback for suppliers
       try {
         const suppRes = await apiClient.get('/inventory/suppliers')
         const supps: Supplier[] = suppRes.data.suppliers || []
@@ -140,6 +174,9 @@ export default function POList() {
       if (supplierRef.current && !supplierRef.current.contains(e.target as Node)) {
         setSupplierDropdownOpen(false)
       }
+      if (productRef.current && !productRef.current.contains(e.target as Node)) {
+        setProductDropdownOpen(false)
+      }
     }
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
@@ -155,7 +192,8 @@ export default function POList() {
     setCreateNotes('')
     setCreateLines([])
     setCreateError('')
-    setAddProductId('')
+    setSelectedItem(null)
+    setProductQuery('')
     setAddQty('')
     setAddCost('')
     setShowCreate(true)
@@ -208,18 +246,19 @@ export default function POList() {
   }
 
   const addLine = () => {
-    if (!addProductId) return
+    if (!selectedItem) return
     const qty = parseFloat(addQty)
     const cost = parseFloat(addCost)
     if (isNaN(qty) || qty <= 0 || isNaN(cost) || cost < 0) return
-    const prod = products.find(p => p.id === addProductId)
     setCreateLines(prev => [...prev, {
-      product_id: addProductId,
-      description: prod?.name || '',
+      product_id: selectedItem.source === 'product' ? selectedItem.id : null,
+      catalogue_item_id: selectedItem.source === 'catalogue' ? selectedItem.id : null,
+      description: selectedItem.name,
       quantity: qty,
       unit_cost: cost,
     }])
-    setAddProductId('')
+    setSelectedItem(null)
+    setProductQuery('')
     setAddQty('')
     setAddCost('')
   }
@@ -239,7 +278,8 @@ export default function POList() {
         expected_delivery: createExpectedDelivery || null,
         notes: createNotes.trim() || null,
         lines: createLines.map(l => ({
-          product_id: l.product_id,
+          product_id: l.product_id || null,
+          catalogue_item_id: l.catalogue_item_id || null,
           description: l.description,
           quantity_ordered: l.quantity,
           unit_cost: l.unit_cost,
@@ -252,16 +292,63 @@ export default function POList() {
     } finally { setCreateSaving(false) }
   }
 
-  // Auto-fill cost when product selected
-  const handleProductSelect = (productId: string) => {
-    setAddProductId(productId)
-    const prod = products.find(p => p.id === productId)
-    if (prod && prod.cost_price) setAddCost(String(prod.cost_price))
+  // Product/part search helpers
+  const filteredItems = productQuery.trim() === ''
+    ? searchItems
+    : searchItems.filter(i =>
+        i.name.toLowerCase().includes(productQuery.toLowerCase()) ||
+        (i.sku && i.sku.toLowerCase().includes(productQuery.toLowerCase()))
+      )
+
+  const selectItem = (item: SearchItem) => {
+    setSelectedItem(item)
+    setProductQuery(item.name)
+    setProductDropdownOpen(false)
+    if (item.cost_price) setAddCost(String(item.cost_price))
+  }
+
+  const clearItem = () => {
+    setSelectedItem(null)
+    setProductQuery('')
+    setAddCost('')
+  }
+
+  const openAddPart = () => {
+    setNewPart({ name: productQuery.trim(), part_number: '', brand: '', default_price: '', description: '' })
+    setAddPartError('')
+    setShowAddPart(true)
+  }
+
+  const handleAddPart = async () => {
+    if (!newPart.name.trim()) { setAddPartError('Part name is required.'); return }
+    setAddPartSaving(true)
+    setAddPartError('')
+    try {
+      const res = await apiClient.post('/catalogue/parts', {
+        name: newPart.name.trim(),
+        part_number: newPart.part_number.trim() || null,
+        brand: newPart.brand.trim() || null,
+        default_price: newPart.default_price ? Number(newPart.default_price) : 0,
+        description: newPart.description.trim() || null,
+        part_type: 'part',
+      })
+      const created = res.data.part || res.data
+      const newItem: SearchItem = {
+        id: created.id,
+        name: created.name,
+        sku: created.part_number || null,
+        cost_price: Number(created.default_price) || 0,
+        source: 'catalogue',
+      }
+      setSearchItems(prev => [...prev, newItem])
+      selectItem(newItem)
+      setShowAddPart(false)
+    } catch (err: any) {
+      setAddPartError(err?.response?.data?.detail || 'Failed to create part.')
+    } finally { setAddPartSaving(false) }
   }
 
   const lineTotal = createLines.reduce((sum, l) => sum + l.quantity * l.unit_cost, 0)
-
-  const productOptions = [{ value: '', label: 'Select product…' }, ...products.map(p => ({ value: p.id, label: `${p.name}${p.sku ? ` (${p.sku})` : ''}` }))]
 
   return (
     <div className="px-4 py-6 sm:px-6 lg:px-8">
@@ -379,10 +466,52 @@ export default function POList() {
           {/* Line items */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Line Items</label>
-            <div className="flex gap-2 mb-2">
+            <div className="flex gap-2 mb-2 items-end">
+              {/* Product/part live search */}
               <div className="flex-1">
-                <Select label="Product" options={productOptions} value={addProductId}
-                  onChange={e => handleProductSelect(e.target.value)} />
+                <label className="block text-xs font-medium text-gray-600 mb-1">Part / Product</label>
+                {selectedItem ? (
+                  <div className="flex items-center gap-2 rounded-md border border-gray-300 bg-gray-50 px-3 py-2 h-10">
+                    <span className="flex-1 text-sm text-gray-900 truncate">{selectedItem.name}</span>
+                    <button type="button" onClick={clearItem} className="text-gray-400 hover:text-gray-600 text-xs shrink-0">✕</button>
+                  </div>
+                ) : (
+                  <div ref={productRef} className="relative">
+                    <input
+                      type="text"
+                      value={productQuery}
+                      onChange={e => { setProductQuery(e.target.value); setProductDropdownOpen(true) }}
+                      onFocus={() => setProductDropdownOpen(true)}
+                      placeholder="Search parts…"
+                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm h-10 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      autoComplete="off"
+                    />
+                    {productDropdownOpen && (
+                      <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+                        {filteredItems.slice(0, 10).map(item => (
+                          <button key={item.id} type="button" onClick={() => selectItem(item)}
+                            className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50">
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium text-gray-900">{item.name}</span>
+                              <span className="text-xs text-gray-500 ml-2">{formatNZD(item.cost_price)}</span>
+                            </div>
+                            {item.sku && <div className="text-xs text-gray-400">{item.sku}</div>}
+                          </button>
+                        ))}
+                        {filteredItems.length === 0 && productQuery.length > 0 && (
+                          <div className="px-3 py-2 text-sm text-gray-500">No parts match "{productQuery}"</div>
+                        )}
+                        {filteredItems.length === 0 && productQuery.length === 0 && searchItems.length === 0 && (
+                          <div className="px-3 py-2 text-sm text-gray-500">No parts in catalogue yet</div>
+                        )}
+                        <button type="button" onClick={openAddPart}
+                          className="w-full border-t border-gray-100 px-3 py-2 text-left text-sm font-medium text-blue-600 hover:bg-blue-50">
+                          + Add New Part{productQuery.trim() ? ` "${productQuery.trim()}"` : ''}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="w-20">
                 <Input label="Qty" type="number" min="1" value={addQty}
@@ -393,7 +522,7 @@ export default function POList() {
                   onChange={e => setAddCost(e.target.value)} />
               </div>
               <div className="flex items-end">
-                <Button size="sm" variant="secondary" onClick={addLine} disabled={!addProductId || !addQty || !addCost}>Add</Button>
+                <Button size="sm" variant="secondary" onClick={addLine} disabled={!selectedItem || !addQty || !addCost}>Add</Button>
               </div>
             </div>
 
@@ -470,6 +599,33 @@ export default function POList() {
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="secondary" onClick={() => setShowAddSupplier(false)}>Cancel</Button>
             <Button onClick={handleAddSupplier} loading={addSupplierSaving}>Create Supplier</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Add Part Modal */}
+      <Modal open={showAddPart} onClose={() => setShowAddPart(false)} title="New Part">
+        <div className="space-y-3">
+          <Input label="Part name *" value={newPart.name}
+            onChange={e => setNewPart(prev => ({ ...prev, name: e.target.value }))} />
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Part number / SKU" value={newPart.part_number}
+              onChange={e => setNewPart(prev => ({ ...prev, part_number: e.target.value }))} />
+            <Input label="Brand" value={newPart.brand}
+              onChange={e => setNewPart(prev => ({ ...prev, brand: e.target.value }))} />
+          </div>
+          <Input label="Default price (ex-GST)" type="number" min="0" step="0.01" value={newPart.default_price}
+            onChange={e => setNewPart(prev => ({ ...prev, default_price: e.target.value }))} />
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+            <textarea value={newPart.description} onChange={e => setNewPart(prev => ({ ...prev, description: e.target.value }))}
+              rows={2} placeholder="Optional description…"
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          {addPartError && <p className="text-sm text-red-600">{addPartError}</p>}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setShowAddPart(false)}>Cancel</Button>
+            <Button onClick={handleAddPart} loading={addPartSaving}>Create Part</Button>
           </div>
         </div>
       </Modal>

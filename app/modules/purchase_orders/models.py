@@ -81,8 +81,11 @@ class PurchaseOrderLine(Base):
     po_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("purchase_orders.id", ondelete="CASCADE"), nullable=False,
     )
-    product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id"), nullable=False,
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id"), nullable=True,
+    )
+    catalogue_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("parts_catalogue.id", ondelete="SET NULL"), nullable=True,
     )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     quantity_ordered: Mapped[Decimal] = mapped_column(

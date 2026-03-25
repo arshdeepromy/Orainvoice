@@ -103,6 +103,7 @@ class PurchaseOrderService:
             line = PurchaseOrderLine(
                 po_id=po.id,
                 product_id=line_data.product_id,
+                catalogue_item_id=line_data.catalogue_item_id,
                 description=line_data.description,
                 quantity_ordered=line_data.quantity_ordered,
                 unit_cost=line_data.unit_cost,
@@ -191,19 +192,20 @@ class PurchaseOrderService:
             # Update line received quantity
             line.quantity_received = line.quantity_received + recv.quantity
 
-            # Increment stock via StockService
-            product_stmt = select(Product).where(Product.id == line.product_id)
-            product_result = await self.db.execute(product_stmt)
-            product = product_result.scalar_one_or_none()
-            if product is not None:
-                await stock_svc.increment_stock(
-                    product,
-                    recv.quantity,
-                    movement_type="receive",
-                    reference_type="purchase_order",
-                    reference_id=po.id,
-                    performed_by=performed_by,
-                )
+            # Increment stock via StockService (only for products table items)
+            if line.product_id is not None:
+                product_stmt = select(Product).where(Product.id == line.product_id)
+                product_result = await self.db.execute(product_stmt)
+                product = product_result.scalar_one_or_none()
+                if product is not None:
+                    await stock_svc.increment_stock(
+                        product,
+                        recv.quantity,
+                        movement_type="receive",
+                        reference_type="purchase_order",
+                        reference_id=po.id,
+                        performed_by=performed_by,
+                    )
 
         # Update PO status based on received quantities
         self._update_po_status(po)
