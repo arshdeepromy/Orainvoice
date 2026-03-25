@@ -1020,10 +1020,11 @@ export default function InvoiceCreate() {
     try {
       if (isEditMode && editId) {
         await apiClient.put(`/invoices/${editId}`, buildPayload('draft'))
-        window.location.href = `/invoices/${editId}`
+        navigate(`/invoices/${editId}`)
       } else {
-        await apiClient.post('/invoices', buildPayload('draft'))
-        navigate('/invoices')
+        const res = await apiClient.post('/invoices', buildPayload('draft'))
+        const newId = (res.data as any)?.id || (res.data as any)?.invoice?.id
+        navigate(newId ? `/invoices/${newId}` : '/invoices')
       }
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to save draft. Please try again.'
@@ -1039,10 +1040,11 @@ export default function InvoiceCreate() {
     try {
       if (isEditMode && editId) {
         await apiClient.put(`/invoices/${editId}`, buildPayload('sent'))
-        window.location.href = `/invoices/${editId}`
+        navigate(`/invoices/${editId}`)
       } else {
-        await apiClient.post('/invoices', buildPayload('sent'))
-        navigate('/invoices')
+        const res = await apiClient.post('/invoices', buildPayload('sent'))
+        const newId = (res.data as any)?.id || (res.data as any)?.invoice?.id
+        navigate(newId ? `/invoices/${newId}` : '/invoices')
       }
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to send invoice. Please try again.'

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Modal } from '../../components/ui'
 import { ModuleGate } from '../../components/common/ModuleGate'
@@ -228,6 +228,7 @@ const PRINT_STYLES = `
 
 export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
 
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -289,7 +290,7 @@ export default function InvoiceDetail() {
     setActionMessage('')
     try {
       const res = await apiClient.post<{ id: string }>(`/invoices/${invoice.id}/duplicate`)
-      window.location.href = `/invoices/${res.data.id}`
+      navigate(`/invoices/${res.data.id}`)
     } catch {
       setActionMessage('Failed to duplicate invoice.')
     } finally {
@@ -396,7 +397,7 @@ export default function InvoiceDetail() {
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
           {error || 'Invoice not found.'}
         </div>
-        <Button variant="secondary" className="mt-4" onClick={() => { window.location.href = '/invoices' }}>
+        <Button variant="secondary" className="mt-4" onClick={() => { navigate('/invoices') }}>
           ← Back to Invoices
         </Button>
       </div>
@@ -422,7 +423,7 @@ export default function InvoiceDetail() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6" data-print-hide>
         <div className="flex items-center gap-3">
           <button
-            onClick={() => { window.location.href = '/invoices' }}
+            onClick={() => { navigate('/invoices') }}
             className="rounded p-1 text-gray-400 hover:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             aria-label="Back to invoices"
           >
@@ -439,7 +440,7 @@ export default function InvoiceDetail() {
         {/* Action buttons */}
         <div className="flex flex-wrap items-center gap-2">
           {isDraft && (
-            <Button size="sm" variant="primary" onClick={() => { window.location.href = `/invoices/${invoice.id}/edit` }}>
+            <Button size="sm" variant="primary" onClick={() => { navigate(`/invoices/${invoice.id}/edit`) }}>
               Edit
             </Button>
           )}
