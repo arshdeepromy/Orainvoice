@@ -1,16 +1,9 @@
-/**
- * Expense list page with paginated table, receipt upload, category filter,
- * date range filter, and links to job/project.
- *
- * Validates: Requirement — Expense Module
- */
-
-import React, { useEffect, useState, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import apiClient from '@/api/client'
+import { Button, Badge, Spinner, Modal, Input, Select } from '@/components/ui'
 
 interface Expense {
   id: string
-  org_id: string
   job_id: string | null
   project_id: string | null
   invoice_id: string | null
@@ -25,7 +18,14 @@ interface Expense {
   created_at: string
 }
 
-const CATEGORY_OPTIONS = [
+interface Summary {
+  total_amount: string
+  total_tax: string
+  total_count: number
+  by_category: { category: string | null; total_amount: string; count: number }[]
+}
+
+const CATEGORIES = [
   { value: '', label: 'All Categories' },
   { value: 'materials', label: 'Materials' },
   { value: 'travel', label: 'Travel' },
@@ -38,6 +38,24 @@ const CATEGORY_OPTIONS = [
   { value: 'other', label: 'Other' },
 ]
 
+const EMPTY_FORM = {
+  date: new Date().toISOString().split('T')[0],
+  description: '',
+  amount: '',
+  tax_amount: '',
+  category: '',
+  is_pass_through: false,
+  receipt_file_key: '',
+}
+
+function formatNZD(amount: string | number) {
+  return new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(Number(amount))
+}
+
+function categoryLabel(cat: string | null) {
+  return CATEGORIES.find(c => c.value === cat)?.label || cat || '—'
+}
+
 export default function ExpenseList() {
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [total, setTotal] = useState(0)
@@ -46,228 +64,317 @@ export default function ExpenseList() {
   const [categoryFilter, setCategoryFilter] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
-  const [showCreateForm, setShowCreateForm] = useState(false)
-  const [receiptUploading, setReceiptUploading] = useState(false)
   const pageSize = 20
 
-  // Create form state
-  const [newExpense, setNewExpense] = useState({
-    date: new Date().toISOString().split('T')[0],
-    description: '',
-    amount: '',
-    tax_amount: '0',
-    category: '',
-    is_pass_through: false,
-    receipt_file_key: '',
-  })
+  const [summary, setSummary] = useState<Summary | null>(null)
+
+  // Create/Edit modal
+  const [showModal, setShowModal] = useState(false)
+  const [editId, setEditId] = useState<string | null>(null)
+  const [form, setForm] = useState({ ...EMPTY_FORM })
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState('')
+  const [receiptUploading, setReceiptUploading] = useState(false)
+
+  // Delete confirm
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const fetchExpenses = useCallback(async () => {
     setLoading(true)
     try {
-      const params = new URLSearchParams({
-        page: String(page),
-        page_size: String(pageSize),
-      })
-      if (categoryFilter) params.set('category', categoryFilter)
-      if (dateFrom) params.set('date_from', dateFrom)
-      if (dateTo) params.set('date_to', dateTo)
-
-      const res = await apiClient.get(`/api/v2/expenses?${params}`)
-      setExpenses(res.data.expenses)
-      setTotal(res.data.total)
-    } catch {
-      setExpenses([])
-    } finally {
-      setLoading(false)
-    }
+      const params: Record<string, string> = { page: String(page), page_size: String(pageSize) }
+      if (categoryFilter) params.category = categoryFilter
+      if (dateFrom) params.date_from = dateFrom
+      if (dateTo) params.date_to = dateTo
+      const res = await apiClient.get('/api/v2/expenses', { params })
+      setExpenses(res.data.expenses || [])
+      setTotal(res.data.total || 0)
+    } catch { setExpenses([]) }
+    finally { setLoading(false) }
   }, [page, categoryFilter, dateFrom, dateTo])
 
+  const fetchSummary = useCallback(async () => {
+    try {
+      const params: Record<string, string> = {}
+      if (dateFrom) params.date_from = dateFrom
+      if (dateTo) params.date_to = dateTo
+      const res = await apiClient.get('/api/v2/expenses/summary', { params })
+      setSummary(res.data)
+    } catch { /* non-blocking */ }
+  }, [dateFrom, dateTo])
+
   useEffect(() => { fetchExpenses() }, [fetchExpenses])
+  useEffect(() => { fetchSummary() }, [fetchSummary])
+
+  const totalPages = Math.ceil(total / pageSize)
+
+  const openCreate = () => {
+    setEditId(null)
+    setForm({ ...EMPTY_FORM })
+    setFormError('')
+    setShowModal(true)
+  }
+
+  const openEdit = (e: Expense) => {
+    setEditId(e.id)
+    setForm({
+      date: e.date,
+      description: e.description,
+      amount: String(Number(e.amount)),
+      tax_amount: String(Number(e.tax_amount)),
+      category: e.category || '',
+      is_pass_through: e.is_pass_through,
+      receipt_file_key: e.receipt_file_key || '',
+    })
+    setFormError('')
+    setShowModal(true)
+  }
 
   const handleReceiptUpload = async (file: File) => {
     setReceiptUploading(true)
     try {
-      const formData = new FormData()
-      formData.append('file', file)
-      const res = await apiClient.post('/api/v2/uploads/receipts', formData, {
+      const fd = new FormData()
+      fd.append('file', file)
+      const res = await apiClient.post('/api/v2/uploads/receipts', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
-      setNewExpense(prev => ({ ...prev, receipt_file_key: res.data.file_key }))
-    } catch {
-      // Upload failed — user can retry
-    } finally {
-      setReceiptUploading(false)
-    }
+      setForm(prev => ({ ...prev, receipt_file_key: res.data.file_key }))
+    } catch { /* silent */ }
+    finally { setReceiptUploading(false) }
   }
 
-  const handleCreateExpense = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSave = async () => {
+    if (!form.description.trim()) { setFormError('Description is required.'); return }
+    if (!form.amount || isNaN(Number(form.amount)) || Number(form.amount) <= 0) { setFormError('Enter a valid amount.'); return }
+    setSaving(true)
+    setFormError('')
     try {
-      await apiClient.post('/api/v2/expenses', {
-        date: newExpense.date,
-        description: newExpense.description,
-        amount: parseFloat(newExpense.amount),
-        tax_amount: parseFloat(newExpense.tax_amount || '0'),
-        category: newExpense.category || null,
-        is_pass_through: newExpense.is_pass_through,
-        receipt_file_key: newExpense.receipt_file_key || null,
-      })
-      setShowCreateForm(false)
-      setNewExpense({
-        date: new Date().toISOString().split('T')[0],
-        description: '', amount: '', tax_amount: '0',
-        category: '', is_pass_through: false, receipt_file_key: '',
-      })
+      const payload = {
+        date: form.date,
+        description: form.description.trim(),
+        amount: Number(form.amount),
+        tax_amount: Number(form.tax_amount) || 0,
+        category: form.category || null,
+        is_pass_through: form.is_pass_through,
+        receipt_file_key: form.receipt_file_key || null,
+      }
+      if (editId) {
+        await apiClient.put(`/api/v2/expenses/${editId}`, payload)
+      } else {
+        await apiClient.post('/api/v2/expenses', payload)
+      }
+      setShowModal(false)
       fetchExpenses()
-    } catch {
-      // Creation failed
-    }
+      fetchSummary()
+    } catch (err: any) {
+      setFormError(err?.response?.data?.detail || 'Failed to save expense.')
+    } finally { setSaving(false) }
   }
 
-  const totalPages = Math.ceil(total / pageSize)
-
-  if (loading) {
-    return <div role="status" aria-label="Loading expenses">Loading expenses…</div>
+  const handleDelete = async () => {
+    if (!deleteId) return
+    setDeleting(true)
+    try {
+      await apiClient.delete(`/api/v2/expenses/${deleteId}`)
+      setDeleteId(null)
+      fetchExpenses()
+      fetchSummary()
+    } catch { /* silent */ }
+    finally { setDeleting(false) }
   }
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1>Expenses</h1>
-        <button onClick={() => setShowCreateForm(true)} aria-label="Add expense">
-          + Add Expense
-        </button>
+    <div className="px-4 py-6 sm:px-6 lg:px-8">
+      {/* Header */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
+        <h1 className="text-2xl font-semibold text-gray-900">Expenses</h1>
+        <Button onClick={openCreate}>+ Add Expense</Button>
       </div>
 
-      {/* Filters */}
-      <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
-        <div>
-          <label htmlFor="category-filter">Category</label>
-          <select
-            id="category-filter"
-            value={categoryFilter}
-            onChange={e => { setCategoryFilter(e.target.value); setPage(1) }}
-          >
-            {CATEGORY_OPTIONS.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label htmlFor="date-from">From</label>
-          <input
-            id="date-from"
-            type="date"
-            value={dateFrom}
-            onChange={e => { setDateFrom(e.target.value); setPage(1) }}
-          />
-        </div>
-        <div>
-          <label htmlFor="date-to">To</label>
-          <input
-            id="date-to"
-            type="date"
-            value={dateTo}
-            onChange={e => { setDateTo(e.target.value); setPage(1) }}
-          />
-        </div>
-      </div>
-
-      {/* Create form */}
-      {showCreateForm && (
-        <form onSubmit={handleCreateExpense} aria-label="Create expense">
-          <div style={{ display: 'grid', gap: '0.5rem', marginBottom: '1rem', padding: '1rem', border: '1px solid #ccc' }}>
-            <div>
-              <label htmlFor="expense-date">Date</label>
-              <input id="expense-date" type="date" required value={newExpense.date}
-                onChange={e => setNewExpense(p => ({ ...p, date: e.target.value }))} />
-            </div>
-            <div>
-              <label htmlFor="expense-description">Description</label>
-              <input id="expense-description" type="text" required value={newExpense.description}
-                onChange={e => setNewExpense(p => ({ ...p, description: e.target.value }))} />
-            </div>
-            <div>
-              <label htmlFor="expense-amount">Amount</label>
-              <input id="expense-amount" type="number" step="0.01" inputMode="numeric" required value={newExpense.amount}
-                onChange={e => setNewExpense(p => ({ ...p, amount: e.target.value }))} />
-            </div>
-            <div>
-              <label htmlFor="expense-category">Category</label>
-              <select id="expense-category" value={newExpense.category}
-                onChange={e => setNewExpense(p => ({ ...p, category: e.target.value }))}>
-                {CATEGORY_OPTIONS.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label htmlFor="expense-pass-through">
-                <input id="expense-pass-through" type="checkbox" checked={newExpense.is_pass_through}
-                  onChange={e => setNewExpense(p => ({ ...p, is_pass_through: e.target.checked }))} />
-                Pass-through to invoice
-              </label>
-            </div>
-            <div>
-              <label htmlFor="receipt-upload">Receipt</label>
-              <input id="receipt-upload" type="file" accept="image/*,.pdf"
-                onChange={e => { if (e.target.files?.[0]) handleReceiptUpload(e.target.files[0]) }} />
-              {receiptUploading && <span role="status" aria-label="Uploading receipt">Uploading…</span>}
-              {newExpense.receipt_file_key && <span>✓ Receipt attached</span>}
-            </div>
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <button type="submit">Save Expense</button>
-              <button type="button" onClick={() => setShowCreateForm(false)}>Cancel</button>
-            </div>
+      {/* Summary cards */}
+      {summary && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+          <div className="rounded-lg border border-gray-200 bg-white p-4">
+            <p className="text-xs font-medium uppercase text-gray-500">Total Expenses</p>
+            <p className="mt-1 text-2xl font-semibold text-gray-900">{formatNZD(summary.total_amount)}</p>
+            <p className="text-xs text-gray-400">{summary.total_count} record{summary.total_count !== 1 ? 's' : ''}</p>
           </div>
-        </form>
+          <div className="rounded-lg border border-gray-200 bg-white p-4">
+            <p className="text-xs font-medium uppercase text-gray-500">Total Tax</p>
+            <p className="mt-1 text-2xl font-semibold text-gray-900">{formatNZD(summary.total_tax)}</p>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-white p-4">
+            <p className="text-xs font-medium uppercase text-gray-500">Top Category</p>
+            {summary.by_category.length > 0 ? (
+              <>
+                <p className="mt-1 text-lg font-semibold text-gray-900">{categoryLabel(summary.by_category[0].category)}</p>
+                <p className="text-xs text-gray-400">{formatNZD(summary.by_category[0].total_amount)}</p>
+              </>
+            ) : <p className="mt-1 text-sm text-gray-400">—</p>}
+          </div>
+        </div>
       )}
 
-      {/* Expense table */}
-      {expenses.length === 0 ? (
-        <p>No expenses found. Add your first expense to get started.</p>
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3 mb-4">
+        <div className="w-44">
+          <Select label="Category" options={CATEGORIES} value={categoryFilter}
+            onChange={e => { setCategoryFilter(e.target.value); setPage(1) }} />
+        </div>
+        <div>
+          <Input label="From" type="date" value={dateFrom}
+            onChange={e => { setDateFrom(e.target.value); setPage(1) }} />
+        </div>
+        <div>
+          <Input label="To" type="date" value={dateTo}
+            onChange={e => { setDateTo(e.target.value); setPage(1) }} />
+        </div>
+        {(categoryFilter || dateFrom || dateTo) && (
+          <div className="flex items-end">
+            <Button size="sm" variant="secondary" onClick={() => { setCategoryFilter(''); setDateFrom(''); setDateTo(''); setPage(1) }}>
+              Clear filters
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {/* Table */}
+      {loading ? (
+        <div className="py-16 text-center"><Spinner label="Loading expenses" /></div>
+      ) : expenses.length === 0 ? (
+        <div className="rounded-lg border border-gray-200 bg-white p-12 text-center">
+          <p className="text-gray-500">No expenses found.</p>
+          <Button className="mt-4" onClick={openCreate}>Add your first expense</Button>
+        </div>
       ) : (
         <>
-          <table role="grid" aria-label="Expenses list">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Description</th>
-                <th>Category</th>
-                <th>Amount</th>
-                <th>Pass-through</th>
-                <th>Invoiced</th>
-                <th>Receipt</th>
-                <th>Job</th>
-                <th>Project</th>
-              </tr>
-            </thead>
-            <tbody>
-              {expenses.map(expense => (
-                <tr key={expense.id} role="row">
-                  <td>{new Date(expense.date).toLocaleDateString()}</td>
-                  <td>{expense.description}</td>
-                  <td>{expense.category || '—'}</td>
-                  <td>${Number(expense.amount).toFixed(2)}</td>
-                  <td>{expense.is_pass_through ? 'Yes' : 'No'}</td>
-                  <td>{expense.is_invoiced ? 'Yes' : 'No'}</td>
-                  <td>{expense.receipt_file_key ? <a href={`/api/v2/files/${expense.receipt_file_key}`}>View</a> : '—'}</td>
-                  <td>{expense.job_id ? <a href={`/jobs/${expense.job_id}`}>View Job</a> : '—'}</td>
-                  <td>{expense.project_id ? <a href={`/projects/${expense.project_id}`}>View Project</a> : '—'}</td>
+          <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Date</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Description</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Category</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Amount</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Tax</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Receipt</th>
+                  <th className="px-4 py-3 w-24"></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {expenses.map(exp => (
+                  <tr key={exp.id} className="hover:bg-gray-50">
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">
+                      {new Date(exp.date).toLocaleDateString('en-NZ')}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-900 max-w-xs truncate">{exp.description}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{categoryLabel(exp.category)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-right font-medium tabular-nums text-gray-900">
+                      {formatNZD(exp.amount)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-500">
+                      {Number(exp.tax_amount) > 0 ? formatNZD(exp.tax_amount) : '—'}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm">
+                      <div className="flex flex-wrap gap-1">
+                        {exp.is_invoiced && <Badge variant="success">Invoiced</Badge>}
+                        {exp.is_pass_through && <Badge variant="info">Pass-through</Badge>}
+                        {!exp.is_invoiced && !exp.is_pass_through && <span className="text-gray-400 text-xs">—</span>}
+                      </div>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm">
+                      {exp.receipt_file_key ? (
+                        <a href={`/api/v2/files/${exp.receipt_file_key}`} target="_blank" rel="noopener noreferrer"
+                          className="text-blue-600 hover:underline text-xs">View</a>
+                      ) : <span className="text-gray-400 text-xs">—</span>}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-right">
+                      <div className="flex justify-end gap-2">
+                        <button type="button" onClick={() => openEdit(exp)}
+                          className="text-blue-600 hover:text-blue-800 text-xs font-medium">Edit</button>
+                        {!exp.is_invoiced && (
+                          <button type="button" onClick={() => setDeleteId(exp.id)}
+                            className="text-red-500 hover:text-red-700 text-xs font-medium">Delete</button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
           {totalPages > 1 && (
-            <nav aria-label="Pagination">
-              <button disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Previous</button>
-              <span>Page {page} of {totalPages}</span>
-              <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next</button>
-            </nav>
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-sm text-gray-500">{total} expense{total !== 1 ? 's' : ''}</p>
+              <div className="flex gap-2">
+                <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Previous</Button>
+                <span className="flex items-center text-sm text-gray-600">Page {page} of {totalPages}</span>
+                <Button size="sm" variant="secondary" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next</Button>
+              </div>
+            </div>
           )}
         </>
       )}
+
+      {/* Create / Edit Modal */}
+      <Modal open={showModal} onClose={() => setShowModal(false)} title={editId ? 'Edit Expense' : 'New Expense'}>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Date *" type="date" value={form.date}
+              onChange={e => setForm(p => ({ ...p, date: e.target.value }))} />
+            <Select label="Category" options={CATEGORIES} value={form.category}
+              onChange={e => setForm(p => ({ ...p, category: e.target.value }))} />
+          </div>
+          <Input label="Description *" value={form.description} placeholder="What was this expense for?"
+            onChange={e => setForm(p => ({ ...p, description: e.target.value }))} />
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Amount (ex-tax) *" type="number" min="0.01" step="0.01" value={form.amount}
+              onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} />
+            <Input label="Tax amount" type="number" min="0" step="0.01" value={form.tax_amount}
+              onChange={e => setForm(p => ({ ...p, tax_amount: e.target.value }))} />
+          </div>
+          <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+            <input type="checkbox" checked={form.is_pass_through}
+              onChange={e => setForm(p => ({ ...p, is_pass_through: e.target.checked }))}
+              className="rounded border-gray-300 text-blue-600" />
+            Pass-through to invoice (charge to customer)
+          </label>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Receipt</label>
+            {form.receipt_file_key ? (
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-green-600">✓ Receipt attached</span>
+                <button type="button" onClick={() => setForm(p => ({ ...p, receipt_file_key: '' }))}
+                  className="text-xs text-red-500 hover:underline">Remove</button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <input type="file" accept="image/*,.pdf"
+                  onChange={e => { if (e.target.files?.[0]) handleReceiptUpload(e.target.files[0]) }}
+                  className="text-sm text-gray-600" />
+                {receiptUploading && <Spinner size="sm" label="Uploading…" />}
+              </div>
+            )}
+          </div>
+          {formError && <p className="text-sm text-red-600">{formError}</p>}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setShowModal(false)}>Cancel</Button>
+            <Button onClick={handleSave} loading={saving}>{editId ? 'Save Changes' : 'Add Expense'}</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Delete confirm */}
+      <Modal open={!!deleteId} onClose={() => setDeleteId(null)} title="Delete Expense">
+        <p className="text-sm text-gray-600 mb-4">Are you sure you want to delete this expense? This cannot be undone.</p>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={() => setDeleteId(null)}>Cancel</Button>
+          <Button variant="danger" onClick={handleDelete} loading={deleting}>Delete</Button>
+        </div>
+      </Modal>
     </div>
   )
 }
