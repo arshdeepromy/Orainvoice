@@ -63,6 +63,4 @@ async def update_branding(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    await db.commit()
-    await db.refresh(branding)
     return BrandingResponse.model_validate(branding)
