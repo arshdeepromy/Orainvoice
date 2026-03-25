@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { Button, Badge, Spinner, Modal, Input, Select } from '@/components/ui'
 
-interface Supplier { id: string; name: string }
+interface Supplier { id: string; name: string; contact_name?: string | null; email?: string | null; phone?: string | null; address?: string | null }
 interface Product { id: string; name: string; sku: string | null; cost_price: number }
 
 interface POLine {
@@ -69,11 +69,23 @@ export default function POList() {
   // Create modal
   const [showCreate, setShowCreate] = useState(false)
   const [createSupplierId, setCreateSupplierId] = useState('')
+  const [createSupplierName, setCreateSupplierName] = useState('')
   const [createExpectedDelivery, setCreateExpectedDelivery] = useState('')
   const [createNotes, setCreateNotes] = useState('')
   const [createLines, setCreateLines] = useState<NewLine[]>([])
   const [createSaving, setCreateSaving] = useState(false)
   const [createError, setCreateError] = useState('')
+
+  // Supplier search state
+  const [supplierQuery, setSupplierQuery] = useState('')
+  const [supplierDropdownOpen, setSupplierDropdownOpen] = useState(false)
+  const supplierRef = useRef<HTMLDivElement>(null)
+
+  // Add supplier modal
+  const [showAddSupplier, setShowAddSupplier] = useState(false)
+  const [newSupplier, setNewSupplier] = useState({ name: '', contact_name: '', email: '', phone: '', address: '' })
+  const [addSupplierSaving, setAddSupplierSaving] = useState(false)
+  const [addSupplierError, setAddSupplierError] = useState('')
 
   // Add line state
   const [addProductId, setAddProductId] = useState('')
@@ -112,10 +124,23 @@ export default function POList() {
   useEffect(() => { fetchOrders() }, [fetchOrders])
   useEffect(() => { fetchMeta() }, [fetchMeta])
 
+  // Close supplier dropdown on click outside
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (supplierRef.current && !supplierRef.current.contains(e.target as Node)) {
+        setSupplierDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
   const totalPages = Math.ceil(total / pageSize)
 
   const openCreate = () => {
     setCreateSupplierId('')
+    setCreateSupplierName('')
+    setSupplierQuery('')
     setCreateExpectedDelivery('')
     setCreateNotes('')
     setCreateLines([])
@@ -124,6 +149,52 @@ export default function POList() {
     setAddQty('')
     setAddCost('')
     setShowCreate(true)
+  }
+
+  // Supplier search helpers
+  const filteredSuppliers = suppliers.filter(s =>
+    s.name.toLowerCase().includes(supplierQuery.toLowerCase())
+  )
+
+  const selectSupplier = (s: Supplier) => {
+    setCreateSupplierId(s.id)
+    setCreateSupplierName(s.name)
+    setSupplierQuery(s.name)
+    setSupplierDropdownOpen(false)
+  }
+
+  const clearSupplier = () => {
+    setCreateSupplierId('')
+    setCreateSupplierName('')
+    setSupplierQuery('')
+  }
+
+  const openAddSupplier = () => {
+    setNewSupplier({ name: supplierQuery.trim(), contact_name: '', email: '', phone: '', address: '' })
+    setAddSupplierError('')
+    setShowAddSupplier(true)
+  }
+
+  const handleAddSupplier = async () => {
+    if (!newSupplier.name.trim()) { setAddSupplierError('Supplier name is required.'); return }
+    setAddSupplierSaving(true)
+    setAddSupplierError('')
+    try {
+      const body: Record<string, string> = { name: newSupplier.name.trim() }
+      if (newSupplier.contact_name.trim()) body.contact_name = newSupplier.contact_name.trim()
+      if (newSupplier.email.trim()) body.email = newSupplier.email.trim()
+      if (newSupplier.phone.trim()) body.phone = newSupplier.phone.trim()
+      if (newSupplier.address.trim()) body.address = newSupplier.address.trim()
+      const res = await apiClient.post('/inventory/suppliers', body)
+      const created: Supplier = res.data.supplier || res.data
+      // Add to local list and select it
+      setSuppliers(prev => [...prev, created])
+      setSupplierMap(prev => ({ ...prev, [created.id]: created.name }))
+      selectSupplier(created)
+      setShowAddSupplier(false)
+    } catch (err: any) {
+      setAddSupplierError(err?.response?.data?.detail || 'Failed to create supplier.')
+    } finally { setAddSupplierSaving(false) }
   }
 
   const addLine = () => {
@@ -180,7 +251,6 @@ export default function POList() {
 
   const lineTotal = createLines.reduce((sum, l) => sum + l.quantity * l.unit_cost, 0)
 
-  const supplierOptions = [{ value: '', label: 'Select supplier…' }, ...suppliers.map(s => ({ value: s.id, label: s.name }))]
   const productOptions = [{ value: '', label: 'Select product…' }, ...products.map(p => ({ value: p.id, label: `${p.name}${p.sku ? ` (${p.sku})` : ''}` }))]
 
   return (
@@ -250,8 +320,46 @@ export default function POList() {
       {/* Create PO Modal */}
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="New Purchase Order">
         <div className="space-y-4">
-          <Select label="Supplier *" options={supplierOptions} value={createSupplierId}
-            onChange={e => setCreateSupplierId(e.target.value)} />
+          {/* Supplier live search */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Supplier *</label>
+            {createSupplierId ? (
+              <div className="flex items-center gap-2 rounded-md border border-gray-300 bg-gray-50 px-3 py-2">
+                <span className="flex-1 text-sm text-gray-900">{createSupplierName}</span>
+                <button type="button" onClick={clearSupplier} className="rounded p-1 text-gray-400 hover:text-gray-600 text-xs" aria-label="Change supplier">✕</button>
+              </div>
+            ) : (
+              <div ref={supplierRef} className="relative">
+                <input
+                  type="text"
+                  value={supplierQuery}
+                  onChange={e => { setSupplierQuery(e.target.value); setSupplierDropdownOpen(true) }}
+                  onFocus={() => setSupplierDropdownOpen(true)}
+                  placeholder="Search or type supplier name…"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  autoComplete="off"
+                />
+                {supplierDropdownOpen && (
+                  <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+                    {filteredSuppliers.length > 0 && filteredSuppliers.slice(0, 10).map(s => (
+                      <button key={s.id} type="button" onClick={() => selectSupplier(s)}
+                        className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50">
+                        <span className="font-medium text-gray-900">{s.name}</span>
+                        {s.contact_name && <span className="ml-2 text-xs text-gray-500">{s.contact_name}</span>}
+                      </button>
+                    ))}
+                    {filteredSuppliers.length === 0 && supplierQuery.length > 0 && (
+                      <div className="px-3 py-2 text-sm text-gray-500">No suppliers found</div>
+                    )}
+                    <button type="button" onClick={openAddSupplier}
+                      className="w-full border-t border-gray-100 px-3 py-2 text-left text-sm font-medium text-blue-600 hover:bg-blue-50">
+                      + Add New Supplier{supplierQuery.trim() ? ` "${supplierQuery.trim()}"` : ''}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           <Input label="Expected Delivery" type="date" value={createExpectedDelivery}
             onChange={e => setCreateExpectedDelivery(e.target.value)} />
 
@@ -326,6 +434,29 @@ export default function POList() {
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="secondary" onClick={() => setShowCreate(false)}>Cancel</Button>
             <Button onClick={handleCreate} loading={createSaving}>Create Purchase Order</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Add Supplier Modal */}
+      <Modal open={showAddSupplier} onClose={() => setShowAddSupplier(false)} title="New Supplier">
+        <div className="space-y-3">
+          <Input label="Supplier name *" value={newSupplier.name}
+            onChange={e => setNewSupplier(prev => ({ ...prev, name: e.target.value }))} />
+          <Input label="Contact person" value={newSupplier.contact_name}
+            onChange={e => setNewSupplier(prev => ({ ...prev, contact_name: e.target.value }))} />
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Email" type="email" value={newSupplier.email}
+              onChange={e => setNewSupplier(prev => ({ ...prev, email: e.target.value }))} />
+            <Input label="Phone" value={newSupplier.phone}
+              onChange={e => setNewSupplier(prev => ({ ...prev, phone: e.target.value }))} />
+          </div>
+          <Input label="Address" value={newSupplier.address}
+            onChange={e => setNewSupplier(prev => ({ ...prev, address: e.target.value }))} />
+          {addSupplierError && <p className="text-sm text-red-600">{addSupplierError}</p>}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setShowAddSupplier(false)}>Cancel</Button>
+            <Button onClick={handleAddSupplier} loading={addSupplierSaving}>Create Supplier</Button>
           </div>
         </div>
       </Modal>
