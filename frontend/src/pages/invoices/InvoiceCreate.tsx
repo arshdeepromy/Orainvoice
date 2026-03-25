@@ -60,6 +60,7 @@ interface Vehicle {
   newOdometer?: number | null
   service_due_date?: string | null
   newServiceDueDate?: string | null
+  newWofExpiry?: string | null
 }
 
 interface CatalogueItem {
@@ -974,6 +975,7 @@ export default function InvoiceCreate() {
       vehicle_odometer: vehicles[0]?.newOdometer ?? vehicles[0]?.odometer ?? undefined,
       global_vehicle_id: vehicles[0]?.id || undefined,
       vehicle_service_due_date: vehicles[0]?.newServiceDueDate ?? vehicles[0]?.service_due_date ?? undefined,
+      vehicle_wof_expiry_date: vehicles[0]?.newWofExpiry ?? vehicles[0]?.wof_expiry ?? undefined,
       vehicles: vehicles.map(v => ({
         id: v.id || undefined,
         rego: v.rego,
@@ -1210,6 +1212,23 @@ export default function InvoiceCreate() {
                         {v.service_due_date && !v.newServiceDueDate && (
                           <span className="text-xs text-gray-400">
                             Current: {new Date(v.service_due_date).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <label className="text-xs text-gray-500 whitespace-nowrap">WOF Expiry:</label>
+                        <input
+                          type="date"
+                          value={v.newWofExpiry ?? v.wof_expiry ?? ''}
+                          onChange={(e) => {
+                            const val = e.target.value || null
+                            setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newWofExpiry: val } : veh))
+                          }}
+                          className="w-40 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        {v.wof_expiry && !v.newWofExpiry && (
+                          <span className="text-xs text-gray-400">
+                            Current: {new Date(v.wof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}
                           </span>
                         )}
                       </div>
