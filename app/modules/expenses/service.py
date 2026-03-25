@@ -13,8 +13,8 @@ from typing import Any
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.expenses.models import Expense
-from app.modules.expenses.schemas import ExpenseCreate, ExpenseUpdate
+from app.modules.expenses.models import Expense, MileagePreference, MileageRate
+from app.modules.expenses.schemas import ExpenseCreate, ExpenseUpdate, MileagePreferenceUpdate
 
 
 class ExpenseService:
@@ -73,13 +73,19 @@ class ExpenseService:
             org_id=org_id,
             job_id=payload.job_id,
             project_id=payload.project_id,
+            customer_id=payload.customer_id,
             date=payload.date,
             description=payload.description,
             amount=payload.amount,
             tax_amount=payload.tax_amount,
             category=payload.category,
+            reference_number=payload.reference_number,
+            notes=payload.notes,
             receipt_file_key=payload.receipt_file_key,
             is_pass_through=payload.is_pass_through,
+            is_billable=payload.is_billable,
+            tax_inclusive=payload.tax_inclusive,
+            expense_type=payload.expense_type,
             created_by=created_by,
         )
         self.db.add(expense)
@@ -267,3 +273,73 @@ class ExpenseService:
         )
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
+
+    # ------------------------------------------------------------------
+    # Mileage preferences & rates
+    # ------------------------------------------------------------------
+
+    async def get_mileage_preferences(self, org_id: uuid.UUID) -> dict:
+        """Get mileage preferences and rates for an org."""
+        pref_stmt = select(MileagePreference).where(MileagePreference.org_id == org_id)
+        pref = (await self.db.execute(pref_stmt)).scalar_one_or_none()
+
+        rates_stmt = select(MileageRate).where(MileageRate.org_id == org_id).order_by(MileageRate.start_date.asc().nullsfirst())
+        rates = list((await self.db.execute(rates_stmt)).scalars().all())
+
+        return {
+            "default_unit": pref.default_unit if pref else "km",
+            "default_account": pref.default_account if pref else None,
+            "rates": rates,
+        }
+
+    async def save_mileage_preferences(self, org_id: uuid.UUID, payload: MileagePreferenceUpdate) -> dict:
+        """Upsert mileage preferences and replace rates."""
+        pref_stmt = select(MileagePreference).where(MileagePreference.org_id == org_id)
+        pref = (await self.db.execute(pref_stmt)).scalar_one_or_none()
+
+        if pref is None:
+            pref = MileagePreference(org_id=org_id)
+            self.db.add(pref)
+
+        if payload.default_unit is not None:
+            pref.default_unit = payload.default_unit
+        if payload.default_account is not None:
+            pref.default_account = payload.default_account
+
+        # Replace all rates
+        del_stmt = select(MileageRate).where(MileageRate.org_id == org_id)
+        existing = list((await self.db.execute(del_stmt)).scalars().all())
+        for r in existing:
+            await self.db.delete(r)
+
+        new_rates = []
+        for rate_data in payload.rates:
+            rate = MileageRate(
+                org_id=org_id,
+                start_date=rate_data.start_date,
+                rate_per_unit=rate_data.rate_per_unit,
+                currency=rate_data.currency,
+            )
+            self.db.add(rate)
+            new_rates.append(rate)
+
+        await self.db.flush()
+        return {
+            "default_unit": pref.default_unit,
+            "default_account": pref.default_account,
+            "rates": new_rates,
+        }
+
+    async def bulk_create_expenses(
+        self,
+        org_id: uuid.UUID,
+        expenses_data: list[ExpenseCreate],
+        *,
+        created_by: uuid.UUID | None = None,
+    ) -> list[Expense]:
+        """Bulk create multiple expenses."""
+        created = []
+        for payload in expenses_data:
+            expense = await self.create_expense(org_id, payload, created_by=created_by)
+            created.append(expense)
+        return created

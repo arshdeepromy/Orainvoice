@@ -22,12 +22,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
 from app.modules.expenses.schemas import (
+    BulkExpenseCreate,
     ExpenseCreate,
     ExpenseListResponse,
     ExpenseResponse,
     ExpenseSummaryReport,
     ExpenseUpdate,
     IncludeInInvoiceRequest,
+    MileagePreferenceResponse,
+    MileagePreferenceUpdate,
 )
 from app.modules.expenses.service import ExpenseService
 
@@ -175,3 +178,47 @@ async def delete_expense(
         raise HTTPException(status_code=422, detail=str(exc))
     if not deleted:
         raise HTTPException(status_code=404, detail="Expense not found")
+
+
+# ---------------------------------------------------------------------------
+# Mileage preferences
+# ---------------------------------------------------------------------------
+
+@router.get("/mileage-preferences", response_model=MileagePreferenceResponse, summary="Get mileage preferences")
+async def get_mileage_preferences(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    svc = ExpenseService(db)
+    data = await svc.get_mileage_preferences(org_id)
+    return MileagePreferenceResponse(**data)
+
+
+@router.put("/mileage-preferences", response_model=MileagePreferenceResponse, summary="Save mileage preferences")
+async def save_mileage_preferences(
+    payload: MileagePreferenceUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    svc = ExpenseService(db)
+    data = await svc.save_mileage_preferences(org_id, payload)
+    return MileagePreferenceResponse(**data)
+
+
+# ---------------------------------------------------------------------------
+# Bulk create
+# ---------------------------------------------------------------------------
+
+@router.post("/bulk", response_model=list[ExpenseResponse], status_code=201, summary="Bulk create expenses")
+async def bulk_create_expenses(
+    payload: BulkExpenseCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    svc = ExpenseService(db)
+    expenses = await svc.bulk_create_expenses(org_id, payload.expenses, created_by=user_id)
+    return [ExpenseResponse.model_validate(e) for e in expenses]
