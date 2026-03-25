@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
+import { usePlatformBranding } from '@/contexts/PlatformBrandingContext'
 import apiClient from '@/api/client'
 import { Button, Input, AlertBanner, Spinner } from '@/components/ui'
 import { MfaModal } from '@/components/auth/MfaModal'
@@ -11,6 +12,7 @@ export function Login() {
   const { login, loginWithGoogle, loginWithPasskey, isLoading } =
     useAuth()
   const navigate = useNavigate()
+  const { branding } = usePlatformBranding()
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -90,8 +92,11 @@ export function Login() {
     <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
       <div className="w-full max-w-md space-y-6 rounded-xl bg-white p-8 shadow-lg">
         <div className="text-center">
+          {branding.logo_url && (
+            <img src={branding.logo_url} alt={branding.platform_name} className="mx-auto h-12 mb-3 object-contain" />
+          )}
           <h1 className="text-2xl font-bold text-gray-900">
-            Sign in to WorkshopPro
+            Sign in to {branding.platform_name}
           </h1>
           <p className="mt-1 text-sm text-gray-500">
             Enter your credentials to continue

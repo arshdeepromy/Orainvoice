@@ -5,6 +5,7 @@ import apiClient from '@/api/client'
 import { Button, Input, AlertBanner, Spinner } from '@/components/ui'
 import { validateSignupForm } from './signup-validation'
 import { PasswordRequirements, PasswordMatch } from '@/components/auth/PasswordRequirements'
+import { usePlatformBranding } from '@/contexts/PlatformBrandingContext'
 import type { SignupFormData, SignupResponse, PublicPlan, PublicPlanListResponse } from './signup-types'
 
 interface CouponResponse {
@@ -117,6 +118,7 @@ function PaymentForm({
 
 /* ── Main Signup Component ── */
 export function Signup() {
+  const { branding } = usePlatformBranding()
   const [step, setStep] = useState<Step>('form')
   const [plans, setPlans] = useState<PublicPlan[]>([])
   const [plansLoading, setPlansLoading] = useState(true)
@@ -418,6 +420,9 @@ export function Signup() {
 
   return (
     <div className="mx-auto max-w-lg py-12 px-4">
+      {branding.logo_url && (
+        <img src={branding.logo_url} alt={branding.platform_name} className="mx-auto h-12 mb-4 object-contain" />
+      )}
       <h1 className="text-2xl font-bold text-gray-900">Create your account</h1>
       <p className="mt-1 text-sm text-gray-600">{subtitle}</p>
 

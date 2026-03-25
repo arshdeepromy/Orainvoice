@@ -13,10 +13,25 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
-from app.modules.branding.schemas import BrandingResponse, BrandingUpdate
+from app.modules.branding.schemas import BrandingResponse, BrandingUpdate, PublicBrandingResponse
 from app.modules.branding.service import BrandingService
 
 router = APIRouter()
+public_router = APIRouter()
+
+
+@public_router.get("", response_model=PublicBrandingResponse, summary="Get public platform branding")
+async def get_public_branding(db: AsyncSession = Depends(get_db_session)):
+    """Public endpoint — no auth required. Returns branding for login/signup pages."""
+    svc = BrandingService(db)
+    branding = await svc.get_branding()
+    if branding is None:
+        return PublicBrandingResponse(
+            platform_name="OraInvoice",
+            primary_colour="#2563EB",
+            secondary_colour="#1E40AF",
+        )
+    return PublicBrandingResponse.model_validate(branding)
 
 
 @router.get("", response_model=BrandingResponse, summary="Get platform branding")

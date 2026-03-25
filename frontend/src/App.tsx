@@ -5,6 +5,7 @@ import { TenantProvider } from '@/contexts/TenantContext'
 import { ModuleProvider } from '@/contexts/ModuleContext'
 import { FeatureFlagProvider } from '@/contexts/FeatureFlagContext'
 import { LocaleProvider } from '@/contexts/LocaleContext'
+import { PlatformBrandingProvider } from '@/contexts/PlatformBrandingContext'
 import { Spinner } from '@/components/ui'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Login, MfaVerify, PasswordResetRequest, PasswordResetComplete, VerifyEmail } from '@/pages/auth'
@@ -402,15 +403,17 @@ function App() {
     <ErrorBoundary level="app" name="root">
       <BrowserRouter>
         <LocaleProvider>
-          <AuthProvider>
-            <TenantProvider>
-              <ModuleProvider>
-                <FeatureFlagProvider>
-                  <AppRoutes />
-                </FeatureFlagProvider>
-              </ModuleProvider>
-            </TenantProvider>
-          </AuthProvider>
+          <PlatformBrandingProvider>
+            <AuthProvider>
+              <TenantProvider>
+                <ModuleProvider>
+                  <FeatureFlagProvider>
+                    <AppRoutes />
+                  </FeatureFlagProvider>
+                </ModuleProvider>
+              </TenantProvider>
+            </AuthProvider>
+          </PlatformBrandingProvider>
         </LocaleProvider>
       </BrowserRouter>
     </ErrorBoundary>

@@ -468,8 +468,9 @@ def create_app() -> FastAPI:
     app.include_router(i18n_router, prefix="/api/v2/i18n", tags=["v2-i18n"])
 
     # --- Branding module routers ---
-    from app.modules.branding.router import router as branding_router
+    from app.modules.branding.router import router as branding_router, public_router as branding_public_router
     app.include_router(branding_router, prefix="/api/v2/admin/branding", tags=["v2-admin-branding"])
+    app.include_router(branding_public_router, prefix="/api/v1/public/branding", tags=["public-branding"])
 
     # --- Asset tracking module routers ---
     from app.modules.assets.router import router as assets_router

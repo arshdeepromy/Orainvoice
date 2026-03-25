@@ -5,6 +5,7 @@ import { AlertBanner } from '@/components/ui'
 import { SignupForm } from './SignupForm'
 import { PaymentStep } from './PaymentStep'
 import { ConfirmationStep } from './ConfirmationStep'
+import { usePlatformBranding } from '@/contexts/PlatformBrandingContext'
 import type { SignupResponse, PublicPlan } from './signup-types'
 
 export type WizardStep = 'form' | 'payment' | 'done'
@@ -67,6 +68,7 @@ function StepIndicator({ currentStep, totalSteps }: StepIndicatorProps) {
 }
 
 export function SignupWizard() {
+  const { branding } = usePlatformBranding()
   const [step, setStep] = useState<WizardStep>('form')
   const [signupResult, setSignupResult] = useState<SignupResponse | null>(null)
   const [selectedPlan, setSelectedPlan] = useState<PublicPlan | null>(null)
@@ -120,6 +122,9 @@ export function SignupWizard() {
 
   return (
     <div className="mx-auto max-w-lg py-12 px-4">
+      {branding.logo_url && (
+        <img src={branding.logo_url} alt={branding.platform_name} className="mx-auto h-12 mb-4 object-contain" />
+      )}
       <StepIndicator currentStep={step} totalSteps={totalSteps} />
 
       {/* Step 1: Signup Form */}

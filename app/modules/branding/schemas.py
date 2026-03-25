@@ -40,6 +40,19 @@ class BrandingResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PublicBrandingResponse(BaseModel):
+    """Public-facing branding for login/signup/public pages."""
+    platform_name: str
+    logo_url: str | None = None
+    primary_colour: str
+    secondary_colour: str
+    support_email: str | None = None
+    terms_url: str | None = None
+    website_url: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class PoweredByConfig(BaseModel):
     """Subset of branding used in PDF/email footers."""
     platform_name: str
@@ -47,3 +60,16 @@ class PoweredByConfig(BaseModel):
     signup_url: str | None = None
     website_url: str | None = None
     show_powered_by: bool = True
+
+    class PublicBrandingResponse(BaseModel):
+        """Public-facing branding for login/signup/public pages."""
+        platform_name: str
+        logo_url: str | None = None
+        primary_colour: str
+        secondary_colour: str
+        support_email: str | None = None
+        terms_url: str | None = None
+        website_url: str | None = None
+
+        model_config = {"from_attributes": True}
+
