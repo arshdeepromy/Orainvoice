@@ -75,7 +75,7 @@ export default function StorageUsage() {
           <div className="rounded-lg border border-gray-200 bg-white p-4 mb-6">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm font-medium text-gray-700">
-                {formatBytes(data.used_bytes ?? 0)} of {data.quota_gb ?? 0} GB used
+                {data.used_gb != null ? `${data.used_gb.toFixed(2)} GB` : formatBytes(data.used_bytes ?? 0)} of {data.quota_gb ?? 0} GB used
               </p>
               <p className="text-sm text-gray-500">{data.usage_percent ?? 0}%</p>
             </div>
