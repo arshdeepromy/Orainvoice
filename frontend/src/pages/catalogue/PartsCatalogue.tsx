@@ -272,26 +272,27 @@ export default function PartsCatalogue() {
 
           <div className="grid grid-cols-2 gap-3">
             <Input label="Part No/Code" value={form.part_number} onChange={e => updateField('part_number', e.target.value)} placeholder="e.g. BRK-PAD-001" />
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">GST *</label>
-              <div className="flex gap-3 pt-1">
-                {(['inclusive', 'exclusive', 'exempt'] as const).map(mode => (
-                  <label key={mode} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                    <input type="radio" name="part_gst_mode" checked={form.gst_mode === mode}
-                      onChange={() => updateField('gst_mode', mode)} className="h-4 w-4 text-blue-600" />
-                    {mode === 'inclusive' ? 'GST Inc.' : mode === 'exclusive' ? 'GST Excl.' : 'GST Exempt'}
-                  </label>
-                ))}
-              </div>
+            <Input
+              label={`Price (${form.gst_mode === 'inclusive' ? 'inc-GST' : form.gst_mode === 'exempt' ? 'no GST' : 'ex-GST'}) *`}
+              type="number" value={form.default_price}
+              onChange={e => updateField('default_price', e.target.value)}
+              placeholder="e.g. 29.95"
+              disabled={!form.gst_mode}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">GST *</label>
+            <div className="inline-flex rounded-md border border-gray-300 overflow-hidden w-full">
+              {(['inclusive', 'exclusive', 'exempt'] as const).map((mode, i) => (
+                <button key={mode} type="button" onClick={() => updateField('gst_mode', mode)}
+                  className={`flex-1 py-2 text-sm font-medium transition-colors ${i > 0 ? 'border-l border-gray-300' : ''} ${
+                    form.gst_mode === mode ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+                  }`}>
+                  {mode === 'inclusive' ? 'GST Inclusive' : mode === 'exclusive' ? 'GST Exclusive' : 'GST Exempt'}
+                </button>
+              ))}
             </div>
           </div>
-          <Input
-            label={`Price (${form.gst_mode === 'inclusive' ? 'inc-GST' : form.gst_mode === 'exempt' ? 'no GST' : 'ex-GST'}) *`}
-            type="number" value={form.default_price}
-            onChange={e => updateField('default_price', e.target.value)}
-            placeholder="e.g. 29.95"
-            disabled={!form.gst_mode}
-          />
 
           <Input label="Part name *" value={form.name} onChange={e => updateField('name', e.target.value)} />
 
