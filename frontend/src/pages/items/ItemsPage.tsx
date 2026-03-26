@@ -108,7 +108,7 @@ export default function ItemsPage() {
       default_price: item.default_price,
       category: item.category || '',
       is_gst_exempt: item.is_gst_exempt,
-      gst_mode: item.is_gst_exempt ? 'exempt' : 'exclusive',
+      gst_mode: item.is_gst_exempt ? 'exempt' : (item as any).gst_inclusive ? 'inclusive' : 'exclusive',
       is_active: item.is_active,
     })
     setFormError('')
@@ -131,6 +131,7 @@ export default function ItemsPage() {
         name: form.name.trim(),
         default_price: form.default_price.trim(),
         is_gst_exempt: form.gst_mode === 'exempt',
+        gst_inclusive: form.gst_mode === 'inclusive',
         is_active: form.is_active,
       }
       if (form.description.trim()) body.description = form.description.trim()

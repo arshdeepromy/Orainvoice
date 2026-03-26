@@ -34,6 +34,9 @@ class ServiceCreateRequest(BaseModel):
     is_gst_exempt: bool = Field(
         False, description="True if GST does not apply to this service"
     )
+    gst_inclusive: bool = Field(
+        False, description="True if the price already includes GST"
+    )
     category: Literal["warrant", "service", "repair", "diagnostic"] = Field(
         ..., description="Service category"
     )
@@ -59,6 +62,9 @@ class ServiceUpdateRequest(BaseModel):
     is_gst_exempt: Optional[bool] = Field(
         None, description="True if GST does not apply"
     )
+    gst_inclusive: Optional[bool] = Field(
+        None, description="True if price already includes GST"
+    )
     category: Optional[Literal["warrant", "service", "repair", "diagnostic"]] = Field(
         None, description="Service category"
     )
@@ -83,6 +89,7 @@ class ServiceResponse(BaseModel):
     description: Optional[str] = Field(None, description="Service description")
     default_price: str = Field(..., description="Default price ex-GST")
     is_gst_exempt: bool = Field(False, description="GST exemption flag")
+    gst_inclusive: bool = Field(False, description="Price includes GST")
     category: str = Field(..., description="Service category")
     is_active: bool = Field(True, description="Active/inactive status")
     created_at: str = Field(..., description="ISO 8601 creation timestamp")
@@ -135,6 +142,9 @@ class ItemCreateRequest(BaseModel):
     is_gst_exempt: bool = Field(
         False, description="True if GST does not apply to this item"
     )
+    gst_inclusive: bool = Field(
+        False, description="True if the price already includes GST"
+    )
     category: Optional[str] = Field(
         None, max_length=100, description="Free-text category"
     )
@@ -160,6 +170,9 @@ class ItemUpdateRequest(BaseModel):
     is_gst_exempt: Optional[bool] = Field(
         None, description="True if GST does not apply"
     )
+    gst_inclusive: Optional[bool] = Field(
+        None, description="True if price already includes GST"
+    )
     category: Optional[str] = Field(
         None, max_length=100, description="Free-text category"
     )
@@ -179,6 +192,7 @@ class ItemResponse(BaseModel):
     description: Optional[str] = Field(None, description="Item description")
     default_price: str = Field(..., description="Default price ex-GST")
     is_gst_exempt: bool = Field(False, description="GST exemption flag")
+    gst_inclusive: bool = Field(False, description="Price includes GST")
     category: Optional[str] = Field(None, description="Free-text category")
     is_active: bool = Field(True, description="Active/inactive status")
     created_at: str = Field(..., description="ISO 8601 creation timestamp")
@@ -233,6 +247,8 @@ class PartCreateRequest(BaseModel):
     default_price: str = Field(
         ..., description="Default price as decimal string (e.g. '29.95')"
     )
+    is_gst_exempt: bool = Field(False, description="True if GST does not apply")
+    gst_inclusive: bool = Field(False, description="True if price already includes GST")
     supplier: Optional[str] = Field(
         None, max_length=255, description="Supplier name (legacy, optional)"
     )
@@ -264,6 +280,8 @@ class PartResponse(BaseModel):
     supplier_id: Optional[str] = Field(None, description="Supplier UUID")
     supplier_name: Optional[str] = Field(None, description="Supplier name")
     default_price: str = Field(..., description="Default price")
+    is_gst_exempt: bool = Field(False, description="GST exemption flag")
+    gst_inclusive: bool = Field(False, description="Price includes GST")
     supplier: Optional[str] = Field(None, description="Supplier name (legacy)")
     is_active: bool = Field(True, description="Active/inactive status")
     tyre_width: Optional[str] = Field(None)

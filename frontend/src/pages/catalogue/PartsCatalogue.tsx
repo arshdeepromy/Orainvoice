@@ -128,7 +128,7 @@ export default function PartsCatalogue() {
       brand: part.brand || '',
       supplier_id: part.supplier_id || '',
       default_price: part.default_price,
-      gst_mode: (part as any).is_gst_exempt ? 'exempt' : 'exclusive',
+      gst_mode: (part as any).is_gst_exempt ? 'exempt' : (part as any).gst_inclusive ? 'inclusive' : 'exclusive',
       min_stock_threshold: String((part as any).min_stock_threshold ?? 0),
       reorder_quantity: String((part as any).reorder_quantity ?? 0),
       is_active: part.is_active,
@@ -155,6 +155,7 @@ export default function PartsCatalogue() {
         name: form.name.trim(),
         default_price: form.default_price.trim(),
         is_gst_exempt: form.gst_mode === 'exempt',
+        gst_inclusive: form.gst_mode === 'inclusive',
         is_active: form.is_active,
         part_type: form.part_type,
       }

@@ -48,6 +48,9 @@ class ItemsCatalogue(Base):
     is_gst_exempt: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
+    gst_inclusive: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="true"
@@ -115,6 +118,8 @@ class PartsCatalogue(Base):
         UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=True
     )
     default_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    is_gst_exempt: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    gst_inclusive: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     current_stock: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )

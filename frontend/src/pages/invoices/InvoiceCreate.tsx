@@ -69,6 +69,7 @@ interface CatalogueItem {
   description?: string
   default_price: number
   gst_applicable: boolean
+  gst_inclusive?: boolean
   category?: string
   sku?: string
 }
@@ -95,6 +96,7 @@ interface LineItem {
   tax_id?: string
   tax_rate: number
   amount: number
+  gst_inclusive?: boolean
 }
 
 interface FormErrors {
@@ -410,14 +412,20 @@ function ItemTableRow({
   }
 
   const handleItemSelect = (catalogueItem: CatalogueItem) => {
+    // If price is GST inclusive: tax_rate=0 (GST already in price, no additional GST)
+    // If GST exempt: tax_rate=0
+    // Otherwise: tax_rate=15
+    const taxRate = (catalogueItem.gst_inclusive || !catalogueItem.gst_applicable) ? 0 : 15
+    const taxId = taxRate === 0 ? 'gst_0' : 'gst_15'
     update({
       item_id: catalogueItem.id,
       description: catalogueItem.name,
       line_description: catalogueItem.description || '',
       original_description: catalogueItem.description || '',
       rate: catalogueItem.default_price,
-      tax_rate: catalogueItem.gst_applicable ? 15 : 0,
-      tax_id: catalogueItem.gst_applicable ? 'gst_15' : 'gst_0',
+      tax_rate: taxRate,
+      tax_id: taxId,
+      gst_inclusive: catalogueItem.gst_inclusive,
     })
     setShowItemDropdown(false)
     setItemSearch('')
@@ -495,6 +503,12 @@ function ItemTableRow({
           />
           {item.item_id && (
             <div className="mt-1">
+              {item.gst_inclusive && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 mb-1">
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  Price is GST inclusive — GST not added again
+                </span>
+              )}
               <textarea
                 value={item.line_description || ''}
                 onChange={(e) => { update({ line_description: e.target.value }); setDescUpdated(false) }}
@@ -857,6 +871,7 @@ export default function InvoiceCreate() {
             description: item.description ?? undefined,
             default_price: typeof item.default_price === 'string' ? parseFloat(item.default_price) : (item.default_price ?? 0),
             gst_applicable: item.gst_applicable ?? (item.is_gst_exempt === false),
+            gst_inclusive: item.gst_inclusive ?? false,
             category: item.category ?? undefined,
             sku: item.sku ?? undefined,
           })))

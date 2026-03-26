@@ -26,6 +26,7 @@ def _item_to_dict(item: ItemsCatalogue) -> dict:
         "description": item.description,
         "default_price": str(item.default_price),
         "is_gst_exempt": item.is_gst_exempt,
+        "gst_inclusive": getattr(item, 'gst_inclusive', False),
         "category": item.category,
         "is_active": item.is_active,
         "created_at": item.created_at.isoformat() if item.created_at else None,
@@ -95,6 +96,7 @@ async def create_item(
     category: str | None = None,
     description: str | None = None,
     is_gst_exempt: bool = False,
+    gst_inclusive: bool = False,
     is_active: bool = True,
     ip_address: str | None = None,
 ) -> dict:
@@ -118,6 +120,7 @@ async def create_item(
         description=description,
         default_price=price,
         is_gst_exempt=is_gst_exempt,
+        gst_inclusive=gst_inclusive,
         category=category or "general",
         is_active=is_active,
     )
@@ -138,6 +141,7 @@ async def create_item(
             "default_price": str(price),
             "category": category,
             "is_gst_exempt": is_gst_exempt,
+            "gst_inclusive": gst_inclusive,
             "is_active": is_active,
         },
         ip_address=ip_address,
@@ -171,7 +175,7 @@ async def update_item(
     if item is None:
         raise ValueError("Item not found")
 
-    allowed_fields = {"name", "description", "default_price", "is_gst_exempt", "category", "is_active"}
+    allowed_fields = {"name", "description", "default_price", "is_gst_exempt", "gst_inclusive", "category", "is_active"}
     before_value = {}
     updated_fields = []
 
@@ -277,6 +281,8 @@ def _part_to_dict(part: PartsCatalogue) -> dict:
         "supplier_id": str(sup_id) if sup_id else None,
         "supplier_name": sup_name or getattr(part, "_supplier_name", None),
         "default_price": str(part.default_price),
+        "is_gst_exempt": getattr(part, 'is_gst_exempt', False),
+        "gst_inclusive": getattr(part, 'gst_inclusive', False),
         "supplier": getattr(part, "_supplier_name", None) or sup_name,
         "is_active": part.is_active,
         "tyre_width": getattr(part, "tyre_width", None),
@@ -344,6 +350,8 @@ async def create_part(
     brand: str | None = None,
     supplier_id: str | None = None,
     supplier: str | None = None,
+    is_gst_exempt: bool = False,
+    gst_inclusive: bool = False,
     is_active: bool = True,
     min_stock_threshold: int = 0,
     reorder_quantity: int = 0,
@@ -376,6 +384,8 @@ async def create_part(
         brand=brand,
         supplier_id=uuid.UUID(supplier_id) if supplier_id else None,
         default_price=price,
+        is_gst_exempt=is_gst_exempt,
+        gst_inclusive=gst_inclusive,
         min_stock_threshold=min_stock_threshold,
         reorder_quantity=reorder_quantity,
         is_active=is_active,

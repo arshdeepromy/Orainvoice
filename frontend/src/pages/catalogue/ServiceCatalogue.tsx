@@ -107,7 +107,7 @@ export default function ServiceCatalogue() {
       description: svc.description || '',
       default_price: svc.default_price,
       is_gst_exempt: svc.is_gst_exempt,
-      gst_mode: svc.is_gst_exempt ? 'exempt' : 'exclusive',
+      gst_mode: svc.is_gst_exempt ? 'exempt' : (svc as any).gst_inclusive ? 'inclusive' : 'exclusive',
       category: svc.category,
       is_active: svc.is_active,
     })
@@ -128,6 +128,7 @@ export default function ServiceCatalogue() {
         name: form.name.trim(),
         default_price: form.default_price.trim(),
         is_gst_exempt: form.gst_mode === 'exempt',
+        gst_inclusive: form.gst_mode === 'inclusive',
         category: form.category,
         is_active: form.is_active,
       }
