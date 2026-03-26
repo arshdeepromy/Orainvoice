@@ -267,8 +267,14 @@ async def delete_item_endpoint(
     item = result.scalar_one_or_none()
     if not item:
         return JSONResponse(status_code=404, content={"detail": "Item not found"})
-    await db.delete(item)
-    await db.flush()
+    try:
+        await db.delete(item)
+        await db.flush()
+    except Exception as exc:
+        err_str = str(exc)
+        if "ForeignKeyViolationError" in err_str or "foreign key" in err_str.lower():
+            return JSONResponse(status_code=409, content={"detail": "Cannot delete: this item is referenced by existing invoices or bookings. Deactivate it instead."})
+        raise
     return {"message": "Item deleted"}
 
 
@@ -302,8 +308,14 @@ async def delete_service_endpoint(
     item = result.scalar_one_or_none()
     if not item:
         return JSONResponse(status_code=404, content={"detail": "Service not found"})
-    await db.delete(item)
-    await db.flush()
+    try:
+        await db.delete(item)
+        await db.flush()
+    except Exception as exc:
+        err_str = str(exc)
+        if "ForeignKeyViolationError" in err_str or "foreign key" in err_str.lower():
+            return JSONResponse(status_code=409, content={"detail": "Cannot delete: this service is referenced by existing bookings or invoices. Deactivate it instead."})
+        raise
     return {"message": "Service deleted"}
 
 
@@ -333,8 +345,14 @@ async def delete_part_endpoint(
     part = result.scalar_one_or_none()
     if not part:
         return JSONResponse(status_code=404, content={"detail": "Part not found"})
-    await db.delete(part)
-    await db.flush()
+    try:
+        await db.delete(part)
+        await db.flush()
+    except Exception as exc:
+        err_str = str(exc)
+        if "ForeignKeyViolationError" in err_str or "foreign key" in err_str.lower():
+            return JSONResponse(status_code=409, content={"detail": "Cannot delete: this part is referenced by existing purchase orders or invoices. Deactivate it instead."})
+        raise
     return {"message": "Part deleted"}
 
 

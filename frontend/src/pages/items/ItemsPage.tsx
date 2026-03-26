@@ -175,8 +175,10 @@ export default function ItemsPage() {
       setDeleteId(null)
       addToast('success', 'Item deleted.')
       fetchItems()
-    } catch {
-      addToast('error', 'Failed to delete item.')
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || 'Failed to delete item.'
+      addToast('error', msg)
+      setDeleteId(null)
     } finally { setDeleting(false) }
   }
 

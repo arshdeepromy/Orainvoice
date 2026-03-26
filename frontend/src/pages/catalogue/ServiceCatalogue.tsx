@@ -168,8 +168,10 @@ export default function ServiceCatalogue() {
       await apiClient.delete(`/catalogue/services/${deleteId}`)
       setDeleteId(null)
       fetchServices()
-    } catch {
-      setError('Failed to delete service.')
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || 'Failed to delete service.'
+      setError(msg)
+      setDeleteId(null)
     } finally { setDeleting(false) }
   }
 

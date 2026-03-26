@@ -199,8 +199,11 @@ export default function PartsCatalogue() {
       await apiClient.delete(`/catalogue/parts/${deleteId}`)
       setDeleteId(null)
       fetchParts()
-    } catch { setError('Failed to delete part.') }
-    finally { setDeleting(false) }
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || 'Failed to delete part.'
+      setError(msg)
+      setDeleteId(null)
+    } finally { setDeleting(false) }
   }
 
   const handleCreateCategory = async () => {
