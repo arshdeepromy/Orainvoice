@@ -137,6 +137,22 @@ function formatNZD(amount: number): string {
   }).format(amount)
 }
 
+/** Safely extract a human-readable string from any API error shape.
+ *  Handles: string, Pydantic array [{msg, loc, ...}], or unknown objects. */
+function extractErrorMsg(detail: unknown, fallback: string): string {
+  if (!detail) return fallback
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    const first = detail[0]
+    if (first && typeof first === 'object' && 'msg' in first) {
+      const loc = Array.isArray((first as any).loc) ? (first as any).loc.join(' → ') : ''
+      return loc ? `${loc}: ${(first as any).msg}` : String((first as any).msg)
+    }
+    return fallback
+  }
+  return fallback
+}
+
 function formatDate(date: Date): string {
   return date.toISOString().split('T')[0]
 }
@@ -1042,7 +1058,7 @@ export default function InvoiceCreate() {
         navigate(newId ? `/invoices/${newId}` : '/invoices')
       }
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to save draft. Please try again.'
+      const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to save draft. Please try again.')
       setErrors({ submit: msg })
     } finally {
       setSaving(false)
@@ -1062,7 +1078,7 @@ export default function InvoiceCreate() {
         navigate(newId ? `/invoices/${newId}` : '/invoices')
       }
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to send invoice. Please try again.'
+      const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to send invoice. Please try again.')
       setErrors({ submit: msg })
     } finally {
       setSaving(false)
