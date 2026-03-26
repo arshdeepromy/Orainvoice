@@ -45,7 +45,7 @@ from app.modules.catalogue.service import (
     list_parts,
     update_item,
 )
-from app.modules.catalogue.models import PartsCatalogue
+from app.modules.catalogue.models import ItemsCatalogue, PartsCatalogue
 
 router = APIRouter()
 
@@ -244,7 +244,7 @@ async def update_item_endpoint(
         403: {"description": "Org_Admin role required"},
         404: {"description": "Item not found"},
     },
-    summary="Soft-delete an items catalogue entry",
+    summary="Hard-delete an items catalogue entry",
     dependencies=[require_role("org_admin")],
 )
 async def delete_item_endpoint(
@@ -252,43 +252,24 @@ async def delete_item_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Soft-delete an item by setting is_active to false.
-
-    Requirements: 2.4
-    """
-    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    """Permanently delete an item from the catalogue."""
+    from sqlalchemy import select as _sel
+    org_uuid, _, _ = _extract_org_context(request)
     if not org_uuid:
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "Organisation context required"},
-        )
-
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
     try:
         item_uuid = uuid.UUID(item_id)
     except (ValueError, TypeError):
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Invalid item ID format"},
-        )
-
-    try:
-        item_data = await update_item(
-            db,
-            org_id=org_uuid,
-            user_id=user_uuid or uuid.uuid4(),
-            item_id=item_uuid,
-            ip_address=ip_address,
-            is_active=False,
-        )
-    except ValueError as exc:
-        error_msg = str(exc)
-        status = 404 if "not found" in error_msg.lower() else 400
-        return JSONResponse(
-            status_code=status,
-            content={"detail": error_msg},
-        )
-
-    return {"message": "Item deactivated", "item": ItemResponse(**item_data).model_dump()}
+        return JSONResponse(status_code=400, content={"detail": "Invalid item ID format"})
+    result = await db.execute(
+        _sel(ItemsCatalogue).where(ItemsCatalogue.id == item_uuid, ItemsCatalogue.org_id == org_uuid)
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        return JSONResponse(status_code=404, content={"detail": "Item not found"})
+    await db.delete(item)
+    await db.flush()
+    return {"message": "Item deleted"}
 
 
 # ===========================================================================
@@ -298,7 +279,7 @@ async def delete_item_endpoint(
 @router.delete(
     "/services/{service_id}",
     status_code=200,
-    summary="Soft-delete a service catalogue entry",
+    summary="Hard-delete a service catalogue entry",
     dependencies=[require_role("org_admin")],
 )
 async def delete_service_endpoint(
@@ -306,26 +287,30 @@ async def delete_service_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Soft-delete a service by setting is_active to false."""
-    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    """Permanently delete a service from the catalogue."""
+    from sqlalchemy import select as _sel
+    org_uuid, _, _ = _extract_org_context(request)
     if not org_uuid:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
     try:
         item_uuid = uuid.UUID(service_id)
     except (ValueError, TypeError):
         return JSONResponse(status_code=400, content={"detail": "Invalid service ID format"})
-    try:
-        item_data = await update_item(db, org_id=org_uuid, user_id=user_uuid or uuid.uuid4(), item_id=item_uuid, ip_address=ip_address, is_active=False)
-    except ValueError as exc:
-        error_msg = str(exc)
-        return JSONResponse(status_code=404 if "not found" in error_msg.lower() else 400, content={"detail": error_msg})
-    return {"message": "Service deactivated", "service": ServiceResponse(**item_data).model_dump()}
+    result = await db.execute(
+        _sel(ItemsCatalogue).where(ItemsCatalogue.id == item_uuid, ItemsCatalogue.org_id == org_uuid)
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        return JSONResponse(status_code=404, content={"detail": "Service not found"})
+    await db.delete(item)
+    await db.flush()
+    return {"message": "Service deleted"}
 
 
 @router.delete(
     "/parts/{part_id}",
     status_code=200,
-    summary="Soft-delete a parts catalogue entry",
+    summary="Hard-delete a parts catalogue entry",
     dependencies=[require_role("org_admin")],
 )
 async def delete_part_endpoint(
@@ -333,9 +318,8 @@ async def delete_part_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Soft-delete a part by setting is_active to false."""
+    """Permanently delete a part from the catalogue."""
     from sqlalchemy import select as _sel
-    from sqlalchemy.orm import selectinload
     org_uuid, _, _ = _extract_org_context(request)
     if not org_uuid:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
@@ -344,16 +328,14 @@ async def delete_part_endpoint(
     except (ValueError, TypeError):
         return JSONResponse(status_code=400, content={"detail": "Invalid part ID format"})
     result = await db.execute(
-        _sel(PartsCatalogue)
-        .where(PartsCatalogue.id == part_uuid, PartsCatalogue.org_id == org_uuid)
-        .options(selectinload(PartsCatalogue.category), selectinload(PartsCatalogue.supplier))
+        _sel(PartsCatalogue).where(PartsCatalogue.id == part_uuid, PartsCatalogue.org_id == org_uuid)
     )
     part = result.scalar_one_or_none()
     if not part:
         return JSONResponse(status_code=404, content={"detail": "Part not found"})
-    part.is_active = False
+    await db.delete(part)
     await db.flush()
-    return {"message": "Part deactivated", "part": _part_to_dict(part)}
+    return {"message": "Part deleted"}
 
 
 # ===========================================================================

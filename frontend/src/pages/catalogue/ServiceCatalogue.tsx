@@ -324,7 +324,7 @@ export default function ServiceCatalogue() {
 
       {/* Delete confirm */}
       <Modal open={!!deleteId} onClose={() => setDeleteId(null)} title="Delete Service">
-        <p className="text-sm text-gray-600 mb-4">This will deactivate the service and hide it from invoice creation. Historical data is preserved.</p>
+        <p className="text-sm text-gray-600 mb-4">This will permanently delete the service. This cannot be undone.</p>
         <div className="flex justify-end gap-2">
           <Button variant="secondary" size="sm" onClick={() => setDeleteId(null)}>Cancel</Button>
           <Button size="sm" variant="danger" onClick={handleDelete} loading={deleting}>Delete</Button>
