@@ -1035,7 +1035,9 @@ export default function InvoiceCreate() {
     is_recurring: makeRecurring,
     line_items: lineItems.filter(item => item.description.trim()).map(item => ({
       catalogue_item_id: item.item_id || undefined,
-      description: item.line_description ? `${item.description}\n${item.line_description}` : item.description,
+      description: (item.line_description
+        ? `${item.description}\n${item.line_description}`
+        : item.description).slice(0, 2000),
       quantity: item.quantity,
       rate: item.rate,
       tax_id: item.tax_id,

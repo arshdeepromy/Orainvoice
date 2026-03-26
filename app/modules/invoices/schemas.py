@@ -38,7 +38,7 @@ class LineItemCreate(BaseModel):
     model_config = {"extra": "ignore"}  # Ignore extra fields from frontend
 
     item_type: ItemType = ItemType.service  # Default to service
-    description: str = Field(..., min_length=1, max_length=500)
+    description: str = Field(..., min_length=1, max_length=2000)
     catalogue_item_id: uuid.UUID | None = None
     part_number: str | None = None
     quantity: Decimal = Field(default=Decimal("1"), gt=0)
@@ -266,7 +266,7 @@ class AddLineItemRequest(BaseModel):
     """Request body for adding a line item to an existing invoice."""
 
     item_type: ItemType
-    description: str = Field(default="", max_length=500)
+    description: str = Field(default="", max_length=2000)
     catalogue_item_id: uuid.UUID | None = None
     labour_rate_id: uuid.UUID | None = None
     part_number: str | None = None
@@ -409,7 +409,7 @@ class UpdateInvoiceResponse(BaseModel):
 class CreditNoteItemCreate(BaseModel):
     """A single item being credited on the credit note."""
 
-    description: str = Field(..., min_length=1, max_length=500)
+    description: str = Field(..., min_length=1, max_length=2000)
     amount: Decimal = Field(..., gt=0)
 
 
@@ -561,7 +561,7 @@ class RecurringLineItem(BaseModel):
     """Line item template stored in a recurring schedule."""
 
     item_type: ItemType
-    description: str = Field(..., max_length=500)
+    description: str = Field(..., max_length=2000)
     quantity: Decimal = Field(default=Decimal("1"), ge=0)
     unit_price: Decimal = Field(..., ge=0)
     hours: Decimal | None = None

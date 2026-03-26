@@ -761,7 +761,7 @@ export default function QuoteCreate() {
     adjustment: adjustment,
     line_items: lineItems.filter(item => item.description.trim()).map((item, i) => ({
       item_type: 'service',
-      description: item.line_description ? `${item.description}\n${item.line_description}` : item.description,
+      description: (item.line_description ? `${item.description}\n${item.line_description}` : item.description).slice(0, 2000),
       quantity: item.quantity,
       unit_price: item.rate,
       is_gst_exempt: item.tax_rate === 0,

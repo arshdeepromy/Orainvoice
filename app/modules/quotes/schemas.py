@@ -34,7 +34,7 @@ class QuoteLineItemCreate(BaseModel):
     """Schema for creating a single quote line item."""
 
     item_type: QuoteItemType
-    description: str = Field(..., min_length=1, max_length=500)
+    description: str = Field(..., min_length=1, max_length=2000)
     quantity: Decimal = Field(default=Decimal("1"), gt=0)
     unit_price: Decimal = Field(..., ge=0)
     hours: Decimal | None = Field(default=None, ge=0)
