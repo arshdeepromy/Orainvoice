@@ -16,7 +16,6 @@ from app.modules.admin.models import Organisation, SubscriptionPlan
 from app.modules.customers.models import Customer, FleetAccount
 from app.modules.invoices.models import CreditNote, Invoice, LineItem
 from app.modules.payments.models import Payment
-from app.modules.storage.service import calculate_org_storage
 
 
 # ---------------------------------------------------------------------------
@@ -704,17 +703,26 @@ async def get_storage_usage(
     db: AsyncSession,
     org_id: uuid.UUID,
 ) -> dict:
-    """Storage usage for the organisation."""
-    storage_result = await calculate_org_storage(db, org_id)
-    used_bytes = storage_result["total_bytes"]
-    breakdown = storage_result["breakdown"]
+    """Storage usage for the organisation.
 
-    # Get quota
+    Uses storage_used_bytes (actual file uploads tracked by StorageManager)
+    and storage_quota_gb (plan quota) from the organisations table.
+    This reflects real file storage (receipts, attachments, logos) rather
+    than raw DB text field sizes.
+    """
     result = await db.execute(
-        select(Organisation.storage_quota_gb).where(Organisation.id == org_id)
+        select(
+            Organisation.storage_used_bytes,
+            Organisation.storage_quota_gb,
+        ).where(Organisation.id == org_id)
     )
-    quota_gb = result.scalar() or 1
-    quota_bytes = quota_gb * 1_073_741_824  # 1 GB in bytes
+    row = result.one_or_none()
+    if row is None:
+        return {"used_bytes": 0, "used_gb": 0.0, "quota_gb": 100, "usage_percent": 0.0, "breakdown": []}
+
+    used_bytes = row.storage_used_bytes or 0
+    quota_gb = row.storage_quota_gb or 100
+    quota_bytes = quota_gb * 1_073_741_824
     percentage = (used_bytes / quota_bytes * 100) if quota_bytes > 0 else 0.0
     used_gb = round(used_bytes / 1_073_741_824, 4)
 
@@ -723,7 +731,7 @@ async def get_storage_usage(
         "used_gb": used_gb,
         "quota_gb": quota_gb,
         "usage_percent": round(percentage, 2),
-        "breakdown": breakdown,
+        "breakdown": [],
     }
 
 
