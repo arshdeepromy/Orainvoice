@@ -26,6 +26,7 @@ interface ServiceForm {
   description: string
   default_price: string
   is_gst_exempt: boolean
+  gst_mode: 'inclusive' | 'exclusive' | 'exempt' | ''
   category: ServiceCategory
   is_active: boolean
 }
@@ -35,6 +36,7 @@ const EMPTY_FORM: ServiceForm = {
   description: '',
   default_price: '',
   is_gst_exempt: false,
+  gst_mode: '',
   category: 'service',
   is_active: true,
 }
@@ -105,6 +107,7 @@ export default function ServiceCatalogue() {
       description: svc.description || '',
       default_price: svc.default_price,
       is_gst_exempt: svc.is_gst_exempt,
+      gst_mode: svc.is_gst_exempt ? 'exempt' : 'exclusive',
       category: svc.category,
       is_active: svc.is_active,
     })
@@ -114,6 +117,7 @@ export default function ServiceCatalogue() {
 
   const handleSave = async () => {
     if (!form.name.trim()) { setFormError('Service name is required.'); return }
+    if (!form.gst_mode) { setFormError('Please select a GST option before entering the price.'); return }
     if (!form.default_price.trim() || isNaN(Number(form.default_price))) {
       setFormError('Valid default price is required.'); return
     }
@@ -123,7 +127,7 @@ export default function ServiceCatalogue() {
       const body: Record<string, unknown> = {
         name: form.name.trim(),
         default_price: form.default_price.trim(),
-        is_gst_exempt: form.is_gst_exempt,
+        is_gst_exempt: form.gst_mode === 'exempt',
         category: form.category,
         is_active: form.is_active,
       }
@@ -251,13 +255,35 @@ export default function ServiceCatalogue() {
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                GST *
+              </label>
+              <div className="flex gap-3 pt-1">
+                {(['inclusive', 'exclusive', 'exempt'] as const).map(mode => (
+                  <label key={mode} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="svc_gst_mode"
+                      checked={form.gst_mode === mode}
+                      onChange={() => updateField('gst_mode', mode)}
+                      className="h-4 w-4 text-blue-600"
+                    />
+                    {mode === 'inclusive' ? 'GST Inc.' : mode === 'exclusive' ? 'GST Excl.' : 'GST Exempt'}
+                  </label>
+                ))}
+              </div>
+            </div>
             <Input
-              label="Default price (ex-GST) *"
+              label={`Default price (${form.gst_mode === 'inclusive' ? 'inc-GST' : form.gst_mode === 'exempt' ? 'no GST' : 'ex-GST'}) *`}
               type="number"
               value={form.default_price}
               onChange={(e) => updateField('default_price', e.target.value)}
               placeholder="e.g. 85.00"
+              disabled={!form.gst_mode}
             />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
             <Select
               label="Category"
               options={CATEGORY_OPTIONS}
@@ -266,15 +292,6 @@ export default function ServiceCatalogue() {
             />
           </div>
           <div className="flex gap-6">
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input
-                type="checkbox"
-                checked={form.is_gst_exempt}
-                onChange={(e) => updateField('is_gst_exempt', e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              GST exempt
-            </label>
             <label className="flex items-center gap-2 text-sm text-gray-700">
               <input
                 type="checkbox"

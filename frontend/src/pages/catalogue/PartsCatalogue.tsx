@@ -34,6 +34,7 @@ interface PartForm {
   brand: string
   supplier_id: string
   default_price: string
+  gst_mode: 'inclusive' | 'exclusive' | 'exempt' | ''
   min_stock_threshold: string
   reorder_quantity: string
   is_active: boolean
@@ -50,7 +51,7 @@ interface Supplier { id: string; name: string }
 const EMPTY_FORM: PartForm = {
   name: '', part_number: '', description: '', part_type: 'part',
   category_id: '', category_name: '', brand: '', supplier_id: '',
-  default_price: '', min_stock_threshold: '0', reorder_quantity: '0', is_active: true,
+  default_price: '', gst_mode: '', min_stock_threshold: '0', reorder_quantity: '0', is_active: true,
   tyre_width: '', tyre_profile: '', tyre_rim_dia: '',
   tyre_load_index: '', tyre_speed_index: '',
 }
@@ -127,6 +128,7 @@ export default function PartsCatalogue() {
       brand: part.brand || '',
       supplier_id: part.supplier_id || '',
       default_price: part.default_price,
+      gst_mode: (part as any).is_gst_exempt ? 'exempt' : 'exclusive',
       min_stock_threshold: String((part as any).min_stock_threshold ?? 0),
       reorder_quantity: String((part as any).reorder_quantity ?? 0),
       is_active: part.is_active,
@@ -143,6 +145,7 @@ export default function PartsCatalogue() {
 
   const handleSave = async () => {
     if (!form.name.trim()) { setFormError('Part name is required.'); return }
+    if (!form.gst_mode) { setFormError('Please select a GST option before entering the price.'); return }
     if (!form.default_price.trim() || isNaN(Number(form.default_price))) {
       setFormError('Valid price is required.'); return
     }
@@ -151,6 +154,7 @@ export default function PartsCatalogue() {
       const body: Record<string, unknown> = {
         name: form.name.trim(),
         default_price: form.default_price.trim(),
+        is_gst_exempt: form.gst_mode === 'exempt',
         is_active: form.is_active,
         part_type: form.part_type,
       }
@@ -268,8 +272,26 @@ export default function PartsCatalogue() {
 
           <div className="grid grid-cols-2 gap-3">
             <Input label="Part No/Code" value={form.part_number} onChange={e => updateField('part_number', e.target.value)} placeholder="e.g. BRK-PAD-001" />
-            <Input label="Price *" type="number" value={form.default_price} onChange={e => updateField('default_price', e.target.value)} placeholder="e.g. 29.95" />
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">GST *</label>
+              <div className="flex gap-3 pt-1">
+                {(['inclusive', 'exclusive', 'exempt'] as const).map(mode => (
+                  <label key={mode} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                    <input type="radio" name="part_gst_mode" checked={form.gst_mode === mode}
+                      onChange={() => updateField('gst_mode', mode)} className="h-4 w-4 text-blue-600" />
+                    {mode === 'inclusive' ? 'GST Inc.' : mode === 'exclusive' ? 'GST Excl.' : 'GST Exempt'}
+                  </label>
+                ))}
+              </div>
+            </div>
           </div>
+          <Input
+            label={`Price (${form.gst_mode === 'inclusive' ? 'inc-GST' : form.gst_mode === 'exempt' ? 'no GST' : 'ex-GST'}) *`}
+            type="number" value={form.default_price}
+            onChange={e => updateField('default_price', e.target.value)}
+            placeholder="e.g. 29.95"
+            disabled={!form.gst_mode}
+          />
 
           <Input label="Part name *" value={form.name} onChange={e => updateField('name', e.target.value)} />
 

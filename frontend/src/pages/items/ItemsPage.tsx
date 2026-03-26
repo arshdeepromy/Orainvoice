@@ -24,6 +24,7 @@ interface ItemForm {
   default_price: string
   category: string
   is_gst_exempt: boolean
+  gst_mode: 'inclusive' | 'exclusive' | 'exempt' | ''
   is_active: boolean
 }
 
@@ -33,6 +34,7 @@ const EMPTY_FORM: ItemForm = {
   default_price: '',
   category: '',
   is_gst_exempt: false,
+  gst_mode: '',
   is_active: true,
 }
 
@@ -106,6 +108,7 @@ export default function ItemsPage() {
       default_price: item.default_price,
       category: item.category || '',
       is_gst_exempt: item.is_gst_exempt,
+      gst_mode: item.is_gst_exempt ? 'exempt' : 'exclusive',
       is_active: item.is_active,
     })
     setFormError('')
@@ -114,6 +117,7 @@ export default function ItemsPage() {
 
   const handleSave = async () => {
     if (!form.name.trim()) { setFormError('Item name is required.'); return }
+    if (!form.gst_mode) { setFormError('Please select a GST option before entering the price.'); return }
     if (!form.default_price.trim() || isNaN(Number(form.default_price))) {
       setFormError('Valid default price is required.'); return
     }
@@ -126,7 +130,7 @@ export default function ItemsPage() {
       const body: Record<string, unknown> = {
         name: form.name.trim(),
         default_price: form.default_price.trim(),
-        is_gst_exempt: form.is_gst_exempt,
+        is_gst_exempt: form.gst_mode === 'exempt',
         is_active: form.is_active,
       }
       if (form.description.trim()) body.description = form.description.trim()
@@ -293,41 +297,37 @@ export default function ItemsPage() {
               placeholder="Optional item description"
             />
           </div>
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-gray-700">GST *</label>
+            <div className="flex gap-4">
+              {(['inclusive', 'exclusive', 'exempt'] as const).map(mode => (
+                <label key={mode} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                  <input type="radio" name="item_gst_mode" checked={form.gst_mode === mode}
+                    onChange={() => updateField('gst_mode', mode)} className="h-4 w-4 text-blue-600" />
+                  {mode === 'inclusive' ? 'GST Inc.' : mode === 'exclusive' ? 'GST Excl.' : 'GST Exempt'}
+                </label>
+              ))}
+            </div>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <Input
-              label="Default price (ex-GST) *"
-              type="number"
-              min="0"
-              step="0.01"
+              label={`Default price (${form.gst_mode === 'inclusive' ? 'inc-GST' : form.gst_mode === 'exempt' ? 'no GST' : 'ex-GST'}) *`}
+              type="number" min="0" step="0.01"
               value={form.default_price}
               onChange={(e) => updateField('default_price', e.target.value)}
               placeholder="e.g. 85.00"
+              disabled={!form.gst_mode}
             />
-            <Input
-              label="Category"
-              value={form.category}
+            <Input label="Category" value={form.category}
               onChange={(e) => updateField('category', e.target.value)}
-              placeholder="e.g. Plumbing, Electrical"
-            />
+              placeholder="e.g. Plumbing, Electrical" />
           </div>
           <div className="flex gap-6">
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input
-                type="checkbox"
-                checked={form.is_gst_exempt}
-                onChange={(e) => updateField('is_gst_exempt', e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              GST exempt
-            </label>
             {editingId && (
               <label className="flex items-center gap-2 text-sm text-gray-700">
-                <input
-                  type="checkbox"
-                  checked={form.is_active}
+                <input type="checkbox" checked={form.is_active}
                   onChange={(e) => updateField('is_active', e.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
+                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
                 Active
               </label>
             )}
