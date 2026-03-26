@@ -158,7 +158,7 @@ class QuoteLineItem(Base):
         UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False
     )
     item_type: Mapped[str] = mapped_column(String(10), nullable=False)
-    description: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[str] = mapped_column(String(2000), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(
         Numeric(10, 3), nullable=False, server_default="1"
     )

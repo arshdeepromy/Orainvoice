@@ -285,7 +285,7 @@ class LineItem(Base):
         UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False
     )
     item_type: Mapped[str] = mapped_column(String(10), nullable=False)
-    description: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[str] = mapped_column(String(2000), nullable=False)
     catalogue_item_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
