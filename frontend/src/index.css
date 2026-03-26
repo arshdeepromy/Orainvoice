@@ -13,9 +13,15 @@
 }
 
 /* OrgLayout and AdminLayout set their own `h-screen overflow-hidden`
-   to prevent double-scroll (ISSUE-051).  No height/overflow constraints
-   needed on html/body/#root — guest pages (signup, login) need native
-   document scrolling. */
+   to prevent double-scroll (ISSUE-051).
+   html/body/#root are also constrained so the browser never shows its
+   own document scrollbar. Guest pages (signup, login) get their own
+   overflow-y:auto wrapper in GuestOnly (App.tsx) so they can scroll
+   within the #root bounds. */
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
 
 /* Global form element styling */
 @layer base {

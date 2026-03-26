@@ -163,7 +163,11 @@ function GuestOnly() {
   if (isAuthenticated) {
     return <Navigate to={isGlobalAdmin ? '/admin/dashboard' : '/dashboard'} replace />
   }
-  return <Outlet />
+  return (
+    <div className="h-full overflow-y-auto">
+      <Outlet />
+    </div>
+  )
 }
 
 function RequireGlobalAdmin() {

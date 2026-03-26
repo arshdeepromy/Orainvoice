@@ -3261,3 +3261,35 @@ After all three fixes, re-created the subscription and all 122 tables synced suc
 **Files Changed**:
 - `app/modules/inventory/service.py`
 - `app/modules/inventory/router.py`
+
+---
+
+### ISSUE-096: Double scroll on all app pages — document body scrolls in addition to main content area
+
+- **Date**: 2026-03-26
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: ISSUE-051 (partial regression — the layout-level fix is intact but the global CSS guard was removed)
+
+**Symptoms**: On any page inside OrgLayout or AdminLayout (e.g. HA Replication, Expenses, Purchase Orders), scrolling the page content also causes the entire browser document to scroll. Two scrollbars appear or the page scrolls past the intended boundary, leaving empty space at the bottom.
+
+**Root Cause**: ISSUE-051 fixed double scroll with two complementary changes:
+1. `min-h-0` on flex children in OrgLayout/AdminLayout (still intact)
+2. `html, body, #root { height: 100%; overflow: hidden; }` in `index.css` (was subsequently removed in TASK 1 to fix signup page scrolling)
+
+When the `index.css` rule was removed to fix the signup page, the document-level scroll guard was lost. The layout's `h-screen overflow-hidden` root div alone is not sufficient — if `html`/`body` have no height constraint, the browser can still scroll the document when the layout div's content overflows in edge cases (e.g. tall pages, modals, dynamic content).
+
+The signup page fix (TASK 1) removed the global CSS rule entirely rather than finding a targeted solution that preserves both behaviours.
+
+**Fix Applied**:
+1. Restored `html, body, #root { height: 100%; overflow: hidden; }` in `index.css`
+2. Wrapped the `<Outlet />` in `GuestOnly` (App.tsx) with `<div className="h-full overflow-y-auto">` — this gives guest pages (login, signup, password reset, verify email) their own scroll container within the `#root` bounds, so they can scroll without the document scrolling
+
+**Key Principle**: `html/body/#root` must be `height: 100%; overflow: hidden` to prevent document scroll. Guest pages that need to scroll must have their own `overflow-y: auto` wrapper. OrgLayout/AdminLayout already have `h-screen overflow-hidden` + `<main overflow-y-auto>` so they're unaffected.
+
+**Files Changed**:
+- `frontend/src/index.css` — Restored `html, body, #root { height: 100%; overflow: hidden; }`
+- `frontend/src/App.tsx` — Wrapped GuestOnly `<Outlet />` with scrollable div
+
+**Related Issues**: ISSUE-051 (original double scroll fix), ISSUE-039 (original broken scrolling fix)
