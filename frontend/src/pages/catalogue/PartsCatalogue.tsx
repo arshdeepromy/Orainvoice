@@ -302,26 +302,42 @@ export default function PartsCatalogue() {
 
           <div className="grid grid-cols-2 gap-3">
             <Input label="Part No/Code" value={form.part_number} onChange={e => updateField('part_number', e.target.value)} placeholder="e.g. BRK-PAD-001" />
-            <Input
-              label={`Price (${form.gst_mode === 'inclusive' ? 'inc-GST' : form.gst_mode === 'exempt' ? 'no GST' : 'ex-GST'}) *`}
-              type="number" value={form.default_price}
-              onChange={e => updateField('default_price', e.target.value)}
-              placeholder="e.g. 29.95"
-              disabled={!form.gst_mode}
-            />
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">GST *</label>
+              <div className="inline-flex rounded-md border border-gray-300 overflow-hidden w-full">
+                {(['inclusive', 'exclusive', 'exempt'] as const).map((mode, i) => (
+                  <button key={mode} type="button" onClick={() => updateField('gst_mode', mode)}
+                    className={`flex-1 py-2 text-sm font-medium transition-colors ${i > 0 ? 'border-l border-gray-300' : ''} ${
+                      form.gst_mode === mode ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+                    }`}>
+                    {mode === 'inclusive' ? 'GST Inclusive' : mode === 'exclusive' ? 'GST Exclusive' : 'GST Exempt'}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">GST *</label>
-            <div className="inline-flex rounded-md border border-gray-300 overflow-hidden w-full">
-              {(['inclusive', 'exclusive', 'exempt'] as const).map((mode, i) => (
-                <button key={mode} type="button" onClick={() => updateField('gst_mode', mode)}
-                  className={`flex-1 py-2 text-sm font-medium transition-colors ${i > 0 ? 'border-l border-gray-300' : ''} ${
-                    form.gst_mode === mode ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
-                  }`}>
-                  {mode === 'inclusive' ? 'GST Inclusive' : mode === 'exclusive' ? 'GST Exclusive' : 'GST Exempt'}
-                </button>
-              ))}
-            </div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              {form.gst_mode
+                ? `Price (${form.gst_mode === 'inclusive' ? 'inc-GST' : form.gst_mode === 'exempt' ? 'no GST' : 'ex-GST'}) *`
+                : 'Price *'}
+            </label>
+            {!form.gst_mode ? (
+              <div className="flex items-center gap-2 rounded-md border-2 border-dashed border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
+                <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                </svg>
+                Select a GST type above to unlock the price field
+              </div>
+            ) : (
+              <input
+                type="number" min="0" step="0.01"
+                value={form.default_price}
+                onChange={e => updateField('default_price', e.target.value)}
+                placeholder="e.g. 29.95"
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            )}
           </div>
 
           <Input label="Part name *" value={form.name} onChange={e => updateField('name', e.target.value)} />

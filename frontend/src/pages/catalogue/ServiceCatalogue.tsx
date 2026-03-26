@@ -293,14 +293,29 @@ export default function ServiceCatalogue() {
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Input
-              label={`Default price (${form.gst_mode === 'inclusive' ? 'inc-GST' : form.gst_mode === 'exempt' ? 'no GST' : 'ex-GST'}) *`}
-              type="number"
-              value={form.default_price}
-              onChange={(e) => updateField('default_price', e.target.value)}
-              placeholder="e.g. 85.00"
-              disabled={!form.gst_mode}
-            />
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                {form.gst_mode
+                  ? `Default price (${form.gst_mode === 'inclusive' ? 'inc-GST' : form.gst_mode === 'exempt' ? 'no GST' : 'ex-GST'}) *`
+                  : 'Default price *'}
+              </label>
+              {!form.gst_mode ? (
+                <div className="flex items-center gap-2 rounded-md border-2 border-dashed border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
+                  <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                  Select a GST type above to unlock
+                </div>
+              ) : (
+                <input
+                  type="number" min="0" step="0.01"
+                  value={form.default_price}
+                  onChange={(e) => updateField('default_price', e.target.value)}
+                  placeholder="e.g. 85.00"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              )}
+            </div>
             <Select
               label="Category"
               options={CATEGORY_OPTIONS}
