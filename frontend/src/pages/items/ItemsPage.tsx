@@ -60,6 +60,8 @@ export default function ItemsPage() {
   const [form, setForm] = useState<ItemForm>(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const fetchItems = useCallback(async () => {
     setLoading(true)
@@ -165,6 +167,19 @@ export default function ItemsPage() {
     }
   }
 
+  const handleDelete = async () => {
+    if (!deleteId) return
+    setDeleting(true)
+    try {
+      await apiClient.delete(`/catalogue/items/${deleteId}`)
+      setDeleteId(null)
+      addToast('success', 'Item deleted.')
+      fetchItems()
+    } catch {
+      addToast('error', 'Failed to delete item.')
+    } finally { setDeleting(false) }
+  }
+
   const updateField = <K extends keyof ItemForm>(field: K, value: ItemForm[K]) => {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
@@ -247,7 +262,10 @@ export default function ItemsPage() {
                         </button>
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-right">
-                        <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); openEdit(item) }}>Edit</Button>
+                        <div className="flex justify-end gap-1">
+                          <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); openEdit(item) }}>Edit</Button>
+                          <Button size="sm" variant="danger" onClick={(e) => { e.stopPropagation(); setDeleteId(item.id) }}>Delete</Button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -339,6 +357,15 @@ export default function ItemsPage() {
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="secondary" size="sm" onClick={() => setModalOpen(false)}>Cancel</Button>
           <Button size="sm" onClick={handleSave} loading={saving}>{editingId ? 'Save Changes' : 'Create Item'}</Button>
+        </div>
+      </Modal>
+
+      {/* Delete confirm */}
+      <Modal open={!!deleteId} onClose={() => setDeleteId(null)} title="Delete Item">
+        <p className="text-sm text-gray-600 mb-4">This will deactivate the item and hide it from invoice creation. Historical data is preserved.</p>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={() => setDeleteId(null)}>Cancel</Button>
+          <Button size="sm" variant="danger" onClick={handleDelete} loading={deleting}>Delete</Button>
         </div>
       </Modal>
 

@@ -78,6 +78,10 @@ export default function ServiceCatalogue() {
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
 
+  /* Delete confirm */
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
+
   const fetchServices = useCallback(async () => {
     setLoading(true)
     setError('')
@@ -157,6 +161,18 @@ export default function ServiceCatalogue() {
     }
   }
 
+  const handleDelete = async () => {
+    if (!deleteId) return
+    setDeleting(true)
+    try {
+      await apiClient.delete(`/catalogue/services/${deleteId}`)
+      setDeleteId(null)
+      fetchServices()
+    } catch {
+      setError('Failed to delete service.')
+    } finally { setDeleting(false) }
+  }
+
   const updateField = <K extends keyof ServiceForm>(field: K, value: ServiceForm[K]) => {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
@@ -231,7 +247,13 @@ export default function ServiceCatalogue() {
                       </button>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-right">
-                      <Button size="sm" variant="secondary" onClick={() => openEdit(svc)}>Edit</Button>
+                      <div className="flex justify-end gap-1">
+                        <Button size="sm" variant="secondary" onClick={() => openEdit(svc)}>Edit</Button>
+                        <Button size="sm" variant="secondary" onClick={() => handleToggleActive(svc)}>
+                          {svc.is_active ? 'Deactivate' : 'Activate'}
+                        </Button>
+                        <Button size="sm" variant="danger" onClick={() => setDeleteId(svc.id)}>Delete</Button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -297,6 +319,15 @@ export default function ServiceCatalogue() {
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="secondary" size="sm" onClick={() => setModalOpen(false)}>Cancel</Button>
           <Button size="sm" onClick={handleSave} loading={saving}>{editingId ? 'Save Changes' : 'Create Service'}</Button>
+        </div>
+      </Modal>
+
+      {/* Delete confirm */}
+      <Modal open={!!deleteId} onClose={() => setDeleteId(null)} title="Delete Service">
+        <p className="text-sm text-gray-600 mb-4">This will deactivate the service and hide it from invoice creation. Historical data is preserved.</p>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={() => setDeleteId(null)}>Cancel</Button>
+          <Button size="sm" variant="danger" onClick={handleDelete} loading={deleting}>Delete</Button>
         </div>
       </Modal>
     </div>

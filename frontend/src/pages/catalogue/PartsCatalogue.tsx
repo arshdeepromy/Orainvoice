@@ -65,6 +65,8 @@ export default function PartsCatalogue() {
   const [form, setForm] = useState<PartForm>(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   // Category search
   const [categories, setCategories] = useState<Category[]>([])
@@ -183,6 +185,24 @@ export default function PartsCatalogue() {
     finally { setSaving(false) }
   }
 
+  const handleToggleActive = async (part: Part) => {
+    try {
+      await apiClient.put(`/catalogue/parts/${part.id}`, { is_active: !(part as any).is_active })
+      fetchParts()
+    } catch { setError('Failed to update part status.') }
+  }
+
+  const handleDelete = async () => {
+    if (!deleteId) return
+    setDeleting(true)
+    try {
+      await apiClient.delete(`/catalogue/parts/${deleteId}`)
+      setDeleteId(null)
+      fetchParts()
+    } catch { setError('Failed to delete part.') }
+    finally { setDeleting(false) }
+  }
+
   const handleCreateCategory = async () => {
     if (!catSearch.trim()) return
     setCatCreating(true)
@@ -248,7 +268,13 @@ export default function PartsCatalogue() {
                     <Badge variant={part.is_active ? 'success' : 'neutral'}>{part.is_active ? 'Active' : 'Inactive'}</Badge>
                   </td>
                   <td className="px-4 py-3 text-sm text-right">
-                    <Button size="sm" variant="secondary" onClick={() => openEdit(part)}>Edit</Button>
+                    <div className="flex justify-end gap-1">
+                      <Button size="sm" variant="secondary" onClick={() => openEdit(part)}>Edit</Button>
+                      <Button size="sm" variant="secondary" onClick={() => handleToggleActive(part)}>
+                        {(part as any).is_active !== false ? 'Deactivate' : 'Activate'}
+                      </Button>
+                      <Button size="sm" variant="danger" onClick={() => setDeleteId(part.id)}>Delete</Button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -386,6 +412,14 @@ export default function PartsCatalogue() {
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="secondary" size="sm" onClick={() => setModalOpen(false)}>Cancel</Button>
           <Button size="sm" onClick={handleSave} loading={saving}>{editingId ? 'Save Changes' : 'Create Part'}</Button>
+        </div>
+      </Modal>
+
+      <Modal open={!!deleteId} onClose={() => setDeleteId(null)} title="Delete Part">
+        <p className="text-sm text-gray-600 mb-4">This will deactivate the part and hide it from invoice creation. Historical data is preserved.</p>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={() => setDeleteId(null)}>Cancel</Button>
+          <Button size="sm" variant="danger" onClick={handleDelete} loading={deleting}>Delete</Button>
         </div>
       </Modal>
     </div>
