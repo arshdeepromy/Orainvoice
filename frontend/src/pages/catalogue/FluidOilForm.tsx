@@ -25,6 +25,8 @@ interface FluidFormData {
   product_name: string
   description: string
   pack_size: string
+  min_stock_volume: string
+  reorder_volume: string
 }
 
 const EMPTY: FluidFormData = {
@@ -32,6 +34,7 @@ const EMPTY: FluidFormData = {
   qty_per_pack: '', unit_type: 'litre', container_type: '', total_quantity: '',
   purchase_price: '', gst_mode: '', sell_price_per_unit: '',
   brand_name: '', product_name: '', description: '', pack_size: '',
+  min_stock_volume: '0', reorder_volume: '0',
 }
 
 const OIL_TYPES = [
@@ -253,6 +256,8 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
         gst_mode: f.gst_mode || null,
         sell_price_per_unit: f.sell_price_per_unit ? Number(f.sell_price_per_unit) : null,
         supplier_id: selectedSupplierId || null,
+        min_stock_volume: f.min_stock_volume ? Number(f.min_stock_volume) : 0,
+        reorder_volume: f.reorder_volume ? Number(f.reorder_volume) : 0,
       }
       await apiClient.post('/catalogue/fluids', payload)
       setSaveSuccess(true)
@@ -608,6 +613,17 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
               </Field>
             </div>
           )}
+          {/* Stock thresholds — dynamic unit label */}
+          <div className="grid grid-cols-2 gap-3">
+            <Field label={`Min stock threshold (${unitLabel}s)`}>
+              <input type="number" min="0" step="0.1" value={f.min_stock_volume} onChange={e => set('min_stock_volume', e.target.value)}
+                placeholder="0" className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </Field>
+            <Field label={`Reorder quantity (${unitLabel}s)`}>
+              <input type="number" min="0" step="0.1" value={f.reorder_volume} onChange={e => set('reorder_volume', e.target.value)}
+                placeholder="0" className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </Field>
+          </div>
         </div>
       </Section>
 
@@ -865,6 +881,16 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
               <textarea value={ep.description || ''} onChange={e => upd('description', e.target.value)} rows={2}
                 className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
             </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label={`Min stock (${eUnitLabel}s)`}>
+                <input type="number" min="0" step="0.1" value={ep.min_stock_volume || ''} onChange={e => upd('min_stock_volume', e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </Field>
+              <Field label={`Reorder qty (${eUnitLabel}s)`}>
+                <input type="number" min="0" step="0.1" value={ep.reorder_volume || ''} onChange={e => upd('reorder_volume', e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </Field>
+            </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="secondary" onClick={() => setEditProduct(null)}>Cancel</Button>
               <Button onClick={handleEditSave} loading={editSaving}>Save Changes</Button>

@@ -23,6 +23,8 @@ class FluidOilCreate(BaseModel):
     gst_mode: str | None = None
     sell_price_per_unit: Decimal | None = None
     supplier_id: UUID | None = None
+    min_stock_volume: Decimal = Decimal("0")
+    reorder_volume: Decimal = Decimal("0")
 
 
 class FluidOilResponse(BaseModel):
@@ -48,6 +50,8 @@ class FluidOilResponse(BaseModel):
     margin: Decimal | None = None
     margin_pct: Decimal | None = None
     current_stock_volume: Decimal = Decimal("0")
+    min_stock_volume: Decimal = Decimal("0")
+    reorder_volume: Decimal = Decimal("0")
     is_active: bool = True
     supplier_id: UUID | None = None
     created_at: datetime
