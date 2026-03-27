@@ -647,28 +647,49 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
         </div>
       )}
 
-      {/* Edit modal */}
+      {/* Edit modal — full fields */}
       <Modal open={!!editProduct} onClose={() => setEditProduct(null)} title="Edit Fluid / Oil Product">
-        {editProduct && (
-          <div className="space-y-3">
-            <Field label="Brand Name">
-              <input type="text" value={editProduct.brand_name || ''} onChange={e => setEditProduct((p: any) => ({...p, brand_name: e.target.value}))}
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            </Field>
-            {editProduct.fluid_type === 'non-oil' && (
-              <Field label="Product Name">
-                <input type="text" value={editProduct.product_name || ''} onChange={e => setEditProduct((p: any) => ({...p, product_name: e.target.value}))}
+        {editProduct && (() => {
+          const ep = editProduct
+          const upd = (k: string, v: any) => setEditProduct((p: any) => ({ ...p, [k]: v }))
+          const eQpp = parseFloat(ep.qty_per_pack) || 0
+          const eTq = parseFloat(ep.total_quantity) || 0
+          const eTotalVol = eQpp * eTq
+          const ePp = parseFloat(ep.purchase_price) || 0
+          const eCpu = eTotalVol > 0 ? ePp / eTotalVol : 0
+          const eSpu = parseFloat(ep.sell_price_per_unit) || 0
+          const eMargin = eSpu - eCpu
+          const eMarginPct = eCpu > 0 ? (eMargin / eCpu) * 100 : 0
+          const eUnitLabel = ep.unit_type === 'gallon' ? 'Gallon' : 'Litre'
+          return (
+          <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Brand Name">
+                <input type="text" value={ep.brand_name || ''} onChange={e => upd('brand_name', e.target.value)}
                   className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </Field>
-            )}
-            {editProduct.oil_type === 'engine' && (
+              {ep.fluid_type === 'non-oil' ? (
+                <Field label="Product Name">
+                  <input type="text" value={ep.product_name || ''} onChange={e => upd('product_name', e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </Field>
+              ) : (
+                <Field label="Oil Type">
+                  <select value={ep.oil_type || ''} onChange={e => upd('oil_type', e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    {OIL_TYPES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </Field>
+              )}
+            </div>
+            {ep.oil_type === 'engine' && (
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Grade">
-                  <input type="text" value={editProduct.grade || ''} onChange={e => setEditProduct((p: any) => ({...p, grade: e.target.value}))}
+                  <input type="text" value={ep.grade || ''} onChange={e => upd('grade', e.target.value)}
                     className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
                 </Field>
                 <Field label="Synthetic Type">
-                  <select value={editProduct.synthetic_type || ''} onChange={e => setEditProduct((p: any) => ({...p, synthetic_type: e.target.value}))}
+                  <select value={ep.synthetic_type || ''} onChange={e => upd('synthetic_type', e.target.value)}
                     className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                     <option value="">—</option>
                     <option value="semi_synthetic">Semi Synthetic</option>
@@ -678,18 +699,74 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
                 </Field>
               </div>
             )}
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Purchase Price">
-                <input type="number" min="0" step="0.01" value={editProduct.purchase_price || ''} onChange={e => setEditProduct((p: any) => ({...p, purchase_price: e.target.value}))}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              </Field>
-              <Field label={`Sell Price per ${editProduct.unit_type === 'gallon' ? 'Gallon' : 'Litre'}`}>
-                <input type="number" min="0" step="0.01" value={editProduct.sell_price_per_unit || ''} onChange={e => setEditProduct((p: any) => ({...p, sell_price_per_unit: e.target.value}))}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              </Field>
+            {/* Pack format */}
+            <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-3 space-y-2">
+              <p className="text-xs font-medium text-gray-500 uppercase">Pack Format</p>
+              <div className="grid grid-cols-4 gap-2">
+                <Field label="Qty/pack">
+                  <input type="number" min="1" step="0.1" value={ep.qty_per_pack || ''} onChange={e => upd('qty_per_pack', e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </Field>
+                <Field label="Unit">
+                  <select value={ep.unit_type || 'litre'} onChange={e => upd('unit_type', e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="litre">Litre</option>
+                    <option value="gallon">Gallon</option>
+                  </select>
+                </Field>
+                <Field label="Container">
+                  <select value={ep.container_type || ''} onChange={e => upd('container_type', e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="">—</option>
+                    {CONTAINER_TYPES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  </select>
+                </Field>
+                <Field label="Total packs">
+                  <input type="number" min="1" step="1" value={ep.total_quantity || ''} onChange={e => upd('total_quantity', e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </Field>
+              </div>
+              {eTotalVol > 0 && (
+                <p className="text-xs text-gray-500">Total Volume: <span className="font-semibold text-gray-900">{eTotalVol.toLocaleString()} {eUnitLabel}s</span></p>
+              )}
+            </div>
+            {/* Pricing */}
+            <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-3 space-y-2">
+              <p className="text-xs font-medium text-gray-500 uppercase">Pricing</p>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Purchase Price">
+                  <input type="number" min="0" step="0.01" value={ep.purchase_price || ''} onChange={e => upd('purchase_price', e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </Field>
+                <Field label={`Sell Price per ${eUnitLabel}`}>
+                  <input type="number" min="0" step="0.01" value={ep.sell_price_per_unit || ''} onChange={e => upd('sell_price_per_unit', e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </Field>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">GST</label>
+                <div className="inline-flex rounded-md border border-gray-300 overflow-hidden w-full">
+                  {(['inclusive', 'exclusive', 'exempt'] as const).map((mode, i) => (
+                    <button key={mode} type="button" onClick={() => upd('gst_mode', mode)}
+                      className={`flex-1 py-1.5 text-xs font-medium transition-colors ${i > 0 ? 'border-l border-gray-300' : ''} ${
+                        ep.gst_mode === mode ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+                      }`}>
+                      {mode === 'inclusive' ? 'GST Inc.' : mode === 'exclusive' ? 'GST Excl.' : 'Exempt'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {eCpu > 0 && (
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>Cost/{eUnitLabel}: <span className="font-semibold text-gray-900">{formatNZD(eCpu)}</span></span>
+                  {eMargin !== 0 && (
+                    <span>Margin: <span className={`font-semibold ${eMargin >= 0 ? 'text-green-700' : 'text-red-700'}`}>{formatNZD(eMargin)} ({eMarginPct.toFixed(1)}%)</span></span>
+                  )}
+                </div>
+              )}
             </div>
             <Field label="Description">
-              <textarea value={editProduct.description || ''} onChange={e => setEditProduct((p: any) => ({...p, description: e.target.value}))} rows={2}
+              <textarea value={ep.description || ''} onChange={e => upd('description', e.target.value)} rows={2}
                 className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
             </Field>
             <div className="flex justify-end gap-2 pt-2">
@@ -697,7 +774,8 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
               <Button onClick={handleEditSave} loading={editSaving}>Save Changes</Button>
             </div>
           </div>
-        )}
+          )
+        })()}
       </Modal>
 
       {/* Delete confirm modal */}
