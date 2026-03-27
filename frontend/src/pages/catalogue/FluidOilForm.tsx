@@ -104,6 +104,8 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [saveSuccess, setSaveSuccess] = useState(false)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   // List of saved products
   const [products, setProducts] = useState<any[]>([])
@@ -223,6 +225,28 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
     } catch (err: any) {
       setSaveError(err?.response?.data?.detail || 'Failed to save product.')
     } finally { setSaving(false) }
+  }
+
+  const handleToggleActive = async (productId: string) => {
+    try {
+      const { default: apiClient } = await import('@/api/client')
+      await apiClient.put(`/catalogue/fluids/${productId}/toggle-active`)
+      fetchProducts()
+    } catch { /* non-blocking */ }
+  }
+
+  const handleDelete = async () => {
+    if (!deleteId) return
+    setDeleting(true)
+    try {
+      const { default: apiClient } = await import('@/api/client')
+      await apiClient.delete(`/catalogue/fluids/${deleteId}`)
+      setDeleteId(null)
+      fetchProducts()
+    } catch (err: any) {
+      setSaveError(err?.response?.data?.detail || 'Failed to delete product.')
+      setDeleteId(null)
+    } finally { setDeleting(false) }
   }
 
   return (
@@ -496,11 +520,13 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
                   <th className="px-4 py-2 text-right text-xs font-medium uppercase text-gray-500">Cost/Unit</th>
                   <th className="px-4 py-2 text-right text-xs font-medium uppercase text-gray-500">Sell/Unit</th>
                   <th className="px-4 py-2 text-right text-xs font-medium uppercase text-gray-500">Margin</th>
+                  <th className="px-4 py-2 text-center text-xs font-medium uppercase text-gray-500">Status</th>
+                  <th className="px-4 py-2 text-right text-xs font-medium uppercase text-gray-500">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {products.map((p: any) => (
-                  <tr key={p.id} className="hover:bg-gray-50">
+                  <tr key={p.id} className={`hover:bg-gray-50 ${!p.is_active ? 'opacity-60' : ''}`}>
                     <td className="px-4 py-2 font-medium text-gray-900">
                       {p.brand_name ? `${p.brand_name} ` : ''}{p.product_name || p.oil_type || p.fluid_type}
                       {p.grade && <span className="ml-1 text-gray-500">{p.grade}</span>}
@@ -510,6 +536,17 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
                     <td className="px-4 py-2 text-right tabular-nums">{p.cost_per_unit ? formatNZD(Number(p.cost_per_unit)) : '—'}</td>
                     <td className="px-4 py-2 text-right tabular-nums">{p.sell_price_per_unit ? formatNZD(Number(p.sell_price_per_unit)) : '—'}</td>
                     <td className="px-4 py-2 text-right tabular-nums">{p.margin_pct != null ? `${Number(p.margin_pct).toFixed(1)}%` : '—'}</td>
+                    <td className="px-4 py-2 text-center">
+                      <Badge variant={p.is_active ? 'success' : 'neutral'}>{p.is_active ? 'Active' : 'Inactive'}</Badge>
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <div className="flex justify-end gap-1">
+                        <Button size="sm" variant="secondary" onClick={() => handleToggleActive(p.id)}>
+                          {p.is_active ? 'Deactivate' : 'Activate'}
+                        </Button>
+                        <Button size="sm" variant="danger" onClick={() => setDeleteId(p.id)}>Delete</Button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -517,6 +554,15 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
           </div>
         </div>
       )}
+
+      {/* Delete confirm modal */}
+      <Modal open={!!deleteId} onClose={() => setDeleteId(null)} title="Delete Product">
+        <p className="text-sm text-gray-600 mb-4">This will permanently delete this fluid/oil product. This cannot be undone.</p>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={() => setDeleteId(null)}>Cancel</Button>
+          <Button variant="danger" onClick={handleDelete} loading={deleting}>Delete</Button>
+        </div>
+      </Modal>
 
       {/* Result modal */}
       <Modal open={showResult} onClose={() => setShowResult(false)} title="Product Saved">

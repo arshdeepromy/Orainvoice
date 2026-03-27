@@ -124,3 +124,66 @@ async def delete_product(
     await db.delete(product)
     await db.flush()
     return {"message": "Product deleted"}
+
+
+@router.put("/{product_id}/toggle-active", status_code=200, summary="Toggle active status")
+async def toggle_active(
+    product_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    try:
+        pid = uuid.UUID(product_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid ID"})
+    result = await db.execute(
+        select(FluidOilProduct).where(FluidOilProduct.id == pid, FluidOilProduct.org_id == org_id)
+    )
+    product = result.scalar_one_or_none()
+    if not product:
+        return JSONResponse(status_code=404, content={"detail": "Product not found"})
+    product.is_active = not product.is_active
+    await db.flush()
+    return FluidOilResponse.model_validate(product)
+
+
+@router.put("/{product_id}", response_model=FluidOilResponse, summary="Update fluid/oil product")
+async def update_product(
+    product_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    try:
+        pid = uuid.UUID(product_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid ID"})
+    result = await db.execute(
+        select(FluidOilProduct).where(FluidOilProduct.id == pid, FluidOilProduct.org_id == org_id)
+    )
+    product = result.scalar_one_or_none()
+    if not product:
+        return JSONResponse(status_code=404, content={"detail": "Product not found"})
+
+    body = await request.json()
+    for field in ["fluid_type", "oil_type", "grade", "synthetic_type", "product_name",
+                   "brand_name", "description", "pack_size", "unit_type", "container_type", "gst_mode"]:
+        if field in body:
+            setattr(product, field, body[field])
+    for nfield in ["qty_per_pack", "total_quantity", "purchase_price", "sell_price_per_unit"]:
+        if nfield in body and body[nfield] is not None:
+            setattr(product, nfield, Decimal(str(body[nfield])))
+
+    # Recalculate derived fields
+    if product.qty_per_pack and product.total_quantity:
+        product.total_volume = product.qty_per_pack * product.total_quantity
+    if product.purchase_price and product.total_volume and product.total_volume > 0:
+        product.cost_per_unit = product.purchase_price / product.total_volume
+    if product.sell_price_per_unit and product.cost_per_unit:
+        product.margin = product.sell_price_per_unit - product.cost_per_unit
+        if product.cost_per_unit > 0:
+            product.margin_pct = (product.margin / product.cost_per_unit) * 100
+
+    await db.flush()
+    return FluidOilResponse.model_validate(product)
