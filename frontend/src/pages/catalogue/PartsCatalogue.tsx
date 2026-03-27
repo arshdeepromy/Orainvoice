@@ -33,6 +33,7 @@ interface PartForm {
   category_name: string
   brand: string
   supplier_id: string
+  supplier_ids: string[]
   default_price: string
   gst_mode: 'inclusive' | 'exclusive' | 'exempt' | ''
   min_stock_threshold: string
@@ -50,7 +51,7 @@ interface Supplier { id: string; name: string }
 
 const EMPTY_FORM: PartForm = {
   name: '', part_number: '', description: '', part_type: 'part',
-  category_id: '', category_name: '', brand: '', supplier_id: '',
+  category_id: '', category_name: '', brand: '', supplier_id: '', supplier_ids: [],
   default_price: '', gst_mode: '', min_stock_threshold: '0', reorder_quantity: '0', is_active: true,
   tyre_width: '', tyre_profile: '', tyre_rim_dia: '',
   tyre_load_index: '', tyre_speed_index: '',
@@ -77,7 +78,10 @@ export default function PartsCatalogue() {
 
   // Suppliers
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
-
+  const [showAddSupplier, setShowAddSupplier] = useState(false)
+  const [newSupplier, setNewSupplier] = useState({ name: '', contact_name: '', email: '', phone: '', address: '' })
+  const [addSupplierSaving, setAddSupplierSaving] = useState(false)
+  const [addSupplierError, setAddSupplierError] = useState('')
   const fetchParts = useCallback(async () => {
     setLoading(true); setError('')
     try {
@@ -129,6 +133,7 @@ export default function PartsCatalogue() {
       category_name: part.category_name || '',
       brand: part.brand || '',
       supplier_id: part.supplier_id || '',
+      supplier_ids: part.supplier_id ? [part.supplier_id] : [],
       default_price: part.default_price,
       gst_mode: (part as any).is_gst_exempt ? 'exempt' : (part as any).gst_inclusive ? 'inclusive' : 'exclusive',
       min_stock_threshold: String((part as any).min_stock_threshold ?? 0),
@@ -223,6 +228,37 @@ export default function PartsCatalogue() {
     setForm(f => ({ ...f, category_id: cat.id, category_name: cat.name }))
     setCatSearch(cat.name)
     setCatDropOpen(false)
+  }
+
+  const handleAddSupplier = async () => {
+    if (!newSupplier.name.trim()) { setAddSupplierError('Supplier name is required.'); return }
+    setAddSupplierSaving(true)
+    setAddSupplierError('')
+    try {
+      const body: Record<string, string> = { name: newSupplier.name.trim() }
+      if (newSupplier.contact_name.trim()) body.contact_name = newSupplier.contact_name.trim()
+      if (newSupplier.email.trim()) body.email = newSupplier.email.trim()
+      if (newSupplier.phone.trim()) body.phone = newSupplier.phone.trim()
+      if (newSupplier.address.trim()) body.address = newSupplier.address.trim()
+      const res = await apiClient.post('/inventory/suppliers', body)
+      const created: Supplier = res.data.supplier || res.data
+      setSuppliers(prev => [...prev, created])
+      // Auto-add to selected suppliers
+      setForm(f => ({ ...f, supplier_ids: [...f.supplier_ids, created.id], supplier_id: f.supplier_id || created.id }))
+      setShowAddSupplier(false)
+      setNewSupplier({ name: '', contact_name: '', email: '', phone: '', address: '' })
+    } catch (err: any) {
+      setAddSupplierError(err?.response?.data?.detail || 'Failed to create supplier.')
+    } finally { setAddSupplierSaving(false) }
+  }
+
+  const toggleSupplier = (supplierId: string) => {
+    setForm(f => {
+      const ids = f.supplier_ids.includes(supplierId)
+        ? f.supplier_ids.filter(id => id !== supplierId)
+        : [...f.supplier_ids, supplierId]
+      return { ...f, supplier_ids: ids, supplier_id: ids[0] || '' }
+    })
   }
 
   const updateField = <K extends keyof PartForm>(field: K, value: PartForm[K]) => {
@@ -405,14 +441,39 @@ export default function PartsCatalogue() {
             )}
           </div>
 
-          {/* Supplier dropdown */}
+          {/* Supplier multi-select + add */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Supplier</label>
-            <select value={form.supplier_id} onChange={e => updateField('supplier_id', e.target.value)}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
-              <option value="">— None —</option>
-              {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-sm font-medium text-gray-700">Suppliers</label>
+              <button type="button" onClick={() => { setNewSupplier({ name: '', contact_name: '', email: '', phone: '', address: '' }); setAddSupplierError(''); setShowAddSupplier(true) }}
+                className="text-xs text-blue-600 hover:underline font-medium">+ Add Supplier</button>
+            </div>
+            {/* Selected chips */}
+            {form.supplier_ids.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-2">
+                {form.supplier_ids.map(sid => {
+                  const s = suppliers.find(x => x.id === sid)
+                  return s ? (
+                    <span key={sid} className="inline-flex items-center gap-1 rounded-full bg-blue-100 text-blue-800 px-2.5 py-0.5 text-xs font-medium">
+                      {s.name}
+                      <button type="button" onClick={() => toggleSupplier(sid)} className="text-blue-600 hover:text-blue-800">✕</button>
+                    </span>
+                  ) : null
+                })}
+              </div>
+            )}
+            {/* Supplier checkboxes */}
+            <div className="max-h-32 overflow-y-auto rounded-md border border-gray-300 divide-y divide-gray-100">
+              {suppliers.length === 0 ? (
+                <div className="px-3 py-2 text-sm text-gray-400">No suppliers yet. Click "+ Add Supplier" above.</div>
+              ) : suppliers.map(s => (
+                <label key={s.id} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer">
+                  <input type="checkbox" checked={form.supplier_ids.includes(s.id)} onChange={() => toggleSupplier(s.id)}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600" />
+                  <span className="text-gray-900">{s.name}</span>
+                </label>
+              ))}
+            </div>
           </div>
 
           <Input label="Brand" value={form.brand} onChange={e => updateField('brand', e.target.value)} placeholder="e.g. Bosch, Continental" />
@@ -431,6 +492,29 @@ export default function PartsCatalogue() {
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="secondary" size="sm" onClick={() => setModalOpen(false)}>Cancel</Button>
           <Button size="sm" onClick={handleSave} loading={saving}>{editingId ? 'Save Changes' : 'Create Part'}</Button>
+        </div>
+      </Modal>
+
+      {/* Add Supplier Modal */}
+      <Modal open={showAddSupplier} onClose={() => setShowAddSupplier(false)} title="New Supplier">
+        <div className="space-y-3">
+          <Input label="Supplier name *" value={newSupplier.name}
+            onChange={e => setNewSupplier(prev => ({ ...prev, name: e.target.value }))} />
+          <Input label="Contact person" value={newSupplier.contact_name}
+            onChange={e => setNewSupplier(prev => ({ ...prev, contact_name: e.target.value }))} />
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Email" type="email" value={newSupplier.email}
+              onChange={e => setNewSupplier(prev => ({ ...prev, email: e.target.value }))} />
+            <Input label="Phone" value={newSupplier.phone}
+              onChange={e => setNewSupplier(prev => ({ ...prev, phone: e.target.value }))} />
+          </div>
+          <Input label="Address" value={newSupplier.address}
+            onChange={e => setNewSupplier(prev => ({ ...prev, address: e.target.value }))} />
+          {addSupplierError && <p className="text-sm text-red-600">{addSupplierError}</p>}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setShowAddSupplier(false)}>Cancel</Button>
+            <Button onClick={handleAddSupplier} loading={addSupplierSaving}>Create Supplier</Button>
+          </div>
         </div>
       </Modal>
 
