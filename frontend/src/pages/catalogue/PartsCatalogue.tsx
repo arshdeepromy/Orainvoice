@@ -82,6 +82,9 @@ export default function PartsCatalogue() {
   const [newSupplier, setNewSupplier] = useState({ name: '', contact_name: '', email: '', phone: '', address: '' })
   const [addSupplierSaving, setAddSupplierSaving] = useState(false)
   const [addSupplierError, setAddSupplierError] = useState('')
+  const [supplierSearch, setSupplierSearch] = useState('')
+  const [supplierDropOpen, setSupplierDropOpen] = useState(false)
+  const supplierDropRef = useRef<HTMLDivElement>(null)
   const fetchParts = useCallback(async () => {
     setLoading(true); setError('')
     try {
@@ -112,6 +115,7 @@ export default function PartsCatalogue() {
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (catRef.current && !catRef.current.contains(e.target as Node)) setCatDropOpen(false)
+      if (supplierDropRef.current && !supplierDropRef.current.contains(e.target as Node)) setSupplierDropOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -441,7 +445,7 @@ export default function PartsCatalogue() {
             )}
           </div>
 
-          {/* Supplier multi-select + add */}
+          {/* Supplier searchable dropdown + add */}
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="block text-sm font-medium text-gray-700">Suppliers</label>
@@ -462,17 +466,38 @@ export default function PartsCatalogue() {
                 })}
               </div>
             )}
-            {/* Supplier checkboxes */}
-            <div className="max-h-32 overflow-y-auto rounded-md border border-gray-300 divide-y divide-gray-100">
-              {suppliers.length === 0 ? (
-                <div className="px-3 py-2 text-sm text-gray-400">No suppliers yet. Click "+ Add Supplier" above.</div>
-              ) : suppliers.map(s => (
-                <label key={s.id} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer">
-                  <input type="checkbox" checked={form.supplier_ids.includes(s.id)} onChange={() => toggleSupplier(s.id)}
-                    className="h-4 w-4 rounded border-gray-300 text-blue-600" />
-                  <span className="text-gray-900">{s.name}</span>
-                </label>
-              ))}
+            {/* Searchable dropdown */}
+            <div ref={supplierDropRef} className="relative">
+              <input
+                type="text"
+                value={supplierSearch}
+                onChange={e => { setSupplierSearch(e.target.value); setSupplierDropOpen(true) }}
+                onFocus={() => setSupplierDropOpen(true)}
+                placeholder="Search suppliers…"
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                autoComplete="off"
+              />
+              {supplierDropOpen && (
+                <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+                  {suppliers
+                    .filter(s => !supplierSearch.trim() || s.name.toLowerCase().includes(supplierSearch.toLowerCase()))
+                    .slice(0, 15)
+                    .map(s => (
+                      <button key={s.id} type="button" onClick={() => { toggleSupplier(s.id); setSupplierSearch(''); setSupplierDropOpen(false) }}
+                        className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center justify-between">
+                        <span className="text-gray-900">{s.name}</span>
+                        {form.supplier_ids.includes(s.id) && <span className="text-blue-600 text-xs">✓ selected</span>}
+                      </button>
+                    ))}
+                  {suppliers.filter(s => !supplierSearch.trim() || s.name.toLowerCase().includes(supplierSearch.toLowerCase())).length === 0 && (
+                    <div className="px-3 py-2 text-sm text-gray-500">No suppliers match</div>
+                  )}
+                  <button type="button" onClick={() => { setNewSupplier({ name: supplierSearch.trim(), contact_name: '', email: '', phone: '', address: '' }); setAddSupplierError(''); setShowAddSupplier(true); setSupplierDropOpen(false) }}
+                    className="w-full border-t border-gray-100 px-3 py-2 text-left text-sm font-medium text-blue-600 hover:bg-blue-50">
+                    + Add New Supplier{supplierSearch.trim() ? ` "${supplierSearch.trim()}"` : ''}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 

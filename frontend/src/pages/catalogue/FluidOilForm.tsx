@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { Button, Badge, Modal } from '@/components/ui'
 
 /* ── Types ── */
@@ -112,6 +112,17 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
   // List of saved products
   const [products, setProducts] = useState<any[]>([])
 
+  // Suppliers
+  const [suppliers, setSuppliers] = useState<{id: string; name: string}[]>([])
+  const [supplierSearch, setSupplierSearch] = useState('')
+  const [supplierDropOpen, setSupplierDropOpen] = useState(false)
+  const [selectedSupplierId, setSelectedSupplierId] = useState('')
+  const [selectedSupplierName, setSelectedSupplierName] = useState('')
+  const [showAddSupplier, setShowAddSupplier] = useState(false)
+  const [newSupplier, setNewSupplier] = useState({ name: '', contact_name: '', email: '', phone: '', address: '' })
+  const [addSupplierSaving, setAddSupplierSaving] = useState(false)
+  const [addSupplierError, setAddSupplierError] = useState('')
+  const supplierDropRef = useRef<HTMLDivElement>(null)
   const fetchProducts = async () => {
     try {
       const { default: apiClient } = await import('@/api/client')
@@ -121,6 +132,26 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
   }
 
   useEffect(() => { fetchProducts() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch suppliers
+  useEffect(() => {
+    (async () => {
+      try {
+        const { default: apiClient } = await import('@/api/client')
+        const res = await apiClient.get('/inventory/suppliers')
+        setSuppliers((res.data.suppliers || []).map((s: any) => ({ id: s.id, name: s.name })))
+      } catch { /* non-blocking */ }
+    })()
+  }, [])
+
+  // Click outside supplier dropdown
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (supplierDropRef.current && !supplierDropRef.current.contains(e.target as Node)) setSupplierDropOpen(false)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [])
 
   const set = <K extends keyof FluidFormData>(key: K, val: FluidFormData[K]) => {
     setF(prev => ({ ...prev, [key]: val }))
@@ -221,6 +252,7 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
         purchase_price: f.purchase_price ? Number(f.purchase_price) : null,
         gst_mode: f.gst_mode || null,
         sell_price_per_unit: f.sell_price_per_unit ? Number(f.sell_price_per_unit) : null,
+        supplier_id: selectedSupplierId || null,
       }
       await apiClient.post('/catalogue/fluids', payload)
       setSaveSuccess(true)
@@ -266,6 +298,29 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
     } catch (err: any) {
       setSaveError(err?.response?.data?.detail || 'Failed to update product.')
     } finally { setEditSaving(false) }
+  }
+
+  const handleAddSupplierFluid = async () => {
+    if (!newSupplier.name.trim()) { setAddSupplierError('Supplier name is required.'); return }
+    setAddSupplierSaving(true)
+    setAddSupplierError('')
+    try {
+      const { default: apiClient } = await import('@/api/client')
+      const body: Record<string, string> = { name: newSupplier.name.trim() }
+      if (newSupplier.contact_name.trim()) body.contact_name = newSupplier.contact_name.trim()
+      if (newSupplier.email.trim()) body.email = newSupplier.email.trim()
+      if (newSupplier.phone.trim()) body.phone = newSupplier.phone.trim()
+      if (newSupplier.address.trim()) body.address = newSupplier.address.trim()
+      const res = await apiClient.post('/inventory/suppliers', body)
+      const created = res.data.supplier || res.data
+      setSuppliers(prev => [...prev, { id: created.id, name: created.name }])
+      setSelectedSupplierId(created.id)
+      setSelectedSupplierName(created.name)
+      setShowAddSupplier(false)
+      setNewSupplier({ name: '', contact_name: '', email: '', phone: '', address: '' })
+    } catch (err: any) {
+      setAddSupplierError(err?.response?.data?.detail || 'Failed to create supplier.')
+    } finally { setAddSupplierSaving(false) }
   }
 
   return (
@@ -501,17 +556,58 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
         </div>
       </Section>
 
-      {/* Step 6: Optional Fields */}
-      <Section show={showOptional}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Field label="Brand Name">
-            <input type="text" value={f.brand_name} onChange={e => set('brand_name', e.target.value)} placeholder="e.g. Castrol, Penrite"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </Field>
-          <Field label="Description">
-            <textarea value={f.description} onChange={e => set('description', e.target.value)} rows={2} placeholder="Optional notes"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
-          </Field>
+      {/* Step 6: Optional Fields + Supplier */}
+      <Section show={showOptional || isNonOil}>
+        <div className="space-y-3">
+          {/* Supplier searchable dropdown */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-sm font-medium text-gray-700">Supplier</label>
+              <button type="button" onClick={() => { setNewSupplier({ name: '', contact_name: '', email: '', phone: '', address: '' }); setAddSupplierError(''); setShowAddSupplier(true) }}
+                className="text-xs text-blue-600 hover:underline font-medium">+ Add Supplier</button>
+            </div>
+            {selectedSupplierId ? (
+              <div className="flex items-center gap-2 rounded-md border border-gray-300 bg-gray-50 px-3 py-2">
+                <span className="flex-1 text-sm text-gray-900">{selectedSupplierName}</span>
+                <button type="button" onClick={() => { setSelectedSupplierId(''); setSelectedSupplierName('') }} className="text-gray-400 hover:text-gray-600 text-xs">✕</button>
+              </div>
+            ) : (
+              <div ref={supplierDropRef} className="relative">
+                <input type="text" value={supplierSearch}
+                  onChange={e => { setSupplierSearch(e.target.value); setSupplierDropOpen(true) }}
+                  onFocus={() => setSupplierDropOpen(true)}
+                  placeholder="Search suppliers…"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" autoComplete="off" />
+                {supplierDropOpen && (
+                  <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+                    {suppliers.filter(s => !supplierSearch.trim() || s.name.toLowerCase().includes(supplierSearch.toLowerCase())).slice(0, 15).map(s => (
+                      <button key={s.id} type="button" onClick={() => { setSelectedSupplierId(s.id); setSelectedSupplierName(s.name); setSupplierSearch(''); setSupplierDropOpen(false) }}
+                        className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 text-gray-900">{s.name}</button>
+                    ))}
+                    {suppliers.filter(s => !supplierSearch.trim() || s.name.toLowerCase().includes(supplierSearch.toLowerCase())).length === 0 && (
+                      <div className="px-3 py-2 text-sm text-gray-500">No suppliers match</div>
+                    )}
+                    <button type="button" onClick={() => { setNewSupplier({ name: supplierSearch.trim(), contact_name: '', email: '', phone: '', address: '' }); setAddSupplierError(''); setShowAddSupplier(true); setSupplierDropOpen(false) }}
+                      className="w-full border-t border-gray-100 px-3 py-2 text-left text-sm font-medium text-blue-600 hover:bg-blue-50">
+                      + Add New Supplier{supplierSearch.trim() ? ` "${supplierSearch.trim()}"` : ''}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          {showOptional && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="Brand Name">
+                <input type="text" value={f.brand_name} onChange={e => set('brand_name', e.target.value)} placeholder="e.g. Castrol, Penrite"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </Field>
+              <Field label="Description">
+                <textarea value={f.description} onChange={e => set('description', e.target.value)} rows={2} placeholder="Optional notes"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
+              </Field>
+            </div>
+          )}
         </div>
       </Section>
 
@@ -776,6 +872,39 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
           </div>
           )
         })()}
+      </Modal>
+
+      {/* Add Supplier Modal */}
+      <Modal open={showAddSupplier} onClose={() => setShowAddSupplier(false)} title="New Supplier">
+        <div className="space-y-3">
+          <Field label="Supplier name *">
+            <input type="text" value={newSupplier.name} onChange={e => setNewSupplier(p => ({ ...p, name: e.target.value }))}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </Field>
+          <Field label="Contact person">
+            <input type="text" value={newSupplier.contact_name} onChange={e => setNewSupplier(p => ({ ...p, contact_name: e.target.value }))}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Email">
+              <input type="email" value={newSupplier.email} onChange={e => setNewSupplier(p => ({ ...p, email: e.target.value }))}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </Field>
+            <Field label="Phone">
+              <input type="text" value={newSupplier.phone} onChange={e => setNewSupplier(p => ({ ...p, phone: e.target.value }))}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </Field>
+          </div>
+          <Field label="Address">
+            <input type="text" value={newSupplier.address} onChange={e => setNewSupplier(p => ({ ...p, address: e.target.value }))}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </Field>
+          {addSupplierError && <p className="text-sm text-red-600">{addSupplierError}</p>}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setShowAddSupplier(false)}>Cancel</Button>
+            <Button onClick={handleAddSupplierFluid} loading={addSupplierSaving}>Create Supplier</Button>
+          </div>
+        </div>
       </Modal>
 
       {/* Delete confirm modal */}

@@ -97,6 +97,7 @@ async def create_product(
         margin=margin,
         margin_pct=margin_pct,
         current_stock_volume=total_volume or Decimal("0"),
+        supplier_id=payload.supplier_id,
         created_by=user_id,
     )
     db.add(product)
@@ -168,7 +169,7 @@ async def update_product(
 
     body = await request.json()
     for field in ["fluid_type", "oil_type", "grade", "synthetic_type", "product_name",
-                   "brand_name", "description", "pack_size", "unit_type", "container_type", "gst_mode"]:
+                   "brand_name", "description", "pack_size", "unit_type", "container_type", "gst_mode", "supplier_id"]:
         if field in body:
             setattr(product, field, body[field])
     for nfield in ["qty_per_pack", "total_quantity", "purchase_price", "sell_price_per_unit"]:
