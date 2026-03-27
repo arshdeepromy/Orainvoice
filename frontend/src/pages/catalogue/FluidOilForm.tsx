@@ -176,8 +176,12 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
     if (isNonOil) {
       if (!f.brand_name.trim()) e.brand_name = 'Required'
       if (!f.product_name.trim()) e.product_name = 'Required'
+      if (!f.qty_per_pack || Number(f.qty_per_pack) <= 0) e.qty_per_pack = 'Required'
+      if (!f.container_type) e.container_type = 'Select container type'
+      if (!f.total_quantity || Number(f.total_quantity) <= 0) e.total_quantity = 'Required'
       if (!f.purchase_price || Number(f.purchase_price) <= 0) e.purchase_price = 'Required'
       if (!f.gst_mode) e.gst_mode = 'Select GST type'
+      if (!f.sell_price_per_unit || Number(f.sell_price_per_unit) <= 0) e.sell_price_per_unit = 'Required'
     }
 
     if (isOil) {
@@ -278,7 +282,7 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
       />
       {errors.fluid_type && <p className="text-xs text-red-600">{errors.fluid_type}</p>}
 
-      {/* Non-Oil: simple form */}
+      {/* Non-Oil: full form with pack/pricing like oils */}
       <Section show={isNonOil}>
         <div className="space-y-4 rounded-lg border border-gray-200 bg-white p-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -291,30 +295,84 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
                 className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </Field>
           </div>
-          <Field label="Pack Size">
-            <input type="text" value={f.pack_size} onChange={e => set('pack_size', e.target.value)} placeholder="e.g. 5L, 20L"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </Field>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Field label="Purchase Price" required error={errors.purchase_price}>
+
+          {/* Pack / Purchase Format */}
+          <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-3 space-y-3">
+            <p className="text-sm font-medium text-gray-900">How is this product purchased?</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <Field label="Qty per pack" required error={errors.qty_per_pack}>
+                <input type="number" min="1" step="0.1" value={f.qty_per_pack} onChange={e => set('qty_per_pack', e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. 5" />
+              </Field>
+              <Field label="Unit">
+                <div className="inline-flex rounded-md border border-gray-300 overflow-hidden w-full">
+                  {(['litre', 'gallon'] as UnitType[]).map((u, i) => (
+                    <button key={u} type="button" onClick={() => set('unit_type', u)}
+                      className={`flex-1 py-2 text-sm font-medium transition-colors ${i > 0 ? 'border-l border-gray-300' : ''} ${
+                        f.unit_type === u ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+                      }`}>
+                      {u === 'litre' ? 'Litre' : 'Gallon'}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+              <Field label="Container" required error={errors.container_type}>
+                <select value={f.container_type} onChange={e => set('container_type', e.target.value as ContainerType)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <option value="">Select…</option>
+                  {CONTAINER_TYPES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
+              </Field>
+              <Field label="Total packs" required error={errors.total_quantity}>
+                <input type="number" min="1" step="1" value={f.total_quantity} onChange={e => set('total_quantity', e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. 6" />
+              </Field>
+            </div>
+            {totalVolume > 0 && (
+              <div className="flex items-center gap-2 rounded-md bg-white border border-gray-200 px-3 py-2">
+                <span className="text-sm text-gray-500">Total Volume:</span>
+                <span className="text-sm font-semibold text-gray-900">{totalVolume.toLocaleString()} {unitLabel}s</span>
+              </div>
+            )}
+          </div>
+
+          {/* Pricing */}
+          <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-3 space-y-3">
+            <p className="text-sm font-medium text-gray-900">Pricing</p>
+            <Field label="Purchase Price (total cost)" required error={errors.purchase_price}>
               <div className="flex">
                 <span className="rounded-l-md border border-r-0 border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500">NZD $</span>
                 <input type="number" min="0" step="0.01" value={f.purchase_price} onChange={e => set('purchase_price', e.target.value)}
-                  className="flex-1 rounded-r-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  className="flex-1 rounded-r-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="0.00" />
               </div>
             </Field>
-            <Field label="Sell Price">
+            <SegmentedToggle label="GST" required
+              options={[{ value: 'inclusive' as GstMode, label: 'GST Inclusive' }, { value: 'exclusive' as GstMode, label: 'GST Exclusive' }, { value: 'exempt' as GstMode, label: 'GST Exempt' }]}
+              value={f.gst_mode as GstMode} onChange={v => set('gst_mode', v)} />
+            {errors.gst_mode && <p className="text-xs text-red-600">{errors.gst_mode}</p>}
+            {costPerUnit > 0 && (
+              <div className="rounded-md bg-white border border-gray-200 px-3 py-2 flex items-center justify-between">
+                <span className="text-sm text-gray-500">Cost per {unitLabel}:</span>
+                <span className="text-sm font-semibold text-gray-900">{formatNZD(costPerUnit)}</span>
+              </div>
+            )}
+            <Field label={`Sell Price per ${unitLabel}`} required error={errors.sell_price_per_unit}>
               <div className="flex">
                 <span className="rounded-l-md border border-r-0 border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500">NZD $</span>
                 <input type="number" min="0" step="0.01" value={f.sell_price_per_unit} onChange={e => set('sell_price_per_unit', e.target.value)}
-                  className="flex-1 rounded-r-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  className="flex-1 rounded-r-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="0.00" />
               </div>
             </Field>
+            {sellPerUnit > 0 && costPerUnit > 0 && (
+              <div className={`rounded-md border px-3 py-2 flex items-center justify-between ${margin >= 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                <span className="text-sm text-gray-600">Margin:</span>
+                <span className={`text-sm font-semibold ${margin >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                  {formatNZD(margin)} ({marginPct.toFixed(1)}%)
+                </span>
+              </div>
+            )}
           </div>
-          <SegmentedToggle label="GST" required
-            options={[{ value: 'inclusive' as GstMode, label: 'GST Inclusive' }, { value: 'exclusive' as GstMode, label: 'GST Exclusive' }, { value: 'exempt' as GstMode, label: 'GST Exempt' }]}
-            value={f.gst_mode as GstMode} onChange={v => set('gst_mode', v)} />
-          {errors.gst_mode && <p className="text-xs text-red-600">{errors.gst_mode}</p>}
+
           <Field label="Description">
             <textarea value={f.description} onChange={e => set('description', e.target.value)} rows={2} placeholder="Optional"
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
@@ -458,7 +516,7 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
       </Section>
 
       {/* Step 7: Summary Card */}
-      <Section show={(isOil && !!f.oil_type && totalVolume > 0) || (isNonOil && !!f.product_name)}>
+      <Section show={(isOil && !!f.oil_type && totalVolume > 0) || (isNonOil && !!f.product_name && totalVolume > 0)}>
         <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-4">
           <p className="text-xs font-semibold text-blue-700 uppercase tracking-wider mb-2">Summary</p>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
@@ -500,11 +558,29 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
                 <div>
                   <p className="text-gray-500 text-xs">Product</p>
                   <p className="font-medium text-gray-900">{f.brand_name} {f.product_name}</p>
-                  {f.pack_size && <p className="text-xs text-gray-500">{f.pack_size}</p>}
                 </div>
                 <div>
-                  <p className="text-gray-500 text-xs">Price</p>
+                  <p className="text-gray-500 text-xs">Container</p>
+                  <p className="font-medium text-gray-900">
+                    {f.total_quantity || '?'} × {f.qty_per_pack || '?'}{f.unit_type === 'litre' ? 'L' : 'gal'} {containerLabel}
+                  </p>
+                  <p className="text-xs text-gray-500">{totalVolume > 0 ? `${totalVolume.toLocaleString()} ${unitLabel}s total` : ''}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500 text-xs">Pricing</p>
                   <p className="font-medium text-gray-900">{f.purchase_price ? formatNZD(Number(f.purchase_price)) : '—'}</p>
+                  <p className="text-xs text-gray-500">
+                    {costPerUnit > 0 ? `${formatNZD(costPerUnit)}/${unitLabelLower}` : ''}
+                    {sellPerUnit > 0 ? ` → ${formatNZD(sellPerUnit)}/${unitLabelLower}` : ''}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-gray-500 text-xs">Margin</p>
+                  {margin !== 0 ? (
+                    <p className={`font-medium ${margin >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                      {formatNZD(margin)} ({marginPct.toFixed(1)}%)
+                    </p>
+                  ) : <p className="text-gray-400">—</p>}
                   {f.gst_mode && <Badge variant={f.gst_mode === 'exempt' ? 'neutral' : 'info'}>{f.gst_mode === 'inclusive' ? 'GST Inc.' : f.gst_mode === 'exclusive' ? 'GST Excl.' : 'GST Exempt'}</Badge>}
                 </div>
               </>
