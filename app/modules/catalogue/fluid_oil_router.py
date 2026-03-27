@@ -148,10 +148,10 @@ async def toggle_active(
         return JSONResponse(status_code=404, content={"detail": "Product not found"})
     product.is_active = not product.is_active
     await db.flush()
-    return FluidOilResponse.model_validate(product)
+    return {"message": "Status toggled", "is_active": product.is_active, "id": str(product.id)}
 
 
-@router.put("/{product_id}", response_model=FluidOilResponse, summary="Update fluid/oil product")
+@router.put("/{product_id}", status_code=200, summary="Update fluid/oil product")
 async def update_product(
     product_id: str,
     request: Request,
@@ -171,9 +171,12 @@ async def update_product(
 
     body = await request.json()
     for field in ["fluid_type", "oil_type", "grade", "synthetic_type", "product_name",
-                   "brand_name", "description", "pack_size", "unit_type", "container_type", "gst_mode", "supplier_id"]:
+                   "brand_name", "description", "pack_size", "unit_type", "container_type", "gst_mode"]:
         if field in body:
             setattr(product, field, body[field])
+    if "supplier_id" in body:
+        val = body["supplier_id"]
+        product.supplier_id = uuid.UUID(val) if val else None
     for nfield in ["qty_per_pack", "total_quantity", "purchase_price", "sell_price_per_unit", "min_stock_volume", "reorder_volume"]:
         if nfield in body and body[nfield] is not None:
             setattr(product, nfield, Decimal(str(body[nfield])))
@@ -189,4 +192,5 @@ async def update_product(
             product.margin_pct = (product.margin / product.cost_per_unit) * 100
 
     await db.flush()
-    return FluidOilResponse.model_validate(product)
+    # Return dict to avoid lazy-load deadlock after flush in session.begin() context
+    return {"message": "Product updated", "id": str(product.id)}
