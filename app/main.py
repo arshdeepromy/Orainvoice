@@ -184,6 +184,7 @@ def create_app() -> FastAPI:
     from app.modules.customers import models as _customer_models  # noqa: F401
     from app.modules.suppliers import models as _supplier_models  # noqa: F401
     from app.modules.catalogue import models as _catalogue_models  # noqa: F401
+    from app.modules.catalogue import fluid_oil_models as _fluid_oil_models  # noqa: F401
     from app.modules.inventory import models as _inventory_models  # noqa: F401
     from app.modules.invoices import models as _invoice_models  # noqa: F401
     from app.modules.vehicles import models as _vehicle_models  # noqa: F401
@@ -213,6 +214,7 @@ def create_app() -> FastAPI:
     from app.modules.payments.router import router as payments_router
     from app.modules.billing.router import router as billing_router
     from app.modules.catalogue.router import router as catalogue_router
+    from app.modules.catalogue.fluid_oil_router import router as fluid_oil_router
     from app.modules.storage.router import router as storage_router
     from app.modules.notifications.router import router as notifications_router
     from app.modules.quotes.router import router as quotes_router
@@ -236,6 +238,7 @@ def create_app() -> FastAPI:
     app.include_router(payments_router, prefix="/api/v1/payments", tags=["payments"])
     app.include_router(billing_router, prefix="/api/v1/billing", tags=["billing"])
     app.include_router(catalogue_router, prefix="/api/v1/catalogue", tags=["catalogue"])
+    app.include_router(fluid_oil_router, prefix="/api/v1/catalogue/fluids", tags=["catalogue-fluids"])
     app.include_router(storage_router, prefix="/api/v1/storage", tags=["storage"])
     app.include_router(notifications_router, prefix="/api/v1/notifications", tags=["notifications"])
     app.include_router(quotes_router, prefix="/api/v1/quotes", tags=["quotes"])

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { Button, Badge, Modal } from '@/components/ui'
 
 /* ── Types ── */
@@ -101,7 +101,22 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
   const [f, setF] = useState<FluidFormData>({ ...EMPTY })
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [showResult, setShowResult] = useState(false)
-  const [resultJson, setResultJson] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [saveSuccess, setSaveSuccess] = useState(false)
+
+  // List of saved products
+  const [products, setProducts] = useState<any[]>([])
+
+  const fetchProducts = async () => {
+    try {
+      const { default: apiClient } = await import('@/api/client')
+      const res = await apiClient.get('/catalogue/fluids')
+      setProducts(res.data.products || [])
+    } catch { /* non-blocking */ }
+  }
+
+  useEffect(() => { fetchProducts() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = <K extends keyof FluidFormData>(key: K, val: FluidFormData[K]) => {
     setF(prev => ({ ...prev, [key]: val }))
@@ -176,13 +191,38 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
     return Object.keys(e).length === 0
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!validate()) return
-    const json = JSON.stringify(f, null, 2)
-    setResultJson(json)
-    setShowResult(true)
-    console.log('FluidOilForm submit:', f)
-    onSubmit?.(f)
+    setSaving(true)
+    setSaveError('')
+    try {
+      const { default: apiClient } = await import('@/api/client')
+      const payload = {
+        fluid_type: f.fluid_type === 'non-oil' ? 'non-oil' : 'oil',
+        oil_type: f.oil_type || null,
+        grade: f.grade || null,
+        synthetic_type: f.synthetic_type || null,
+        product_name: f.product_name || null,
+        brand_name: f.brand_name || null,
+        description: f.description || null,
+        pack_size: f.pack_size || null,
+        qty_per_pack: f.qty_per_pack ? Number(f.qty_per_pack) : null,
+        unit_type: f.unit_type,
+        container_type: f.container_type || null,
+        total_quantity: f.total_quantity ? Number(f.total_quantity) : null,
+        purchase_price: f.purchase_price ? Number(f.purchase_price) : null,
+        gst_mode: f.gst_mode || null,
+        sell_price_per_unit: f.sell_price_per_unit ? Number(f.sell_price_per_unit) : null,
+      }
+      await apiClient.post('/catalogue/fluids', payload)
+      setSaveSuccess(true)
+      setTimeout(() => setSaveSuccess(false), 3000)
+      setF({ ...EMPTY })
+      fetchProducts()
+      onSubmit?.(f)
+    } catch (err: any) {
+      setSaveError(err?.response?.data?.detail || 'Failed to save product.')
+    } finally { setSaving(false) }
   }
 
   return (
@@ -435,14 +475,52 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
       </Section>
 
       {/* Actions */}
+      {saveError && <p className="text-sm text-red-600">{saveError}</p>}
+      {saveSuccess && <p className="text-sm text-green-600">✓ Product saved successfully.</p>}
       <div className="flex justify-end gap-3 pt-2 border-t border-gray-200">
         {onClose && <Button variant="secondary" onClick={onClose}>Cancel</Button>}
-        <Button onClick={handleSubmit}>Add Product</Button>
+        <Button onClick={handleSubmit} loading={saving}>Add Product</Button>
       </div>
 
+      {/* Saved products list */}
+      {products.length > 0 && (
+        <div className="mt-6">
+          <h3 className="text-lg font-medium text-gray-900 mb-3">Saved Fluid / Oil Products</h3>
+          <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">Product</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">Type</th>
+                  <th className="px-4 py-2 text-right text-xs font-medium uppercase text-gray-500">Volume</th>
+                  <th className="px-4 py-2 text-right text-xs font-medium uppercase text-gray-500">Cost/Unit</th>
+                  <th className="px-4 py-2 text-right text-xs font-medium uppercase text-gray-500">Sell/Unit</th>
+                  <th className="px-4 py-2 text-right text-xs font-medium uppercase text-gray-500">Margin</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {products.map((p: any) => (
+                  <tr key={p.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-2 font-medium text-gray-900">
+                      {p.brand_name ? `${p.brand_name} ` : ''}{p.product_name || p.oil_type || p.fluid_type}
+                      {p.grade && <span className="ml-1 text-gray-500">{p.grade}</span>}
+                    </td>
+                    <td className="px-4 py-2 text-gray-700 capitalize">{p.fluid_type}{p.oil_type ? ` / ${p.oil_type.replace('_', ' ')}` : ''}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{p.total_volume ? `${Number(p.total_volume).toLocaleString()} ${p.unit_type === 'gallon' ? 'gal' : 'L'}` : '—'}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{p.cost_per_unit ? formatNZD(Number(p.cost_per_unit)) : '—'}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{p.sell_price_per_unit ? formatNZD(Number(p.sell_price_per_unit)) : '—'}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{p.margin_pct != null ? `${Number(p.margin_pct).toFixed(1)}%` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Result modal */}
-      <Modal open={showResult} onClose={() => setShowResult(false)} title="Product Data (JSON)">
-        <pre className="bg-gray-900 text-green-400 rounded-md p-4 text-xs overflow-auto max-h-80 font-mono">{resultJson}</pre>
+      <Modal open={showResult} onClose={() => setShowResult(false)} title="Product Saved">
+        <p className="text-sm text-gray-600">Product has been saved to the database.</p>
         <div className="mt-3 flex justify-end">
           <Button variant="secondary" onClick={() => setShowResult(false)}>Close</Button>
         </div>
