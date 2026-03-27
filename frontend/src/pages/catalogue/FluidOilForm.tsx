@@ -106,6 +106,8 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [editProduct, setEditProduct] = useState<any | null>(null)
+  const [editSaving, setEditSaving] = useState(false)
 
   // List of saved products
   const [products, setProducts] = useState<any[]>([])
@@ -247,6 +249,19 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
       setSaveError(err?.response?.data?.detail || 'Failed to delete product.')
       setDeleteId(null)
     } finally { setDeleting(false) }
+  }
+
+  const handleEditSave = async () => {
+    if (!editProduct) return
+    setEditSaving(true)
+    try {
+      const { default: apiClient } = await import('@/api/client')
+      await apiClient.put(`/catalogue/fluids/${editProduct.id}`, editProduct)
+      setEditProduct(null)
+      fetchProducts()
+    } catch (err: any) {
+      setSaveError(err?.response?.data?.detail || 'Failed to update product.')
+    } finally { setEditSaving(false) }
   }
 
   return (
@@ -541,6 +556,7 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
                     </td>
                     <td className="px-4 py-2 text-right">
                       <div className="flex justify-end gap-1">
+                        <Button size="sm" variant="secondary" onClick={() => setEditProduct({...p})}>Edit</Button>
                         <Button size="sm" variant="secondary" onClick={() => handleToggleActive(p.id)}>
                           {p.is_active ? 'Deactivate' : 'Activate'}
                         </Button>
@@ -554,6 +570,59 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
           </div>
         </div>
       )}
+
+      {/* Edit modal */}
+      <Modal open={!!editProduct} onClose={() => setEditProduct(null)} title="Edit Fluid / Oil Product">
+        {editProduct && (
+          <div className="space-y-3">
+            <Field label="Brand Name">
+              <input type="text" value={editProduct.brand_name || ''} onChange={e => setEditProduct((p: any) => ({...p, brand_name: e.target.value}))}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </Field>
+            {editProduct.fluid_type === 'non-oil' && (
+              <Field label="Product Name">
+                <input type="text" value={editProduct.product_name || ''} onChange={e => setEditProduct((p: any) => ({...p, product_name: e.target.value}))}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </Field>
+            )}
+            {editProduct.oil_type === 'engine' && (
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Grade">
+                  <input type="text" value={editProduct.grade || ''} onChange={e => setEditProduct((p: any) => ({...p, grade: e.target.value}))}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </Field>
+                <Field label="Synthetic Type">
+                  <select value={editProduct.synthetic_type || ''} onChange={e => setEditProduct((p: any) => ({...p, synthetic_type: e.target.value}))}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="">—</option>
+                    <option value="semi_synthetic">Semi Synthetic</option>
+                    <option value="full_synthetic">Full Synthetic</option>
+                    <option value="mineral">Mineral</option>
+                  </select>
+                </Field>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Purchase Price">
+                <input type="number" min="0" step="0.01" value={editProduct.purchase_price || ''} onChange={e => setEditProduct((p: any) => ({...p, purchase_price: e.target.value}))}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </Field>
+              <Field label={`Sell Price per ${editProduct.unit_type === 'gallon' ? 'Gallon' : 'Litre'}`}>
+                <input type="number" min="0" step="0.01" value={editProduct.sell_price_per_unit || ''} onChange={e => setEditProduct((p: any) => ({...p, sell_price_per_unit: e.target.value}))}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </Field>
+            </div>
+            <Field label="Description">
+              <textarea value={editProduct.description || ''} onChange={e => setEditProduct((p: any) => ({...p, description: e.target.value}))} rows={2}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
+            </Field>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="secondary" onClick={() => setEditProduct(null)}>Cancel</Button>
+              <Button onClick={handleEditSave} loading={editSaving}>Save Changes</Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Delete confirm modal */}
       <Modal open={!!deleteId} onClose={() => setDeleteId(null)} title="Delete Product">
