@@ -303,6 +303,13 @@ class OrgSettingsUpdateRequest(BaseModel):
         description="Sidebar branding display: icon_and_name, icon_only, or name_only",
     )
 
+    # Trade category
+    trade_category_slug: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="Trade category slug (e.g. 'general-automotive', 'plumber'). Changes the org's trade type.",
+    )
+
 
 class OrgSettingsUpdateResponse(BaseModel):
     """Response after updating organisation settings."""

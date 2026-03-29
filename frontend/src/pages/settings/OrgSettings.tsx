@@ -9,6 +9,19 @@ import apiClient from '@/api/client'
 
 /* ── Types ── */
 
+interface TradeFamily {
+  id: string
+  name: string
+  slug: string
+}
+
+interface TradeCategory {
+  id: string
+  name: string
+  slug: string
+  family_id: string
+}
+
 interface BrandingForm {
   name: string
   logo_url: string | null
@@ -390,11 +403,118 @@ function ToolbarBtn({ label, onClick, children }: { label: string; onClick: () =
   )
 }
 
+/* ── Business Type Tab ── */
+
+function BusinessTypeTab() {
+  const { refetch: refetchTenant } = useTenant()
+  const [families, setFamilies] = useState<TradeFamily[]>([])
+  const [categories, setCategories] = useState<TradeCategory[]>([])
+  const [currentSlug, setCurrentSlug] = useState<string | null>(null)
+  const [selectedSlug, setSelectedSlug] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const { toasts, addToast, dismissToast } = useToast()
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchData = async () => {
+      try {
+        const [famRes, catRes, settingsRes] = await Promise.all([
+          apiClient.get('/api/v2/trade-families', { signal: controller.signal }),
+          apiClient.get('/api/v2/trade-categories', { signal: controller.signal }),
+          apiClient.get('/org/settings', { signal: controller.signal }),
+        ])
+        setFamilies(famRes.data?.families ?? [])
+        setCategories(catRes.data?.categories ?? [])
+        const slug = settingsRes.data?.trade_category ?? null
+        setCurrentSlug(slug)
+        setSelectedSlug(slug)
+      } catch {
+        if (!controller.signal.aborted) {
+          addToast('error', 'Failed to load trade categories')
+        }
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchData()
+    return () => controller.abort()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const save = async () => {
+    if (selectedSlug === currentSlug) return
+    setSaving(true)
+    try {
+      await apiClient.put('/org/settings', { trade_category_slug: selectedSlug })
+      setCurrentSlug(selectedSlug)
+      await refetchTenant()
+      addToast('success', 'Business type updated')
+    } catch {
+      addToast('error', 'Failed to update business type')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Group categories by family
+  const grouped = families
+    .map((fam) => ({
+      family: fam,
+      items: categories.filter((cat) => cat.family_id === fam.id),
+    }))
+    .filter((g) => g.items.length > 0)
+
+  if (loading) {
+    return <p className="text-sm text-gray-500">Loading trade categories…</p>
+  }
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      <p className="text-sm text-gray-600">
+        Select the trade category that best describes your business. This controls which catalogue items and features are shown in the sidebar.
+      </p>
+
+      <div className="flex flex-col gap-1">
+        <label htmlFor="trade-category" className="text-sm font-medium text-gray-700">Business Type</label>
+        <select
+          id="trade-category"
+          value={selectedSlug ?? ''}
+          onChange={(e) => setSelectedSlug(e.target.value || null)}
+          className="rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+        >
+          <option value="">— Select a trade category —</option>
+          {grouped.map((g) => (
+            <optgroup key={g.family.id} label={g.family.name}>
+              {g.items.map((cat) => (
+                <option key={cat.id} value={cat.slug}>
+                  {cat.name}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+
+      {selectedSlug && selectedSlug !== currentSlug && (
+        <p className="text-sm text-amber-600">
+          Changing your business type will update which features and catalogue items are visible.
+        </p>
+      )}
+
+      <Button onClick={save} loading={saving} disabled={selectedSlug === currentSlug}>
+        Save Business Type
+      </Button>
+    </div>
+  )
+}
+
 /* ── Main Export ── */
 
 export function OrgSettings() {
   const tabs = [
     { id: 'branding', label: 'Branding', content: <BrandingTab /> },
+    { id: 'business-type', label: 'Business Type', content: <BusinessTypeTab /> },
     { id: 'gst', label: 'GST', content: <GstTab /> },
     { id: 'invoice', label: 'Invoice', content: <InvoiceTab /> },
     { id: 'terms', label: 'Terms & Conditions', content: <TermsTab /> },

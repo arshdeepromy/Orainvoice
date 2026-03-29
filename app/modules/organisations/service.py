@@ -296,6 +296,20 @@ async def update_org_settings(
             new_settings[key] = value
             updated_fields.append(key)
 
+    # --- Update trade category (top-level column) ---
+    trade_category_slug = kwargs.get("trade_category_slug")
+    if trade_category_slug is not None:
+        from sqlalchemy import text
+        cat_result = await db.execute(
+            text("SELECT id FROM trade_categories WHERE slug = :slug AND is_active = true"),
+            {"slug": trade_category_slug},
+        )
+        cat_row = cat_result.fetchone()
+        if cat_row is None:
+            raise ValueError(f"Trade category '{trade_category_slug}' not found")
+        org.trade_category_id = cat_row[0]
+        updated_fields.append("trade_category")
+
     if not updated_fields:
         return {"updated_fields": []}
 
