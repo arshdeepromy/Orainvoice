@@ -104,8 +104,8 @@ export default function StockMovements() {
       if (typeFilter) params.movement_type = typeFilter
       if (productFilter) params.product_id = productFilter
       const res = await apiClient.get<StockMovementListResponse>('/v2/stock-movements', { params })
-      setMovements(res.data.movements)
-      setTotal(res.data.total)
+      setMovements(res.data?.movements ?? [])
+      setTotal(res.data?.total ?? 0)
     } catch {
       setError('Failed to load stock movements.')
     } finally {
@@ -116,7 +116,7 @@ export default function StockMovements() {
   const fetchProducts = useCallback(async () => {
     try {
       const res = await apiClient.get<{ products: Product[] }>('/v2/products', { params: { page_size: 500 } })
-      setProducts(res.data.products)
+      setProducts(res.data?.products ?? [])
     } catch { /* non-critical */ }
   }, [])
 

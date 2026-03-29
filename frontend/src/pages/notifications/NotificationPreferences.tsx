@@ -40,7 +40,7 @@ export default function NotificationPreferences() {
     setError('')
     try {
       const res = await apiClient.get<PreferencesResponse>('/notifications/settings')
-      setCategories(res.data.categories)
+      setCategories(res.data?.categories ?? [])
     } catch {
       setError('Failed to load notification preferences.')
     } finally {

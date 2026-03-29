@@ -444,9 +444,9 @@ function StaffAllocationSection({
           {allocations.map((a) => (
             <tr key={a.staff_member_id} data-testid={`alloc-row-${a.staff_member_id}`}>
               <td>{a.staff_name}</td>
-              <td>${a.total_tips.toFixed(2)}</td>
+              <td>${(a.total_tips ?? 0).toFixed(2)}</td>
               <td>{a.tip_count}</td>
-              <td>${a.average_tip.toFixed(2)}</td>
+              <td>${(a.average_tip ?? 0).toFixed(2)}</td>
             </tr>
           ))}
           {allocations.length === 0 && (
@@ -472,7 +472,7 @@ function StaffAllocationSection({
                 return (
                   <tr key={p.id} data-testid={`preview-row-${p.id}`}>
                     <td>{staffName}</td>
-                    <td>${p.amount.toFixed(2)}</td>
+                    <td>${(p.amount ?? 0).toFixed(2)}</td>
                   </tr>
                 )
               })}
@@ -499,11 +499,11 @@ function TipAnalyticsSection({ analytics }: { analytics: TipAnalyticsData | null
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
         <div data-testid="analytics-total-collected">
           <strong>Total {tipLabel}s Collected</strong>
-          <p>${analytics.total_tips_collected.toFixed(2)}</p>
+          <p>${(analytics.total_tips_collected ?? 0).toFixed(2)}</p>
         </div>
         <div data-testid="analytics-avg-pct">
           <strong>Average {tipLabel} %</strong>
-          <p>{analytics.average_tip_percentage.toFixed(1)}%</p>
+          <p>{(analytics.average_tip_percentage ?? 0).toFixed(1)}%</p>
         </div>
       </div>
 
@@ -517,7 +517,7 @@ function TipAnalyticsSection({ analytics }: { analytics: TipAnalyticsData | null
               {analytics.tips_by_payment_method.map((m) => (
                 <tr key={m.method} data-testid={`method-row-${m.method}`}>
                   <td>{m.method}</td>
-                  <td>${m.total.toFixed(2)}</td>
+                  <td>${(m.total ?? 0).toFixed(2)}</td>
                   <td>{m.count}</td>
                 </tr>
               ))}
@@ -536,7 +536,7 @@ function TipAnalyticsSection({ analytics }: { analytics: TipAnalyticsData | null
               {analytics.tips_per_staff.map((s) => (
                 <tr key={s.staff_id} data-testid={`staff-tip-row-${s.staff_id}`}>
                   <td>{s.name}</td>
-                  <td>${s.total.toFixed(2)}</td>
+                  <td>${(s.total ?? 0).toFixed(2)}</td>
                 </tr>
               ))}
             </tbody>
@@ -554,7 +554,7 @@ function TipAnalyticsSection({ analytics }: { analytics: TipAnalyticsData | null
               {analytics.daily_totals.map((d) => (
                 <tr key={d.date}>
                   <td>{d.date}</td>
-                  <td>${d.total.toFixed(2)}</td>
+                  <td>${(d.total ?? 0).toFixed(2)}</td>
                 </tr>
               ))}
             </tbody>
@@ -577,7 +577,7 @@ export function TipTransactionSummary({ tipInfo }: { tipInfo: TipSummaryInfo | n
       <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
         <span className="text-sm text-gray-600">{tipLabel}</span>
         <span className="text-sm font-medium" data-testid="tip-summary-amount">
-          ${tipInfo.tip_amount.toFixed(2)}
+          ${(tipInfo.tip_amount ?? 0).toFixed(2)}
         </span>
       </div>
       <div style={{ fontSize: 12, color: '#6b7280' }}>
@@ -587,7 +587,7 @@ export function TipTransactionSummary({ tipInfo }: { tipInfo: TipSummaryInfo | n
         <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
           {tipInfo.staff_allocations.map((a) => (
             <span key={a.name} style={{ marginRight: 8 }}>
-              {a.name}: ${a.amount.toFixed(2)}
+              {a.name}: ${(a.amount ?? 0).toFixed(2)}
             </span>
           ))}
         </div>

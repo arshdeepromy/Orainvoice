@@ -6,6 +6,7 @@ Requirements: 59.1, 59.2, 59.5
 from __future__ import annotations
 
 import math
+import re
 import uuid
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -510,12 +511,15 @@ async def convert_job_card_to_invoice(
             "Only completed job cards can be converted to invoices."
         )
 
-    # Build invoice line items from job card items
+    # Build invoice line items from job card items — strip location tags for customer-facing invoice
     invoice_line_items = []
     for li in jc_dict.get("line_items", []):
+        desc = li["description"]
+        # Remove [📍 ...] location tags from descriptions
+        desc = re.sub(r'\s*\[📍[^\]]*\]', '', desc).strip()
         invoice_line_items.append({
             "item_type": li["item_type"],
-            "description": li["description"],
+            "description": desc,
             "quantity": li["quantity"],
             "unit_price": li["unit_price"],
             "catalogue_item_id": li.get("catalogue_item_id"),
@@ -523,7 +527,66 @@ async def convert_job_card_to_invoice(
             "sort_order": li.get("sort_order", 0),
         })
 
-    # Create draft invoice
+    # Look up the original booking to get fluid usage data
+    fluid_usage_for_invoice = None
+    try:
+        from app.modules.bookings.models import Booking
+        bk_result = await db.execute(
+            select(Booking).where(
+                Booking.converted_job_id == job_card_id,
+                Booking.org_id == org_id,
+            )
+        )
+        source_booking = bk_result.scalar_one_or_none()
+        if source_booking and source_booking.booking_data_json:
+            booking_fluids = source_booking.booking_data_json.get("fluid_usage", [])
+            if booking_fluids:
+                fluid_usage_for_invoice = [
+                    {
+                        "stock_item_id": f.get("stock_item_id"),
+                        "catalogue_item_id": f.get("catalogue_item_id"),
+                        "item_name": f.get("item_name", ""),
+                        "litres": f.get("litres", 0),
+                    }
+                    for f in booking_fluids if f.get("stock_item_id") and f.get("litres", 0) > 0
+                ]
+                # Release booking fluid reservations (invoice will re-reserve)
+                from app.modules.inventory.stock_items_service import release_reservation
+                for f in booking_fluids:
+                    sid = f.get("stock_item_id")
+                    litres = float(f.get("litres", 0))
+                    if sid and litres > 0:
+                        try:
+                            await release_reservation(
+                                db, org_id=org_id, user_id=user_id,
+                                stock_item_id=uuid.UUID(str(sid)), quantity=litres,
+                                reference_type="booking_fluid", reference_id=source_booking.id,
+                            )
+                        except Exception:
+                            pass
+            # Also release part reservations from booking (invoice will re-reserve)
+            booking_parts = source_booking.booking_data_json.get("parts", [])
+            for bp in booking_parts:
+                sid = bp.get("stock_item_id")
+                qty = float(bp.get("quantity", 0))
+                if sid and qty > 0:
+                    try:
+                        await release_reservation(
+                            db, org_id=org_id, user_id=user_id,
+                            stock_item_id=uuid.UUID(str(sid)), quantity=qty,
+                            reference_type="booking", reference_id=source_booking.id,
+                        )
+                    except Exception:
+                        pass
+    except Exception:
+        pass  # Non-blocking — booking lookup is best-effort
+
+    # Create draft invoice with parts (from line items) and fluid usage
+    # Strip internal oil/fluid notes from customer-facing invoice notes
+    raw_notes = jc_dict.get("notes") or ""
+    # Remove the "── Oil / Fluid Required ──" section and everything after it
+    clean_notes = re.split(r'\n*── Oil / Fluid Required ──', raw_notes)[0].strip() or None
+
     invoice_dict = await create_invoice(
         db,
         org_id=org_id,
@@ -532,7 +595,8 @@ async def convert_job_card_to_invoice(
         vehicle_rego=jc_dict.get("vehicle_rego"),
         status="draft",
         line_items_data=invoice_line_items,
-        notes_customer=jc_dict.get("notes"),
+        fluid_usage_data=fluid_usage_for_invoice,
+        notes_customer=clean_notes,
         ip_address=ip_address,
     )
 
@@ -624,9 +688,11 @@ async def combine_job_cards_to_invoice(
     sort_offset = 0
     for jc in job_cards_data:
         for li in jc.get("line_items", []):
+            desc = li["description"]
+            desc = re.sub(r'\s*\[📍[^\]]*\]', '', desc).strip()
             invoice_line_items.append({
                 "item_type": li["item_type"],
-                "description": li["description"],
+                "description": desc,
                 "quantity": li["quantity"],
                 "unit_price": li["unit_price"],
                 "catalogue_item_id": li.get("catalogue_item_id"),
@@ -635,7 +701,49 @@ async def combine_job_cards_to_invoice(
             })
         sort_offset += len(jc.get("line_items", []))
 
-    # Create draft invoice
+    # Create draft invoice with combined fluid usage from source bookings
+    combined_fluid_usage = []
+    try:
+        from app.modules.bookings.models import Booking
+        from app.modules.inventory.stock_items_service import release_reservation
+        for jc_id in job_card_ids:
+            bk_result = await db.execute(
+                select(Booking).where(Booking.converted_job_id == jc_id, Booking.org_id == org_id)
+            )
+            bk = bk_result.scalar_one_or_none()
+            if bk and bk.booking_data_json:
+                for f in bk.booking_data_json.get("fluid_usage", []):
+                    if f.get("stock_item_id") and f.get("litres", 0) > 0:
+                        combined_fluid_usage.append({
+                            "stock_item_id": f["stock_item_id"],
+                            "catalogue_item_id": f.get("catalogue_item_id", ""),
+                            "item_name": f.get("item_name", ""),
+                            "litres": f["litres"],
+                        })
+                        try:
+                            await release_reservation(
+                                db, org_id=org_id, user_id=user_id,
+                                stock_item_id=uuid.UUID(str(f["stock_item_id"])),
+                                quantity=float(f["litres"]),
+                                reference_type="booking_fluid", reference_id=bk.id,
+                            )
+                        except Exception:
+                            pass
+                for bp in bk.booking_data_json.get("parts", []):
+                    sid = bp.get("stock_item_id")
+                    qty = float(bp.get("quantity", 0))
+                    if sid and qty > 0:
+                        try:
+                            await release_reservation(
+                                db, org_id=org_id, user_id=user_id,
+                                stock_item_id=uuid.UUID(str(sid)), quantity=qty,
+                                reference_type="booking", reference_id=bk.id,
+                            )
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+
     invoice_dict = await create_invoice(
         db,
         org_id=org_id,
@@ -644,6 +752,7 @@ async def combine_job_cards_to_invoice(
         vehicle_rego=vehicle_rego,
         status="draft",
         line_items_data=invoice_line_items,
+        fluid_usage_data=combined_fluid_usage if combined_fluid_usage else None,
         ip_address=ip_address,
     )
 

@@ -85,8 +85,8 @@ export default function ProductList() {
       if (search.trim()) params.search = search.trim()
       if (categoryFilter) params.category_id = categoryFilter
       const res = await apiClient.get<ProductListResponse>('/v2/products', { params })
-      setProducts(res.data.products)
-      setTotal(res.data.total)
+      setProducts(res.data?.products ?? [])
+      setTotal(res.data?.total ?? 0)
     } catch {
       setError(`Failed to load ${productLabel.toLowerCase()}s.`)
     } finally {
@@ -97,21 +97,21 @@ export default function ProductList() {
   const fetchAllProducts = useCallback(async () => {
     try {
       const res = await apiClient.get<ProductListResponse>('/v2/products', { params: { page_size: 1000 } })
-      setAllProducts(res.data.products)
+      setAllProducts(res.data?.products ?? [])
     } catch { /* non-critical */ }
   }, [])
 
   const fetchCategories = useCallback(async () => {
     try {
       const res = await apiClient.get<{ categories: Category[] }>('/v2/product-categories')
-      setCategories(res.data.categories)
+      setCategories(res.data?.categories ?? [])
     } catch { /* non-critical */ }
   }, [])
 
   const fetchSuppliers = useCallback(async () => {
     try {
       const res = await apiClient.get<{ suppliers: Supplier[] }>('/v2/suppliers')
-      setSuppliers(res.data.suppliers)
+      setSuppliers(res.data?.suppliers ?? [])
     } catch { /* non-critical */ }
   }, [])
 

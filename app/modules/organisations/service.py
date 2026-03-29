@@ -208,8 +208,11 @@ async def get_org_settings(
     """Retrieve organisation settings for the given org.
 
     Returns a flat dict with org_name (from the name column) and all
-    settings keys from the JSONB column.
+    settings keys from the JSONB column. Includes trade_family and
+    trade_category for trade-specific UI gating.
     """
+    from sqlalchemy import text
+
     result = await db.execute(
         select(Organisation).where(Organisation.id == org_id)
     )
@@ -219,8 +222,28 @@ async def get_org_settings(
 
     settings_data = dict(org.settings) if org.settings else {}
 
+    # Resolve trade family and category from the org's trade_category_id
+    trade_family = None
+    trade_category = None
+    if org.trade_category_id:
+        trade_result = await db.execute(
+            text(
+                "SELECT tc.slug, tf.slug "
+                "FROM trade_categories tc "
+                "JOIN trade_families tf ON tc.family_id = tf.id "
+                "WHERE tc.id = :cat_id"
+            ),
+            {"cat_id": org.trade_category_id},
+        )
+        trade_row = trade_result.fetchone()
+        if trade_row:
+            trade_category = trade_row[0]
+            trade_family = trade_row[1]
+
     return {
         "org_name": org.name,
+        "trade_family": trade_family,
+        "trade_category": trade_category,
         **{key: settings_data.get(key) for key in SETTINGS_JSONB_KEYS},
     }
 
@@ -556,20 +579,22 @@ async def invite_org_user(
     inviter_user_id: uuid.UUID,
     email: str,
     role: str,
+    password: str | None = None,
     ip_address: str | None = None,
 ) -> dict:
-    """Invite a new user to the organisation.
+    """Invite a new user to the organisation, or create directly with a password.
+
+    When ``password`` is provided (typically for kiosk accounts), the user is
+    created immediately with the password set and ``is_email_verified=True``
+    — no invitation email is sent.  When ``password`` is ``None``, the
+    existing invite-token flow is used.
 
     Enforces seat limits per the subscription plan (Requirement 10.4).
-    When the seat limit is reached, raises ValueError with upgrade message
-    (Requirement 10.5).
-
-    Delegates actual user creation and invitation token generation to
-    ``auth.service.create_invitation``.
 
     Returns a dict with user details.
     """
     from app.modules.auth.service import create_invitation
+    from app.modules.auth.password import hash_password
 
     # Check seat limit (Requirement 10.4, 10.5)
     seat_limit, active_count = await _get_seat_limit_and_count(db, org_id)
@@ -579,7 +604,46 @@ async def invite_org_user(
             seat_limit=seat_limit,
         )
 
-    # Delegate to auth service for user creation + invitation token
+    if password is not None:
+        # Direct creation path — create user with password, skip invite email
+        existing = await db.execute(select(User).where(User.email == email))
+        if existing.scalar_one_or_none() is not None:
+            raise ValueError("A user with this email already exists")
+
+        new_user = User(
+            org_id=org_id,
+            email=email,
+            role=role,
+            is_active=True,
+            is_email_verified=True,
+            password_hash=hash_password(password),
+        )
+        db.add(new_user)
+        await db.flush()
+
+        from app.modules.auth.service import write_audit_log
+        await write_audit_log(
+            session=db,
+            org_id=org_id,
+            user_id=inviter_user_id,
+            action="auth.user_created_direct",
+            entity_type="user",
+            entity_id=new_user.id,
+            after_value={"email": email, "role": role},
+            ip_address=ip_address,
+        )
+
+        return {
+            "id": str(new_user.id),
+            "email": new_user.email,
+            "role": new_user.role,
+            "is_active": new_user.is_active,
+            "is_email_verified": new_user.is_email_verified,
+            "last_login_at": None,
+            "created_at": new_user.created_at.isoformat() if new_user.created_at else None,
+        }
+
+    # Invite flow — delegate to auth service for user creation + invitation token
     result = await create_invitation(
         db,
         inviter_user_id=inviter_user_id,
@@ -653,8 +717,8 @@ async def update_org_user(
 
     # Update role
     if role is not None:
-        if role not in ("org_admin", "salesperson"):
-            raise ValueError("Role must be 'org_admin' or 'salesperson'")
+        if role not in ("org_admin", "salesperson", "kiosk"):
+            raise ValueError("Role must be 'org_admin', 'salesperson', or 'kiosk'")
         user.role = role
         updated_fields.append("role")
 
@@ -776,6 +840,50 @@ async def _invalidate_user_sessions(
         count += 1
 
     return count
+
+
+async def revoke_user_sessions(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    acting_user_id: uuid.UUID,
+    target_user_id: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Revoke all active sessions for a user without deactivating the account.
+
+    Requirement 7.3: Org_Admin can revoke kiosk sessions.
+
+    Returns a dict with user_id and sessions_invalidated count.
+    Raises ValueError if user not found.
+    """
+    result = await db.execute(
+        select(User).where(User.id == target_user_id, User.org_id == org_id)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise ValueError("User not found in this organisation")
+
+    sessions_invalidated = await _invalidate_user_sessions(db, user_id=target_user_id)
+    await db.flush()
+
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=acting_user_id,
+        action="org.user_sessions_revoked",
+        entity_type="user",
+        entity_id=target_user_id,
+        after_value={
+            "sessions_invalidated": sessions_invalidated,
+        },
+        ip_address=ip_address,
+    )
+
+    return {
+        "user_id": str(target_user_id),
+        "sessions_invalidated": sessions_invalidated,
+    }
 
 
 async def update_mfa_policy(

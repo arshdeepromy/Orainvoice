@@ -90,7 +90,7 @@ export default function RecurringList() {
     try {
       const params = statusFilter ? `?status=${statusFilter}` : ''
       const res = await apiClient.get(`/api/v2/recurring/${params}`)
-      setSchedules(res.data.schedules)
+      setSchedules(res.data?.schedules ?? [])
     } catch {
       setError('Failed to load recurring schedules')
     } finally {

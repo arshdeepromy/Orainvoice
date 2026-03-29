@@ -457,7 +457,7 @@ export default function RecurringInvoices() {
       const res = await apiClient.get<RecurringScheduleListResponse>('/invoices/recurring', {
         params: activeOnly ? { active_only: true } : {},
       })
-      setSchedules(res.data.schedules)
+      setSchedules(res.data?.schedules ?? [])
     } catch {
       setError('Failed to load recurring schedules.')
     } finally {

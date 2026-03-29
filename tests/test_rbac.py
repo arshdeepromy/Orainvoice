@@ -172,7 +172,7 @@ class TestThreeRolesEnforced:
     def test_all_roles_defined(self):
         assert ALL_ROLES == {
             "global_admin", "franchise_admin", "org_admin",
-            "location_manager", "salesperson", "staff_member",
+            "location_manager", "salesperson", "staff_member", "kiosk",
         }
 
     def test_valid_roles_accepted(self, client):

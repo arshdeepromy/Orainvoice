@@ -169,7 +169,7 @@ export default function ProductDetail({ productId }: { productId?: string }) {
       const res = await apiClient.get<{ movements: StockMovement[] }>('/v2/stock-movements', {
         params: { product_id: productId },
       })
-      setMovements(res.data.movements)
+      setMovements(res.data?.movements ?? [])
     } catch { /* non-critical */ }
   }, [productId])
 
@@ -179,7 +179,7 @@ export default function ProductDetail({ productId }: { productId?: string }) {
       const res = await apiClient.get<{ rules: PricingRule[] }>('/v2/pricing-rules', {
         params: { product_id: productId },
       })
-      setPricingRules(res.data.rules)
+      setPricingRules(res.data?.rules ?? [])
     } catch { /* non-critical */ }
   }, [productId])
 

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Service History Report</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; color: #333; margin: 0; padding: 0; background: #f4f4f4; }
+    .container { max-width: 600px; margin: 20px auto; background: #fff; border-radius: 6px; overflow: hidden; }
+    .header { background: #1a1a2e; color: #fff; padding: 24px; text-align: center; }
+    .header img { max-height: 60px; margin-bottom: 12px; }
+    .header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+    .body { padding: 24px; line-height: 1.6; }
+    .vehicle-info { background: #f8f9fa; border-radius: 4px; padding: 16px; margin: 16px 0; }
+    .vehicle-info p { margin: 4px 0; }
+    .footer { padding: 16px 24px; font-size: 12px; color: #888; text-align: center; border-top: 1px solid #eee; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      {% if org.logo_url %}
+      <img src="{{ org.logo_url }}" alt="{{ org.name }}">
+      {% endif %}
+      <h1>{{ org.name }}</h1>
+    </div>
+    <div class="body">
+      <p>Please find attached the Service History Report for the following vehicle:</p>
+      <div class="vehicle-info">
+        <p><strong>Registration:</strong> {{ vehicle.rego }}</p>
+        <p><strong>Vehicle:</strong> {{ vehicle.make }} {{ vehicle.model }}{% if vehicle.year %} ({{ vehicle.year }}){% endif %}</p>
+        <p><strong>Period:</strong> {{ date_range_label }}</p>
+      </div>
+      <p>This report was generated on {{ generated_date }}.</p>
+      <p>If you have any questions, please don't hesitate to contact us.</p>
+    </div>
+    <div class="footer">
+      <p>{{ org.name }}{% if org.phone %} &middot; {{ org.phone }}{% endif %}{% if org.email %} &middot; {{ org.email }}{% endif %}</p>
+      {% if org.address %}<p>{{ org.address }}</p>{% endif %}
+    </div>
+  </div>
+</body>
+</html>

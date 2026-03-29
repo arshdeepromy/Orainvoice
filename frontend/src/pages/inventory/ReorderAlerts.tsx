@@ -2,31 +2,27 @@ import { useState, useEffect, useCallback } from 'react'
 import apiClient from '../../api/client'
 import { Badge, Spinner, AlertBanner } from '../../components/ui'
 
-/* ------------------------------------------------------------------ */
-/*  Types                                                              */
-/* ------------------------------------------------------------------ */
-
-interface ReorderAlert {
-  part_id: string
-  part_name: string
+interface StockItem {
+  id: string
+  catalogue_item_id: string
+  catalogue_type: string
+  item_name: string
   part_number: string | null
-  current_stock: number
+  brand: string | null
+  current_quantity: number
   min_threshold: number
   reorder_quantity: number
+  is_below_threshold: boolean
+  barcode: string | null
 }
 
-interface ReorderAlertListResponse {
-  alerts: ReorderAlert[]
+interface StockItemListResponse {
+  stock_items: StockItem[]
   total: number
 }
 
-/**
- * Reorder alerts view showing parts that have fallen below their minimum stock threshold.
- *
- * Requirements: 62.3
- */
 export default function ReorderAlerts() {
-  const [data, setData] = useState<ReorderAlertListResponse | null>(null)
+  const [alerts, setAlerts] = useState<StockItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -34,8 +30,10 @@ export default function ReorderAlerts() {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<ReorderAlertListResponse>('/inventory/stock/reorder-alerts')
-      setData(res.data)
+      const res = await apiClient.get<StockItemListResponse>('/inventory/stock-items', {
+        params: { below_threshold_only: true, limit: 500 },
+      })
+      setAlerts(res.data?.stock_items ?? [])
     } catch {
       setError('Failed to load reorder alerts.')
     } finally {
@@ -45,30 +43,39 @@ export default function ReorderAlerts() {
 
   useEffect(() => { fetchAlerts() }, [fetchAlerts])
 
+  function typeBadge(type: string) {
+    switch (type) {
+      case 'part': return <Badge variant="info">Part</Badge>
+      case 'tyre': return <Badge variant="neutral">Tyre</Badge>
+      case 'fluid': return <Badge variant="neutral" className="bg-purple-100 text-purple-800 border-purple-300">Fluid/Oil</Badge>
+      default: return <Badge variant="neutral">{type}</Badge>
+    }
+  }
+
   return (
     <div>
       <p className="text-sm text-gray-500 mb-4">
-        Parts that have fallen below their minimum stock threshold and need reordering.
+        Items that have fallen below their minimum stock threshold and need reordering.
       </p>
 
       {error && (
         <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{error}</div>
       )}
 
-      {loading && !data && (
+      {loading && alerts.length === 0 && (
         <div className="py-16"><Spinner label="Loading reorder alerts" /></div>
       )}
 
-      {data && data.alerts.length === 0 && (
+      {!loading && alerts.length === 0 && !error && (
         <AlertBanner variant="success" title="All stocked up">
-          No parts are currently below their minimum threshold.
+          No items are currently below their minimum threshold.
         </AlertBanner>
       )}
 
-      {data && data.alerts.length > 0 && (
+      {alerts.length > 0 && (
         <>
-          <AlertBanner variant="warning" title={`${data.total} part${data.total !== 1 ? 's' : ''} need reordering`} className="mb-4">
-            The following parts have stock levels at or below their minimum threshold.
+          <AlertBanner variant="warning" title={`${alerts.length} item${alerts.length !== 1 ? 's' : ''} need reordering`} className="mb-4">
+            The following items have stock levels at or below their minimum threshold.
           </AlertBanner>
 
           <div className="overflow-x-auto rounded-lg border border-gray-200">
@@ -76,7 +83,8 @@ export default function ReorderAlerts() {
               <caption className="sr-only">Reorder alerts</caption>
               <thead className="bg-gray-50">
                 <tr>
-                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Part</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Type</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Item</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Part Number</th>
                   <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Current Stock</th>
                   <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Min Threshold</th>
@@ -85,20 +93,22 @@ export default function ReorderAlerts() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {data.alerts.map((a) => (
-                  <tr key={a.part_id} className="hover:bg-gray-50 bg-amber-50/50">
-                    <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-gray-900">{a.part_name}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{a.part_number || '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums font-medium text-red-700">{a.current_stock}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-700">{a.min_threshold}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-700">{a.reorder_quantity}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
-                      <Badge variant="error">
-                        {a.min_threshold - a.current_stock} short
-                      </Badge>
-                    </td>
-                  </tr>
-                ))}
+                {alerts.map((s) => {
+                  const deficit = s.min_threshold - s.current_quantity
+                  return (
+                    <tr key={s.id} className="hover:bg-gray-50 bg-amber-50/50">
+                      <td className="whitespace-nowrap px-4 py-3 text-sm">{typeBadge(s.catalogue_type)}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-gray-900">{s.item_name}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{s.part_number || '—'}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums font-medium text-red-700">{s.current_quantity}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-700">{s.min_threshold}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-700">{s.reorder_quantity}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
+                        <Badge variant="error">{deficit > 0 ? `${deficit} short` : 'At threshold'}</Badge>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

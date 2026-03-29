@@ -196,7 +196,9 @@ async def authenticate_user(
     refresh_token = create_refresh_token()
 
     # 6. Determine refresh token expiry
-    if payload.remember_me:
+    if user.role == "kiosk":
+        expires_delta = timedelta(days=30)
+    elif payload.remember_me:
         expires_delta = timedelta(days=settings.refresh_token_remember_days)
     else:
         expires_delta = timedelta(days=settings.refresh_token_expire_days)
@@ -2024,8 +2026,8 @@ async def create_invitation(
     from app.core.redis import redis_pool
 
     # Validate role
-    if role not in ("org_admin", "salesperson"):
-        raise ValueError("Role must be 'org_admin' or 'salesperson'")
+    if role not in ("org_admin", "salesperson", "kiosk"):
+        raise ValueError("Role must be 'org_admin', 'salesperson', or 'kiosk'")
 
     # Check if email already exists
     result = await db.execute(select(User).where(User.email == email))

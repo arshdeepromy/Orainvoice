@@ -101,7 +101,7 @@ export default function PricingRules() {
   const fetchProducts = useCallback(async () => {
     try {
       const res = await apiClient.get<{ products: Product[] }>('/v2/products', { params: { page_size: 500 } })
-      setProducts(res.data.products)
+      setProducts(res.data?.products ?? [])
     } catch { /* non-critical */ }
   }, [])
 

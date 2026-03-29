@@ -112,6 +112,9 @@ class Organisation(Base):
     locale: Mapped[str] = mapped_column(
         String(10), nullable=False, server_default="'en'"
     )
+    trade_category_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     timezone: Mapped[str] = mapped_column(
         String(50), nullable=False, server_default="'UTC'"
     )

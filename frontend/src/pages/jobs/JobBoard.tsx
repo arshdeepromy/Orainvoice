@@ -77,7 +77,7 @@ export default function JobBoard() {
     setLoading(true)
     try {
       const res = await apiClient.get('/api/v2/jobs?page_size=200')
-      setJobs(res.data.jobs)
+      setJobs(res.data?.jobs ?? [])
     } catch {
       setError('Failed to load jobs')
     } finally {

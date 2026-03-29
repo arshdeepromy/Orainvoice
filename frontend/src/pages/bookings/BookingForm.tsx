@@ -160,6 +160,40 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
   const [reminderOption, setReminderOption] = useState<'none' | '24' | '6' | 'custom'>('none')
   const [customReminderHours, setCustomReminderHours] = useState('')
 
+  // Inventory parts and fluid usage for reservation
+  interface BookingPart { key: string; stock_item_id: string; catalogue_item_id: string; item_name: string; quantity: number; sell_price: number | null; gst_mode: string | null }
+  interface BookingFluid { key: string; stock_item_id: string; catalogue_item_id: string; item_name: string; litres: number }
+  const [bookingParts, setBookingParts] = useState<BookingPart[]>([])
+  const [bookingFluids, setBookingFluids] = useState<BookingFluid[]>([])
+  const [partsPickerOpen, setPartsPickerOpen] = useState(false)
+  const [fluidPickerOpen, setFluidPickerOpen] = useState(false)
+  const [stockItems, setStockItems] = useState<any[]>([])
+  const [stockLoading, setStockLoading] = useState(false)
+  const [stockSearch, setStockSearch] = useState('')
+
+  const openPartsPicker = async () => {
+    setPartsPickerOpen(true); setStockSearch(''); setStockLoading(true)
+    try {
+      const res = await apiClient.get('/inventory/stock-items', { params: { limit: 500 } })
+      setStockItems(((res.data as any).stock_items || []).filter((si: any) => si.catalogue_type !== 'fluid' && si.available_quantity > 0))
+    } catch { setStockItems([]) } finally { setStockLoading(false) }
+  }
+  const openFluidPicker = async () => {
+    setFluidPickerOpen(true); setStockSearch(''); setStockLoading(true)
+    try {
+      const res = await apiClient.get('/inventory/stock-items', { params: { limit: 500 } })
+      setStockItems(((res.data as any).stock_items || []).filter((si: any) => si.catalogue_type === 'fluid' && si.available_quantity > 0))
+    } catch { setStockItems([]) } finally { setStockLoading(false) }
+  }
+  const addBookingPart = (si: any) => {
+    setBookingParts(prev => [...prev, { key: crypto.randomUUID(), stock_item_id: si.id, catalogue_item_id: si.catalogue_item_id, item_name: si.item_name + (si.subtitle ? ` (${si.subtitle})` : ''), quantity: 1, sell_price: si.sell_price, gst_mode: si.gst_mode }])
+    setPartsPickerOpen(false)
+  }
+  const addBookingFluid = (si: any) => {
+    setBookingFluids(prev => [...prev, { key: crypto.randomUUID(), stock_item_id: si.id, catalogue_item_id: si.catalogue_item_id, item_name: si.item_name, litres: 1 }])
+    setFluidPickerOpen(false)
+  }
+
   const [saving, setSaving] = useState(false)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [error, setError] = useState('')
@@ -210,6 +244,9 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
           setDurationMinutes(String(b.duration_minutes))
           setNotes(b.notes ?? '')
           setStatus(b.status)
+          // Load parts and fluid usage from booking_data_json
+          setBookingParts((b.parts || []).map((p: any) => ({ key: crypto.randomUUID(), stock_item_id: p.stock_item_id, catalogue_item_id: p.catalogue_item_id, item_name: p.item_name || '', quantity: p.quantity || 1, sell_price: p.sell_price ?? null, gst_mode: p.gst_mode ?? null })))
+          setBookingFluids((b.fluid_usage || []).map((f: any) => ({ key: crypto.randomUUID(), stock_item_id: f.stock_item_id, catalogue_item_id: f.catalogue_item_id, item_name: f.item_name || '', litres: f.litres || 1 })))
         })
         .catch(() => setError('Failed to load booking details.'))
         .finally(() => setLoadingDetail(false))
@@ -243,6 +280,8 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
       setCustomReminderHours('')
       setShowCustomerCreateModal(false)
       setError('')
+      setBookingParts([])
+      setBookingFluids([])
     }
   }, [open, editBooking, initialDate])
 
@@ -410,6 +449,8 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
           send_email_confirmation: sendEmailConfirmation,
           send_sms_confirmation: sendSmsConfirmation,
           reminder_offset_hours: reminderOption === 'none' ? null : reminderOption === 'custom' ? (customReminderHours && !isNaN(parseFloat(customReminderHours)) ? parseFloat(customReminderHours) : null) : parseFloat(reminderOption),
+          parts: bookingParts.filter(p => p.quantity > 0).map(p => ({ stock_item_id: p.stock_item_id, catalogue_item_id: p.catalogue_item_id, item_name: p.item_name, quantity: p.quantity, sell_price: p.sell_price, gst_mode: p.gst_mode })),
+          fluid_usage: bookingFluids.filter(f => f.litres > 0).map(f => ({ stock_item_id: f.stock_item_id, catalogue_item_id: f.catalogue_item_id, item_name: f.item_name, litres: f.litres })),
         })
       }
       onSaved()
@@ -776,6 +817,42 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
             />
           </div>
 
+          {/* Parts from Inventory (optional) */}
+          <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-blue-900">Parts (optional)</span>
+              <button type="button" onClick={openPartsPicker} className="text-xs font-medium text-blue-600 hover:underline">+ Add Part</button>
+            </div>
+            {bookingParts.map(p => (
+              <div key={p.key} className="flex items-center gap-2 bg-white rounded border border-blue-100 px-2 py-1.5">
+                <span className="flex-1 text-sm text-gray-900 truncate">{p.item_name}</span>
+                <input type="number" min="1" step="1" value={p.quantity} onChange={e => setBookingParts(prev => prev.map(x => x.key === p.key ? { ...x, quantity: Math.max(1, parseInt(e.target.value) || 1) } : x))} className="w-16 rounded border border-gray-300 px-1.5 py-1 text-sm text-right" />
+                {p.sell_price != null && <span className="text-xs text-gray-500">${p.sell_price.toFixed(2)}</span>}
+                <button type="button" onClick={() => setBookingParts(prev => prev.filter(x => x.key !== p.key))} className="text-gray-400 hover:text-red-500">✕</button>
+              </div>
+            ))}
+            {bookingParts.length === 0 && <p className="text-xs text-blue-700">No parts added. Click "+ Add Part" to reserve inventory.</p>}
+          </div>
+
+          {/* Fluid / Oil Usage (optional, shown when vehicle is selected) */}
+          {vehiclesEnabled && selectedVehicle && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-amber-900">Oil / Fluid (optional)</span>
+                <button type="button" onClick={openFluidPicker} className="text-xs font-medium text-amber-700 hover:underline">+ Add Fluid</button>
+              </div>
+              {bookingFluids.map(f => (
+                <div key={f.key} className="flex items-center gap-2 bg-white rounded border border-amber-100 px-2 py-1.5">
+                  <span className="flex-1 text-sm text-gray-900 truncate">{f.item_name}</span>
+                  <input type="number" min="0.1" step="0.1" value={f.litres} onChange={e => setBookingFluids(prev => prev.map(x => x.key === f.key ? { ...x, litres: Math.max(0.1, parseFloat(e.target.value) || 0.1) } : x))} className="w-16 rounded border border-gray-300 px-1.5 py-1 text-sm text-right" />
+                  <span className="text-xs text-gray-500">L</span>
+                  <button type="button" onClick={() => setBookingFluids(prev => prev.filter(x => x.key !== f.key))} className="text-gray-400 hover:text-red-500">✕</button>
+                </div>
+              ))}
+              {bookingFluids.length === 0 && <p className="text-xs text-amber-700">No fluids added. Click "+ Add Fluid" to reserve oil/fluid.</p>}
+            </div>
+          )}
+
           {/* Confirmation notifications (create only) */}
           {!isEdit && (
             <div className="space-y-2">
@@ -887,6 +964,41 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
           </div>
         </form>
       )}
+
+      {/* Parts Picker Modal */}
+      <Modal open={partsPickerOpen} onClose={() => setPartsPickerOpen(false)} title="Add Part from Inventory">
+        <div className="space-y-3">
+          <input type="text" placeholder="Search parts..." value={stockSearch} onChange={e => setStockSearch(e.target.value)} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+          {stockLoading ? <div className="py-6 text-center text-sm text-gray-500">Loading...</div> : (
+            <div className="max-h-64 overflow-y-auto divide-y divide-gray-100">
+              {stockItems.filter(si => !stockSearch || si.item_name.toLowerCase().includes(stockSearch.toLowerCase())).map((si: any) => (
+                <button key={si.id} type="button" onClick={() => addBookingPart(si)} className="w-full text-left px-3 py-2 hover:bg-blue-50 flex justify-between">
+                  <div><div className="text-sm font-medium text-gray-900">{si.item_name}</div><div className="text-xs text-gray-500">{si.part_number && `${si.part_number} · `}{si.brand || ''} · Avail: {si.available_quantity}</div></div>
+                  <span className="text-sm text-gray-900">{si.sell_price != null ? `$${si.sell_price.toFixed(2)}` : '—'}</span>
+                </button>
+              ))}
+              {stockItems.length === 0 && <div className="py-6 text-center text-sm text-gray-500">No parts in stock.</div>}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* Fluid Picker Modal */}
+      <Modal open={fluidPickerOpen} onClose={() => setFluidPickerOpen(false)} title="Add Oil / Fluid">
+        <div className="space-y-3">
+          <input type="text" placeholder="Search fluids..." value={stockSearch} onChange={e => setStockSearch(e.target.value)} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+          {stockLoading ? <div className="py-6 text-center text-sm text-gray-500">Loading...</div> : (
+            <div className="max-h-64 overflow-y-auto divide-y divide-gray-100">
+              {stockItems.filter(si => !stockSearch || si.item_name.toLowerCase().includes(stockSearch.toLowerCase())).map((si: any) => (
+                <button key={si.id} type="button" onClick={() => addBookingFluid(si)} className="w-full text-left px-3 py-2 hover:bg-amber-50 flex justify-between">
+                  <div><div className="text-sm font-medium text-gray-900">{si.item_name}</div><div className="text-xs text-gray-500">{si.brand || ''} · Avail: {si.available_quantity}L</div></div>
+                </button>
+              ))}
+              {stockItems.length === 0 && <div className="py-6 text-center text-sm text-gray-500">No fluids in stock.</div>}
+            </div>
+          )}
+        </div>
+      </Modal>
     </Modal>
   )
 }

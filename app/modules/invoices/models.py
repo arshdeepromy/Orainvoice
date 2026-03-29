@@ -289,6 +289,9 @@ class LineItem(Base):
     catalogue_item_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
+    stock_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     part_number: Mapped[str | None] = mapped_column(
         String(100), nullable=True
     )

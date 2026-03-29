@@ -1,4 +1,5 @@
 import { Tabs } from '../../components/ui'
+import { useTenant } from '@/contexts/TenantContext'
 import ServiceCatalogue from './ServiceCatalogue'
 import PartsCatalogue from './PartsCatalogue'
 import LabourRates from './LabourRates'
@@ -6,13 +7,18 @@ import FluidOilForm from './FluidOilForm'
 
 /**
  * Catalogue management page with tabbed navigation for services, parts, labour rates, and fluids/oils.
+ * Parts and Fluids/Oils tabs are only shown for automotive-transport trade family.
  */
 export default function CataloguePage() {
+  const { tradeFamily } = useTenant()
+  // Null tradeFamily treated as automotive for backward compat (all existing orgs are automotive)
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+
   const tabs = [
     { id: 'services', label: 'Services', content: <ServiceCatalogue /> },
-    { id: 'parts', label: 'Parts', content: <PartsCatalogue /> },
+    ...(isAutomotive ? [{ id: 'parts', label: 'Parts', content: <PartsCatalogue /> }] : []),
     { id: 'labour-rates', label: 'Labour Rates', content: <LabourRates /> },
-    { id: 'fluids', label: 'Fluids / Oils', content: <FluidOilForm /> },
+    ...(isAutomotive ? [{ id: 'fluids', label: 'Fluids / Oils', content: <FluidOilForm /> }] : []),
   ]
 
   return (

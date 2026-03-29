@@ -188,16 +188,15 @@ export default function JobCardDetail() {
     setTransitioning(true)
     setActionMessage('')
     try {
-      if (newStatus === 'completed') {
-        const res = await apiClient.post(`/job-cards/${jobCard.id}/complete`)
-        const data = res.data as { job_card_id: string; invoice_id: string }
-        setActionMessage('Job completed and invoice created.')
-        navigate(`/invoices/${data.invoice_id}`)
-      } else {
-        await apiClient.put(`/job-cards/${jobCard.id}`, { status: newStatus })
-        fetchJobCard()
-        setActionMessage(`Status updated to ${STATUS_CONFIG[newStatus].label}.`)
+      // Auto-stop timer when marking complete
+      if (newStatus === 'completed' && (jobCard.is_timer_active || (jobCard.active_timer && !jobCard.active_timer.stopped_at))) {
+        try {
+          await apiClient.post(`/job-cards/${jobCard.id}/timer/stop`)
+        } catch { /* timer may already be stopped */ }
       }
+      await apiClient.put(`/job-cards/${jobCard.id}`, { status: newStatus })
+      fetchJobCard()
+      setActionMessage(`Status updated to ${STATUS_CONFIG[newStatus].label}.`)
     } catch {
       setActionMessage('Failed to update status.')
       fetchJobCard()
@@ -246,7 +245,7 @@ export default function JobCardDetail() {
       const res = await apiClient.post(`/job-cards/${jobCard.id}/convert`)
       const data = res.data as { invoice_id: string }
       setConvertModalOpen(false)
-      navigate(`/invoices/${data.invoice_id}`)
+      navigate(`/invoices/${data.invoice_id}/edit`)
     } catch {
       setActionMessage('Failed to convert to invoice.')
       setConvertModalOpen(false)

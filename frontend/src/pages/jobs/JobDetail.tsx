@@ -353,17 +353,17 @@ export default function JobDetail({ jobId }: Props) {
               <h2>{jobLabel} Profitability</h2>
               <dl>
                 <dt>Total Revenue</dt>
-                <dd>${financials.total_revenue.toFixed(2)}</dd>
+                <dd>${(financials.total_revenue ?? 0).toFixed(2)}</dd>
                 <dt>Time Costs</dt>
-                <dd>${financials.time_costs.toFixed(2)}</dd>
+                <dd>${(financials.time_costs ?? 0).toFixed(2)}</dd>
                 <dt>Expense Costs</dt>
-                <dd>${financials.expense_costs.toFixed(2)}</dd>
+                <dd>${(financials.expense_costs ?? 0).toFixed(2)}</dd>
                 <dt>Material Costs</dt>
-                <dd>${financials.material_costs.toFixed(2)}</dd>
+                <dd>${(financials.material_costs ?? 0).toFixed(2)}</dd>
                 <dt>Total Costs</dt>
-                <dd>${(financials.time_costs + financials.expense_costs + financials.material_costs).toFixed(2)}</dd>
+                <dd>${((financials.time_costs ?? 0) + (financials.expense_costs ?? 0) + (financials.material_costs ?? 0)).toFixed(2)}</dd>
                 <dt>Profit Margin</dt>
-                <dd>${profitability.margin.toFixed(2)}</dd>
+                <dd>${(profitability.margin ?? 0).toFixed(2)}</dd>
                 <dt>Margin Percentage</dt>
                 <dd
                   style={{
@@ -371,7 +371,7 @@ export default function JobDetail({ jobId }: Props) {
                     fontWeight: 600,
                   }}
                 >
-                  {profitability.marginPercentage.toFixed(1)}%
+                  {(profitability.marginPercentage ?? 0).toFixed(1)}%
                 </dd>
               </dl>
             </div>

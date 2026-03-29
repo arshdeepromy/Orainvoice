@@ -71,6 +71,8 @@ def _booking_to_dict(booking: Booking) -> dict:
         "reminder_offset_hours": booking.reminder_offset_hours,
         "reminder_scheduled_at": booking.reminder_scheduled_at,
         "reminder_cancelled": booking.reminder_cancelled,
+        "parts": (booking.booking_data_json or {}).get("parts", []),
+        "fluid_usage": (booking.booking_data_json or {}).get("fluid_usage", []),
         "created_at": booking.created_at,
         "updated_at": booking.updated_at,
     }
@@ -208,6 +210,8 @@ async def create_booking(
     send_email_confirmation: bool | None = None,
     send_sms_confirmation: bool = False,
     reminder_offset_hours: float | None = None,
+    parts_data: list[dict] | None = None,
+    fluid_usage_data: list[dict] | None = None,
     ip_address: str | None = None,
 ) -> dict:
     """Create a new booking."""
@@ -293,6 +297,62 @@ async def create_booking(
     )
     db.add(booking)
     await db.flush()
+
+    # Reserve inventory parts and fluids for this booking
+    booking_json: dict = {}
+    if parts_data:
+        from app.modules.inventory.stock_items_service import reserve_stock
+        parts_records = []
+        for p in parts_data:
+            sid = p.get("stock_item_id")
+            qty = float(p.get("quantity", 0))
+            if sid and qty > 0:
+                try:
+                    await reserve_stock(
+                        db, org_id=org_id, user_id=user_id,
+                        stock_item_id=uuid.UUID(str(sid)), quantity=qty,
+                        reference_type="booking", reference_id=booking.id,
+                    )
+                except Exception:
+                    pass
+                parts_records.append({
+                    "stock_item_id": str(sid),
+                    "catalogue_item_id": str(p.get("catalogue_item_id", "")),
+                    "item_name": p.get("item_name", ""),
+                    "quantity": qty,
+                    "sell_price": p.get("sell_price"),
+                    "gst_mode": p.get("gst_mode"),
+                })
+        if parts_records:
+            booking_json["parts"] = parts_records
+
+    if fluid_usage_data:
+        from app.modules.inventory.stock_items_service import reserve_stock as _res
+        fluid_records = []
+        for f in fluid_usage_data:
+            sid = f.get("stock_item_id")
+            litres = float(f.get("litres", 0))
+            if sid and litres > 0:
+                try:
+                    await _res(
+                        db, org_id=org_id, user_id=user_id,
+                        stock_item_id=uuid.UUID(str(sid)), quantity=litres,
+                        reference_type="booking_fluid", reference_id=booking.id,
+                    )
+                except Exception:
+                    pass
+                fluid_records.append({
+                    "stock_item_id": str(sid),
+                    "catalogue_item_id": str(f.get("catalogue_item_id", "")),
+                    "item_name": f.get("item_name", ""),
+                    "litres": litres,
+                })
+        if fluid_records:
+            booking_json["fluid_usage"] = fluid_records
+
+    if booking_json:
+        booking.booking_data_json = booking_json
+        await db.flush()
 
     # --- Auto-link customer ↔ vehicle (mirrors invoice creation logic) ---
     if vehicle_rego:
@@ -457,8 +517,15 @@ async def get_booking(
 
 
 def _get_calendar_range(view: str, date_param: datetime | None) -> tuple[datetime, datetime]:
-    """Return (start, end) datetimes for a calendar view."""
+    """Return (start, end) datetimes for a calendar view.
+    
+    Adds a buffer to account for timezone differences (up to UTC+14).
+    Bookings are stored in UTC but users think in local time.
+    """
     now = date_param or datetime.now(timezone.utc)
+    # Strip timezone info for consistent weekday calculation
+    if now.tzinfo:
+        now = now.replace(tzinfo=None)
     if view == "day":
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=1)
@@ -472,6 +539,9 @@ def _get_calendar_range(view: str, date_param: datetime | None) -> tuple[datetim
         start = now - timedelta(days=now.weekday())
         start = start.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=7)
+    # Add buffer for timezone differences (bookings stored in UTC, users in local time)
+    start = start - timedelta(hours=14)
+    end = end + timedelta(hours=14)
     return start, end
 
 
@@ -681,12 +751,70 @@ async def convert_booking_to_job_card(
                     "unit_price": booking.service_price,
                 })
 
+    # Add reserved parts from booking as job card line items
+    booking_json = booking.booking_data_json or {}
+    booking_parts = booking_json.get("parts", [])
+    booking_fluids = booking_json.get("fluid_usage", [])
+
+    # Look up stock item locations for parts and fluids
+    all_stock_ids = []
+    for bp in booking_parts:
+        sid = bp.get("stock_item_id")
+        if sid:
+            all_stock_ids.append(uuid.UUID(str(sid)))
+    for bf in booking_fluids:
+        sid = bf.get("stock_item_id")
+        if sid:
+            all_stock_ids.append(uuid.UUID(str(sid)))
+
+    location_map: dict[str, str] = {}
+    if all_stock_ids:
+        from app.modules.inventory.models import StockItem as _SI
+        loc_result = await db.execute(
+            select(_SI.id, _SI.location).where(_SI.id.in_(all_stock_ids))
+        )
+        for row in loc_result.all():
+            if row[1]:
+                location_map[str(row[0])] = row[1]
+
+    for bp in booking_parts:
+        sell_price = bp.get("sell_price") or 0
+        qty = bp.get("quantity", 1)
+        loc = location_map.get(str(bp.get("stock_item_id", "")), "")
+        desc = bp.get("item_name", "Part")
+        if loc:
+            desc += f" [📍 {loc}]"
+        line_items_data.append({
+            "item_type": "part",
+            "catalogue_item_id": None,
+            "description": desc,
+            "quantity": Decimal(str(qty)),
+            "unit_price": Decimal(str(sell_price)),
+        })
+
+    # Build enhanced notes with fluid usage and location info
+    notes_parts = []
+    if booking.notes:
+        notes_parts.append(booking.notes)
+
+    if booking_fluids:
+        fluid_lines = ["", "── Oil / Fluid Required ──"]
+        for bf in booking_fluids:
+            loc = location_map.get(str(bf.get("stock_item_id", "")), "")
+            line = f"• {bf.get('item_name', 'Fluid')}: {bf.get('litres', 0)}L"
+            if loc:
+                line += f"  [📍 {loc}]"
+            fluid_lines.append(line)
+        notes_parts.extend(fluid_lines)
+
+    enhanced_notes = "\n".join(notes_parts) if notes_parts else booking.notes
+
     job_card = await create_job_card(
         db, org_id=org_id, user_id=user_id,
         customer_id=customer_id,
         vehicle_rego=booking.vehicle_rego,
         description=booking.service_type,
-        notes=booking.notes,
+        notes=enhanced_notes,
         assigned_to=assigned_to,
         line_items_data=line_items_data,
         ip_address=ip_address,
@@ -741,18 +869,78 @@ async def convert_booking_to_invoice(
             "Please ensure the customer exists before converting."
         )
 
-    # Build line items from booking service info
+    # Build line items from booking service info + reserved parts
     invoice_line_items: list[dict] = []
     if bk.get("service_type"):
         price = Decimal(str(bk["service_price"])) if bk.get("service_price") else Decimal("0")
         invoice_line_items.append({
             "item_type": "service",
             "description": bk["service_type"],
-            "quantity": 1,
+            "quantity": Decimal("1"),
             "unit_price": price,
             "is_gst_exempt": False,
             "sort_order": 0,
         })
+
+    # Add reserved parts from booking as invoice line items
+    booking_parts = bk.get("parts", [])
+    for idx, bp in enumerate(booking_parts):
+        sell_price = bp.get("sell_price") or 0
+        gst_mode = bp.get("gst_mode", "exclusive")
+        # Back-calculate ex-GST rate for inclusive items
+        if gst_mode == "inclusive" and sell_price > 0:
+            unit_price = round(sell_price / 1.15, 2)
+        else:
+            unit_price = sell_price
+        invoice_line_items.append({
+            "item_type": "part",
+            "description": bp.get("item_name", "Part"),
+            "stock_item_id": bp.get("stock_item_id"),
+            "catalogue_item_id": bp.get("catalogue_item_id"),
+            "quantity": Decimal(str(bp.get("quantity", 1))),
+            "unit_price": Decimal(str(unit_price)),
+            "is_gst_exempt": gst_mode == "exempt",
+            "sort_order": len(invoice_line_items),
+        })
+
+    # Build fluid usage data from booking
+    booking_fluids = bk.get("fluid_usage", [])
+    fluid_usage_for_invoice = [
+        {
+            "stock_item_id": f.get("stock_item_id"),
+            "catalogue_item_id": f.get("catalogue_item_id"),
+            "item_name": f.get("item_name", ""),
+            "litres": f.get("litres", 0),
+        }
+        for f in booking_fluids if f.get("stock_item_id") and f.get("litres", 0) > 0
+    ]
+
+    # Release booking reservations before creating invoice (invoice will re-reserve)
+    from app.modules.inventory.stock_items_service import release_reservation
+    for bp in booking_parts:
+        sid = bp.get("stock_item_id")
+        qty = float(bp.get("quantity", 0))
+        if sid and qty > 0:
+            try:
+                await release_reservation(
+                    db, org_id=org_id, user_id=user_id,
+                    stock_item_id=uuid.UUID(str(sid)), quantity=qty,
+                    reference_type="booking", reference_id=booking_id,
+                )
+            except Exception:
+                pass
+    for bf in booking_fluids:
+        sid = bf.get("stock_item_id")
+        litres = float(bf.get("litres", 0))
+        if sid and litres > 0:
+            try:
+                await release_reservation(
+                    db, org_id=org_id, user_id=user_id,
+                    stock_item_id=uuid.UUID(str(sid)), quantity=litres,
+                    reference_type="booking_fluid", reference_id=booking_id,
+                )
+            except Exception:
+                pass
 
     # Create draft invoice (same pattern as convert_job_card_to_invoice)
     invoice_dict = await create_invoice(
@@ -763,6 +951,7 @@ async def convert_booking_to_invoice(
         vehicle_rego=bk.get("vehicle_rego"),
         status="draft",
         line_items_data=invoice_line_items if invoice_line_items else None,
+        fluid_usage_data=fluid_usage_for_invoice if fluid_usage_for_invoice else None,
         notes_internal=bk.get("notes"),
         ip_address=ip_address,
     )

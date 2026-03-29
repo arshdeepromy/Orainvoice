@@ -76,8 +76,8 @@ export default function JobList() {
       if (statusFilter) params.set('status', statusFilter)
 
       const res = await apiClient.get(`/api/v2/jobs?${params}`)
-      setJobs(res.data.jobs)
-      setTotal(res.data.total)
+      setJobs(res.data?.jobs ?? [])
+      setTotal(res.data?.total ?? 0)
     } catch {
       setJobs([])
     } finally {

@@ -143,9 +143,10 @@ export default function FloorPlan({ floorPlanId, onTableTap }: FloorPlanProps) {
   const fetchFloorPlans = useCallback(async () => {
     try {
       const res = await apiClient.get('/api/v2/tables/floor-plans')
-      setFloorPlans(res.data.floor_plans)
-      if (!selectedPlanId && res.data.floor_plans.length > 0) {
-        setSelectedPlanId(res.data.floor_plans[0].id)
+      const plans = res.data?.floor_plans ?? []
+      setFloorPlans(plans)
+      if (!selectedPlanId && plans.length > 0) {
+        setSelectedPlanId(plans[0].id)
       }
     } catch {
       setError('Failed to load floor plans.')

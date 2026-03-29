@@ -47,6 +47,7 @@ from app.modules.organisations.service import (
     list_branches,
     list_org_users,
     list_salespeople,
+    revoke_user_sessions,
     save_onboarding_step,
     update_mfa_policy,
     update_org_settings,
@@ -146,7 +147,7 @@ async def save_onboarding(
         403: {"description": "Org role required"},
     },
     summary="Get organisation settings and branding",
-    dependencies=[require_role("org_admin", "salesperson")],
+    dependencies=[require_role("org_admin", "salesperson", "location_manager", "kiosk")],
 )
 async def get_settings(
     request: Request,
@@ -549,6 +550,7 @@ async def invite_user(
             inviter_user_id=user_uuid,
             email=payload.email,
             role=payload.role,
+            password=payload.password,
             ip_address=ip_address,
         )
     except SeatLimitExceeded as exc:
@@ -680,6 +682,58 @@ async def delete_user(
 
     return UserDeactivateResponse(
         message="User deactivated",
+        user_id=result["user_id"],
+        sessions_invalidated=result["sessions_invalidated"],
+    )
+
+
+@router.post(
+    "/users/{target_user_id}/revoke-sessions",
+    response_model=UserDeactivateResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    summary="Revoke all active sessions for a user",
+    dependencies=[require_role("org_admin")],
+)
+async def revoke_sessions(
+    target_user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Revoke all active sessions for a user without deactivating the account.
+
+    Requirements: 7.3
+    """
+    acting_user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        acting_uuid = uuid.UUID(acting_user_id) if acting_user_id else uuid.uuid4()
+        target_uuid = uuid.UUID(target_user_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid UUID format"})
+
+    try:
+        result = await revoke_user_sessions(
+            db,
+            org_id=org_uuid,
+            acting_user_id=acting_uuid,
+            target_user_id=target_uuid,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return UserDeactivateResponse(
+        message="Sessions revoked",
         user_id=result["user_id"],
         sessions_invalidated=result["sessions_invalidated"],
     )

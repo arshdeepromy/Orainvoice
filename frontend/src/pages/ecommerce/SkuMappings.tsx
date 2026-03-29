@@ -35,7 +35,7 @@ export default function SkuMappings() {
   const fetchMappings = useCallback(async () => {
     try {
       const res = await apiClient.get('/api/v2/ecommerce/sku-mappings')
-      setMappings(res.data.mappings)
+      setMappings(res.data?.mappings ?? [])
     } catch {
       setError('Failed to load SKU mappings')
     } finally {

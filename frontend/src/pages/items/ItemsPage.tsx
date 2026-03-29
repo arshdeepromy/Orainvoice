@@ -73,8 +73,8 @@ export default function ItemsPage() {
       if (search.trim()) params.search = search.trim()
 
       const res = await apiClient.get<{ items: Item[]; total: number }>('/catalogue/items', { params })
-      setItems(res.data.items)
-      setTotal(res.data.total)
+      setItems(res.data?.items ?? [])
+      setTotal(res.data?.total ?? 0)
     } catch {
       addToast('error', 'Failed to load items.')
       setItems([])

@@ -154,8 +154,8 @@ export default function Reminders() {
     setError('')
     try {
       const res = await apiClient.get<RemindersResponse>('/notifications/reminders')
-      setManualReminders(res.data.manual_reminders)
-      setRules(res.data.automated_reminders)
+      setManualReminders(res.data?.manual_reminders ?? [])
+      setRules(res.data?.automated_reminders ?? [])
     } catch {
       setError('Failed to load reminders.')
     } finally {

@@ -115,8 +115,8 @@ export default function VehicleList() {
       const params: Record<string, string | number> = { page: p, page_size: pageSize }
       if (q.trim()) params.search = q.trim()
       const res = await apiClient.get<VehicleListResponse>('/vehicles', { params })
-      setVehicles(res.data.items)
-      setTotal(res.data.total)
+      setVehicles(res.data?.items ?? [])
+      setTotal(res.data?.total ?? 0)
     } catch {
       setVehicles([])
       setTotal(0)

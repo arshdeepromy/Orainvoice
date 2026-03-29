@@ -250,6 +250,56 @@ get_service = get_item
 # ===========================================================================
 
 
+def _compute_pricing(
+    purchase_price: Decimal | None,
+    qty_per_pack: int | None,
+    total_packs: int | None,
+    sell_price_per_unit: Decimal | None,
+) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
+    """Derive cost_per_unit, margin, and margin_pct from pricing inputs.
+
+    Returns (cost_per_unit, margin, margin_pct).  Any field that cannot be
+    computed (missing or invalid inputs) is returned as ``None``.
+
+    Requirements: 2.1, 2.2, 2.3, 2.4, 3.1, 3.2, 3.3, 3.4
+    """
+    cost_per_unit: Decimal | None = None
+    margin: Decimal | None = None
+    margin_pct: Decimal | None = None
+
+    if (
+        purchase_price is not None
+        and qty_per_pack is not None
+        and total_packs is not None
+        and purchase_price > 0
+        and qty_per_pack > 0
+        and total_packs > 0
+    ):
+        total_units = qty_per_pack * total_packs
+        cost_per_unit = Decimal(str(purchase_price)) / Decimal(str(total_units))
+
+    if sell_price_per_unit is not None and cost_per_unit is not None:
+        margin = Decimal(str(sell_price_per_unit)) - cost_per_unit
+        if sell_price_per_unit > 0:
+            margin_pct = (margin / Decimal(str(sell_price_per_unit))) * Decimal("100")
+        else:
+            margin_pct = Decimal("0.00")
+
+    return cost_per_unit, margin, margin_pct
+
+def _map_gst_legacy(is_gst_exempt: bool, gst_inclusive: bool) -> str:
+    """Map legacy GST boolean fields to the unified gst_mode string.
+
+    Requirements: 4.3, 4.4, 4.5, 4.6
+    """
+    if is_gst_exempt:
+        return "exempt"
+    if gst_inclusive:
+        return "inclusive"
+    return "exclusive"
+
+
+
 def _part_to_dict(part: PartsCatalogue) -> dict:
     """Convert a PartsCatalogue ORM instance to a serialisable dict."""
     # Use getattr with None default to avoid lazy-load greenlet errors
@@ -285,6 +335,19 @@ def _part_to_dict(part: PartsCatalogue) -> dict:
         "gst_inclusive": getattr(part, 'gst_inclusive', False),
         "supplier": getattr(part, "_supplier_name", None) or sup_name,
         "is_active": part.is_active,
+        # Packaging & pricing fields
+        "purchase_price": str(part.purchase_price) if part.purchase_price is not None else None,
+        "packaging_type": part.packaging_type,
+        "qty_per_pack": part.qty_per_pack,
+        "total_packs": part.total_packs,
+        "cost_per_unit": str(part.cost_per_unit) if part.cost_per_unit is not None else None,
+        "sell_price_per_unit": str(part.sell_price_per_unit) if part.sell_price_per_unit is not None else None,
+        "margin": str(part.margin) if part.margin is not None else None,
+        "margin_pct": str(part.margin_pct) if part.margin_pct is not None else None,
+        "gst_mode": part.gst_mode if part.gst_mode is not None else _map_gst_legacy(
+            getattr(part, 'is_gst_exempt', False),
+            getattr(part, 'gst_inclusive', False),
+        ),
         "tyre_width": getattr(part, "tyre_width", None),
         "tyre_profile": getattr(part, "tyre_profile", None),
         "tyre_rim_dia": getattr(part, "tyre_rim_dia", None),
@@ -355,6 +418,13 @@ async def create_part(
     is_active: bool = True,
     min_stock_threshold: int = 0,
     reorder_quantity: int = 0,
+    # Packaging & pricing fields
+    purchase_price: str | None = None,
+    packaging_type: str | None = None,
+    qty_per_pack: int | None = None,
+    total_packs: int | None = None,
+    sell_price_per_unit: str | None = None,
+    gst_mode: str | None = None,
     tyre_width: str | None = None,
     tyre_profile: str | None = None,
     tyre_rim_dia: str | None = None,
@@ -364,7 +434,7 @@ async def create_part(
 ) -> dict:
     """Create a new parts catalogue entry.
 
-    Requirements: 28.1
+    Requirements: 28.1, 7.1, 7.4
     """
     try:
         price = Decimal(default_price)
@@ -373,6 +443,26 @@ async def create_part(
 
     if price < 0:
         raise ValueError("Price cannot be negative")
+
+    # Parse optional Decimal pricing fields
+    pp: Decimal | None = None
+    if purchase_price is not None:
+        try:
+            pp = Decimal(purchase_price)
+        except (InvalidOperation, ValueError):
+            raise ValueError("Invalid purchase_price format")
+
+    spu: Decimal | None = None
+    if sell_price_per_unit is not None:
+        try:
+            spu = Decimal(sell_price_per_unit)
+        except (InvalidOperation, ValueError):
+            raise ValueError("Invalid sell_price_per_unit format")
+
+    # Compute derived pricing fields
+    cost_per_unit, margin, margin_pct = _compute_pricing(
+        pp, qty_per_pack, total_packs, spu,
+    )
 
     part = PartsCatalogue(
         org_id=org_id,
@@ -389,6 +479,16 @@ async def create_part(
         min_stock_threshold=min_stock_threshold,
         reorder_quantity=reorder_quantity,
         is_active=is_active,
+        # Packaging & pricing
+        purchase_price=pp,
+        packaging_type=packaging_type,
+        qty_per_pack=qty_per_pack,
+        total_packs=total_packs,
+        cost_per_unit=cost_per_unit,
+        sell_price_per_unit=spu,
+        margin=margin,
+        margin_pct=margin_pct,
+        gst_mode=gst_mode,
         tyre_width=tyre_width,
         tyre_profile=tyre_profile,
         tyre_rim_dia=tyre_rim_dia,

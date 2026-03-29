@@ -9,7 +9,7 @@ import {
 import type { ReactNode } from 'react'
 import apiClient, { setAccessToken, isAccessTokenValid, getAccessToken, doTokenRefresh } from '@/api/client'
 
-export type UserRole = 'global_admin' | 'org_admin' | 'salesperson'
+export type UserRole = 'global_admin' | 'org_admin' | 'salesperson' | 'kiosk'
 
 export interface AuthUser {
   id: string
@@ -68,6 +68,7 @@ interface AuthContextValue {
   isGlobalAdmin: boolean
   isOrgAdmin: boolean
   isSalesperson: boolean
+  isKiosk: boolean
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -318,6 +319,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isGlobalAdmin: user?.role === 'global_admin',
       isOrgAdmin: user?.role === 'org_admin',
       isSalesperson: user?.role === 'salesperson',
+      isKiosk: user?.role === 'kiosk',
     }),
     [
       user,

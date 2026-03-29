@@ -14,6 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.modules.auth.rbac import require_role
 from app.modules.inventory.schemas import (
+    FluidReorderAlertListResponse,
+    FluidStockAdjustmentRequest,
+    FluidStockLevelListResponse,
     ReorderAlertListResponse,
     StockAdjustmentRequest,
     StockAdjustmentResponse,
@@ -21,7 +24,10 @@ from app.modules.inventory.schemas import (
     StockReportResponse,
 )
 from app.modules.inventory.service import (
+    adjust_fluid_stock,
     adjust_stock,
+    get_fluid_reorder_alerts,
+    get_fluid_stock_levels,
     get_reorder_alerts,
     get_stock_levels,
     get_stock_report,
@@ -180,6 +186,113 @@ async def stock_report_endpoint(
         )
 
     return await get_stock_report(db, org_id=org_uuid, movement_limit=movement_limit)
+
+
+# ---------------------------------------------------------------------------
+# Fluid / Oil stock endpoints — Requirements: 4.1, 4.2, 4.3, 4.5
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/fluid-stock",
+    response_model=FluidStockLevelListResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="List fluid/oil stock levels",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def list_fluid_stock_levels_endpoint(
+    request: Request,
+    limit: int = Query(100, ge=1, le=500, description="Max results"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List stock levels for all active fluid/oil products in the organisation.
+
+    Requirements: 4.1, 4.5
+    """
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    return await get_fluid_stock_levels(db, org_id=org_uuid, limit=limit, offset=offset)
+
+
+@router.get(
+    "/fluid-stock/reorder-alerts",
+    response_model=FluidReorderAlertListResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="Get fluids/oils needing reorder",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def fluid_reorder_alerts_endpoint(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Get fluid/oil products where current stock is at or below the minimum threshold.
+
+    Requirements: 4.3, 4.5
+    """
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    return await get_fluid_reorder_alerts(db, org_id=org_uuid)
+
+
+@router.put(
+    "/fluid-stock/{product_id}",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Product not found"},
+    },
+    summary="Adjust fluid/oil stock volume",
+    dependencies=[require_role("org_admin")],
+)
+async def adjust_fluid_stock_endpoint(
+    request: Request,
+    product_id: uuid.UUID,
+    body: FluidStockAdjustmentRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Manually adjust fluid/oil stock volume with reason recorded in audit log.
+
+    Requirements: 4.2, 4.5
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid or not user_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        result = await adjust_fluid_stock(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            product_id=product_id,
+            volume_change=body.volume_change,
+            reason=body.reason,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        status = 404 if "not found" in str(exc).lower() else 400
+        return JSONResponse(status_code=status, content={"detail": str(exc)})
+
+    return {"message": "Fluid stock adjusted successfully", **result}
 
 
 # ---------------------------------------------------------------------------

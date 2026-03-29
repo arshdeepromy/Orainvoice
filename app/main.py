@@ -222,11 +222,13 @@ def create_app() -> FastAPI:
     from app.modules.bookings.router import router as bookings_router
     from app.modules.time_tracking.router import router as time_tracking_router
     from app.modules.inventory.router import router as inventory_router
+    from app.modules.inventory.stock_items_router import router as stock_items_router
     from app.modules.reports.router import router as reports_router
     from app.modules.portal.router import router as portal_router
     from app.modules.data_io.router import router as data_io_router
     from app.modules.webhooks.router import router as webhooks_router
     from app.modules.accounting.router import router as accounting_router
+    from app.modules.kiosk.router import router as kiosk_router
 
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(admin_router, prefix="/api/v1/admin", tags=["admin"])
@@ -246,11 +248,13 @@ def create_app() -> FastAPI:
     app.include_router(bookings_router, prefix="/api/v1/bookings", tags=["bookings"])
     app.include_router(time_tracking_router, prefix="/api/v1/job-cards", tags=["time-tracking"])
     app.include_router(inventory_router, prefix="/api/v1/inventory", tags=["inventory"])
+    app.include_router(stock_items_router, prefix="/api/v1/inventory/stock-items", tags=["stock-items"])
     app.include_router(reports_router, prefix="/api/v1/reports", tags=["reports"])
     app.include_router(portal_router, prefix="/api/v1/portal", tags=["portal"])
     app.include_router(data_io_router, prefix="/api/v1/data", tags=["data-import-export"])
     app.include_router(webhooks_router, prefix="/api/v1/webhooks", tags=["webhooks"])
     app.include_router(accounting_router, prefix="/api/v1/org/accounting", tags=["accounting"])
+    app.include_router(kiosk_router, prefix="/api/v1/kiosk", tags=["kiosk"])
 
     # --- V2 Routers (universal platform) ---
     # Existing V1 modules are also available under /api/v2/ for continuity.

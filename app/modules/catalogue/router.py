@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +36,7 @@ from app.modules.catalogue.schemas import (
     ServiceUpdateResponse,
 )
 from app.modules.catalogue.service import (
+    _compute_pricing,
     _part_to_dict,
     create_item,
     create_labour_rate,
@@ -48,6 +49,8 @@ from app.modules.catalogue.service import (
 from app.modules.catalogue.models import ItemsCatalogue, PartsCatalogue
 
 router = APIRouter()
+
+ALLOWED_PACKAGING_TYPES = {"box", "carton", "pack", "bag", "pallet", "single"}
 
 
 def _extract_org_context(request: Request) -> tuple[uuid.UUID | None, uuid.UUID | None, str | None]:
@@ -604,13 +607,34 @@ async def create_part_endpoint(
     Parts can also be added ad-hoc per invoice without pre-loading
     (Req 28.2).
 
-    Requirements: 28.1
+    Requirements: 28.1, 7.1, 7.5, 7.6
     """
     org_uuid, user_uuid, ip_address = _extract_org_context(request)
     if not org_uuid:
         return JSONResponse(
             status_code=403,
             content={"detail": "Organisation context required"},
+        )
+
+    # Validate packaging_type against allowed values (Req 7.6)
+    if payload.packaging_type is not None and payload.packaging_type not in ALLOWED_PACKAGING_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid packaging_type '{payload.packaging_type}'. Must be one of: {', '.join(sorted(ALLOWED_PACKAGING_TYPES))}",
+        )
+
+    # Validate qty_per_pack is positive when provided (Req 7.5)
+    if payload.qty_per_pack is not None and payload.qty_per_pack <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="qty_per_pack must be a positive integer",
+        )
+
+    # Validate total_packs is positive when provided (Req 7.5)
+    if payload.total_packs is not None and payload.total_packs <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="total_packs must be a positive integer",
         )
 
     try:
@@ -632,6 +656,12 @@ async def create_part_endpoint(
             is_active=payload.is_active,
             min_stock_threshold=payload.min_stock_threshold,
             reorder_quantity=payload.reorder_quantity,
+            purchase_price=payload.purchase_price,
+            packaging_type=payload.packaging_type,
+            qty_per_pack=payload.qty_per_pack,
+            total_packs=payload.total_packs,
+            sell_price_per_unit=payload.sell_price_per_unit,
+            gst_mode=payload.gst_mode,
             tyre_width=payload.tyre_width,
             tyre_profile=payload.tyre_profile,
             tyre_rim_dia=payload.tyre_rim_dia,
@@ -649,6 +679,7 @@ async def create_part_endpoint(
         message="Part created",
         part=PartResponse(**part_data),
     )
+
 
 
 @router.put(
@@ -686,12 +717,37 @@ async def update_part_endpoint(
         return JSONResponse(status_code=404, content={"detail": "Part not found"})
 
     body = await request.json()
+
+    # Validate packaging_type against allowed values (Req 7.6)
+    if "packaging_type" in body and body["packaging_type"] is not None:
+        if body["packaging_type"] not in ALLOWED_PACKAGING_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid packaging_type '{body['packaging_type']}'. Must be one of: {', '.join(sorted(ALLOWED_PACKAGING_TYPES))}",
+            )
+
+    # Validate qty_per_pack is positive when provided (Req 7.5)
+    if "qty_per_pack" in body and body["qty_per_pack"] is not None:
+        if int(body["qty_per_pack"]) <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="qty_per_pack must be a positive integer",
+            )
+
+    # Validate total_packs is positive when provided (Req 7.5)
+    if "total_packs" in body and body["total_packs"] is not None:
+        if int(body["total_packs"]) <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="total_packs must be a positive integer",
+            )
+
     for field in ["name", "part_number", "description", "part_type", "brand",
                    "tyre_width", "tyre_profile", "tyre_rim_dia", "tyre_load_index", "tyre_speed_index"]:
         if field in body:
             setattr(part, field, body[field])
+    from decimal import Decimal
     if "default_price" in body:
-        from decimal import Decimal
         part.default_price = Decimal(str(body["default_price"]))
     if "category_id" in body:
         part.category_id = uuid.UUID(body["category_id"]) if body["category_id"] else None
@@ -703,6 +759,31 @@ async def update_part_endpoint(
         part.min_stock_threshold = int(body["min_stock_threshold"])
     if "reorder_quantity" in body:
         part.reorder_quantity = int(body["reorder_quantity"])
+
+    # Handle new pricing fields (Req 7.2)
+    if "purchase_price" in body:
+        part.purchase_price = Decimal(str(body["purchase_price"])) if body["purchase_price"] is not None else None
+    if "packaging_type" in body:
+        part.packaging_type = body["packaging_type"]
+    if "qty_per_pack" in body:
+        part.qty_per_pack = int(body["qty_per_pack"]) if body["qty_per_pack"] is not None else None
+    if "total_packs" in body:
+        part.total_packs = int(body["total_packs"]) if body["total_packs"] is not None else None
+    if "sell_price_per_unit" in body:
+        part.sell_price_per_unit = Decimal(str(body["sell_price_per_unit"])) if body["sell_price_per_unit"] is not None else None
+    if "gst_mode" in body:
+        part.gst_mode = body["gst_mode"]
+
+    # Recalculate derived fields server-side (Req 7.4)
+    cost_per_unit, margin, margin_pct = _compute_pricing(
+        part.purchase_price,
+        part.qty_per_pack,
+        part.total_packs,
+        part.sell_price_per_unit,
+    )
+    part.cost_per_unit = cost_per_unit
+    part.margin = margin
+    part.margin_pct = margin_pct
 
     await db.flush()
 

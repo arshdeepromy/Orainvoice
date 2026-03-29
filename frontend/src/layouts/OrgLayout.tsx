@@ -24,12 +24,14 @@ interface NavItem {
   flagKey?: string
   /** If true, only org_admin (and global_admin) can see this item */
   adminOnly?: boolean
+  /** If set, this nav item is only shown when the org's trade family matches (null treated as automotive for backward compat) */
+  tradeFamily?: string
 }
 
 const navItems: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: DashboardIcon },
   { to: '/customers', label: 'Customers', icon: CustomersIcon },
-  { to: '/vehicles', label: 'Vehicles', icon: VehiclesIcon, module: 'vehicles', flagKey: 'vehicles' },
+  { to: '/vehicles', label: 'Vehicles', icon: VehiclesIcon, module: 'vehicles', flagKey: 'vehicles', tradeFamily: 'automotive-transport' },
   { to: '/invoices', label: 'Invoices', icon: InvoicesIcon },
   { to: '/quotes', label: 'Quotes', icon: QuotesIcon, module: 'quotes', flagKey: 'quotes' },
   { to: '/job-cards', label: 'Job Cards', icon: JobCardsIcon, module: 'jobs', flagKey: 'jobs' },
@@ -37,7 +39,7 @@ const navItems: NavItem[] = [
   { to: '/bookings', label: 'Bookings', icon: BookingsIcon, module: 'bookings', flagKey: 'bookings' },
   { to: '/inventory', label: 'Inventory', icon: InventoryIcon, module: 'inventory', flagKey: 'inventory' },
   { to: '/items', label: 'Items', icon: CatalogueIcon },
-  { to: '/catalogue', label: 'Catalogue', icon: CatalogueIcon, module: 'vehicles' },
+  { to: '/catalogue', label: 'Catalogue', icon: CatalogueIcon },
   { to: '/staff', label: 'Staff', icon: StaffIcon, module: 'staff', flagKey: 'staff' },
   { to: '/projects', label: 'Projects', icon: ProjectsIcon, module: 'projects', flagKey: 'projects' },
   { to: '/expenses', label: 'Expenses', icon: ExpensesIcon, module: 'expenses', flagKey: 'expenses' },
@@ -77,7 +79,7 @@ export function OrgLayout() {
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
-  const { settings } = useTenant()
+  const { settings, tradeFamily } = useTenant()
   const { isEnabled } = useModules()
   const { isGlobalAdmin, user, logout } = useAuth()
   const { flags } = useFeatureFlags()
@@ -103,13 +105,15 @@ export function OrgLayout() {
     () => navItems.filter((item) => {
       // Admin-only items hidden from non-admin roles
       if (item.adminOnly && userRole !== 'org_admin' && userRole !== 'global_admin') return false
+      // Trade family gating — null tradeFamily treated as automotive for backward compat
+      if (item.tradeFamily && (tradeFamily ?? 'automotive-transport') !== item.tradeFamily) return false
       // If the item has a module gate, module enablement is sufficient
       if (item.module) return isEnabled(item.module)
       // Items without a module gate fall back to feature flag check
       if (item.flagKey && !flags[item.flagKey]) return false
       return true
     }),
-    [isEnabled, flags, userRole],
+    [isEnabled, flags, userRole, tradeFamily],
   )
 
   const visibleQuickActions = useMemo(

@@ -97,6 +97,8 @@ async def create_booking_endpoint(
             send_email_confirmation=payload.send_email_confirmation,
             send_sms_confirmation=payload.send_sms_confirmation,
             reminder_offset_hours=payload.reminder_offset_hours,
+            parts_data=[p.model_dump() for p in payload.parts] if payload.parts else None,
+            fluid_usage_data=[f.model_dump() for f in payload.fluid_usage] if payload.fluid_usage else None,
             ip_address=ip_address,
         )
     except ValueError as exc:

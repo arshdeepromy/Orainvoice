@@ -240,10 +240,10 @@ function RolloutMonitoring({ metrics }: { metrics: RolloutMetric[] }) {
                     <div className="w-24 bg-gray-200 rounded-full h-2">
                       <div
                         className="bg-blue-600 h-2 rounded-full"
-                        style={{ width: `${Math.min(m.adoption_percent, 100)}%` }}
+                        style={{ width: `${Math.min(m.adoption_percent ?? 0, 100)}%` }}
                       />
                     </div>
-                    <span>{m.adoption_percent.toFixed(1)}%</span>
+                    <span>{(m.adoption_percent ?? 0).toFixed(1)}%</span>
                   </div>
                 </td>
                 <td className={`px-4 py-3 text-sm font-medium ${trendColor(m.trend)}`}>
@@ -251,7 +251,7 @@ function RolloutMonitoring({ metrics }: { metrics: RolloutMetric[] }) {
                 </td>
                 <td className="px-4 py-3 text-sm">
                   <span className={m.error_rate > 5 ? 'text-red-600 font-medium' : 'text-gray-700'}>
-                    {m.error_rate.toFixed(2)}%
+                    {(m.error_rate ?? 0).toFixed(2)}%
                   </span>
                 </td>
               </tr>

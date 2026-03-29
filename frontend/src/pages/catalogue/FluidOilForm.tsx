@@ -111,16 +111,19 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
   const [deleting, setDeleting] = useState(false)
   const [editProduct, setEditProduct] = useState<any | null>(null)
   const [editSaving, setEditSaving] = useState(false)
+  const [editSupplierIds, setEditSupplierIds] = useState<string[]>([])
+  const [editSupplierSearch, setEditSupplierSearch] = useState('')
+  const [editSupplierDropOpen, setEditSupplierDropOpen] = useState(false)
+  const editSupplierDropRef = useRef<HTMLDivElement>(null)
 
   // List of saved products
   const [products, setProducts] = useState<any[]>([])
 
-  // Suppliers
+  // Suppliers (multi-select like Parts)
   const [suppliers, setSuppliers] = useState<{id: string; name: string}[]>([])
   const [supplierSearch, setSupplierSearch] = useState('')
   const [supplierDropOpen, setSupplierDropOpen] = useState(false)
-  const [selectedSupplierId, setSelectedSupplierId] = useState('')
-  const [selectedSupplierName, setSelectedSupplierName] = useState('')
+  const [selectedSupplierIds, setSelectedSupplierIds] = useState<string[]>([])
   const [showAddSupplier, setShowAddSupplier] = useState(false)
   const [newSupplier, setNewSupplier] = useState({ name: '', contact_name: '', email: '', phone: '', address: '' })
   const [addSupplierSaving, setAddSupplierSaving] = useState(false)
@@ -151,6 +154,7 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
   useEffect(() => {
     const h = (e: MouseEvent) => {
       if (supplierDropRef.current && !supplierDropRef.current.contains(e.target as Node)) setSupplierDropOpen(false)
+      if (editSupplierDropRef.current && !editSupplierDropRef.current.contains(e.target as Node)) setEditSupplierDropOpen(false)
     }
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
@@ -255,7 +259,7 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
         purchase_price: f.purchase_price ? Number(f.purchase_price) : null,
         gst_mode: f.gst_mode || null,
         sell_price_per_unit: f.sell_price_per_unit ? Number(f.sell_price_per_unit) : null,
-        supplier_id: selectedSupplierId || null,
+        supplier_id: selectedSupplierIds[0] || null,
         min_stock_volume: f.min_stock_volume ? Number(f.min_stock_volume) : 0,
         reorder_volume: f.reorder_volume ? Number(f.reorder_volume) : 0,
       }
@@ -263,6 +267,7 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 3000)
       setF({ ...EMPTY })
+      setSelectedSupplierIds([])
       fetchProducts()
       onSubmit?.(f)
     } catch (err: any) {
@@ -297,12 +302,27 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
     setEditSaving(true)
     try {
       const { default: apiClient } = await import('@/api/client')
-      await apiClient.put(`/catalogue/fluids/${editProduct.id}`, editProduct)
+      await apiClient.put(`/catalogue/fluids/${editProduct.id}`, {
+        ...editProduct,
+        supplier_id: editSupplierIds[0] || null,
+      })
       setEditProduct(null)
       fetchProducts()
     } catch (err: any) {
       setSaveError(err?.response?.data?.detail || 'Failed to update product.')
     } finally { setEditSaving(false) }
+  }
+
+  const toggleEditSupplier = (sid: string) => {
+    setEditSupplierIds(prev =>
+      prev.includes(sid) ? prev.filter(id => id !== sid) : [...prev, sid]
+    )
+  }
+
+  const toggleSupplier = (supplierId: string) => {
+    setSelectedSupplierIds(prev =>
+      prev.includes(supplierId) ? prev.filter(id => id !== supplierId) : [...prev, supplierId]
+    )
   }
 
   const handleAddSupplierFluid = async () => {
@@ -319,8 +339,11 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
       const res = await apiClient.post('/inventory/suppliers', body)
       const created = res.data.supplier || res.data
       setSuppliers(prev => [...prev, { id: created.id, name: created.name }])
-      setSelectedSupplierId(created.id)
-      setSelectedSupplierName(created.name)
+      if (editProduct) {
+        setEditSupplierIds(prev => [...prev, created.id])
+      } else {
+        setSelectedSupplierIds(prev => [...prev, created.id])
+      }
       setShowAddSupplier(false)
       setNewSupplier({ name: '', contact_name: '', email: '', phone: '', address: '' })
     } catch (err: any) {
@@ -567,39 +590,50 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
           {/* Supplier searchable dropdown */}
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-sm font-medium text-gray-700">Supplier</label>
+              <label className="block text-sm font-medium text-gray-700">Suppliers</label>
               <button type="button" onClick={() => { setNewSupplier({ name: '', contact_name: '', email: '', phone: '', address: '' }); setAddSupplierError(''); setShowAddSupplier(true) }}
                 className="text-xs text-blue-600 hover:underline font-medium">+ Add Supplier</button>
             </div>
-            {selectedSupplierId ? (
-              <div className="flex items-center gap-2 rounded-md border border-gray-300 bg-gray-50 px-3 py-2">
-                <span className="flex-1 text-sm text-gray-900">{selectedSupplierName}</span>
-                <button type="button" onClick={() => { setSelectedSupplierId(''); setSelectedSupplierName('') }} className="text-gray-400 hover:text-gray-600 text-xs">✕</button>
-              </div>
-            ) : (
-              <div ref={supplierDropRef} className="relative">
-                <input type="text" value={supplierSearch}
-                  onChange={e => { setSupplierSearch(e.target.value); setSupplierDropOpen(true) }}
-                  onFocus={() => setSupplierDropOpen(true)}
-                  placeholder="Search suppliers…"
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" autoComplete="off" />
-                {supplierDropOpen && (
-                  <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
-                    {suppliers.filter(s => !supplierSearch.trim() || s.name.toLowerCase().includes(supplierSearch.toLowerCase())).slice(0, 15).map(s => (
-                      <button key={s.id} type="button" onClick={() => { setSelectedSupplierId(s.id); setSelectedSupplierName(s.name); setSupplierSearch(''); setSupplierDropOpen(false) }}
-                        className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 text-gray-900">{s.name}</button>
-                    ))}
-                    {suppliers.filter(s => !supplierSearch.trim() || s.name.toLowerCase().includes(supplierSearch.toLowerCase())).length === 0 && (
-                      <div className="px-3 py-2 text-sm text-gray-500">No suppliers match</div>
-                    )}
-                    <button type="button" onClick={() => { setNewSupplier({ name: supplierSearch.trim(), contact_name: '', email: '', phone: '', address: '' }); setAddSupplierError(''); setShowAddSupplier(true); setSupplierDropOpen(false) }}
-                      className="w-full border-t border-gray-100 px-3 py-2 text-left text-sm font-medium text-blue-600 hover:bg-blue-50">
-                      + Add New Supplier{supplierSearch.trim() ? ` "${supplierSearch.trim()}"` : ''}
-                    </button>
-                  </div>
-                )}
+            {/* Selected supplier chips */}
+            {selectedSupplierIds.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-2">
+                {selectedSupplierIds.map(sid => {
+                  const s = suppliers.find(x => x.id === sid)
+                  return s ? (
+                    <span key={sid} className="inline-flex items-center gap-1 rounded-full bg-blue-100 text-blue-800 px-2.5 py-0.5 text-xs font-medium">
+                      {s.name}
+                      <button type="button" onClick={() => toggleSupplier(sid)} className="text-blue-600 hover:text-blue-800">✕</button>
+                    </span>
+                  ) : null
+                })}
               </div>
             )}
+            {/* Searchable dropdown */}
+            <div ref={supplierDropRef} className="relative">
+              <input type="text" value={supplierSearch}
+                onChange={e => { setSupplierSearch(e.target.value); setSupplierDropOpen(true) }}
+                onFocus={() => setSupplierDropOpen(true)}
+                placeholder="Search suppliers…"
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" autoComplete="off" />
+              {supplierDropOpen && (
+                <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+                  {suppliers.filter(s => !supplierSearch.trim() || s.name.toLowerCase().includes(supplierSearch.toLowerCase())).slice(0, 15).map(s => (
+                    <button key={s.id} type="button" onClick={() => { toggleSupplier(s.id); setSupplierSearch(''); setSupplierDropOpen(false) }}
+                      className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center justify-between">
+                      <span className="text-gray-900">{s.name}</span>
+                      {selectedSupplierIds.includes(s.id) && <span className="text-blue-600 text-xs">✓ selected</span>}
+                    </button>
+                  ))}
+                  {suppliers.filter(s => !supplierSearch.trim() || s.name.toLowerCase().includes(supplierSearch.toLowerCase())).length === 0 && (
+                    <div className="px-3 py-2 text-sm text-gray-500">No suppliers match</div>
+                  )}
+                  <button type="button" onClick={() => { setNewSupplier({ name: supplierSearch.trim(), contact_name: '', email: '', phone: '', address: '' }); setAddSupplierError(''); setShowAddSupplier(true); setSupplierDropOpen(false) }}
+                    className="w-full border-t border-gray-100 px-3 py-2 text-left text-sm font-medium text-blue-600 hover:bg-blue-50">
+                    + Add New Supplier{supplierSearch.trim() ? ` "${supplierSearch.trim()}"` : ''}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
           {showOptional && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -744,7 +778,7 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
                     </td>
                     <td className="px-4 py-2 text-right">
                       <div className="flex justify-end gap-1">
-                        <Button size="sm" variant="secondary" onClick={() => setEditProduct({...p})}>Edit</Button>
+                        <Button size="sm" variant="secondary" onClick={() => { setEditProduct({...p}); setEditSupplierIds(p.supplier_id ? [String(p.supplier_id)] : []); setEditSupplierSearch('') }}>Edit</Button>
                         <Button size="sm" variant="secondary" onClick={() => handleToggleActive(p.id)}>
                           {p.is_active ? 'Deactivate' : 'Activate'}
                         </Button>
@@ -876,6 +910,52 @@ export default function FluidOilForm({ onClose, onSubmit }: { onClose?: () => vo
                   )}
                 </div>
               )}
+            </div>
+            {/* Suppliers */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700">Suppliers</label>
+                <button type="button" onClick={() => { setNewSupplier({ name: '', contact_name: '', email: '', phone: '', address: '' }); setAddSupplierError(''); setShowAddSupplier(true) }}
+                  className="text-xs text-blue-600 hover:underline font-medium">+ Add Supplier</button>
+              </div>
+              {editSupplierIds.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {editSupplierIds.map(sid => {
+                    const s = suppliers.find(x => x.id === sid)
+                    return s ? (
+                      <span key={sid} className="inline-flex items-center gap-1 rounded-full bg-blue-100 text-blue-800 px-2.5 py-0.5 text-xs font-medium">
+                        {s.name}
+                        <button type="button" onClick={() => toggleEditSupplier(sid)} className="hover:text-blue-600" aria-label={`Remove ${s.name}`}>&times;</button>
+                      </span>
+                    ) : null
+                  })}
+                </div>
+              )}
+              <div ref={editSupplierDropRef} className="relative">
+                <input type="text" value={editSupplierSearch}
+                  onChange={e => { setEditSupplierSearch(e.target.value); setEditSupplierDropOpen(true) }}
+                  onFocus={() => setEditSupplierDropOpen(true)}
+                  placeholder="Search suppliers…"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" autoComplete="off" />
+                {editSupplierDropOpen && (
+                  <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+                    {suppliers.filter(s => !editSupplierSearch.trim() || s.name.toLowerCase().includes(editSupplierSearch.toLowerCase())).slice(0, 15).map(s => (
+                      <button key={s.id} type="button" onClick={() => { toggleEditSupplier(s.id); setEditSupplierSearch(''); setEditSupplierDropOpen(false) }}
+                        className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center justify-between">
+                        <span className="text-gray-900">{s.name}</span>
+                        {editSupplierIds.includes(s.id) && <span className="text-blue-600 text-xs">✓</span>}
+                      </button>
+                    ))}
+                    {suppliers.filter(s => !editSupplierSearch.trim() || s.name.toLowerCase().includes(editSupplierSearch.toLowerCase())).length === 0 && (
+                      <div className="px-3 py-2 text-sm text-gray-500">No suppliers match</div>
+                    )}
+                    <button type="button" onClick={() => { setNewSupplier({ name: editSupplierSearch.trim(), contact_name: '', email: '', phone: '', address: '' }); setAddSupplierError(''); setShowAddSupplier(true); setEditSupplierDropOpen(false) }}
+                      className="w-full border-t border-gray-100 px-3 py-2 text-left text-sm font-medium text-blue-600 hover:bg-blue-50">
+                      + Add New Supplier{editSupplierSearch.trim() ? ` "${editSupplierSearch.trim()}"` : ''}
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
             <Field label="Description">
               <textarea value={ep.description || ''} onChange={e => upd('description', e.target.value)} rows={2}

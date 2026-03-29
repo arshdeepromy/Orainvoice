@@ -24,7 +24,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -106,6 +106,9 @@ class Booking(Base):
     )
     reminder_cancelled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
+    )
+    booking_data_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default="{}"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

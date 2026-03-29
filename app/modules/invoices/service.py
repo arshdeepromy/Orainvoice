@@ -235,6 +235,7 @@ async def create_invoice(
     branch_id: uuid.UUID | None = None,
     status: str = "draft",
     line_items_data: list[dict] | None = None,
+    fluid_usage_data: list[dict] | None = None,
     notes_internal: str | None = None,
     notes_customer: str | None = None,
     due_date: date | None = None,
@@ -388,6 +389,7 @@ async def create_invoice(
             item_type=item_data["item_type"],
             description=item_data["description"],
             catalogue_item_id=item_data.get("catalogue_item_id"),
+            stock_item_id=item_data.get("stock_item_id"),
             part_number=item_data.get("part_number"),
             quantity=item_data["quantity"],
             unit_price=item_data["unit_price"],
@@ -407,22 +409,84 @@ async def create_invoice(
     # Audit log — record creation with before/after values (Req 23.3)
     audit_action = "invoice.created_draft" if status == "draft" else "invoice.issued"
 
-    # Decrement stock for parts from catalogue (if not draft)
-    if status != "draft":
-        from app.modules.inventory.service import decrement_stock_for_invoice
-        for li in created_line_items:
-            if li.catalogue_item_id and li.quantity:
+    # Stock handling: reserve for drafts, decrement for issued
+    from app.modules.inventory.stock_items_service import (
+        reserve_stock, decrement_stock_for_invoice_v2
+    )
+    from app.modules.inventory.service import decrement_stock_for_invoice
+    for li_data, li in zip(items, created_line_items):
+        stock_item_id = li_data.get("stock_item_id")
+        if stock_item_id and li.quantity:
+            sid = uuid.UUID(str(stock_item_id))
+            qty = float(li.quantity)
+            if status == "draft":
                 try:
-                    await decrement_stock_for_invoice(
-                        db,
-                        org_id=org_id,
-                        user_id=user_id,
-                        part_id=li.catalogue_item_id,
-                        quantity=int(li.quantity),
-                        invoice_id=invoice.id,
+                    await reserve_stock(
+                        db, org_id=org_id, user_id=user_id,
+                        stock_item_id=sid, quantity=qty,
+                        reference_type="invoice_draft", reference_id=invoice.id,
                     )
                 except Exception:
-                    pass  # Non-blocking — stock decrement is best-effort
+                    pass
+            else:
+                try:
+                    await decrement_stock_for_invoice_v2(
+                        db, org_id=org_id, user_id=user_id,
+                        stock_item_id=sid, quantity=qty, invoice_id=invoice.id,
+                    )
+                except Exception:
+                    pass
+        elif li.catalogue_item_id and li.quantity and status != "draft":
+            try:
+                await decrement_stock_for_invoice(
+                    db, org_id=org_id, user_id=user_id,
+                    part_id=li.catalogue_item_id,
+                    quantity=int(li.quantity), invoice_id=invoice.id,
+                )
+            except Exception:
+                pass
+
+    # Process fluid/oil usage — reserve for drafts, decrement for issued
+    fluid_usage_records = []
+    if fluid_usage_data:
+        for fu in fluid_usage_data:
+            stock_item_id = fu.get("stock_item_id")
+            litres = float(fu.get("litres", 0))
+            if stock_item_id and litres > 0:
+                sid = uuid.UUID(str(stock_item_id))
+                if status == "draft":
+                    try:
+                        await reserve_stock(
+                            db, org_id=org_id, user_id=user_id,
+                            stock_item_id=sid, quantity=litres,
+                            reference_type="invoice_draft_fluid", reference_id=invoice.id,
+                        )
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        await decrement_stock_for_invoice_v2(
+                            db, org_id=org_id, user_id=user_id,
+                            stock_item_id=sid, quantity=litres, invoice_id=invoice.id,
+                        )
+                    except Exception:
+                        pass
+                fluid_usage_records.append({
+                    "stock_item_id": str(stock_item_id),
+                    "catalogue_item_id": str(fu.get("catalogue_item_id", "")),
+                    "item_name": fu.get("item_name", ""),
+                    "litres": litres,
+                    "vehicle_id": str(global_vehicle_id) if global_vehicle_id else None,
+                    "vehicle_rego": vehicle_rego,
+                })
+        # Always store fluid usage in invoice_data_json (even for drafts)
+        if fluid_usage_records:
+            data_json = dict(invoice.invoice_data_json or {})
+            data_json["fluid_usage"] = fluid_usage_records
+            invoice.invoice_data_json = data_json
+            from sqlalchemy.orm.attributes import flag_modified as _fm_fluid
+            _fm_fluid(invoice, "invoice_data_json")
+            await db.flush()
 
     await write_audit_log(
         session=db,
@@ -562,6 +626,7 @@ def _invoice_to_dict(invoice: Invoice, line_items: list[LineItem]) -> dict:
         "payment_terms": (invoice.invoice_data_json or {}).get("payment_terms"),
         "terms_and_conditions": (invoice.invoice_data_json or {}).get("terms_and_conditions"),
         "additional_vehicles": (invoice.invoice_data_json or {}).get("additional_vehicles", []),
+        "fluid_usage": (invoice.invoice_data_json or {}).get("fluid_usage", []),
     }
 
 
@@ -572,6 +637,7 @@ def _line_item_to_dict(li: LineItem) -> dict:
         "item_type": li.item_type,
         "description": li.description,
         "catalogue_item_id": li.catalogue_item_id,
+        "stock_item_id": li.stock_item_id,
         "part_number": li.part_number,
         "quantity": li.quantity,
         "unit_price": li.unit_price,
@@ -1281,21 +1347,44 @@ async def issue_invoice(
     gst_pct = Decimal(str(org_settings.get("gst_percentage", 15)))
     tax_details = get_line_item_tax_details(line_items, gst_pct)
 
-    # Decrement stock for catalogue parts when issuing
+    # Convert reservations to actual sales when issuing a draft
+    from app.modules.inventory.stock_items_service import convert_reservation_to_sale
     from app.modules.inventory.service import decrement_stock_for_invoice
     for li in line_items:
-        if li.catalogue_item_id and li.quantity:
+        if li.stock_item_id and li.quantity:
             try:
-                await decrement_stock_for_invoice(
-                    db,
-                    org_id=org_id,
-                    user_id=user_id,
-                    part_id=li.catalogue_item_id,
-                    quantity=int(li.quantity),
-                    invoice_id=invoice.id,
+                await convert_reservation_to_sale(
+                    db, org_id=org_id, user_id=user_id,
+                    stock_item_id=li.stock_item_id,
+                    quantity=float(li.quantity), invoice_id=invoice.id,
                 )
             except Exception:
-                pass  # Non-blocking
+                pass
+        elif li.catalogue_item_id and li.quantity:
+            try:
+                await decrement_stock_for_invoice(
+                    db, org_id=org_id, user_id=user_id,
+                    part_id=li.catalogue_item_id,
+                    quantity=int(li.quantity), invoice_id=invoice.id,
+                )
+            except Exception:
+                pass
+
+    # Convert fluid reservations to sales
+    fluid_usage = (invoice.invoice_data_json or {}).get("fluid_usage", [])
+    if fluid_usage:
+        for fu in fluid_usage:
+            fu_stock_id = fu.get("stock_item_id")
+            fu_litres = float(fu.get("litres", 0))
+            if fu_stock_id and fu_litres > 0:
+                try:
+                    await convert_reservation_to_sale(
+                        db, org_id=org_id, user_id=user_id,
+                        stock_item_id=uuid.UUID(str(fu_stock_id)),
+                        quantity=fu_litres, invoice_id=invoice.id,
+                    )
+                except Exception:
+                    pass
 
     result = _invoice_to_dict(invoice, line_items)
     result["tax_compliance"] = compliance
@@ -1528,6 +1617,24 @@ async def update_invoice(
     # Handle line_items — replace all line items if provided
     if "line_items" in updates and updates["line_items"] is not None:
         new_items = updates["line_items"]
+
+        # Release old reservations before deleting line items
+        from app.modules.inventory.stock_items_service import release_reservation, reserve_stock
+        old_li_result = await db.execute(
+            select(LineItem).where(LineItem.invoice_id == invoice.id)
+        )
+        for old_li in old_li_result.scalars().all():
+            if old_li.stock_item_id and old_li.quantity:
+                try:
+                    await release_reservation(
+                        db, org_id=org_id, user_id=user_id,
+                        stock_item_id=old_li.stock_item_id,
+                        quantity=float(old_li.quantity),
+                        reference_type="invoice_draft", reference_id=invoice.id,
+                    )
+                except Exception:
+                    pass
+
         # Delete existing line items
         await db.execute(
             delete(LineItem).where(LineItem.invoice_id == invoice.id)
@@ -1550,8 +1657,10 @@ async def update_invoice(
             li = LineItem(
                 invoice_id=invoice.id,
                 org_id=org_id,
-                item_type="service",
+                item_type=item_data.get("item_type", "service"),
                 description=item_data.get("description", ""),
+                catalogue_item_id=item_data.get("catalogue_item_id"),
+                stock_item_id=item_data.get("stock_item_id"),
                 quantity=qty,
                 unit_price=rate,
                 is_gst_exempt=is_exempt,
@@ -1560,6 +1669,22 @@ async def update_invoice(
             )
             db.add(li)
         await db.flush()
+
+        # Reserve stock for new line items (draft only)
+        for item_data in new_items:
+            sid = item_data.get("stock_item_id")
+            qty_val = float(item_data.get("quantity", 0))
+            if sid and qty_val > 0:
+                try:
+                    await reserve_stock(
+                        db, org_id=org_id, user_id=user_id,
+                        stock_item_id=uuid.UUID(str(sid)) if not isinstance(sid, uuid.UUID) else sid,
+                        quantity=qty_val,
+                        reference_type="invoice_draft", reference_id=invoice.id,
+                    )
+                except Exception:
+                    pass
+
         applied["line_items"] = f"{len(new_items)} items"
 
     # Handle vehicles array — store additional vehicles in invoice_data_json
@@ -1583,6 +1708,58 @@ async def update_invoice(
         invoice.invoice_data_json = inv_json
         from sqlalchemy.orm.attributes import flag_modified as _flag_modified
         _flag_modified(invoice, "invoice_data_json")
+
+    # Handle fluid_usage — release old reservations, store new data, reserve new
+    if "fluid_usage" in updates and updates["fluid_usage"] is not None:
+        from app.modules.inventory.stock_items_service import release_reservation as _rel_res, reserve_stock as _res_stock
+
+        # Release old fluid reservations
+        old_fluid = (invoice.invoice_data_json or {}).get("fluid_usage", [])
+        for ofu in old_fluid:
+            ofu_sid = ofu.get("stock_item_id")
+            ofu_litres = float(ofu.get("litres", 0))
+            if ofu_sid and ofu_litres > 0:
+                try:
+                    await _rel_res(
+                        db, org_id=org_id, user_id=user_id,
+                        stock_item_id=uuid.UUID(str(ofu_sid)), quantity=ofu_litres,
+                        reference_type="invoice_draft_fluid", reference_id=invoice.id,
+                    )
+                except Exception:
+                    pass
+
+        fluid_data = updates["fluid_usage"]
+        inv_json = dict(invoice.invoice_data_json or {})
+        fluid_records = []
+        for fu in fluid_data:
+            stock_item_id = fu.get("stock_item_id")
+            litres = float(fu.get("litres", 0))
+            if stock_item_id and litres > 0:
+                # Reserve new fluid
+                sid = uuid.UUID(str(stock_item_id)) if not isinstance(stock_item_id, uuid.UUID) else stock_item_id
+                try:
+                    await _res_stock(
+                        db, org_id=org_id, user_id=user_id,
+                        stock_item_id=sid, quantity=litres,
+                        reference_type="invoice_draft_fluid", reference_id=invoice.id,
+                    )
+                except Exception:
+                    pass
+                fluid_records.append({
+                    "stock_item_id": str(stock_item_id),
+                    "catalogue_item_id": str(fu.get("catalogue_item_id", "")),
+                    "item_name": fu.get("item_name", ""),
+                    "litres": litres,
+                    "vehicle_id": str(updates.get("global_vehicle_id", "")) if updates.get("global_vehicle_id") else None,
+                    "vehicle_rego": updates.get("vehicle_rego") or invoice.vehicle_rego,
+                })
+        if fluid_records:
+            inv_json["fluid_usage"] = fluid_records
+        else:
+            inv_json.pop("fluid_usage", None)
+        invoice.invoice_data_json = inv_json
+        from sqlalchemy.orm.attributes import flag_modified as _flag_modified2
+        _flag_modified2(invoice, "invoice_data_json")
 
     await db.flush()
 

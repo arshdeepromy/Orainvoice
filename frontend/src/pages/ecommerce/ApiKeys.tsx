@@ -28,7 +28,7 @@ export default function ApiKeys() {
   const fetchCredentials = useCallback(async () => {
     try {
       const res = await apiClient.get('/api/v2/ecommerce/api-keys')
-      setCredentials(res.data.credentials)
+      setCredentials(res.data?.credentials ?? [])
     } catch {
       setError('Failed to load API credentials')
     } finally {
@@ -49,7 +49,7 @@ export default function ApiKeys() {
         name: newKeyName,
         scopes: ['read', 'write'],
       })
-      setCreatedKey(res.data.api_key)
+      setCreatedKey(res.data?.api_key ?? '')
       setShowForm(false)
       setNewKeyName('')
       fetchCredentials()

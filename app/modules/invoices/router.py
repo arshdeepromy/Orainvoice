@@ -117,6 +117,7 @@ async def create_invoice_endpoint(
             "item_type": li.item_type.value,
             "description": li.description,
             "catalogue_item_id": li.catalogue_item_id,
+            "stock_item_id": li.stock_item_id,
             "part_number": li.part_number,
             "quantity": li.quantity,
             "unit_price": li.get_unit_price(),  # Use helper to get unit_price or rate
@@ -153,6 +154,7 @@ async def create_invoice_endpoint(
             branch_id=payload.branch_id,
             status=effective_status,
             line_items_data=line_items_data,
+            fluid_usage_data=[fu.model_dump() for fu in payload.fluid_usage] if payload.fluid_usage else None,
             notes_internal=payload.notes_internal,
             notes_customer=payload.notes_customer,
             due_date=payload.due_date,

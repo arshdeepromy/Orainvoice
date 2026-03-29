@@ -205,7 +205,7 @@ function VehicleDbTab({ onToast }: { onToast: (v: 'success' | 'error', msg: stri
           <div className="mt-2 flex gap-6">
             <div className="rounded-lg border border-gray-200 p-4">
               <p className="text-sm text-gray-500">Total records</p>
-              <p className="text-2xl font-bold text-gray-900">{stats.total_records.toLocaleString()}</p>
+              <p className="text-2xl font-bold text-gray-900">{(stats.total_records ?? 0).toLocaleString()}</p>
             </div>
             <div className="rounded-lg border border-gray-200 p-4">
               <p className="text-sm text-gray-500">Last refreshed</p>

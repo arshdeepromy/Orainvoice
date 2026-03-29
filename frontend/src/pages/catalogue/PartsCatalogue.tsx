@@ -15,6 +15,18 @@ interface Part {
   supplier_name: string | null
   default_price: string
   is_active: boolean
+  is_gst_exempt?: boolean
+  gst_inclusive?: boolean
+  purchase_price: string | null
+  packaging_type: string | null
+  qty_per_pack: number | null
+  total_packs: number | null
+  cost_per_unit: string | null
+  sell_price_per_unit: string | null
+  margin: string | null
+  margin_pct: string | null
+  gst_mode: string | null
+  min_stock_threshold?: number
   tyre_width: string | null
   tyre_profile: string | null
   tyre_rim_dia: string | null
@@ -36,6 +48,11 @@ interface PartForm {
   supplier_ids: string[]
   default_price: string
   gst_mode: 'inclusive' | 'exclusive' | 'exempt' | ''
+  purchase_price: string
+  packaging_type: string
+  qty_per_pack: string
+  total_packs: string
+  sell_price_per_unit: string
   min_stock_threshold: string
   reorder_quantity: string
   is_active: boolean
@@ -52,7 +69,9 @@ interface Supplier { id: string; name: string }
 const EMPTY_FORM: PartForm = {
   name: '', part_number: '', description: '', part_type: 'part',
   category_id: '', category_name: '', brand: '', supplier_id: '', supplier_ids: [],
-  default_price: '', gst_mode: '', min_stock_threshold: '0', reorder_quantity: '0', is_active: true,
+  default_price: '', gst_mode: '',
+  purchase_price: '', packaging_type: 'single', qty_per_pack: '1', total_packs: '1', sell_price_per_unit: '',
+  min_stock_threshold: '0', reorder_quantity: '0', is_active: true,
   tyre_width: '', tyre_profile: '', tyre_rim_dia: '',
   tyre_load_index: '', tyre_speed_index: '',
 }
@@ -85,6 +104,17 @@ export default function PartsCatalogue() {
   const [supplierSearch, setSupplierSearch] = useState('')
   const [supplierDropOpen, setSupplierDropOpen] = useState(false)
   const supplierDropRef = useRef<HTMLDivElement>(null)
+  // Real-time pricing calculations
+  const totalUnits = (parseInt(form.qty_per_pack) || 0) * (parseInt(form.total_packs) || 0)
+  const costPerUnit = totalUnits > 0 && parseFloat(form.purchase_price) > 0
+    ? parseFloat(form.purchase_price) / totalUnits : null
+  const sellPerUnit = parseFloat(form.sell_price_per_unit) || null
+  const margin = costPerUnit !== null && sellPerUnit !== null ? sellPerUnit - costPerUnit : null
+  const marginPct = margin !== null && sellPerUnit !== null && sellPerUnit > 0
+    ? (margin / sellPerUnit) * 100 : (sellPerUnit === 0 ? 0 : null)
+
+  const fmtNZD = (v: number) => '$' + v.toFixed(2)
+
   const fetchParts = useCallback(async () => {
     setLoading(true); setError('')
     try {
@@ -139,8 +169,13 @@ export default function PartsCatalogue() {
       supplier_id: part.supplier_id || '',
       supplier_ids: part.supplier_id ? [part.supplier_id] : [],
       default_price: part.default_price,
-      gst_mode: (part as any).is_gst_exempt ? 'exempt' : (part as any).gst_inclusive ? 'inclusive' : 'exclusive',
-      min_stock_threshold: String((part as any).min_stock_threshold ?? 0),
+      gst_mode: (part.gst_mode as PartForm['gst_mode']) || (part.is_gst_exempt ? 'exempt' : part.gst_inclusive ? 'inclusive' : 'exclusive'),
+      purchase_price: part.purchase_price ?? '',
+      packaging_type: part.packaging_type ?? 'single',
+      qty_per_pack: String(part.qty_per_pack ?? 1),
+      total_packs: String(part.total_packs ?? 1),
+      sell_price_per_unit: part.sell_price_per_unit ?? '',
+      min_stock_threshold: String(part.min_stock_threshold ?? 0),
       reorder_quantity: String((part as any).reorder_quantity ?? 0),
       is_active: part.is_active,
       tyre_width: part.tyre_width || '',
@@ -156,19 +191,27 @@ export default function PartsCatalogue() {
 
   const handleSave = async () => {
     if (!form.name.trim()) { setFormError('Part name is required.'); return }
-    if (!form.gst_mode) { setFormError('Please select a GST option before entering the price.'); return }
-    if (!form.default_price.trim() || isNaN(Number(form.default_price))) {
-      setFormError('Valid price is required.'); return
+    if (!form.gst_mode) { setFormError('Please select a GST mode in the Pricing section.'); return }
+    // Use sell_price_per_unit as the canonical price; fall back to default_price for legacy compat
+    const effectivePrice = form.sell_price_per_unit.trim() || form.default_price.trim()
+    if (!effectivePrice || isNaN(Number(effectivePrice))) {
+      setFormError('Valid sell price per unit is required.'); return
     }
     setSaving(true); setFormError('')
     try {
       const body: Record<string, unknown> = {
         name: form.name.trim(),
-        default_price: form.default_price.trim(),
+        default_price: effectivePrice,
         is_gst_exempt: form.gst_mode === 'exempt',
         gst_inclusive: form.gst_mode === 'inclusive',
         is_active: form.is_active,
         part_type: form.part_type,
+        purchase_price: form.purchase_price.trim() || null,
+        packaging_type: form.packaging_type || null,
+        qty_per_pack: parseInt(form.qty_per_pack) || null,
+        total_packs: parseInt(form.total_packs) || null,
+        sell_price_per_unit: form.sell_price_per_unit.trim() || null,
+        gst_mode: form.gst_mode || null,
       }
       if (form.part_number.trim()) body.part_number = form.part_number.trim()
       if (form.description.trim()) body.description = form.description.trim()
@@ -196,7 +239,7 @@ export default function PartsCatalogue() {
 
   const handleToggleActive = async (part: Part) => {
     try {
-      await apiClient.put(`/catalogue/parts/${part.id}`, { is_active: !(part as any).is_active })
+      await apiClient.put(`/catalogue/parts/${part.id}`, { is_active: !part.is_active })
       fetchParts()
     } catch { setError('Failed to update part status.') }
   }
@@ -305,7 +348,7 @@ export default function PartsCatalogue() {
                   <td className="px-4 py-3 text-sm text-gray-700">{part.part_number || '—'}</td>
                   <td className="px-4 py-3 text-sm text-gray-700 capitalize">{part.part_type}</td>
                   <td className="px-4 py-3 text-sm text-gray-700">{part.category_name || '—'}</td>
-                  <td className="px-4 py-3 text-sm text-gray-900 text-right tabular-nums font-medium">${part.default_price}</td>
+                  <td className="px-4 py-3 text-sm text-gray-900 text-right tabular-nums font-medium">${part.sell_price_per_unit || part.default_price}</td>
                   <td className="px-4 py-3 text-sm text-gray-700">{part.supplier_name || '—'}</td>
                   <td className="px-4 py-3 text-sm text-center">
                     <Badge variant={part.is_active ? 'success' : 'neutral'}>{part.is_active ? 'Active' : 'Inactive'}</Badge>
@@ -314,7 +357,7 @@ export default function PartsCatalogue() {
                     <div className="flex justify-end gap-1">
                       <Button size="sm" variant="secondary" onClick={() => openEdit(part)}>Edit</Button>
                       <Button size="sm" variant="secondary" onClick={() => handleToggleActive(part)}>
-                        {(part as any).is_active !== false ? 'Deactivate' : 'Activate'}
+                        {part.is_active !== false ? 'Deactivate' : 'Activate'}
                       </Button>
                       <Button size="sm" variant="danger" onClick={() => setDeleteId(part.id)}>Delete</Button>
                     </div>
@@ -340,45 +383,7 @@ export default function PartsCatalogue() {
             </label>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <Input label="Part No/Code" value={form.part_number} onChange={e => updateField('part_number', e.target.value)} placeholder="e.g. BRK-PAD-001" />
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">GST *</label>
-              <div className="inline-flex rounded-md border border-gray-300 overflow-hidden w-full">
-                {(['inclusive', 'exclusive', 'exempt'] as const).map((mode, i) => (
-                  <button key={mode} type="button" onClick={() => updateField('gst_mode', mode)}
-                    className={`flex-1 py-2 text-sm font-medium transition-colors ${i > 0 ? 'border-l border-gray-300' : ''} ${
-                      form.gst_mode === mode ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
-                    }`}>
-                    {mode === 'inclusive' ? 'GST Inclusive' : mode === 'exclusive' ? 'GST Exclusive' : 'GST Exempt'}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              {form.gst_mode
-                ? `Price (${form.gst_mode === 'inclusive' ? 'inc-GST' : form.gst_mode === 'exempt' ? 'no GST' : 'ex-GST'}) *`
-                : 'Price *'}
-            </label>
-            {!form.gst_mode ? (
-              <div className="flex items-center gap-2 rounded-md border-2 border-dashed border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
-                <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                </svg>
-                Select a GST type above to unlock the price field
-              </div>
-            ) : (
-              <input
-                type="number" min="0" step="0.01"
-                value={form.default_price}
-                onChange={e => updateField('default_price', e.target.value)}
-                placeholder="e.g. 29.95"
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            )}
-          </div>
+          <Input label="Part No/Code" value={form.part_number} onChange={e => updateField('part_number', e.target.value)} placeholder="e.g. BRK-PAD-001" />
 
           <Input label="Part name *" value={form.name} onChange={e => updateField('name', e.target.value)} />
 
@@ -502,6 +507,134 @@ export default function PartsCatalogue() {
           </div>
 
           <Input label="Brand" value={form.brand} onChange={e => updateField('brand', e.target.value)} placeholder="e.g. Bosch, Continental" />
+
+          {/* ── Pricing & Packaging Section ── */}
+          <div className="rounded-lg border border-gray-200 bg-gray-50/50 p-3 space-y-3">
+            <p className="text-sm font-medium text-gray-900">Pricing &amp; Packaging</p>
+
+            {/* Packaging Type */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Packaging Type</label>
+              <select
+                value={form.packaging_type}
+                onChange={e => {
+                  const val = e.target.value
+                  if (val === 'single') {
+                    setForm(prev => ({ ...prev, packaging_type: val, qty_per_pack: '1', total_packs: '1' }))
+                  } else {
+                    updateField('packaging_type', val)
+                  }
+                }}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="single">Single</option>
+                <option value="box">Box</option>
+                <option value="carton">Carton</option>
+                <option value="pack">Pack</option>
+                <option value="bag">Bag</option>
+                <option value="pallet">Pallet</option>
+              </select>
+            </div>
+
+            {/* Qty Per Pack & Total Packs */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Qty Per Pack</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={form.qty_per_pack}
+                  onChange={e => updateField('qty_per_pack', e.target.value)}
+                  disabled={form.packaging_type === 'single'}
+                  className={`w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${form.packaging_type === 'single' ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                  placeholder="e.g. 10"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Total Packs</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={form.total_packs}
+                  onChange={e => updateField('total_packs', e.target.value)}
+                  disabled={form.packaging_type === 'single'}
+                  className={`w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${form.packaging_type === 'single' ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                  placeholder="e.g. 2"
+                />
+              </div>
+            </div>
+
+            {/* Purchase Price & Sell Price Per Unit */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Purchase Price</label>
+                <div className="flex">
+                  <span className="rounded-l-md border border-r-0 border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500">$</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.purchase_price}
+                    onChange={e => updateField('purchase_price', e.target.value)}
+                    className="flex-1 rounded-r-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="0.00"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Sell Price Per Unit</label>
+                <div className="flex">
+                  <span className="rounded-l-md border border-r-0 border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500">$</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.sell_price_per_unit}
+                    onChange={e => updateField('sell_price_per_unit', e.target.value)}
+                    className="flex-1 rounded-r-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="0.00"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* GST Mode */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">GST Mode</label>
+              <div className="inline-flex rounded-md border border-gray-300 overflow-hidden w-full">
+                {([
+                  { value: 'inclusive', label: 'GST Inc.' },
+                  { value: 'exclusive', label: 'GST Excl.' },
+                  { value: 'exempt', label: 'Exempt' },
+                ] as const).map((opt, i) => (
+                  <button key={opt.value} type="button" onClick={() => updateField('gst_mode', opt.value)}
+                    className={`flex-1 py-2 text-sm font-medium transition-colors ${i > 0 ? 'border-l border-gray-300' : ''} ${
+                      form.gst_mode === opt.value ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+                    }`}>
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Read-only calculated displays */}
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-md bg-white border border-gray-200 px-3 py-2 text-center">
+                <span className="block text-xs text-gray-500">Cost/Unit</span>
+                <span className="block text-sm font-semibold text-gray-900">{costPerUnit !== null ? fmtNZD(costPerUnit) : '—'}</span>
+              </div>
+              <div className="rounded-md bg-white border border-gray-200 px-3 py-2 text-center">
+                <span className="block text-xs text-gray-500">Margin $</span>
+                <span className="block text-sm font-semibold text-gray-900">{margin !== null ? fmtNZD(margin) : '—'}</span>
+              </div>
+              <div className="rounded-md bg-white border border-gray-200 px-3 py-2 text-center">
+                <span className="block text-xs text-gray-500">Margin %</span>
+                <span className="block text-sm font-semibold text-gray-900">{marginPct !== null ? marginPct.toFixed(2) + '%' : '—'}</span>
+              </div>
+            </div>
+          </div>
 
           <div className="grid grid-cols-2 gap-3">
             <Input label="Min stock threshold" type="number" value={form.min_stock_threshold} onChange={e => updateField('min_stock_threshold', e.target.value)} placeholder="0" />

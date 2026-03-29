@@ -140,6 +140,101 @@ class StockAdjustmentResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Fluid / Oil stock schemas — Requirements: 4.1, 4.2, 4.3
+# ---------------------------------------------------------------------------
+
+
+class FluidStockLevelResponse(BaseModel):
+    """Single fluid/oil product stock level in API responses.
+
+    Requirements: 4.1
+    """
+
+    product_id: str = Field(..., description="Fluid/oil product UUID")
+    display_name: str = Field(
+        ..., description="Display name (oil_type + grade or product_name)"
+    )
+    brand_name: Optional[str] = Field(None, description="Brand name")
+    fluid_type: str = Field(..., description="Fluid type (e.g. oil, coolant)")
+    oil_type: Optional[str] = Field(None, description="Oil type if applicable")
+    grade: Optional[str] = Field(None, description="Grade / viscosity if applicable")
+    unit_type: str = Field(..., description="Unit of measure: 'litre' or 'gallon'")
+    current_stock_volume: float = Field(
+        ..., description="Current stock volume in unit_type"
+    )
+    min_stock_volume: float = Field(
+        ..., description="Minimum stock volume threshold"
+    )
+    reorder_volume: float = Field(
+        ..., description="Volume to reorder when below threshold"
+    )
+    is_below_threshold: bool = Field(
+        ..., description="True if current_stock_volume <= min_stock_volume"
+    )
+
+
+class FluidStockLevelListResponse(BaseModel):
+    """GET /api/v1/inventory/fluid-stock response.
+
+    Requirements: 4.1
+    """
+
+    fluid_stock_levels: list[FluidStockLevelResponse] = Field(
+        default_factory=list, description="Stock levels for all fluid/oil products"
+    )
+    total: int = Field(0, description="Total number of fluid/oil products")
+
+
+class FluidStockAdjustmentRequest(BaseModel):
+    """PUT /api/v1/inventory/fluid-stock/{product_id} — manual fluid stock adjustment.
+
+    Requirements: 4.2
+    """
+
+    volume_change: float = Field(
+        ..., description="Positive to add volume, negative to remove"
+    )
+    reason: str = Field(
+        ..., min_length=1, max_length=500, description="Reason for adjustment"
+    )
+
+
+class FluidReorderAlertResponse(BaseModel):
+    """Single fluid/oil reorder alert.
+
+    Requirements: 4.3
+    """
+
+    product_id: str = Field(..., description="Fluid/oil product UUID")
+    display_name: str = Field(
+        ..., description="Display name (oil_type + grade or product_name)"
+    )
+    brand_name: Optional[str] = Field(None, description="Brand name")
+    unit_type: str = Field(..., description="Unit of measure: 'litre' or 'gallon'")
+    current_stock_volume: float = Field(
+        ..., description="Current stock volume in unit_type"
+    )
+    min_stock_volume: float = Field(
+        ..., description="Minimum stock volume threshold"
+    )
+    reorder_volume: float = Field(
+        ..., description="Volume to reorder when below threshold"
+    )
+
+
+class FluidReorderAlertListResponse(BaseModel):
+    """GET /api/v1/inventory/fluid-stock/reorder-alerts response.
+
+    Requirements: 4.3
+    """
+
+    alerts: list[FluidReorderAlertResponse] = Field(
+        default_factory=list, description="Fluid/oil products needing reorder"
+    )
+    total: int = Field(0, description="Total alerts")
+
+
+# ---------------------------------------------------------------------------
 # Supplier schemas — Requirements: 63.1, 63.2, 63.3
 # ---------------------------------------------------------------------------
 

@@ -21,12 +21,19 @@ interface OrgUser {
 }
 
 interface PlanInfo { user_seats: number }
-interface InviteForm { email: string; role: string }
+interface InviteForm { email: string; role: string; password: string }
 
 const ROLE_OPTIONS = [
   { value: 'org_admin', label: 'Org Admin' },
   { value: 'salesperson', label: 'Salesperson' },
+  { value: 'kiosk', label: 'Kiosk' },
 ]
+
+const ROLE_LABELS: Record<string, string> = {
+  org_admin: 'Org Admin',
+  salesperson: 'Salesperson',
+  kiosk: 'Kiosk',
+}
 
 export function UserManagement() {
   const [users, setUsers] = useState<OrgUser[]>([])
@@ -34,25 +41,26 @@ export function UserManagement() {
   const [mfaPolicy, setMfaPolicy] = useState<'optional' | 'mandatory'>('optional')
   const [loading, setLoading] = useState(true)
   const [inviteOpen, setInviteOpen] = useState(false)
-  const [inviteForm, setInviteForm] = useState<InviteForm>({ email: '', role: 'salesperson' })
+  const [inviteForm, setInviteForm] = useState<InviteForm>({ email: '', role: 'salesperson', password: '' })
   const [saving, setSaving] = useState(false)
   const { toasts, addToast, dismissToast } = useToast()
 
-  const fetchData = async () => {
+  const fetchData = async (signal?: AbortSignal) => {
     setLoading(true)
     try {
       const [userRes, settingsRes] = await Promise.all([
-        apiClient.get('/org/users'),
-        apiClient.get('/org/settings'),
+        apiClient.get('/org/users', { signal }),
+        apiClient.get('/org/settings', { signal }),
       ])
       // Handle both array and wrapped response formats
-      const userData = Array.isArray(userRes.data) ? userRes.data : (userRes.data?.users || [])
+      const userData = Array.isArray(userRes.data) ? userRes.data : (userRes.data?.users ?? [])
       setUsers(userData)
-      setMfaPolicy(settingsRes.data.mfa_policy || 'optional')
-      if (settingsRes.data.plan) {
-        setPlan({ user_seats: settingsRes.data.plan.user_seats })
+      setMfaPolicy(settingsRes.data?.mfa_policy ?? 'optional')
+      if (settingsRes.data?.plan) {
+        setPlan({ user_seats: settingsRes.data?.plan?.user_seats ?? 0 })
       }
-    } catch {
+    } catch (err) {
+      if (signal && signal.aborted) return
       addToast('error', 'Failed to load users')
       setUsers([])
     } finally {
@@ -60,7 +68,11 @@ export function UserManagement() {
     }
   }
 
-  useEffect(() => { fetchData() }, [])
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchData(controller.signal)
+    return () => controller.abort()
+  }, [])
 
   const activeCount = users.filter((u) => u.is_active).length
   const seatLimit = plan?.user_seats ?? 0
@@ -68,16 +80,27 @@ export function UserManagement() {
 
   const inviteUser = async () => {
     if (!inviteForm.email.trim()) return
+    if (inviteForm.role === 'kiosk' && inviteForm.password.length < 8) {
+      addToast('error', 'Password must be at least 8 characters')
+      return
+    }
     if (atLimit) {
       addToast('error', 'Seat limit reached. Upgrade your plan to invite more users.')
       return
     }
     setSaving(true)
     try {
-      await apiClient.post('/org/users/invite', inviteForm)
+      const payload: Record<string, string | null> = {
+        email: inviteForm.email,
+        role: inviteForm.role,
+      }
+      if (inviteForm.role === 'kiosk' && inviteForm.password) {
+        payload.password = inviteForm.password
+      }
+      await apiClient.post('/org/users/invite', payload)
       setInviteOpen(false)
-      setInviteForm({ email: '', role: 'salesperson' })
-      addToast('success', 'Invitation sent')
+      setInviteForm({ email: '', role: 'salesperson', password: '' })
+      addToast('success', inviteForm.role === 'kiosk' && inviteForm.password ? 'Kiosk account created' : 'Invitation sent')
       fetchData()
     } catch (err: any) {
       const detail = err?.response?.data?.detail || 'Failed to send invitation'
@@ -95,6 +118,17 @@ export function UserManagement() {
       fetchData()
     } catch {
       addToast('error', 'Failed to deactivate user')
+    }
+  }
+
+  const revokeUserSessions = async (userId: string) => {
+    if (!confirm('Revoke all active sessions for this kiosk user? The tablet will need to re-authenticate.')) return
+    try {
+      await apiClient.post(`/org/users/${userId}/revoke-sessions`)
+      addToast('success', 'Sessions revoked')
+      fetchData()
+    } catch {
+      addToast('error', 'Failed to revoke sessions')
     }
   }
 
@@ -161,7 +195,11 @@ export function UserManagement() {
     { key: 'email', header: 'Email', sortable: true },
     {
       key: 'role', header: 'Role',
-      render: (row) => <Badge variant="info">{row.role === 'org_admin' ? 'Org Admin' : 'Salesperson'}</Badge>,
+      render: (row) => (
+        <Badge variant={row.role === 'kiosk' ? 'warning' : 'info'}>
+          {ROLE_LABELS[row.role] ?? row.role}
+        </Badge>
+      ),
     },
     {
       key: 'is_active', header: 'Status',
@@ -171,7 +209,13 @@ export function UserManagement() {
         </Badge>
       ),
     },
-    { key: 'last_login_at', header: 'Last Login', render: (row) => formatDate(row.last_login_at) },
+    { key: 'last_login_at', header: 'Last Activity', render: (row) => {
+      const dateStr = formatDate(row.last_login_at)
+      if (row.role === 'kiosk' && row.last_login_at) {
+        return <span className="text-sm font-medium">{dateStr}</span>
+      }
+      return dateStr
+    }},
     {
       key: 'actions', header: 'Actions',
       render: (row) => {
@@ -187,6 +231,9 @@ export function UserManagement() {
               resendCooldowns[row.email] > 0
                 ? <span className="text-xs text-gray-500 tabular-nums">Resend in {resendCooldowns[row.email]}s</span>
                 : <Button size="sm" variant="secondary" loading={resendingEmail === row.email} onClick={() => resendInvite(row.email)}>Resend Invite</Button>
+            )}
+            {row.role === 'kiosk' && row.is_active && (
+              <Button size="sm" variant="secondary" onClick={() => revokeUserSessions(row.id)}>Revoke Sessions</Button>
             )}
             <Button size="sm" variant="danger" onClick={() => deactivateUser(row.id)}>Deactivate</Button>
             <Button size="sm" variant="danger" onClick={() => deleteUserPermanently(row.id, row.email)}>Delete</Button>
@@ -233,15 +280,32 @@ export function UserManagement() {
         <DataTable columns={columns} data={users} keyField="id" caption="Organisation users" />
       )}
 
-      <Modal open={inviteOpen} onClose={() => setInviteOpen(false)} title="Invite User">
+      <Modal open={inviteOpen} onClose={() => setInviteOpen(false)} title={inviteForm.role === 'kiosk' ? 'Create Kiosk Account' : 'Invite User'}>
         <div className="space-y-4">
           <Input label="Email Address" type="email" value={inviteForm.email}
             onChange={(e) => setInviteForm((p) => ({ ...p, email: e.target.value }))} required />
           <Select label="Role" options={ROLE_OPTIONS} value={inviteForm.role}
-            onChange={(e) => setInviteForm((p) => ({ ...p, role: e.target.value }))} />
+            onChange={(e) => setInviteForm((p) => ({ ...p, role: e.target.value, password: '' }))} />
+          {inviteForm.role === 'kiosk' && (
+            <>
+              <Input
+                label="Password"
+                type="password"
+                value={inviteForm.password}
+                onChange={(e) => setInviteForm((p) => ({ ...p, password: e.target.value }))}
+                required
+                placeholder="Min 8 characters"
+              />
+              <p className="text-sm text-gray-500">
+                Set the password now so you can log in directly on the tablet. No invite email will be sent.
+              </p>
+            </>
+          )}
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="secondary" onClick={() => setInviteOpen(false)}>Cancel</Button>
-            <Button onClick={inviteUser} loading={saving}>Send Invitation</Button>
+            <Button onClick={inviteUser} loading={saving}>
+              {inviteForm.role === 'kiosk' ? 'Create Account' : 'Send Invitation'}
+            </Button>
           </div>
         </div>
       </Modal>

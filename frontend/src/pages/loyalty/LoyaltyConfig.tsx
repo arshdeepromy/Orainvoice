@@ -247,15 +247,15 @@ function AnalyticsSection({ analytics }: { analytics: LoyaltyAnalytics | null })
         </div>
         <div data-testid="analytics-points-issued">
           <strong>Points Issued</strong>
-          <p>{analytics.total_points_issued.toLocaleString()}</p>
+          <p>{(analytics.total_points_issued ?? 0).toLocaleString()}</p>
         </div>
         <div data-testid="analytics-points-redeemed">
           <strong>Points Redeemed</strong>
-          <p>{analytics.total_points_redeemed.toLocaleString()}</p>
+          <p>{(analytics.total_points_redeemed ?? 0).toLocaleString()}</p>
         </div>
         <div data-testid="analytics-redemption-rate">
           <strong>Redemption Rate</strong>
-          <p>{analytics.redemption_rate_pct.toFixed(1)}%</p>
+          <p>{(analytics.redemption_rate_pct ?? 0).toFixed(1)}%</p>
         </div>
       </div>
 
@@ -280,7 +280,7 @@ function AnalyticsSection({ analytics }: { analytics: LoyaltyAnalytics | null })
             <thead><tr><th>Name</th><th>Points</th></tr></thead>
             <tbody>
               {analytics.top_customers.map((c) => (
-                <tr key={c.customer_id}><td>{c.name}</td><td>{c.points.toLocaleString()}</td></tr>
+                <tr key={c.customer_id}><td>{c.name}</td><td>{(c.points ?? 0).toLocaleString()}</td></tr>
               ))}
             </tbody>
           </table>

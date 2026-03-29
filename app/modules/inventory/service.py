@@ -259,6 +259,202 @@ async def get_stock_report(
         "movement_history": [_movement_to_dict(m) for m in movements],
     }
 
+# ---------------------------------------------------------------------------
+# Fluid / Oil stock management — Requirements: 4.1, 4.2, 4.3, 4.5
+# ---------------------------------------------------------------------------
+
+from decimal import Decimal
+from app.modules.catalogue.fluid_oil_models import FluidOilProduct
+
+
+def _fluid_display_name(product: FluidOilProduct) -> str:
+    """Build display name: oil_type + grade if oil, else product_name."""
+    if product.oil_type:
+        grade = product.grade or ""
+        return f"{product.oil_type} {grade}".strip()
+    return product.product_name or ""
+
+
+def _fluid_to_stock_level(product: FluidOilProduct) -> dict:
+    """Convert a FluidOilProduct ORM instance to a stock level dict."""
+    min_vol = float(product.min_stock_volume or 0)
+    cur_vol = float(product.current_stock_volume or 0)
+    return {
+        "product_id": str(product.id),
+        "display_name": _fluid_display_name(product),
+        "brand_name": product.brand_name,
+        "fluid_type": product.fluid_type,
+        "oil_type": product.oil_type,
+        "grade": product.grade,
+        "unit_type": product.unit_type,
+        "current_stock_volume": cur_vol,
+        "min_stock_volume": min_vol,
+        "reorder_volume": float(product.reorder_volume or 0),
+        "is_below_threshold": cur_vol <= min_vol and min_vol > 0,
+    }
+
+
+async def get_fluid_stock_levels(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    """List stock levels for all active fluid/oil products in the organisation.
+
+    Requirements: 4.1, 4.5
+    """
+    filters = [
+        FluidOilProduct.org_id == org_id,
+        FluidOilProduct.is_active.is_(True),
+    ]
+
+    count_stmt = select(func.count(FluidOilProduct.id)).where(*filters)
+    total = (await db.execute(count_stmt)).scalar() or 0
+
+    stmt = (
+        select(FluidOilProduct)
+        .where(*filters)
+        .order_by(FluidOilProduct.product_name)
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await db.execute(stmt)
+    products = result.scalars().all()
+
+    return {
+        "fluid_stock_levels": [_fluid_to_stock_level(p) for p in products],
+        "total": total,
+    }
+
+
+async def adjust_fluid_stock(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    product_id: uuid.UUID,
+    volume_change: float,
+    reason: str,
+    ip_address: str | None = None,
+) -> dict:
+    """Manually adjust stock volume for a fluid/oil product with audit logging.
+
+    Uses raw SQL to avoid ORM lazy-loading issues.
+    Requirements: 4.2, 4.5
+    """
+    from sqlalchemy import text
+
+    # Get current product
+    result = await db.execute(
+        text(
+            "SELECT current_stock_volume, product_name, oil_type, grade, brand_name, "
+            "fluid_type, unit_type, min_stock_volume, reorder_volume "
+            "FROM fluid_oil_products "
+            "WHERE id = :pid AND org_id = :oid AND is_active = true"
+        ),
+        {"pid": str(product_id), "oid": str(org_id)},
+    )
+    row = result.fetchone()
+    if not row:
+        raise ValueError("Fluid/oil product not found")
+
+    old_volume = float(row[0] or 0)
+    new_volume = old_volume + volume_change
+    if new_volume < 0:
+        raise ValueError("Stock volume cannot go below zero")
+
+    await db.execute(
+        text(
+            "UPDATE fluid_oil_products SET current_stock_volume = :nv, "
+            "updated_at = NOW() WHERE id = :pid"
+        ),
+        {"nv": new_volume, "pid": str(product_id)},
+    )
+    await db.flush()
+
+    # Build display name from raw row
+    oil_type = row[2]
+    grade = row[3]
+    product_name = row[1]
+    display_name = f"{oil_type} {grade}".strip() if oil_type else (product_name or "")
+
+    min_vol = float(row[7] or 0)
+
+    await write_audit_log(
+        db,
+        org_id=org_id,
+        user_id=user_id,
+        action="inventory.fluid_stock_adjusted",
+        entity_type="fluid_oil_products",
+        entity_id=product_id,
+        before_value={"current_stock_volume": old_volume},
+        after_value={
+            "current_stock_volume": new_volume,
+            "volume_change": volume_change,
+            "reason": reason,
+        },
+        ip_address=ip_address,
+    )
+
+    return {
+        "stock_level": {
+            "product_id": str(product_id),
+            "display_name": display_name,
+            "brand_name": row[4],
+            "fluid_type": row[5],
+            "oil_type": oil_type,
+            "grade": grade,
+            "unit_type": row[6],
+            "current_stock_volume": new_volume,
+            "min_stock_volume": min_vol,
+            "reorder_volume": float(row[8] or 0),
+            "is_below_threshold": new_volume <= min_vol and min_vol > 0,
+        },
+    }
+
+
+async def get_fluid_reorder_alerts(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+) -> dict:
+    """Get fluid/oil products where stock is at or below the minimum threshold.
+
+    Requirements: 4.3, 4.5
+    """
+    filters = [
+        FluidOilProduct.org_id == org_id,
+        FluidOilProduct.is_active.is_(True),
+        FluidOilProduct.current_stock_volume <= FluidOilProduct.min_stock_volume,
+        FluidOilProduct.min_stock_volume > 0,
+    ]
+
+    stmt = (
+        select(FluidOilProduct)
+        .where(*filters)
+        .order_by(FluidOilProduct.current_stock_volume)
+    )
+    result = await db.execute(stmt)
+    products = result.scalars().all()
+
+    alerts = [
+        {
+            "product_id": str(p.id),
+            "display_name": _fluid_display_name(p),
+            "brand_name": p.brand_name,
+            "unit_type": p.unit_type,
+            "current_stock_volume": float(p.current_stock_volume or 0),
+            "min_stock_volume": float(p.min_stock_volume or 0),
+            "reorder_volume": float(p.reorder_volume or 0),
+        }
+        for p in products
+    ]
+
+    return {"alerts": alerts, "total": len(alerts)}
+
+
 
 # ---------------------------------------------------------------------------
 # Supplier management — Requirements: 63.1, 63.2, 63.3

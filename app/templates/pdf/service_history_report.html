@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Service History Report — {{ vehicle.rego }}</title>
+<style>
+  @page {
+    size: A4;
+    margin: 18mm 14mm 22mm 14mm;
+    @bottom-center {
+      content: "Page " counter(page) " of " counter(pages);
+      font-size: 8pt;
+      color: #999;
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-size: 10pt;
+    color: #333;
+    line-height: 1.45;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* ---- Cover page ---- */
+  .cover-page {
+    page-break-after: always;
+    min-height: 100%;
+  }
+  .cover-logo { max-height: 72px; max-width: 240px; margin-bottom: 10px; }
+  .cover-org-name { font-size: 22pt; font-weight: 800; color: #1a1a1a; letter-spacing: -0.5px; }
+  .cover-org-details { font-size: 9pt; color: #666; margin-top: 4px; line-height: 1.6; }
+  .cover-title {
+    font-size: 18pt; font-weight: 800; color: #3b5bdb;
+    margin: 28px 0 6px 0; letter-spacing: -0.3px;
+  }
+  .cover-subtitle { font-size: 10pt; color: #888; margin-bottom: 24px; }
+  .cover-section-label {
+    font-size: 8pt; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.8px; color: #3b5bdb;
+    border-bottom: 1px solid #e5e5e5; padding-bottom: 3px; margin-bottom: 8px; margin-top: 18px;
+  }
+  .cover-detail-table { font-size: 9.5pt; width: 100%; }
+  .cover-detail-table td { padding: 3px 0; vertical-align: top; }
+  .cover-detail-table .lbl { color: #888; width: 140px; }
+  .cover-detail-table .val { color: #1a1a1a; font-weight: 600; }
+  .rego-tag {
+    background: #fef9c3; padding: 2px 8px; border-radius: 3px;
+    font-family: monospace; font-weight: 800; font-size: 10pt; color: #1a1a1a;
+  }
+  .empty-state {
+    margin-top: 40px; padding: 24px;
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+    text-align: center; color: #64748b; font-size: 12pt;
+  }
+
+  /* ---- Table of contents ---- */
+  .toc-section {
+    page-break-before: always;
+  }
+  .toc-title {
+    font-size: 16pt; font-weight: 800; color: #1a1a1a;
+    margin-bottom: 4px;
+  }
+  .toc-subtitle {
+    font-size: 9pt; color: #888; margin-bottom: 16px;
+  }
+  .toc-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 9pt; }
+  .toc-table thead th {
+    background: #3b5bdb; color: #fff;
+    padding: 8px 12px; font-size: 8pt; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.6px;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .toc-table thead th:first-child { border-radius: 6px 0 0 0; }
+  .toc-table thead th:last-child { border-radius: 0 6px 0 0; }
+  .toc-table tbody td { padding: 8px 12px; border-bottom: 1px solid #f0f0f0; }
+  .toc-table tbody tr:nth-child(even) td { background: #fafafa; }
+  .status-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 8pt; font-weight: 700; text-transform: uppercase;
+  }
+  .status-paid { background: #dcfce7; color: #166534; }
+  .status-sent { background: #dbeafe; color: #1e40af; }
+  .status-draft { background: #f3f4f6; color: #6b7280; }
+  .status-overdue { background: #fff7ed; color: #9a3412; }
+  .status-voided { background: #fce4ec; color: #991b1b; }
+  .status-refunded { background: #fff7ed; color: #9a3412; }
+  .status-partially_refunded { background: #fff7ed; color: #9a3412; }
+
+  /* ---- Invoice pages ---- */
+  .invoice-page {
+    page-break-before: always;
+  }
+  .inv-header {
+    margin-bottom: 14px; padding-bottom: 10px;
+    border-bottom: 2px solid #3b5bdb;
+  }
+  .inv-header-title { font-size: 14pt; font-weight: 800; color: #1a1a1a; }
+  .inv-header-number { font-size: 10pt; color: #888; margin-top: 2px; }
+  .inv-meta-bar {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 8px 14px; margin-bottom: 14px;
+  }
+  .inv-meta-bar table { font-size: 9pt; width: 100%; }
+  .inv-meta-bar table td { padding: 2px 16px 2px 0; vertical-align: top; }
+  .inv-meta-bar .mlbl { color: #9ca3af; font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.5px; }
+  .inv-meta-bar .mval { color: #1a1a1a; font-weight: 600; }
+  .items-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 9pt; margin-bottom: 14px; }
+  .items-table thead th {
+    background: #3b5bdb; color: #fff;
+    padding: 8px 12px; font-size: 8pt; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.6px;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .items-table thead th:first-child { border-radius: 6px 0 0 0; }
+  .items-table thead th:last-child { border-radius: 0 6px 0 0; }
+  .items-table tbody td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
+  .items-table tbody tr:nth-child(even) td { background: #fafafa; }
+  .totals-table { font-size: 9.5pt; min-width: 240px; }
+  .totals-table td { padding: 4px 0; }
+  .totals-table .lbl { color: #888; padding-right: 20px; }
+  .totals-table .val { text-align: right; color: #1a1a1a; font-weight: 500; }
+  .total-row td {
+    padding-top: 8px !important; border-top: 2px solid #1a1a1a;
+    font-weight: 800; font-size: 11pt;
+  }
+
+  /* ---- Continuation header for long invoices ---- */
+  .inv-continuation-header {
+    font-size: 9pt; color: #888; margin-bottom: 10px;
+    padding-bottom: 6px; border-bottom: 1px solid #e5e5e5;
+  }
+
+  /* ---- Footer ---- */
+  .report-footer {
+    margin-top: 24px; padding-top: 10px;
+    border-top: 1px solid #eee; text-align: center;
+    font-size: 8pt; color: #aaa;
+  }
+</style>
+</head>
+<body>
+
+<!-- ================================================================== -->
+<!--  COVER PAGE                                                        -->
+<!-- ================================================================== -->
+<div class="cover-page">
+
+  <!-- Org branding -->
+  {% if org.logo_url %}
+  <img src="{{ org.logo_url }}" alt="{{ org.name }}" class="cover-logo">
+  {% endif %}
+  <div class="cover-org-name">{{ org.name }}</div>
+  <div class="cover-org-details">
+    {% if org.address %}{{ org.address }}<br>{% endif %}
+    {% if org.phone %}{{ org.phone }}<br>{% endif %}
+    {% if org.email %}{{ org.email }}<br>{% endif %}
+    {% if org.gst_number %}GST: {{ org.gst_number }}{% endif %}
+  </div>
+
+  <div class="cover-title">Vehicle Service History Report</div>
+  <div class="cover-subtitle">{{ date_range_label }} &mdash; Generated {{ generated_date }}</div>
+
+  <!-- Vehicle details -->
+  <div class="cover-section-label">Vehicle Details</div>
+  <table class="cover-detail-table">
+    <tr>
+      <td class="lbl">Registration</td>
+      <td class="val"><span class="rego-tag">{{ vehicle.rego }}</span></td>
+    </tr>
+    <tr>
+      <td class="lbl">Make</td>
+      <td class="val">{{ vehicle.make }}</td>
+    </tr>
+    <tr>
+      <td class="lbl">Model</td>
+      <td class="val">{{ vehicle.model }}</td>
+    </tr>
+    {% if vehicle.year %}
+    <tr>
+      <td class="lbl">Year</td>
+      <td class="val">{{ vehicle.year }}</td>
+    </tr>
+    {% endif %}
+    {% if vehicle.vin %}
+    <tr>
+      <td class="lbl">VIN</td>
+      <td class="val">{{ vehicle.vin }}</td>
+    </tr>
+    {% endif %}
+    {% if vehicle.odometer %}
+    <tr>
+      <td class="lbl">Odometer</td>
+      <td class="val">{{ "{:,}".format(vehicle.odometer | int) }} km</td>
+    </tr>
+    {% endif %}
+  </table>
+
+  <!-- Customer details -->
+  <div class="cover-section-label">Customer Details</div>
+  <table class="cover-detail-table">
+    <tr>
+      <td class="lbl">Name</td>
+      <td class="val">{{ customer.full_name }}</td>
+    </tr>
+    {% if customer.email %}
+    <tr>
+      <td class="lbl">Email</td>
+      <td class="val">{{ customer.email }}</td>
+    </tr>
+    {% endif %}
+    {% if customer.phone %}
+    <tr>
+      <td class="lbl">Phone</td>
+      <td class="val">{{ customer.phone }}</td>
+    </tr>
+    {% endif %}
+  </table>
+
+  {% if not has_invoices %}
+  <div class="empty-state">
+    No service records found for the selected period.
+  </div>
+  {% endif %}
+
+</div>
+
+{% if has_invoices %}
+<!-- ================================================================== -->
+<!--  TABLE OF CONTENTS                                                 -->
+<!-- ================================================================== -->
+<div class="toc-section">
+
+  <div class="toc-title">Table of Contents</div>
+  <div class="toc-subtitle">{{ invoices | length }} invoice{{ 's' if invoices | length != 1 else '' }} included &mdash; {{ date_range_label }}</div>
+
+  <table class="toc-table">
+    <thead>
+      <tr>
+        <th style="text-align:left;">#</th>
+        <th style="text-align:left;">Invoice Number</th>
+        <th style="text-align:left;">Issue Date</th>
+        <th style="text-align:left;">Status</th>
+        <th style="text-align:right;">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for inv in invoices %}
+      <tr>
+        <td style="color:#888;">{{ loop.index }}</td>
+        <td style="color:#1a1a1a; font-weight:600;">{{ inv.invoice_number }}</td>
+        <td>{{ inv.issue_date }}</td>
+        <td>
+          <span class="status-badge status-{{ inv.status | lower | replace(' ', '_') }}">{{ inv.status | replace('_', ' ') | title }}</span>
+        </td>
+        <td style="text-align:right; font-weight:600;">{{ "%.2f" | format(inv.total | float) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+</div>
+
+<!-- ================================================================== -->
+<!--  INVOICE PAGES — one per invoice                                   -->
+<!-- ================================================================== -->
+{% for inv in invoices %}
+<div class="invoice-page">
+
+  <!-- Invoice header -->
+  <div class="inv-header">
+    <table style="width:100%;" cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="vertical-align:top;">
+          <div class="inv-header-title">Invoice {{ inv.invoice_number }}</div>
+          <div class="inv-header-number">{{ inv.customer_name }}</div>
+        </td>
+        <td style="vertical-align:top; text-align:right;">
+          <span class="status-badge status-{{ inv.status | lower | replace(' ', '_') }}">{{ inv.status | replace('_', ' ') | title }}</span>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- Invoice meta bar -->
+  <div class="inv-meta-bar">
+    <table>
+      <tr>
+        <td>
+          <div class="mlbl">Issue Date</div>
+          <div class="mval">{{ inv.issue_date }}</div>
+        </td>
+        <td>
+          <div class="mlbl">Status</div>
+          <div class="mval">{{ inv.status | replace('_', ' ') | title }}</div>
+        </td>
+        {% if inv.odometer %}
+        <td>
+          <div class="mlbl">Odometer</div>
+          <div class="mval">{{ "{:,}".format(inv.odometer | int) }} km</div>
+        </td>
+        {% endif %}
+        <td>
+          <div class="mlbl">Customer</div>
+          <div class="mval">{{ inv.customer_name }}</div>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- Line items table -->
+  <table class="items-table">
+    <thead>
+      <tr>
+        <th style="text-align:left; width:30px;">#</th>
+        <th style="text-align:left;">Description</th>
+        <th style="text-align:right; width:55px;">Qty</th>
+        <th style="text-align:right; width:80px;">Unit Price</th>
+        <th style="text-align:right; width:90px;">Line Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in inv.line_items %}
+      <tr>
+        <td style="color:#888;">{{ loop.index }}</td>
+        <td style="color:#1a1a1a;">{{ item.description }}</td>
+        <td style="text-align:right; color:#1a1a1a;">{{ item.quantity }}</td>
+        <td style="text-align:right; color:#1a1a1a;">{{ "%.2f" | format(item.unit_price | float) }}</td>
+        <td style="text-align:right; color:#1a1a1a; font-weight:600;">{{ "%.2f" | format(item.line_total | float) }}</td>
+      </tr>
+      {% endfor %}
+      {% if not inv.line_items %}
+      <tr><td colspan="5" style="text-align:center; padding:20px; color:#999;">No line items</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  <!-- Totals -->
+  <table style="margin-left:auto; margin-bottom:6px;" cellpadding="0" cellspacing="0">
+    <tr>
+      <td>
+        <table class="totals-table">
+          <tr>
+            <td class="lbl">Subtotal</td>
+            <td class="val">{{ "%.2f" | format(inv.subtotal | float) }}</td>
+          </tr>
+          <tr>
+            <td class="lbl">Tax (GST)</td>
+            <td class="val">{{ "%.2f" | format(inv.gst_amount | float) }}</td>
+          </tr>
+          <tr class="total-row">
+            <td style="color:#1a1a1a;">Grand Total</td>
+            <td style="text-align:right; color:#1a1a1a;">{{ "%.2f" | format(inv.total | float) }}</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+</div>
+{% endfor %}
+
+{% endif %}
+
+<!-- ================================================================== -->
+<!--  REPORT FOOTER                                                     -->
+<!-- ================================================================== -->
+<div class="report-footer">
+  <p>{{ org.name }} &mdash; Service History Report &mdash; Generated {{ generated_date }}</p>
+</div>
+
+</body>
+</html>

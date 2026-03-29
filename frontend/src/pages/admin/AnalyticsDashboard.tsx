@@ -104,8 +104,8 @@ function pctColor(pct: number): string {
 function OverviewCards({ data }: { data: PlatformOverview | null }) {
   if (!data) return null
   const cards = [
-    { label: 'Total Organisations', value: data.total_orgs.toLocaleString() },
-    { label: 'Active Organisations', value: data.active_orgs.toLocaleString() },
+    { label: 'Total Organisations', value: (data.total_orgs ?? 0).toLocaleString() },
+    { label: 'Active Organisations', value: (data.active_orgs ?? 0).toLocaleString() },
     { label: 'Monthly Recurring Revenue', value: formatCurrency(data.mrr) },
     { label: 'Churn Rate (30d)', value: `${data.churn_rate}%` },
   ]

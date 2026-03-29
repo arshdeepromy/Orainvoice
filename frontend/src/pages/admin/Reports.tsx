@@ -419,7 +419,7 @@ function VehicleDbTab() {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="rounded-lg border border-gray-200 bg-white p-4">
             <p className="text-sm text-gray-500">Total Records</p>
-            <p className="text-2xl font-semibold text-gray-900">{data.total_records.toLocaleString()}</p>
+            <p className="text-2xl font-semibold text-gray-900">{(data.total_records ?? 0).toLocaleString()}</p>
           </div>
           <div className="rounded-lg border border-gray-200 bg-white p-4">
             <p className="text-sm text-gray-500">Cache Hit Rate</p>
@@ -427,7 +427,7 @@ function VehicleDbTab() {
           </div>
           <div className="rounded-lg border border-gray-200 bg-white p-4">
             <p className="text-sm text-gray-500">Total Lookups</p>
-            <p className="text-2xl font-semibold text-gray-900">{data.total_lookups.toLocaleString()}</p>
+            <p className="text-2xl font-semibold text-gray-900">{(data.total_lookups ?? 0).toLocaleString()}</p>
           </div>
         </div>
       )}

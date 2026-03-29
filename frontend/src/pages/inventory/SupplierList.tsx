@@ -61,7 +61,7 @@ export default function SupplierList() {
     setError('')
     try {
       const res = await apiClient.get<SupplierListResponse>('/inventory/suppliers')
-      setSuppliers(res.data.suppliers)
+      setSuppliers(res.data?.suppliers ?? [])
     } catch {
       setError('Failed to load suppliers.')
     } finally {

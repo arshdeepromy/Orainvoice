@@ -57,8 +57,8 @@ export default function NotificationLog() {
       if (statusFilter) params.status = statusFilter
       if (channelFilter) params.channel = channelFilter
       const res = await apiClient.get<LogResponse>('/notifications/log', { params })
-      setEntries(res.data.entries)
-      setTotal(res.data.total)
+      setEntries(res.data?.entries ?? [])
+      setTotal(res.data?.total ?? 0)
     } catch {
       setError('Failed to load notification log.')
     } finally {

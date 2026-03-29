@@ -337,3 +337,25 @@ class OdometerHistoryEntry(BaseModel):
     invoice_id: Optional[str] = None
     notes: Optional[str] = None
     recorded_at: Optional[str] = None
+
+
+class ServiceHistoryReportRequest(BaseModel):
+    """POST /api/v1/vehicles/{id}/service-history-report request body."""
+
+    range_years: int = Field(
+        default=1,
+        description="Date range in years: 0 = all time, 1 = last year, 2 = last 2 years, 3 = last 3 years",
+    )
+
+
+class ServiceHistoryEmailRequest(BaseModel):
+    """POST /api/v1/vehicles/{id}/service-history-report/email request body."""
+
+    range_years: int = Field(
+        default=1,
+        description="Date range in years: 0 = all time, 1 = last year, 2 = last 2 years, 3 = last 3 years",
+    )
+    recipient_email: str = Field(
+        ...,
+        description="Email address to send the report to",
+    )

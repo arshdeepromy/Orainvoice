@@ -796,7 +796,7 @@ function PlanChangeModal({
     setSelectedPlanId(null)
     setLoading(true)
     apiClient.get<{ plans: AvailablePlan[] }>('/auth/plans')
-      .then(res => setPlans(res.data.plans))
+      .then(res => setPlans(res.data?.plans ?? []))
       .catch(() => addToast('error', 'Failed to load available plans'))
       .finally(() => setLoading(false))
   }, [open, addToast])

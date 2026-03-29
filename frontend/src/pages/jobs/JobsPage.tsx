@@ -118,7 +118,7 @@ export default function JobsPage() {
         params.status = 'open,in_progress'
       }
       const res = await apiClient.get<JobCardListResponse>('/job-cards', { params })
-      setJobs(res.data.job_cards)
+      setJobs(res.data?.job_cards ?? [])
     } catch {
       addToast('error', 'Failed to load jobs.')
       setJobs([])

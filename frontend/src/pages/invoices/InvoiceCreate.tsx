@@ -88,6 +88,7 @@ interface Salesperson {
 interface LineItem {
   key: string
   item_id?: string
+  stock_item_id?: string
   description: string
   line_description?: string
   original_description?: string
@@ -428,20 +429,36 @@ function ItemTableRow({
   }
 
   const handleItemSelect = (catalogueItem: CatalogueItem) => {
-    // If price is GST inclusive: tax_rate=0 (GST already in price, no additional GST)
-    // If GST exempt: tax_rate=0
-    // Otherwise: tax_rate=15
-    const taxRate = (catalogueItem.gst_inclusive || !catalogueItem.gst_applicable) ? 0 : 15
-    const taxId = taxRate === 0 ? 'gst_0' : 'gst_15'
+    // GST-inclusive: back-calculate ex-GST rate so invoice shows proper breakdown
+    // GST-exempt: rate as-is, 0% tax
+    // GST-exclusive (default): rate as-is, 15% tax
+    const isGstInclusive = catalogueItem.gst_inclusive === true
+    const isGstExempt = !catalogueItem.gst_applicable
+    let rate: number
+    let taxRate: number
+    let taxId: string
+    if (isGstExempt) {
+      rate = catalogueItem.default_price
+      taxRate = 0
+      taxId = 'gst_0'
+    } else if (isGstInclusive) {
+      rate = Math.round((catalogueItem.default_price / 1.15) * 100) / 100
+      taxRate = 15
+      taxId = 'gst_15'
+    } else {
+      rate = catalogueItem.default_price
+      taxRate = 15
+      taxId = 'gst_15'
+    }
     update({
       item_id: catalogueItem.id,
       description: catalogueItem.name,
       line_description: catalogueItem.description || '',
       original_description: catalogueItem.description || '',
-      rate: catalogueItem.default_price,
+      rate,
       tax_rate: taxRate,
       tax_id: taxId,
-      gst_inclusive: catalogueItem.gst_inclusive,
+      gst_inclusive: isGstInclusive,
     })
     setShowItemDropdown(false)
     setItemSearch('')
@@ -522,7 +539,7 @@ function ItemTableRow({
               {item.gst_inclusive && (
                 <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 mb-1">
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                  Price is GST inclusive — GST not added again
+                  GST inclusive — rate shows ex-GST, GST added in totals
                 </span>
               )}
               <textarea
@@ -848,14 +865,27 @@ export default function InvoiceCreate() {
         // Load line items
         if (inv.line_items && inv.line_items.length > 0) {
           setLineItems(inv.line_items.map((li: Record<string, unknown>) => ({
-            id: String(li.id || crypto.randomUUID()),
-            item_id: '',
+            key: String(li.id || crypto.randomUUID()),
+            item_id: li.catalogue_item_id ? String(li.catalogue_item_id) : '',
+            stock_item_id: li.stock_item_id ? String(li.stock_item_id) : undefined,
             description: String(li.description || ''),
             quantity: Number(li.quantity || 1),
             rate: Number(li.unit_price || li.rate || 0),
-            tax_id: '',
+            tax_id: li.is_gst_exempt ? 'gst_0' : 'gst_15',
             tax_rate: li.is_gst_exempt ? 0 : 15,
             amount: Number(li.line_total || 0),
+          })))
+        }
+
+        // Load fluid usage from invoice_data_json
+        const savedFluidUsage = inv.fluid_usage || []
+        if (savedFluidUsage.length > 0) {
+          setFluidUsages(savedFluidUsage.map((fu: Record<string, unknown>) => ({
+            key: crypto.randomUUID(),
+            stock_item_id: String(fu.stock_item_id || ''),
+            item_name: String(fu.item_name || ''),
+            litres: Number(fu.litres || 0),
+            catalogue_item_id: String(fu.catalogue_item_id || ''),
           })))
         }
       } catch {
@@ -932,25 +962,61 @@ export default function InvoiceCreate() {
     setLineItems(prev => [...prev, newLineItem()])
   }
 
-  // Parts catalogue picker state
-  const [partsPickerOpen, setPartsPickerOpen] = useState(false)
-  const [catalogueParts, setCatalogueParts] = useState<{id:string;name:string;part_number:string|null;default_price:string;part_type:string;brand:string|null;tyre_width:string|null;tyre_profile:string|null;tyre_rim_dia:string|null}[]>([])
-  const [partsLoading, setPartsLoading] = useState(false)
-  const [partsSearch, setPartsSearch] = useState('')
+  // Inventory stock picker state
+  const [stockPickerOpen, setStockPickerOpen] = useState(false)
+  const [stockItems, setStockItems] = useState<{id:string;catalogue_item_id:string;catalogue_type:string;item_name:string;part_number:string|null;brand:string|null;subtitle:string|null;current_quantity:number;reserved_quantity:number;available_quantity:number;sell_price:number|null;cost_per_unit:number|null;gst_mode:string|null;supplier_name:string|null;location:string|null}[]>([])
+  const [stockLoading, setStockLoading] = useState(false)
+  const [stockSearch, setStockSearch] = useState('')
+  const [stockFilter, setStockFilter] = useState<'all'|'part'|'tyre'>('all')
   const [labourPickerOpen, setLabourPickerOpen] = useState(false)
   const [labourRates, setLabourRates] = useState<{id:string;name:string;hourly_rate:string}[]>([])
   const [labourLoading, setLabourLoading] = useState(false)
 
-  const openPartsPicker = async () => {
-    setPartsPickerOpen(true); setPartsSearch(''); setPartsLoading(true)
-    try { setCatalogueParts((await apiClient.get('/catalogue/parts')).data.parts || []) }
-    catch { setCatalogueParts([]) } finally { setPartsLoading(false) }
+  const openStockPicker = async () => {
+    setStockPickerOpen(true); setStockSearch(''); setStockFilter('all'); setStockLoading(true)
+    try {
+      const res = await apiClient.get('/inventory/stock-items', { params: { limit: 500 } })
+      setStockItems((res.data as any).stock_items || [])
+    } catch { setStockItems([]) } finally { setStockLoading(false) }
   }
-  const addPartLineItem = (part: typeof catalogueParts[0]) => {
-    const desc = part.part_type === 'tyre' && part.tyre_width
-      ? `${part.name} (${part.tyre_width}/${part.tyre_profile}R${part.tyre_rim_dia})` : part.name
-    setLineItems(prev => [...prev, { key: crypto.randomUUID(), item_id: part.id, description: desc, quantity: 1, rate: parseFloat(part.default_price) || 0, tax_rate: 15, tax_id: 'gst_15', amount: parseFloat(part.default_price) || 0 }])
-    setPartsPickerOpen(false)
+  const addStockLineItem = (item: typeof stockItems[0]) => {
+    const sellPrice = item.sell_price || 0
+    const isGstInclusive = item.gst_mode === 'inclusive'
+    const isGstExempt = item.gst_mode === 'exempt'
+    // GST-inclusive: back-calculate ex-GST rate so GST breakdown shows correctly
+    // GST-exclusive: rate is already ex-GST, apply 15%
+    // GST-exempt: rate as-is, 0% tax
+    let rate: number
+    let taxRate: number
+    let taxId: string
+    if (isGstExempt) {
+      rate = sellPrice
+      taxRate = 0
+      taxId = 'gst_0'
+    } else if (isGstInclusive) {
+      // Back-calculate: ex-GST = inclusive / 1.15
+      rate = Math.round((sellPrice / 1.15) * 100) / 100
+      taxRate = 15
+      taxId = 'gst_15'
+    } else {
+      rate = sellPrice
+      taxRate = 15
+      taxId = 'gst_15'
+    }
+    const desc = item.subtitle ? `${item.item_name} (${item.subtitle})` : item.item_name
+    setLineItems(prev => [...prev, {
+      key: crypto.randomUUID(),
+      item_id: item.catalogue_item_id,
+      stock_item_id: item.id,
+      description: desc,
+      quantity: 1,
+      rate,
+      tax_rate: taxRate,
+      tax_id: taxId,
+      amount: rate,
+      gst_inclusive: isGstInclusive,
+    }])
+    setStockPickerOpen(false)
   }
   const openLabourPicker = async () => {
     setLabourPickerOpen(true); setLabourLoading(true)
@@ -960,6 +1026,39 @@ export default function InvoiceCreate() {
   const addLabourLineItem = (rate: typeof labourRates[0]) => {
     setLineItems(prev => [...prev, { key: crypto.randomUUID(), description: `Labour: ${rate.name}`, quantity: 1, rate: parseFloat(rate.hourly_rate) || 0, tax_rate: 15, tax_id: 'gst_15', amount: parseFloat(rate.hourly_rate) || 0 }])
     setLabourPickerOpen(false)
+  }
+
+  // Fluid / Oil usage tracking (not invoiced, just inventory tracking)
+  interface FluidUsage { key: string; stock_item_id: string; item_name: string; litres: number; catalogue_item_id: string }
+  const [fluidUsages, setFluidUsages] = useState<FluidUsage[]>([])
+  const [fluidPickerOpen, setFluidPickerOpen] = useState(false)
+  const [fluidItems, setFluidItems] = useState<typeof stockItems>([])
+  const [fluidLoading, setFluidLoading] = useState(false)
+  const [fluidSearch, setFluidSearch] = useState('')
+
+  const openFluidPicker = async () => {
+    setFluidPickerOpen(true); setFluidSearch(''); setFluidLoading(true)
+    try {
+      const res = await apiClient.get('/inventory/stock-items', { params: { limit: 500 } })
+      const all = (res.data as any).stock_items || []
+      setFluidItems(all.filter((si: any) => si.catalogue_type === 'fluid' && si.available_quantity > 0))
+    } catch { setFluidItems([]) } finally { setFluidLoading(false) }
+  }
+  const addFluidUsage = (item: typeof stockItems[0]) => {
+    setFluidUsages(prev => [...prev, {
+      key: crypto.randomUUID(),
+      stock_item_id: item.id,
+      item_name: item.item_name,
+      litres: 1,
+      catalogue_item_id: item.catalogue_item_id,
+    }])
+    setFluidPickerOpen(false)
+  }
+  const updateFluidLitres = (key: string, litres: number) => {
+    setFluidUsages(prev => prev.map(f => f.key === key ? { ...f, litres: Math.max(0, litres) } : f))
+  }
+  const removeFluidUsage = (key: string) => {
+    setFluidUsages(prev => prev.filter(f => f.key !== key))
   }
 
   const updateLineItem = (index: number, updated: LineItem) => {
@@ -1033,8 +1132,16 @@ export default function InvoiceCreate() {
     terms_and_conditions: termsAndConditions || undefined,
     payment_gateway: paymentGateway,
     is_recurring: makeRecurring,
+    fluid_usage: fluidUsages.filter(f => f.litres > 0).map(f => ({
+      stock_item_id: f.stock_item_id,
+      catalogue_item_id: f.catalogue_item_id,
+      litres: f.litres,
+      item_name: f.item_name,
+    })),
     line_items: lineItems.filter(item => item.description.trim()).map(item => ({
+      item_type: item.stock_item_id ? 'part' : (item.item_id ? 'service' : 'service'),
       catalogue_item_id: item.item_id || undefined,
+      stock_item_id: item.stock_item_id || undefined,
       description: (item.line_description
         ? `${item.description}\n${item.line_description}`
         : item.description).slice(0, 2000),
@@ -1415,9 +1522,9 @@ export default function InvoiceCreate() {
               <Button variant="secondary" size="sm" onClick={addLineItem}>
                 + Add New Row
               </Button>
+              <Button variant="secondary" size="sm" onClick={openStockPicker}>+ Add from Inventory</Button>
               {vehiclesEnabled && (
                 <>
-                  <Button variant="secondary" size="sm" onClick={openPartsPicker}>+ Add Parts</Button>
                   <Button variant="secondary" size="sm" onClick={openLabourPicker}>+ Labour Charge</Button>
                 </>
               )}
@@ -1427,6 +1534,45 @@ export default function InvoiceCreate() {
             </div>
           </div>
 
+          {/* Fluid / Oil Usage Tracking (not invoiced — inventory tracking only) */}
+          {vehiclesEnabled && vehicles.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
+                  <span className="text-sm font-medium text-amber-900">Oil / Fluid Used</span>
+                  <span className="text-xs text-amber-600">(tracked against vehicle — not added to invoice total)</span>
+                </div>
+                <Button variant="secondary" size="sm" onClick={openFluidPicker}>+ Add Fluid</Button>
+              </div>
+              {fluidUsages.length > 0 && (
+                <div className="space-y-2">
+                  {fluidUsages.map(f => (
+                    <div key={f.key} className="flex items-center gap-3 bg-white rounded-md border border-amber-100 px-3 py-2">
+                      <span className="flex-1 text-sm text-gray-900">{f.item_name}</span>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min="0.1"
+                          step="0.1"
+                          value={f.litres}
+                          onChange={e => updateFluidLitres(f.key, parseFloat(e.target.value) || 0)}
+                          className="w-20 rounded border border-gray-300 px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <span className="text-xs text-gray-500">L</span>
+                      </div>
+                      <button type="button" onClick={() => removeFluidUsage(f.key)} className="text-gray-400 hover:text-red-500 p-1" aria-label="Remove">
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {fluidUsages.length === 0 && (
+                <p className="text-xs text-amber-700">No fluids recorded. Click "+ Add Fluid" to track oil/fluid used on this vehicle.</p>
+              )}
+            </div>
+          )}
 
           {/* Totals Section */}
           <div className="flex justify-end">
@@ -1672,19 +1818,51 @@ export default function InvoiceCreate() {
         </div>
       </Modal>
 
-      {/* Parts Picker Modal */}
-      <Modal open={partsPickerOpen} onClose={() => setPartsPickerOpen(false)} title="Add Part from Catalogue">
+      {/* Inventory Stock Picker Modal */}
+      <Modal open={stockPickerOpen} onClose={() => setStockPickerOpen(false)} title="Add from Inventory">
         <div className="space-y-3">
-          <input type="text" placeholder="Search parts..." value={partsSearch} onChange={e => setPartsSearch(e.target.value)} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
-          {partsLoading ? <div className="py-8 text-center text-sm text-gray-500">Loading...</div> : (
-            <div className="max-h-64 overflow-y-auto divide-y divide-gray-100">
-              {catalogueParts.filter(p => !partsSearch || p.name.toLowerCase().includes(partsSearch.toLowerCase()) || (p.part_number && p.part_number.toLowerCase().includes(partsSearch.toLowerCase()))).map(part => (
-                <button key={part.id} onClick={() => addPartLineItem(part)} className="w-full text-left px-3 py-2.5 hover:bg-blue-50 flex items-center justify-between">
-                  <div><div className="text-sm font-medium text-gray-900">{part.name}</div><div className="text-xs text-gray-500">{part.part_number && <span>{part.part_number} · </span>}<span className="capitalize">{part.part_type}</span>{part.brand && <span> · {part.brand}</span>}{part.part_type === 'tyre' && part.tyre_width && <span> · {part.tyre_width}/{part.tyre_profile}R{part.tyre_rim_dia}</span>}</div></div>
-                  <span className="text-sm font-medium text-gray-900">${part.default_price}</span>
+          <input type="text" placeholder="Search by name, part number, brand..." value={stockSearch} onChange={e => setStockSearch(e.target.value)} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+          <div className="flex gap-2">
+            {(['all', 'part', 'tyre'] as const).map(f => (
+              <button key={f} type="button" onClick={() => setStockFilter(f)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${stockFilter === f ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                {f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1) + 's'}
+              </button>
+            ))}
+          </div>
+          {stockLoading ? <div className="py-8 text-center text-sm text-gray-500">Loading inventory...</div> : (
+            <div className="max-h-80 overflow-y-auto divide-y divide-gray-100">
+              {stockItems
+                .filter(si => si.catalogue_type !== 'fluid')
+                .filter(si => stockFilter === 'all' || si.catalogue_type === stockFilter)
+                .filter(si => !stockSearch || si.item_name.toLowerCase().includes(stockSearch.toLowerCase()) || (si.part_number && si.part_number.toLowerCase().includes(stockSearch.toLowerCase())) || (si.brand && si.brand.toLowerCase().includes(stockSearch.toLowerCase())))
+                .filter(si => si.available_quantity > 0)
+                .map(si => (
+                <button key={si.id} onClick={() => addStockLineItem(si)} className="w-full text-left px-3 py-2.5 hover:bg-blue-50 flex items-center justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-gray-900 truncate">{si.item_name}</div>
+                    <div className="text-xs text-gray-500 flex flex-wrap gap-x-2">
+                      {si.part_number && <span>{si.part_number}</span>}
+                      <span className="capitalize">{si.catalogue_type}</span>
+                      {si.brand && <span>· {si.brand}</span>}
+                      {si.subtitle && <span>· {si.subtitle}</span>}
+                      {si.location && <span>· 📍 {si.location}</span>}
+                    </div>
+                    <div className="text-xs text-gray-400 mt-0.5">
+                      Available: {si.available_quantity}{si.catalogue_type === 'fluid' ? 'L' : ' units'}
+                      {si.reserved_quantity > 0 && <span className="ml-1 text-orange-500">({si.reserved_quantity} held)</span>}
+                      {si.supplier_name && <span> · {si.supplier_name}</span>}
+                      {si.gst_mode === 'inclusive' && <span className="ml-1 text-amber-600">(GST inc.)</span>}
+                      {si.gst_mode === 'exempt' && <span className="ml-1 text-amber-600">(GST exempt)</span>}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-sm font-medium text-gray-900">{si.sell_price != null ? formatNZD(si.sell_price) : '—'}</div>
+                    <div className="text-xs text-gray-500">{si.catalogue_type === 'fluid' ? '/L' : '/unit'}</div>
+                  </div>
                 </button>
               ))}
-              {catalogueParts.length === 0 && !partsLoading && <div className="py-8 text-center text-sm text-gray-500">No parts in catalogue.</div>}
+              {stockItems.filter(si => si.available_quantity > 0).length === 0 && !stockLoading && <div className="py-8 text-center text-sm text-gray-500">No items in stock.</div>}
             </div>
           )}
         </div>
@@ -1703,6 +1881,36 @@ export default function InvoiceCreate() {
             {labourRates.length === 0 && !labourLoading && <div className="py-8 text-center text-sm text-gray-500">No labour rates configured.</div>}
           </div>
         )}
+      </Modal>
+
+      {/* Fluid / Oil Picker Modal */}
+      <Modal open={fluidPickerOpen} onClose={() => setFluidPickerOpen(false)} title="Add Oil / Fluid Usage">
+        <div className="space-y-3">
+          <p className="text-xs text-gray-500">Select a fluid from inventory to track usage against this vehicle. This will not be added to the invoice total — it only decrements stock.</p>
+          <input type="text" placeholder="Search fluids..." value={fluidSearch} onChange={e => setFluidSearch(e.target.value)} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+          {fluidLoading ? <div className="py-8 text-center text-sm text-gray-500">Loading...</div> : (
+            <div className="max-h-64 overflow-y-auto divide-y divide-gray-100">
+              {fluidItems
+                .filter(si => !fluidSearch || si.item_name.toLowerCase().includes(fluidSearch.toLowerCase()) || (si.brand && si.brand.toLowerCase().includes(fluidSearch.toLowerCase())))
+                .map(si => (
+                <button key={si.id} onClick={() => addFluidUsage(si)} className="w-full text-left px-3 py-2.5 hover:bg-amber-50 flex items-center justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-gray-900">{si.item_name}</div>
+                    <div className="text-xs text-gray-500">
+                      {si.brand && <span>{si.brand} · </span>}
+                      Available: {si.available_quantity}L
+                      {si.reserved_quantity > 0 && <span className="text-orange-500"> ({si.reserved_quantity}L held)</span>}
+                      {si.supplier_name && <span> · {si.supplier_name}</span>}
+                      {si.location && <span> · 📍 {si.location}</span>}
+                    </div>
+                  </div>
+                  <span className="text-xs text-gray-400 shrink-0">{si.available_quantity}L avail</span>
+                </button>
+              ))}
+              {fluidItems.length === 0 && !fluidLoading && <div className="py-8 text-center text-sm text-gray-500">No fluids in stock.</div>}
+            </div>
+          )}
+        </div>
       </Modal>
     </div>
   )

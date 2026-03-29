@@ -195,6 +195,14 @@ class OrgSettingsResponse(BaseModel):
         None, description="Sidebar branding display: icon_and_name, icon_only, or name_only"
     )
 
+    # Trade info (for trade-specific UI gating)
+    trade_family: Optional[str] = Field(
+        None, description="Trade family slug (e.g. 'automotive-transport', 'plumbing-gas')"
+    )
+    trade_category: Optional[str] = Field(
+        None, description="Trade category slug (e.g. 'general-automotive', 'plumber')"
+    )
+
 
 class OrgSettingsUpdateRequest(BaseModel):
     """PUT /api/v1/org/settings request body.
@@ -370,15 +378,28 @@ class AssignUserBranchesResponse(BaseModel):
 
 
 class UserInviteRequest(BaseModel):
-    """POST /api/v1/org/users/invite request body."""
+    """POST /api/v1/org/users/invite request body.
+
+    When ``password`` is provided (kiosk accounts), the user is created
+    directly with the password set and email marked as verified — no
+    invitation email is sent.  When ``password`` is omitted, the existing
+    invite-token flow is used.
+    """
 
     email: str = Field(
         ..., min_length=5, max_length=255, description="Email address of the user to invite"
     )
     role: str = Field(
         "salesperson",
-        description="Role to assign: 'org_admin' or 'salesperson'",
+        description="Role to assign: 'org_admin', 'salesperson', or 'kiosk'",
     )
+    password: str | None = Field(
+        None,
+        min_length=8,
+        max_length=128,
+        description="Password for direct account creation (kiosk only). When provided, skips the invite email.",
+    )
+
 
 
 class OrgUserResponse(BaseModel):
@@ -411,7 +432,7 @@ class UserListResponse(BaseModel):
 class UserUpdateRequest(BaseModel):
     """PUT /api/v1/org/users/{id} request body."""
 
-    role: Optional[str] = Field(None, description="New role: 'org_admin' or 'salesperson'")
+    role: Optional[str] = Field(None, description="New role: 'org_admin', 'salesperson', or 'kiosk'")
     is_active: Optional[bool] = Field(None, description="Activate or deactivate the user")
 
 

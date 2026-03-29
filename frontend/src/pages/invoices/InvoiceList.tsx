@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Spinner, Modal, Badge } from '../../components/ui'
-import { ModuleGate } from '../../components/common/ModuleGate'
+import { useTenant } from '@/contexts/TenantContext'
 import { CreditNoteModal } from '../../components/invoices/CreditNoteModal'
 import { RefundModal } from '../../components/invoices/RefundModal'
 import {
@@ -343,6 +343,9 @@ const PRINT_STYLES = `
 export default function InvoiceList() {
   const navigate = useNavigate()
   const { id: routeId } = useParams<{ id: string }>()
+  const { tradeFamily } = useTenant()
+  // Null tradeFamily treated as automotive for backward compat
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
   /* --- List state --- */
   const [searchQuery, setSearchQuery] = useState('')
@@ -1249,7 +1252,8 @@ export default function InvoiceList() {
                   </div>
 
                   {/* Vehicle info (inside invoice card) */}
-                  <ModuleGate module="vehicles">
+                  {isAutomotive && (
+                  <>
                   {(invoice.vehicle || invoice.vehicle_rego) && (
                     <div className="relative z-10 px-8 pb-4">
                       <div className="bg-slate-50 rounded-lg border border-slate-200 px-5 py-3">
@@ -1311,7 +1315,8 @@ export default function InvoiceList() {
                       ))}
                     </div>
                   )}
-                  </ModuleGate>
+                  </>
+                  )}
 
                   {/* Line items table */}
                   <div className="relative z-10 px-8 pb-6">

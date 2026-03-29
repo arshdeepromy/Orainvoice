@@ -166,10 +166,15 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
     setLoading(true)
     setError('')
     try {
+      // Send local date as ISO string to avoid UTC timezone shift issues
+      // The backend uses this date to calculate the calendar range
+      const d = apiDate
+      const pad = (n: number) => n.toString().padStart(2, '0')
+      const localDateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`
       const res = await apiClient.get<BookingListResponse>('/bookings', {
         params: {
           view,
-          date: apiDate.toISOString(),
+          date: localDateStr,
         },
       })
       // Sort by start_time ascending (backend should already do this, but ensure)
@@ -368,7 +373,7 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
                       )}
                       {b.converted_job_id != null && (
                         <a
-                          href={`/jobs/${b.converted_job_id}`}
+                          href={`/job-cards/${b.converted_job_id}`}
                           className="text-sm font-medium text-blue-600 hover:text-blue-800"
                         >
                           View Job

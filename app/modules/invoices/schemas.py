@@ -40,6 +40,7 @@ class LineItemCreate(BaseModel):
     item_type: ItemType = ItemType.service  # Default to service
     description: str = Field(..., min_length=1, max_length=2000)
     catalogue_item_id: uuid.UUID | None = None
+    stock_item_id: uuid.UUID | None = None
     part_number: str | None = None
     quantity: Decimal = Field(default=Decimal("1"), gt=0)
     unit_price: Decimal | None = Field(default=None, ge=0)  # Made optional, can use rate
@@ -88,6 +89,17 @@ class VehicleItem(BaseModel):
         return v
 
 
+class FluidUsageItem(BaseModel):
+    """Schema for tracking fluid/oil usage against a vehicle (not invoiced)."""
+
+    model_config = {"extra": "ignore"}
+
+    stock_item_id: uuid.UUID
+    catalogue_item_id: uuid.UUID
+    litres: Decimal = Field(..., gt=0)
+    item_name: str = ""
+
+
 class InvoiceCreateRequest(BaseModel):
     """Request body for POST /api/v1/invoices."""
 
@@ -118,6 +130,10 @@ class InvoiceCreateRequest(BaseModel):
     branch_id: uuid.UUID | None = None
     status: InvoiceStatus = InvoiceStatus.draft
     line_items: list[LineItemCreate] = Field(default_factory=list)
+    fluid_usage: list[FluidUsageItem] = Field(
+        default_factory=list,
+        description="Oil/fluid usage to track against vehicle (not invoiced, just stock decrement)"
+    )
     notes_internal: str | None = None
     notes_customer: str | None = Field(default=None, alias="customer_notes")
     terms_and_conditions: str | None = None
@@ -152,6 +168,7 @@ class LineItemResponse(BaseModel):
     item_type: str
     description: str
     catalogue_item_id: uuid.UUID | None = None
+    stock_item_id: uuid.UUID | None = None
     part_number: str | None = None
     quantity: Decimal
     unit_price: Decimal
@@ -250,6 +267,7 @@ class InvoiceResponse(BaseModel):
     org_website: str | None = None
     vehicle: dict | None = None
     additional_vehicles: list[dict] = Field(default_factory=list)
+    fluid_usage: list[dict] = Field(default_factory=list)
     created_by: uuid.UUID
     created_at: datetime
     updated_at: datetime
@@ -366,6 +384,7 @@ class UpdateInvoiceRequest(BaseModel):
     branch_id: uuid.UUID | None = None
     status: InvoiceStatus | None = None
     line_items: list[LineItemCreate] | None = None
+    fluid_usage: list[FluidUsageItem] | None = None
     notes_internal: str | None = None
     notes_customer: str | None = Field(default=None, alias="customer_notes")
     terms_and_conditions: str | None = None

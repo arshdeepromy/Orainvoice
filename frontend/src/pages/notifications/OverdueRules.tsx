@@ -95,7 +95,7 @@ export default function OverdueRules() {
     try {
       const res = await apiClient.get<OverdueRulesResponse>('/notifications/overdue-rules')
       setEnabled(res.data.reminders_enabled)
-      setRules(res.data.rules.map(backendToUiRule))
+      setRules((res.data?.rules ?? []).map(backendToUiRule))
     } catch {
       setError('Failed to load overdue reminder rules.')
     } finally {

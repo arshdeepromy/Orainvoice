@@ -50,7 +50,7 @@ export default function CategoryTree() {
     setError('')
     try {
       const res = await apiClient.get<CategoryTreeResponse>('/v2/product-categories/tree')
-      setTree(res.data.tree)
+      setTree(res.data?.tree ?? [])
     } catch {
       setError('Failed to load categories.')
     } finally {

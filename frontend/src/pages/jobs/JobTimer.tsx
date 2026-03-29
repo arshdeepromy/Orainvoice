@@ -112,8 +112,8 @@ export default function JobTimer({
       const res = await apiClient.get<TimerResponse>(
         `/job-cards/${jobCardId}/timer`,
       )
-      setEntries(res.data.entries)
-      setIsActive(res.data.is_active)
+      setEntries(res.data?.entries ?? [])
+      setIsActive(res.data?.is_active ?? false)
     } catch {
       // Silently handle — timer section will show empty state
     } finally {

@@ -105,8 +105,8 @@ export default function ReservationList() {
       if (dateFilter) params.set('date', dateFilter)
       if (statusFilter !== 'all') params.set('status', statusFilter)
       const res = await apiClient.get(`/api/v2/tables/reservations?${params}`)
-      setReservations(res.data.reservations)
-      setTotal(res.data.total)
+      setReservations(res.data?.reservations ?? [])
+      setTotal(res.data?.total ?? 0)
     } catch {
       setError('Failed to load reservations.')
       setReservations([])
@@ -118,7 +118,7 @@ export default function ReservationList() {
   const fetchTables = useCallback(async () => {
     try {
       const res = await apiClient.get('/api/v2/tables/tables?limit=200')
-      setTables(res.data.tables)
+      setTables(res.data?.tables ?? [])
     } catch {
       // Tables list is optional for display
     }
@@ -132,7 +132,7 @@ export default function ReservationList() {
       const params = new URLSearchParams({ start_date: startDate, end_date: endDate })
       if (statusFilter !== 'all') params.set('status', statusFilter)
       const res = await apiClient.get(`/api/v2/tables/reservations?${params}`)
-      setCalendarReservations(res.data.reservations)
+      setCalendarReservations(res.data?.reservations ?? [])
     } catch {
       // Silent failure for calendar view
     }

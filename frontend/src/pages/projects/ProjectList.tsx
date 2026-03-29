@@ -47,8 +47,8 @@ export default function ProjectList() {
       if (statusFilter) params.set('status', statusFilter)
 
       const res = await apiClient.get(`/api/v2/projects?${params}`)
-      setProjects(res.data.projects)
-      setTotal(res.data.total)
+      setProjects(res.data?.projects ?? [])
+      setTotal(res.data?.total ?? 0)
     } catch {
       setProjects([])
     } finally {

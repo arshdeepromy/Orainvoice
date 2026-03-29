@@ -134,7 +134,7 @@ async def list_customers(
         403: {"description": "Org role required"},
     },
     summary="Create a new customer",
-    dependencies=[require_role("org_admin", "salesperson")],
+    dependencies=[require_role("org_admin", "salesperson", "kiosk")],
 )
 async def create_new_customer(
     payload: CustomerCreateRequest,

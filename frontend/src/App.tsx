@@ -119,6 +119,9 @@ const StaffDetail = lazy(() => import('@/pages/staff/StaffDetail'))
 /* Franchise location detail */
 const LocationDetail = lazy(() => import('@/pages/franchise/LocationDetail'))
 
+/* Kiosk (standalone, outside OrgLayout) */
+const KioskPage = lazy(() => import('@/pages/kiosk/KioskPage'))
+
 function LazyFallback() {
   return (
     <div className="flex items-center justify-center p-8">
@@ -152,7 +155,7 @@ function RequireAuth() {
 }
 
 function GuestOnly() {
-  const { isAuthenticated, isLoading, isGlobalAdmin } = useAuth()
+  const { isAuthenticated, isLoading, isGlobalAdmin, isKiosk } = useAuth()
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -161,6 +164,7 @@ function GuestOnly() {
     )
   }
   if (isAuthenticated) {
+    if (isKiosk) return <Navigate to="/kiosk" replace />
     return <Navigate to={isGlobalAdmin ? '/admin/dashboard' : '/dashboard'} replace />
   }
   return (
@@ -215,7 +219,7 @@ function LocationDetailRoute() {
 }
 
 function AppRoutes() {
-  const { isGlobalAdmin, isAuthenticated } = useAuth()
+  const { isGlobalAdmin, isKiosk, isAuthenticated } = useAuth()
 
   return (
     <Routes>
@@ -257,7 +261,7 @@ function AppRoutes() {
         <Route element={<OrgLayout />}>
           <Route
             path="/dashboard"
-            element={isGlobalAdmin && !sessionStorage.getItem('admin_view_as_org') ? <Navigate to="/admin/dashboard" replace /> : <SafePage name="dashboard"><Dashboard /></SafePage>}
+            element={isKiosk ? <Navigate to="/kiosk" replace /> : isGlobalAdmin && !sessionStorage.getItem('admin_view_as_org') ? <Navigate to="/admin/dashboard" replace /> : <SafePage name="dashboard"><Dashboard /></SafePage>}
           />
 
           {/* Customers */}
@@ -390,6 +394,11 @@ function AppRoutes() {
         </Route>
       </Route>
 
+      {/* Kiosk (standalone, outside OrgLayout) */}
+      <Route element={<RequireAuth />}>
+        <Route path="/kiosk" element={<SafePage name="kiosk"><KioskPage /></SafePage>} />
+      </Route>
+
       {/* Customer portal (public, token-based access) */}
       <Route path="/portal/:token" element={<SafePage name="portal"><PortalPage /></SafePage>} />
 
@@ -397,7 +406,7 @@ function AppRoutes() {
       <Route
         path="*"
         element={
-          <Navigate to={isAuthenticated ? (isGlobalAdmin ? '/admin/dashboard' : '/dashboard') : '/login'} replace />
+          <Navigate to={isAuthenticated ? (isKiosk ? '/kiosk' : isGlobalAdmin ? '/admin/dashboard' : '/dashboard') : '/login'} replace />
         }
       />
     </Routes>

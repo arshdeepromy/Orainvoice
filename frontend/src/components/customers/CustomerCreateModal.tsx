@@ -22,6 +22,8 @@ interface CustomerCreateModalProps {
   open: boolean
   onClose: () => void
   onCustomerCreated: (customer: Customer) => void
+  /** When true, hides admin-only sections (tabs, bank/portal, customer owner) and optimises for tablet touch. */
+  kioskMode?: boolean
 }
 
 interface AddressFields {
@@ -236,7 +238,7 @@ function DisplayNameSelector({
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function CustomerCreateModal({ open, onClose, onCustomerCreated }: CustomerCreateModalProps) {
+export function CustomerCreateModal({ open, onClose, onCustomerCreated, kioskMode = false }: CustomerCreateModalProps) {
   const [activeTab, setActiveTab] = useState<TabId>('details')
   
   // Customer type
@@ -403,10 +405,58 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated }: Custom
     { id: 'remarks', label: 'Remarks' },
   ]
 
+  /* In kiosk mode: auto-set individual type, relax email/mobile validation */
+  const kioskValidate = (): boolean => {
+    const errs: Record<string, string> = {}
+    if (!firstName.trim()) errs.first_name = 'First name is required'
+    if (!lastName.trim()) errs.last_name = 'Last name is required'
+    if (!mobilePhone.trim()) errs.mobile_phone = 'Mobile phone is required'
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errs.email = 'Invalid email format'
+    setErrors(errs)
+    return Object.keys(errs).length === 0
+  }
+
+  const handleKioskCreate = async () => {
+    if (!kioskValidate()) return
+    setCreating(true)
+    try {
+      const payload: Record<string, unknown> = {
+        customer_type: 'individual',
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
+        display_name: `${firstName.trim()} ${lastName.trim()}`,
+        email: email.trim() || undefined,
+        mobile_phone: mobilePhone.trim(),
+        work_phone: workPhone.trim() || undefined,
+        currency: 'NZD',
+        language: 'en',
+        payment_terms: 'due_on_receipt',
+        enable_bank_payment: false,
+        enable_portal: false,
+      }
+      const res = await apiClient.post<{ customer: Customer }>('/customers', payload)
+      onCustomerCreated(res.data.customer)
+      handleClose()
+    } catch {
+      setErrors({ submit: 'Failed to check in. Please try again.' })
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  /* Kiosk-specific: tablet touch targets applied via Tailwind class on the wrapper */
+
   return (
-    <Modal open={open} onClose={handleClose} title="New Customer" className="max-w-3xl">
-      <div className="space-y-6">
-        {/* Customer Type Toggle */}
+    <Modal
+      open={open}
+      onClose={handleClose}
+      title={kioskMode ? 'Check In' : 'New Customer'}
+      className={kioskMode ? 'max-w-lg' : 'max-w-3xl'}
+    >
+      <div className={`space-y-6 ${kioskMode ? '[&_input]:min-h-[48px] [&_input]:text-lg [&_select]:min-h-[48px] [&_select]:text-lg' : ''}`}>
+
+        {/* Customer Type Toggle — hidden in kiosk (defaults to individual) */}
+        {!kioskMode && (
         <div className="flex items-center gap-4">
           <span className="text-sm font-medium text-gray-700">Customer Type</span>
           <div className="flex items-center gap-4">
@@ -432,8 +482,25 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated }: Custom
             </label>
           </div>
         </div>
+        )}
 
-        {/* Primary Contact */}
+        {/* Primary Contact — kiosk: just First + Last, no salutation */}
+        {kioskMode ? (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input
+              label="First Name *"
+              value={firstName}
+              onChange={(e) => setFirstName(e.target.value)}
+              error={errors.first_name}
+            />
+            <Input
+              label="Last Name *"
+              value={lastName}
+              onChange={(e) => setLastName(e.target.value)}
+              error={errors.last_name}
+            />
+          </div>
+        ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-12">
           <div className="sm:col-span-3">
             <Select
@@ -460,9 +527,10 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated }: Custom
             />
           </div>
         </div>
+        )}
 
-        {/* Company Name (for business) */}
-        {customerType === 'business' && (
+        {/* Company Name (for business) — hidden in kiosk */}
+        {!kioskMode && customerType === 'business' && (
           <Input
             label="Company Name"
             value={companyName}
@@ -470,7 +538,8 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated }: Custom
           />
         )}
 
-        {/* Display Name with auto-suggestions */}
+        {/* Display Name — hidden in kiosk (auto-set to "First Last") */}
+        {!kioskMode && (
         <DisplayNameSelector
           salutation={salutation}
           firstName={firstName}
@@ -480,26 +549,31 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated }: Custom
           value={displayName}
           onChange={setDisplayName}
         />
+        )}
 
-        {/* Currency */}
+        {/* Currency — hidden in kiosk (defaults to NZD) */}
+        {!kioskMode && (
         <Select
           label="Currency"
           options={CURRENCY_OPTIONS}
           value={currency}
           onChange={(e) => setCurrency(e.target.value)}
         />
+        )}
 
-        {/* Email */}
+        {/* Email — optional in kiosk mode */}
         <Input
-          label="Email Address *"
+          label={kioskMode ? 'Email Address' : 'Email Address *'}
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           error={errors.email}
+          placeholder={kioskMode ? 'Optional' : undefined}
         />
 
         {/* Phone Numbers */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {!kioskMode && (
           <PhoneInput
             label="Work Phone"
             value={workPhone}
@@ -507,6 +581,7 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated }: Custom
             countryCode="NZ"
             placeholder="Work phone"
           />
+          )}
           <PhoneInput
             label="Mobile"
             value={mobilePhone}
@@ -518,15 +593,18 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated }: Custom
           />
         </div>
 
-        {/* Language */}
+        {/* Language — hidden in kiosk (defaults to English) */}
+        {!kioskMode && (
         <Select
           label="Customer Language"
           options={LANGUAGE_OPTIONS}
           value={language}
           onChange={(e) => setLanguage(e.target.value)}
         />
+        )}
 
-        {/* Tabs */}
+        {/* Tabs — hidden in kiosk mode */}
+        {!kioskMode && (
         <div className="border-b border-gray-200">
           <nav className="-mb-px flex space-x-6" aria-label="Tabs">
             {tabs.map((tab) => (
@@ -545,8 +623,10 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated }: Custom
             ))}
           </nav>
         </div>
+        )}
 
-        {/* Tab Content */}
+        {/* Tab Content — hidden in kiosk mode */}
+        {!kioskMode && (
         <div className="min-h-[200px]">
           {activeTab === 'details' && (
             <div className="space-y-4">
@@ -773,11 +853,14 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated }: Custom
             </div>
           )}
         </div>
+        )}
 
-        {/* Customer Owner Info */}
+        {/* Customer Owner Info — hidden in kiosk mode */}
+        {!kioskMode && (
         <p className="text-sm text-gray-500">
           Customer Owner: Assign a user as the customer owner to provide access only to the data of this customer.
         </p>
+        )}
 
         {/* Error */}
         {errors.submit && (
@@ -787,7 +870,13 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated }: Custom
         {/* Actions */}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
           <Button variant="secondary" onClick={handleClose}>Cancel</Button>
-          <Button onClick={handleCreate} loading={creating}>Save</Button>
+          <Button
+            onClick={kioskMode ? handleKioskCreate : handleCreate}
+            loading={creating}
+            className={kioskMode ? 'min-h-[48px] text-lg px-8' : ''}
+          >
+            {kioskMode ? 'Check In' : 'Save'}
+          </Button>
         </div>
       </div>
     </Modal>

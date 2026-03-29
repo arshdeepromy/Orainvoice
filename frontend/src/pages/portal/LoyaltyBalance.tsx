@@ -65,7 +65,7 @@ export function LoyaltyBalance({ token }: LoyaltyBalanceProps) {
         <div className="rounded-lg border border-gray-200 bg-white p-4">
           <p className="text-sm text-gray-500">Points Balance</p>
           <p className="mt-1 text-2xl font-semibold text-gray-900 tabular-nums">
-            {data.total_points.toLocaleString()}
+            {(data.total_points ?? 0).toLocaleString()}
           </p>
         </div>
         <div className="rounded-lg border border-gray-200 bg-white p-4">

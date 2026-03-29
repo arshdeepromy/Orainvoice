@@ -43,7 +43,7 @@ export default function WooCommerceSetup() {
   const fetchSyncLog = useCallback(async () => {
     try {
       const res = await apiClient.get('/api/v2/ecommerce/sync-log')
-      setSyncLogs(res.data.logs)
+      setSyncLogs(res.data?.logs ?? [])
     } catch {
       // ignore — sync log may be empty
     }

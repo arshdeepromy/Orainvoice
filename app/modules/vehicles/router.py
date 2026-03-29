@@ -6,10 +6,12 @@ Requirements: 14.1, 14.2, 14.3, 14.4, 14.5, 14.6, 14.7, 15.1, 15.2, 15.3, 15.4
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, Request, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
@@ -27,6 +29,8 @@ from app.modules.vehicles.schemas import (
     OdometerReadingRequest,
     OdometerReadingResponse,
     OdometerReadingUpdateRequest,
+    ServiceHistoryEmailRequest,
+    ServiceHistoryReportRequest,
     VehicleLinkRequest,
     VehicleLinkResponse,
     VehicleLookupNotFoundResponse,
@@ -50,6 +54,12 @@ from app.modules.vehicles.service import (
     search_vehicles,
     update_odometer_reading,
 )
+from app.modules.vehicles.report_service import (
+    email_service_history_report,
+    generate_service_history_pdf,
+)
+from app.modules.admin.models import GlobalVehicle
+from app.modules.vehicles.models import OrgVehicle
 
 router = APIRouter()
 
@@ -542,6 +552,130 @@ async def put_odometer_reading(
         )
     except ValueError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Service History Report (MUST be before /{vehicle_id} route!)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/{vehicle_id}/service-history-report",
+    responses={
+        404: {"description": "Vehicle not found or not in user's org"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="Generate PDF service history report for a vehicle",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def service_history_report(
+    vehicle_id: uuid.UUID,
+    body: ServiceHistoryReportRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Generate and return a PDF service history report.
+
+    The PDF includes a cover page with org branding, a table of contents,
+    and individual invoice pages filtered by the requested date range.
+
+    Requirements: 5.1, 5.2, 8.1, 8.3, 8.5
+    """
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # generate_service_history_pdf raises HTTPException(404) if vehicle
+    # not found or not in the user's org — let it propagate.
+    pdf_bytes = await generate_service_history_pdf(
+        db,
+        org_id=org_uuid,
+        vehicle_id=vehicle_id,
+        range_years=body.range_years,
+    )
+
+    # Fetch vehicle rego for the Content-Disposition filename
+    result = await db.execute(
+        select(GlobalVehicle.rego).where(GlobalVehicle.id == vehicle_id)
+    )
+    rego = result.scalar_one_or_none()
+    if rego is None:
+        result = await db.execute(
+            select(OrgVehicle.rego).where(
+                OrgVehicle.id == vehicle_id,
+                OrgVehicle.org_id == org_uuid,
+            )
+        )
+        rego = result.scalar_one_or_none()
+
+    rego_str = (rego or "UNKNOWN").replace(" ", "_")
+    today_str = date.today().strftime("%Y-%m-%d")
+    filename = f"{rego_str}_service_history_{today_str}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+        },
+    )
+
+
+@router.post(
+    "/{vehicle_id}/service-history-report/email",
+    responses={
+        404: {"description": "Vehicle not found or not in user's org"},
+        422: {"description": "Invalid email format"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        500: {"description": "Email sending failed"},
+    },
+    summary="Generate and email PDF service history report for a vehicle",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def service_history_report_email(
+    vehicle_id: uuid.UUID,
+    body: ServiceHistoryEmailRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Generate a PDF service history report and email it to the recipient.
+
+    The PDF includes a cover page with org branding, a table of contents,
+    and individual invoice pages filtered by the requested date range.
+    The report is sent as an attachment to the specified email address.
+
+    Requirements: 6.2, 8.2, 8.3, 8.4, 8.5
+    """
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # email_service_history_report raises HTTPException(404) if vehicle
+    # not found or not in the user's org, and HTTPException(422) for
+    # invalid email format — let those propagate.
+    # ValueError is raised when email providers fail.
+    try:
+        result = await email_service_history_report(
+            db,
+            org_id=org_uuid,
+            vehicle_id=vehicle_id,
+            range_years=body.range_years,
+            recipient_email=body.recipient_email,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(exc)},
+        )
 
     return result
 

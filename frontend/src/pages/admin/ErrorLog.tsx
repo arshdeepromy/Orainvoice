@@ -405,7 +405,7 @@ export function ErrorLog() {
 
       // Check for critical errors in the last hour for push notification
       // Backend returns lowercase severity values
-      const criticals = res.data.errors.filter(
+      const criticals = (res.data?.errors ?? []).filter(
         (e) =>
           e.severity?.toLowerCase() === 'critical' &&
           new Date(e.created_at).getTime() > Date.now() - 60 * 60 * 1000,

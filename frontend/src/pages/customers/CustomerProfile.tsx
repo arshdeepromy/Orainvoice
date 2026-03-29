@@ -362,7 +362,7 @@ export default function CustomerProfilePage() {
         source_customer_id: sourceId,
         preview_only: true,
       })
-      setMergePreview(res.data.preview)
+      setMergePreview(res.data?.preview ?? null)
     } catch {
       setMergeError('Failed to generate merge preview.')
     } finally {

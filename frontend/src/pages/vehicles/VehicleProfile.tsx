@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import apiClient from '../../api/client'
-import { Button, Badge, Spinner, Tabs } from '../../components/ui'
+import { Button, Badge, Spinner, Tabs, Modal, Input, ToastContainer, useToast } from '../../components/ui'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -126,6 +126,16 @@ export default function VehicleProfilePage() {
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [refreshMsg, setRefreshMsg] = useState('')
+
+  // Service history report state
+  const [reportRange, setReportRange] = useState<'1' | '2' | '3' | 'all'>('1')
+  const [printLoading, setPrintLoading] = useState(false)
+  const [emailModalOpen, setEmailModalOpen] = useState(false)
+  const [emailRange, setEmailRange] = useState<'1' | '2' | '3' | 'all'>('1')
+  const [emailSending, setEmailSending] = useState(false)
+  const [emailMsg, setEmailMsg] = useState('')
+  const [recipientEmail, setRecipientEmail] = useState('')
+  const { toasts, addToast, dismissToast } = useToast()
 
   /* ---- Fetch profile ---- */
   const fetchProfile = useCallback(async () => {
@@ -273,52 +283,160 @@ export default function VehicleProfilePage() {
   )
 
   /* ---- Tab: Service History ---- */
+  const filterByRange = (entries: ServiceHistoryEntry[], range: string) => {
+    if (range === 'all') return entries
+    const years = parseInt(range)
+    const cutoff = new Date()
+    cutoff.setFullYear(cutoff.getFullYear() - years)
+    return entries.filter(s => s.issue_date && new Date(s.issue_date) >= cutoff)
+  }
+
+  const printServiceReport = async () => {
+    if (!vehicle.id) return
+    setPrintLoading(true)
+    try {
+      const rangeYears = reportRange === 'all' ? 0 : parseInt(reportRange)
+      const res = await apiClient.post(
+        `/vehicles/${vehicle.id}/service-history-report`,
+        { range_years: rangeYears },
+        { responseType: 'blob' },
+      )
+      const blob = new Blob([res.data], { type: 'application/pdf' })
+      const blobUrl = URL.createObjectURL(blob)
+      const printWindow = window.open(blobUrl, '_blank')
+      if (printWindow) {
+        printWindow.addEventListener('load', () => { printWindow.print() })
+      }
+    } catch {
+      // Silently fail — the user will see the tab didn't open
+    } finally {
+      setPrintLoading(false)
+    }
+  }
+
+  const handleEmailServiceHistory = async () => {
+    const customer = vehicle.linked_customers[0]
+    const emailTo = customer?.email || recipientEmail.trim()
+    if (!emailTo) { setEmailMsg('Please enter a recipient email address.'); return }
+    setEmailSending(true); setEmailMsg('')
+    try {
+      await apiClient.post(`/vehicles/${vehicle.id}/service-history-report/email`, {
+        range_years: emailRange === 'all' ? 0 : parseInt(emailRange),
+        recipient_email: emailTo,
+      })
+      addToast('success', `Service history report sent to ${emailTo}`)
+      setEmailModalOpen(false)
+      setEmailMsg('')
+      setRecipientEmail('')
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { detail?: string } } }
+      const detail = axiosErr.response?.data?.detail || 'Failed to send email. Please try again.'
+      setEmailMsg(detail)
+      addToast('error', detail)
+    } finally { setEmailSending(false) }
+  }
+
   const serviceTab = (
     <div>
       {vehicle.service_history.length === 0 ? (
         <p className="text-sm text-gray-500">No service history for this vehicle.</p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200">
-          <table className="min-w-full divide-y divide-gray-200">
-            <caption className="sr-only">Service history</caption>
-            <thead className="bg-gray-50">
-              <tr>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Invoice</th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Date</th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Customer</th>
-                <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Odometer</th>
-                <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Total</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200 bg-white">
-              {vehicle.service_history.map((s) => {
-                const cfg = INVOICE_STATUS_CONFIG[s.status] ?? { label: s.status, variant: 'neutral' as BadgeVariant }
-                return (
-                  <tr
-                    key={s.invoice_id}
-                    className="hover:bg-gray-50 cursor-pointer"
-                    onClick={() => { window.location.href = `/invoices/${s.invoice_id}` }}
-                  >
-                    <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-blue-600">
-                      {s.invoice_number || <span className="text-gray-400 italic">Draft</span>}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm"><Badge variant={cfg.variant}>{cfg.label}</Badge></td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{formatDate(s.issue_date)}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{s.customer_name}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums">
-                      {s.odometer != null ? s.odometer.toLocaleString('en-NZ') + ' km' : '—'}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums">
-                      {formatNZD(s.total)}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-gray-500">Period:</label>
+              <select value={reportRange} onChange={e => setReportRange(e.target.value as any)}
+                className="rounded-md border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="1">Last 1 Year</option>
+                <option value="2">Last 2 Years</option>
+                <option value="3">Last 3 Years</option>
+                <option value="all">All Time</option>
+              </select>
+              <span className="text-sm text-gray-400">{filterByRange(vehicle.service_history, reportRange).length} records</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="secondary" size="sm" onClick={printServiceReport} loading={printLoading} disabled={printLoading}>Print Report</Button>
+              <Button variant="secondary" size="sm" onClick={() => { setEmailRange(reportRange === 'all' ? '1' : reportRange); setEmailMsg(''); setRecipientEmail(''); setEmailModalOpen(true) }}>
+                Email to Customer
+              </Button>
+            </div>
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200">
+              <caption className="sr-only">Service history</caption>
+              <thead className="bg-gray-50">
+                <tr>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Invoice</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Date</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Customer</th>
+                  <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Odometer</th>
+                  <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 bg-white">
+                {filterByRange(vehicle.service_history, reportRange).map((s) => {
+                  const cfg = INVOICE_STATUS_CONFIG[s.status] ?? { label: s.status, variant: 'neutral' as BadgeVariant }
+                  return (
+                    <tr key={s.invoice_id} className="hover:bg-gray-50 cursor-pointer" onClick={() => { window.location.href = `/invoices/${s.invoice_id}` }}>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-blue-600">{s.invoice_number || <span className="text-gray-400 italic">Draft</span>}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm"><Badge variant={cfg.variant}>{cfg.label}</Badge></td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{formatDate(s.issue_date)}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{s.customer_name}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums">{s.odometer != null ? s.odometer.toLocaleString('en-NZ') + ' km' : '—'}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums">{formatNZD(s.total)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
+
+      <Modal open={emailModalOpen} onClose={() => setEmailModalOpen(false)} title="Email Service History">
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">Send a service history report for {vehicle.rego} to the linked customer.</p>
+          {vehicle.linked_customers.length > 0 && vehicle.linked_customers[0].email ? (
+            <div className="rounded-md bg-gray-50 border border-gray-200 px-3 py-2 text-sm">
+              <span className="text-gray-500">To:</span> <span className="font-medium text-gray-900">{vehicle.linked_customers[0].first_name} {vehicle.linked_customers[0].last_name}</span>
+              <span className="ml-2 text-gray-500">{vehicle.linked_customers[0].email}</span>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-700">No customer email found for this vehicle. Please enter a recipient email below.</div>
+              <Input
+                label="Recipient Email"
+                type="email"
+                placeholder="customer@example.com"
+                value={recipientEmail}
+                onChange={e => setRecipientEmail(e.target.value)}
+              />
+            </div>
+          )}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Date Range</label>
+            <select value={emailRange} onChange={e => setEmailRange(e.target.value as any)}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="1">Last 1 Year</option>
+              <option value="2">Last 2 Years</option>
+              <option value="3">Last 3 Years</option>
+              <option value="all">All Time</option>
+            </select>
+          </div>
+          {emailMsg && <p className={`text-sm text-red-600`} role="alert">{emailMsg}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setEmailModalOpen(false)}>Cancel</Button>
+            <Button
+              onClick={handleEmailServiceHistory}
+              loading={emailSending}
+              disabled={emailSending || !(vehicle.linked_customers[0]?.email || recipientEmail.trim())}
+            >
+              {emailSending ? 'Sending…' : 'Send Email'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 
@@ -473,6 +591,8 @@ export default function VehicleProfilePage() {
         ]}
         defaultTab="service"
       />
+
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   )
 }

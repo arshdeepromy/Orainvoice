@@ -28,6 +28,24 @@ class CalendarView(str, Enum):
     month = "month"
 
 
+class BookingPartItem(BaseModel):
+    """A part from inventory to reserve for a booking."""
+    stock_item_id: uuid.UUID
+    catalogue_item_id: uuid.UUID
+    item_name: str = ""
+    quantity: float = Field(default=1, gt=0)
+    sell_price: float | None = None
+    gst_mode: str | None = None
+
+
+class BookingFluidItem(BaseModel):
+    """A fluid/oil from inventory to reserve for a booking."""
+    stock_item_id: uuid.UUID
+    catalogue_item_id: uuid.UUID
+    item_name: str = ""
+    litres: float = Field(default=1, gt=0)
+
+
 class BookingCreate(BaseModel):
     """Request body for POST /api/v1/bookings."""
 
@@ -45,6 +63,8 @@ class BookingCreate(BaseModel):
     send_email_confirmation: bool | None = None
     send_sms_confirmation: bool = False
     reminder_offset_hours: float | None = None
+    parts: list[BookingPartItem] = Field(default_factory=list)
+    fluid_usage: list[BookingFluidItem] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def backfill_email_confirmation(self) -> BookingCreate:

@@ -37,8 +37,9 @@ ORG_ADMIN = "org_admin"
 LOCATION_MANAGER = "location_manager"
 SALESPERSON = "salesperson"
 STAFF_MEMBER = "staff_member"
+KIOSK = "kiosk"
 
-ALL_ROLES = {GLOBAL_ADMIN, FRANCHISE_ADMIN, ORG_ADMIN, LOCATION_MANAGER, SALESPERSON, STAFF_MEMBER}
+ALL_ROLES = {GLOBAL_ADMIN, FRANCHISE_ADMIN, ORG_ADMIN, LOCATION_MANAGER, SALESPERSON, STAFF_MEMBER, KIOSK}
 
 # ---------------------------------------------------------------------------
 # Permission-based RBAC
@@ -65,6 +66,7 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
         "jobs.read_assigned", "time_entries.own", "schedule.own",
         "job_attachments.upload",
     ],
+    "kiosk": ["kiosk.check_in"],
 }
 
 
@@ -174,6 +176,16 @@ STAFF_MEMBER_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/api/v1/job-cards",
 )
 
+# Kiosk: allowlist-based access — only check-in and branding endpoints
+KIOSK_ALLOWED_PREFIXES: tuple[str, ...] = (
+    "/api/v1/kiosk/",
+    "/api/v1/kiosk",
+    "/api/v1/org/settings",  # branding retrieval (GET only)
+    "/api/v1/customers",     # customer creation for kiosk check-in (POST only)
+    "/api/v1/auth/me",       # session validation for AuthContext
+    "/api/v1/auth/refresh",  # token refresh to keep kiosk session alive
+)
+
 
 def _matches_any_prefix(path: str, prefixes: tuple[str, ...]) -> bool:
     """Return True if path starts with any of the given prefixes."""
@@ -223,7 +235,7 @@ def require_role(*allowed_roles: str):
             )
 
         # For org-scoped roles, verify org membership
-        if role in (ORG_ADMIN, SALESPERSON, LOCATION_MANAGER, STAFF_MEMBER) and not org_id:
+        if role in (ORG_ADMIN, SALESPERSON, LOCATION_MANAGER, STAFF_MEMBER, KIOSK) and not org_id:
             raise HTTPException(
                 status_code=403,
                 detail="Organisation membership required",
@@ -316,6 +328,16 @@ def check_role_path_access(role: str, path: str, method: str = "GET") -> str | N
         if _matches_any_prefix(path, GLOBAL_ADMIN_ONLY_PREFIXES):
             return "Organisation admins cannot access global admin endpoints"
 
+    elif role == KIOSK:
+        if not _matches_any_prefix(path, KIOSK_ALLOWED_PREFIXES):
+            return "Kiosk role can only access check-in and branding endpoints"
+        # Kiosk can only GET org/settings, not modify
+        if _matches_any_prefix(path, ("/api/v1/org/settings",)) and method.upper() != "GET":
+            return "Kiosk role has read-only access to organisation settings"
+        # Kiosk can only POST to /customers (create), not GET/PUT/DELETE
+        if _matches_any_prefix(path, ("/api/v1/customers",)) and method.upper() != "POST":
+            return "Kiosk role can only create customers"
+
     # Unknown roles are denied everything except public paths
     elif role not in ALL_ROLES:
         return f"Unknown role: {role}"
@@ -341,7 +363,7 @@ async def enforce_rbac(request: Request):
     path = request.url.path
 
     # Verify org membership for org-scoped roles
-    if role in (ORG_ADMIN, SALESPERSON, LOCATION_MANAGER, STAFF_MEMBER) and not org_id:
+    if role in (ORG_ADMIN, SALESPERSON, LOCATION_MANAGER, STAFF_MEMBER, KIOSK) and not org_id:
         # Org roles must have an org_id in their token
         raise HTTPException(
             status_code=403,

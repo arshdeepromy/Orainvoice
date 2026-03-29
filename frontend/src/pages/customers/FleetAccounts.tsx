@@ -64,7 +64,7 @@ export default function FleetAccounts() {
     setError('')
     try {
       const res = await apiClient.get<{ fleet_accounts: FleetAccount[]; total: number }>('/customers/fleet-accounts')
-      setAccounts(res.data.fleet_accounts)
+      setAccounts(res.data?.fleet_accounts ?? [])
       setTotal(res.data.total)
     } catch {
       setError('Failed to load fleet accounts.')

@@ -47,6 +47,10 @@ interface TenantContextValue {
   isLoading: boolean
   error: string | null
   refetch: () => Promise<void>
+  /** Trade family slug from the org's trade category (e.g. 'automotive-transport', 'plumbing-gas'). Null if not set. */
+  tradeFamily: string | null
+  /** Trade category slug (e.g. 'general-automotive', 'plumber'). Null if not set. */
+  tradeCategory: string | null
 }
 
 const DEFAULT_PRIMARY = '#2563eb'
@@ -81,6 +85,8 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<TenantSettings | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [tradeFamily, setTradeFamily] = useState<string | null>(null)
+  const [tradeCategory, setTradeCategory] = useState<string | null>(null)
 
   const fetchSettings = useCallback(async (signal?: AbortSignal) => {
     setIsLoading(true)
@@ -101,6 +107,8 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         default_due_days: number
         payment_terms_text: string | null
         terms_and_conditions: string | null
+        trade_family: string | null
+        trade_category: string | null
       }>('/org/settings', { signal })
 
       const data = res.data
@@ -130,6 +138,8 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       setSettings(tenant)
       applyBrandingCssVars(tenant.branding)
+      setTradeFamily(data.trade_family ?? null)
+      setTradeCategory(data.trade_category ?? null)
     } catch (err: any) {
       if (err.name !== 'CanceledError') {
         setError('Failed to load organisation settings')
@@ -147,13 +157,15 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       return () => controller.abort()
     } else {
       setSettings(null)
+      setTradeFamily(null)
+      setTradeCategory(null)
       clearBrandingCssVars()
     }
   }, [isAuthenticated, user?.org_id, user?.role, fetchSettings])
 
   const value = useMemo<TenantContextValue>(
-    () => ({ settings, isLoading, error, refetch: fetchSettings }),
-    [settings, isLoading, error, fetchSettings],
+    () => ({ settings, isLoading, error, refetch: fetchSettings, tradeFamily, tradeCategory }),
+    [settings, isLoading, error, fetchSettings, tradeFamily, tradeCategory],
   )
 
   return (
