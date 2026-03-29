@@ -11,13 +11,13 @@ import apiClient from '@/api/client'
 
 interface TradeFamily {
   id: string
-  name: string
+  display_name: string
   slug: string
 }
 
 interface TradeCategory {
   id: string
-  name: string
+  display_name: string
   slug: string
   family_id: string
 }
@@ -485,10 +485,10 @@ function BusinessTypeTab() {
         >
           <option value="">— Select a trade category —</option>
           {grouped.map((g) => (
-            <optgroup key={g.family.id} label={g.family.name}>
+            <optgroup key={g.family.id} label={g.family.display_name}>
               {g.items.map((cat) => (
                 <option key={cat.id} value={cat.slug}>
-                  {cat.name}
+                  {cat.display_name}
                 </option>
               ))}
             </optgroup>

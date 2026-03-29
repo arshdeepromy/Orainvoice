@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import apiClient from '../../api/client'
 import { Button, Input, Spinner, Modal } from '../../components/ui'
+import { useTenant } from '../../contexts/TenantContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -309,6 +310,9 @@ function VehicleRegoLookup({
 /* ------------------------------------------------------------------ */
 
 export default function JobCardCreate() {
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [vehicle, setVehicle] = useState<Vehicle | null>(null)
   const [description, setDescription] = useState('')
@@ -353,7 +357,7 @@ export default function JobCardCreate() {
     try {
       await apiClient.post('/job-cards', {
         customer_id: customer?.id,
-        vehicle_id: vehicle?.id,
+        ...(isAutomotive && vehicle?.id ? { vehicle_id: vehicle.id } : {}),
         description: description.trim(),
         notes: notes.trim() || undefined,
         items: workItems
@@ -385,10 +389,12 @@ export default function JobCardCreate() {
         </section>
 
         {/* Vehicle */}
+        {isAutomotive && (
         <section aria-labelledby="section-vehicle">
           <h2 id="section-vehicle" className="sr-only">Vehicle</h2>
           <VehicleRegoLookup vehicle={vehicle} onVehicleFound={setVehicle} error={errors.vehicle} />
         </section>
+        )}
 
         {/* Description */}
         <div>

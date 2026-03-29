@@ -5,6 +5,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import apiClient from '../../api/client'
+import { useTenant } from '../../contexts/TenantContext'
 import { Button } from '../../components/ui'
 
 interface LineItem {
@@ -79,6 +80,8 @@ function formatDate(dateStr: string | null | undefined): string {
 
 export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   const navigate = useNavigate()
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const [quote, setQuote] = useState<QuoteData | null>(null)
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
@@ -297,7 +300,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
               <span className="text-xs font-medium uppercase text-gray-500">Valid Until</span>
               <p className="text-sm text-gray-900">{formatDate(quote.valid_until)}</p>
             </div>
-            {quote.vehicle_rego && (
+            {isAutomotive && quote.vehicle_rego && (
               <div>
                 <span className="text-xs font-medium uppercase text-gray-500">Vehicle</span>
                 <p className="text-sm text-gray-900">

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Modal } from '../../components/ui'
 import { useModules } from '../../contexts/ModuleContext'
+import { useTenant } from '../../contexts/TenantContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -503,6 +504,8 @@ export default function QuoteCreate() {
   const navigate = useNavigate()
   const { id: editId } = useParams<{ id: string }>()
   const isEditMode = Boolean(editId)
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const { isEnabled } = useModules()
   const projectsEnabled = isEnabled('projects')
 
@@ -746,10 +749,12 @@ export default function QuoteCreate() {
   // Build payload — sends fields matching backend QuoteCreate/QuoteUpdate schemas
   const buildPayload = () => ({
     customer_id: customer?.id,
-    vehicle_rego: vehicle?.rego ?? (vehicleRego.trim() || undefined),
-    vehicle_make: vehicle?.make ?? undefined,
-    vehicle_model: vehicle?.model ?? undefined,
-    vehicle_year: vehicle?.year ?? undefined,
+    ...(isAutomotive ? {
+      vehicle_rego: vehicle?.rego ?? (vehicleRego.trim() || undefined),
+      vehicle_make: vehicle?.make ?? undefined,
+      vehicle_model: vehicle?.model ?? undefined,
+      vehicle_year: vehicle?.year ?? undefined,
+    } : {}),
     project_id: selectedProjectId || undefined,
     validity_days: Number(validityDays),
     notes: notes || undefined,
@@ -845,8 +850,8 @@ export default function QuoteCreate() {
             <div className="space-y-4">
               <CustomerSearch selectedCustomer={customer} onSelect={setCustomer} error={errors.customer} />
 
-              {/* Vehicle (module-gated) */}
-              {isEnabled('vehicles') && (
+              {/* Vehicle (module-gated + trade-family-gated) */}
+              {isAutomotive && isEnabled('vehicles') && (
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-gray-700">Vehicle</label>
                   {vehicle ? (
@@ -953,7 +958,7 @@ export default function QuoteCreate() {
 
             <div className="flex gap-3 mt-3">
               <Button variant="secondary" size="sm" onClick={addLineItem}>+ Add New Row</Button>
-              {vehiclesEnabled && (
+              {isAutomotive && vehiclesEnabled && (
                 <>
                   <Button variant="secondary" size="sm" onClick={openPartsPicker}>+ Add Parts</Button>
                   <Button variant="secondary" size="sm" onClick={openLabourPicker}>+ Labour Charge</Button>

@@ -701,7 +701,8 @@ export default function InvoiceCreate() {
   const { id: editId } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const isEditMode = Boolean(editId)
-  const { settings } = useTenant()
+  const { settings, tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const { isEnabled } = useModules()
   const vehiclesEnabled = isEnabled('vehicles')
   const [loadingInvoice, setLoadingInvoice] = useState(isEditMode)
@@ -1096,8 +1097,8 @@ export default function InvoiceCreate() {
   // Build payload
   const buildPayload = (status: 'draft' | 'sent') => ({
     customer_id: customer?.id,
-    // Only include vehicle fields when vehicles module is enabled
-    ...(vehiclesEnabled ? {
+    // Only include vehicle fields when vehicles module is enabled and trade is automotive
+    ...(isAutomotive && vehiclesEnabled ? {
       vehicle_rego: vehicles[0]?.rego,
       vehicle_make: vehicles[0]?.make,
       vehicle_model: vehicles[0]?.model,
@@ -1303,8 +1304,8 @@ export default function InvoiceCreate() {
                 error={errors.customer}
               />
               
-              {/* Vehicle Search — only shown when vehicles module is enabled */}
-              <ModuleGate module="vehicles">
+              {/* Vehicle Search — only shown when vehicles module is enabled and trade is automotive */}
+              {isAutomotive && <ModuleGate module="vehicles">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-700">Vehicles</label>
                 {vehicles.map((v, index) => (
@@ -1416,7 +1417,7 @@ export default function InvoiceCreate() {
                   </p>
                 )}
               </div>
-              </ModuleGate>
+              </ModuleGate>}
             </div>
             
             {/* Right Column */}
@@ -1523,7 +1524,7 @@ export default function InvoiceCreate() {
                 + Add New Row
               </Button>
               <Button variant="secondary" size="sm" onClick={openStockPicker}>+ Add from Inventory</Button>
-              {vehiclesEnabled && (
+              {isAutomotive && vehiclesEnabled && (
                 <>
                   <Button variant="secondary" size="sm" onClick={openLabourPicker}>+ Labour Charge</Button>
                 </>
@@ -1535,7 +1536,7 @@ export default function InvoiceCreate() {
           </div>
 
           {/* Fluid / Oil Usage Tracking (not invoiced — inventory tracking only) */}
-          {vehiclesEnabled && vehicles.length > 0 && (
+          {isAutomotive && vehiclesEnabled && vehicles.length > 0 && (
             <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">

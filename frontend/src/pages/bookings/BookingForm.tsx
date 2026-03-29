@@ -3,6 +3,7 @@ import apiClient from '../../api/client'
 import { Button, Input, Select, Modal, Spinner } from '../../components/ui'
 import { ModuleGate } from '../../components/common/ModuleGate'
 import { useModules } from '../../contexts/ModuleContext'
+import { useTenant } from '../../contexts/TenantContext'
 import { VehicleLiveSearch } from '../../components/vehicles/VehicleLiveSearch'
 import { CustomerCreateModal } from '../../components/customers/CustomerCreateModal'
 import type { BookingSearchResult } from './BookingCalendar'
@@ -119,6 +120,8 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
   const isEdit = !!editBooking
   const { isEnabled } = useModules()
   const vehiclesEnabled = isEnabled('vehicles')
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
   /* Form state */
   const [customerId, setCustomerId] = useState('')
@@ -596,21 +599,23 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
           />
 
           {/* Vehicle rego (module-gated) */}
-          <ModuleGate module="vehicles">
-            <VehicleLiveSearch
-              vehicle={selectedVehicle}
-              onVehicleFound={(v) => {
-                setSelectedVehicle(v)
-                setVehicleRego(v?.rego ?? '')
-              }}
-              onCustomerAutoSelect={(c) => {
-                if (!customerId) {
-                  setCustomerId(c.id)
-                  setCustomerSearch(`${c.first_name} ${c.last_name}`)
-                }
-              }}
-            />
-          </ModuleGate>
+          {isAutomotive && (
+            <ModuleGate module="vehicles">
+              <VehicleLiveSearch
+                vehicle={selectedVehicle}
+                onVehicleFound={(v) => {
+                  setSelectedVehicle(v)
+                  setVehicleRego(v?.rego ?? '')
+                }}
+                onCustomerAutoSelect={(c) => {
+                  if (!customerId) {
+                    setCustomerId(c.id)
+                    setCustomerSearch(`${c.first_name} ${c.last_name}`)
+                  }
+                }}
+              />
+            </ModuleGate>
+          )}
 
           {/* Service type (catalogue typeahead) */}
           <div className="relative">
@@ -835,7 +840,7 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
           </div>
 
           {/* Fluid / Oil Usage (optional, shown when vehicle is selected) */}
-          {vehiclesEnabled && selectedVehicle && (
+          {isAutomotive && vehiclesEnabled && selectedVehicle && (
             <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-amber-900">Oil / Fluid (optional)</span>

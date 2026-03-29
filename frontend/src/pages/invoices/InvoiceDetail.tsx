@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Modal } from '../../components/ui'
 import { ModuleGate } from '../../components/common/ModuleGate'
+import { useTenant } from '../../contexts/TenantContext'
 import { CreditNoteModal } from '../../components/invoices/CreditNoteModal'
 import { RefundModal } from '../../components/invoices/RefundModal'
 import {
@@ -229,6 +230,8 @@ const PRINT_STYLES = `
 export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -601,7 +604,7 @@ export default function InvoiceDetail() {
         </section>
 
         {/* Vehicle */}
-        <ModuleGate module="vehicles">
+        {isAutomotive && <ModuleGate module="vehicles">
         <section className="rounded-lg border border-gray-200 p-4">
           <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Vehicle</h2>
           {invoice.vehicle ? (
@@ -681,7 +684,7 @@ export default function InvoiceDetail() {
             </div>
           )}
         </section>
-        </ModuleGate>
+        </ModuleGate>}
       </div>
 
       {/* ---- Line Items ---- */}

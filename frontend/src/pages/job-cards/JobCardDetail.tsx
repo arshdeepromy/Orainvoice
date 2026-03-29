@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Modal } from '../../components/ui'
+import { useTenant } from '../../contexts/TenantContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -128,6 +129,8 @@ function useElapsedTimer(activeTimer: TimeEntry | null): number {
 export default function JobCardDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
   const [jobCard, setJobCard] = useState<JobCardDetailData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -339,6 +342,7 @@ export default function JobCardDetail() {
           )}
         </section>
 
+        {isAutomotive && (
         <section className="rounded-lg border border-gray-200 p-4">
           <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Vehicle</h2>
           {jobCard.vehicle_rego ? (
@@ -347,6 +351,7 @@ export default function JobCardDetail() {
             <p className="text-sm text-gray-500">No vehicle linked</p>
           )}
         </section>
+        )}
       </div>
 
       {/* Assigned To */}

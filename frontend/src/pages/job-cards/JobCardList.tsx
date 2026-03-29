@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import apiClient from '../../api/client'
 import { Button, Input, Select, Badge, Spinner, Pagination, useToast, ToastContainer } from '../../components/ui'
 import StaffPicker from '../../components/StaffPicker'
+import { useTenant } from '../../contexts/TenantContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -181,6 +182,9 @@ function AssigneeCell({
 /* ------------------------------------------------------------------ */
 
 export default function JobCardList() {
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [page, setPage] = useState(1)
@@ -405,7 +409,7 @@ export default function JobCardList() {
               <thead className="bg-gray-50">
                 <tr>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Customer</th>
-                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Rego</th>
+                  {isAutomotive && <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Rego</th>}
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Description</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Assigned To</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
@@ -416,7 +420,7 @@ export default function JobCardList() {
               <tbody className="divide-y divide-gray-200 bg-white">
                 {data.items.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-12 text-center text-sm text-gray-500">
+                    <td colSpan={isAutomotive ? 7 : 6} className="px-4 py-12 text-center text-sm text-gray-500">
                       {hasFilters ? 'No job cards match your filters.' : 'No job cards yet. Create your first job card to get started.'}
                     </td>
                   </tr>
@@ -435,7 +439,7 @@ export default function JobCardList() {
                         onClick={() => { window.location.href = `/job-cards/${jc.id}` }}
                       >
                         <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">{jc.customer_name}</td>
-                        <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700 font-mono">{rego || '—'}</td>
+                        {isAutomotive && <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700 font-mono">{rego || '—'}</td>}
                         <td className="px-4 py-3 text-sm text-gray-700 max-w-xs truncate">{jc.description || '—'}</td>
                         <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">
                           <AssigneeCell

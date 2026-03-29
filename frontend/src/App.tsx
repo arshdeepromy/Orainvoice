@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
-import { TenantProvider } from '@/contexts/TenantContext'
+import { TenantProvider, useTenant } from '@/contexts/TenantContext'
 import { ModuleProvider } from '@/contexts/ModuleContext'
 import { FeatureFlagProvider } from '@/contexts/FeatureFlagContext'
 import { LocaleProvider } from '@/contexts/LocaleContext'
@@ -187,6 +187,13 @@ function RequireGlobalAdmin() {
   return <Outlet />
 }
 
+function RequireAutomotive() {
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+  if (!isAutomotive) return <Navigate to="/dashboard" replace />
+  return <Outlet />
+}
+
 /* ── Route wrappers for components that expect props instead of useParams ── */
 function QuoteDetailRoute() {
   const { id } = useParams<{ id: string }>()
@@ -270,8 +277,10 @@ function AppRoutes() {
           <Route path="/customers/:id" element={<SafePage name="customer-profile"><CustomerProfile /></SafePage>} />
 
           {/* Vehicles */}
-          <Route path="/vehicles" element={<SafePage name="vehicles"><VehicleList /></SafePage>} />
-          <Route path="/vehicles/:id" element={<SafePage name="vehicle-profile"><VehicleProfile /></SafePage>} />
+          <Route element={<RequireAutomotive />}>
+            <Route path="/vehicles" element={<SafePage name="vehicles"><VehicleList /></SafePage>} />
+            <Route path="/vehicles/:id" element={<SafePage name="vehicle-profile"><VehicleProfile /></SafePage>} />
+          </Route>
 
           {/* Invoices */}
           <Route path="/invoices" element={<SafePage name="invoices"><InvoiceList /></SafePage>} />
