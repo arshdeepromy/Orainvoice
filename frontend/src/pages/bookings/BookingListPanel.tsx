@@ -9,6 +9,7 @@ import { useEffect, useState, useCallback, useImperativeHandle, forwardRef } fro
 import apiClient from '../../api/client'
 import { Badge, Button, Spinner, useToast, ConfirmDialog } from '../../components/ui'
 import { useModules } from '../../contexts/ModuleContext'
+import { useTenant } from '../../contexts/TenantContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -135,6 +136,8 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
   const apiDate = calendarDate ?? startDate
   const { isEnabled } = useModules()
   const jobCardsEnabled = isEnabled('jobs')
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const [bookings, setBookings] = useState<BookingListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -307,7 +310,7 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
               <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Customer</th>
               <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Service</th>
               <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Date/Time</th>
-              <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Vehicle Rego</th>
+              {isAutomotive && <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Vehicle Rego</th>}
               <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Status</th>
               <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Actions</th>
             </tr>
@@ -333,7 +336,7 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
                   <td className="px-4 py-3 text-sm text-gray-900">{b.customer_name ?? '—'}</td>
                   <td className="px-4 py-3 text-sm text-gray-700">{b.service_type ?? '—'}</td>
                   <td className="px-4 py-3 text-sm text-gray-700">{dateStr ? formatDateTime(dateStr) : '—'}</td>
-                  <td className="px-4 py-3 text-sm text-gray-700">{b.vehicle_rego ?? '—'}</td>
+                  {isAutomotive && <td className="px-4 py-3 text-sm text-gray-700">{b.vehicle_rego ?? '—'}</td>}
                   <td className="px-4 py-3">
                     <Badge variant={badge.variant}>{badge.label}</Badge>
                   </td>

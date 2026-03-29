@@ -430,7 +430,7 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
       if (isEdit) {
         await apiClient.put(`/bookings/${editBooking!.id}`, {
           customer_id: customerId,
-          vehicle_rego: vehicleRego || null,
+          ...(isAutomotive ? { vehicle_rego: vehicleRego || null } : {}),
           service_type: serviceType || null,
           service_catalogue_id: serviceCatalogueId || null,
           service_price: servicePrice ? parseFloat(servicePrice) : null,
@@ -442,7 +442,7 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
       } else {
         await apiClient.post('/bookings', {
           customer_id: customerId,
-          vehicle_rego: vehicleRego || null,
+          ...(isAutomotive ? { vehicle_rego: vehicleRego || null } : {}),
           service_type: serviceType || null,
           service_catalogue_id: serviceCatalogueId || null,
           service_price: servicePrice ? parseFloat(servicePrice) : null,
@@ -452,8 +452,10 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
           send_email_confirmation: sendEmailConfirmation,
           send_sms_confirmation: sendSmsConfirmation,
           reminder_offset_hours: reminderOption === 'none' ? null : reminderOption === 'custom' ? (customReminderHours && !isNaN(parseFloat(customReminderHours)) ? parseFloat(customReminderHours) : null) : parseFloat(reminderOption),
-          parts: bookingParts.filter(p => p.quantity > 0).map(p => ({ stock_item_id: p.stock_item_id, catalogue_item_id: p.catalogue_item_id, item_name: p.item_name, quantity: p.quantity, sell_price: p.sell_price, gst_mode: p.gst_mode })),
-          fluid_usage: bookingFluids.filter(f => f.litres > 0).map(f => ({ stock_item_id: f.stock_item_id, catalogue_item_id: f.catalogue_item_id, item_name: f.item_name, litres: f.litres })),
+          ...(isAutomotive ? {
+            parts: bookingParts.filter(p => p.quantity > 0).map(p => ({ stock_item_id: p.stock_item_id, catalogue_item_id: p.catalogue_item_id, item_name: p.item_name, quantity: p.quantity, sell_price: p.sell_price, gst_mode: p.gst_mode })),
+            fluid_usage: bookingFluids.filter(f => f.litres > 0).map(f => ({ stock_item_id: f.stock_item_id, catalogue_item_id: f.catalogue_item_id, item_name: f.item_name, litres: f.litres })),
+          } : {}),
         })
       }
       onSaved()
@@ -822,7 +824,8 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
             />
           </div>
 
-          {/* Parts from Inventory (optional) */}
+          {/* Parts from Inventory (optional — automotive only) */}
+          {isAutomotive && (
           <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3 space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium text-blue-900">Parts (optional)</span>
@@ -838,6 +841,7 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
             ))}
             {bookingParts.length === 0 && <p className="text-xs text-blue-700">No parts added. Click "+ Add Part" to reserve inventory.</p>}
           </div>
+          )}
 
           {/* Fluid / Oil Usage (optional, shown when vehicle is selected) */}
           {isAutomotive && vehiclesEnabled && selectedVehicle && (

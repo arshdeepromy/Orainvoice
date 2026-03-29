@@ -159,7 +159,7 @@
     - Run `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec frontend sh -c "rm -rf /app/dist/* && npx vite build"` to rebuild the frontend with all changes
     - Verify build completes without errors
 
-- [-] 4. Checkpoint — Ensure all tests pass
+- [x] 4. Checkpoint — Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
   - Verify fault condition test (task 1) now PASSES after fix
   - Verify preservation test (task 2) still PASSES after fix

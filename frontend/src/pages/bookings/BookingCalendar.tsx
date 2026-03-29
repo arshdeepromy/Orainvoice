@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import apiClient from '../../api/client'
 import { Button, Select, Badge, Spinner } from '../../components/ui'
+import { useTenant } from '../../contexts/TenantContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -171,6 +172,8 @@ function isPastDay(date: Date): boolean {
  * Requirements: 64.1
  */
 export default function BookingCalendar({ onCreateBooking, onEditBooking, onConvertBooking, onSlotClick, refreshKey, onViewChange, onDateChange }: BookingCalendarProps) {
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const [view, setView] = useState<CalendarView>('week')
   const [currentDate, setCurrentDate] = useState(new Date())
   const [statusFilter, setStatusFilter] = useState('')
@@ -323,7 +326,7 @@ function BookingCard({ booking, compact = false, onEdit, onConvert }: BookingCar
           {!compact && (
             <>
               <p className="text-gray-500">{formatTime(booking.scheduled_at)} · {booking.duration_minutes}min</p>
-              {booking.vehicle_rego && <p className="text-gray-500 font-mono">{booking.vehicle_rego}</p>}
+              {isAutomotive && booking.vehicle_rego && <p className="text-gray-500 font-mono">{booking.vehicle_rego}</p>}
               {booking.service_type && <p className="text-gray-500">{booking.service_type}</p>}
             </>
           )}

@@ -12,6 +12,7 @@ import { useState } from 'react'
 import apiClient from '../../api/client'
 import { Button, Modal, useToast } from '../../components/ui'
 import { useAuth } from '../../contexts/AuthContext'
+import { useTenant } from '../../contexts/TenantContext'
 import StaffPicker from '../../components/StaffPicker'
 import type { BookingListItem } from './BookingListPanel'
 
@@ -71,6 +72,8 @@ export default function JobCreationModal({
   onSuccess,
 }: JobCreationModalProps) {
   const { user, isOrgAdmin } = useAuth()
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const { addToast } = useToast()
   const [assignedTo, setAssignedTo] = useState<string>('')
   const [submitting, setSubmitting] = useState(false)
@@ -148,10 +151,12 @@ export default function JobCreationModal({
               <p className="mt-1 text-sm text-gray-900">{booking.customer_name ?? '—'}</p>
             </div>
 
+            {isAutomotive && (
             <div>
               <label className="block text-sm font-medium text-gray-700">Vehicle Rego</label>
               <p className="mt-1 text-sm text-gray-900">{booking.vehicle_rego ?? '—'}</p>
             </div>
+            )}
 
             <div>
               <label className="block text-sm font-medium text-gray-700">Service Type</label>
