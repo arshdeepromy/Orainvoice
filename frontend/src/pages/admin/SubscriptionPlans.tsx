@@ -1283,6 +1283,18 @@ export function SubscriptionPlans() {
     }
   }
 
+  const handleDelete = async (plan: Plan) => {
+    if (!window.confirm(`Permanently delete plan "${plan.name}"? This cannot be undone.`)) return
+    try {
+      await apiClient.delete(`/admin/plans/${plan.id}`)
+      addToast('success', `Plan "${plan.name}" permanently deleted`)
+      fetchPlans()
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      addToast('error', detail ?? 'Failed to delete plan')
+    }
+  }
+
   /* ── Coupon handlers ── */
   const handleCouponSave = async (data: CouponFormData) => {
     setCouponSaving(true)
@@ -1393,6 +1405,9 @@ export function SubscriptionPlans() {
               Archive
             </Button>
           )}
+          <Button size="sm" variant="danger" onClick={() => handleDelete(r)}>
+            Delete
+          </Button>
         </div>
       ),
     },

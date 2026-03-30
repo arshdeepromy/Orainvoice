@@ -81,6 +81,7 @@ from app.modules.admin.service import (
     deactivate_coupon,
     deactivate_storage_package,
     delete_organisation,
+    delete_plan,
     get_coupon,
     get_coupon_redemptions,
     hard_delete_organisation,
@@ -930,6 +931,50 @@ async def archive_subscription_plan(
         return JSONResponse(status_code=400, content={"detail": msg})
 
     return PlanResponse(**result)
+
+
+@router.delete(
+    "/plans/{plan_id}",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "Plan not found"},
+    },
+    summary="Permanently delete a subscription plan",
+    dependencies=[require_role("global_admin")],
+)
+async def delete_subscription_plan(
+    plan_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Permanently delete a subscription plan.
+
+    Fails if any organisation is currently subscribed to this plan.
+    Only Global_Admin users can access this endpoint.
+    """
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    try:
+        plan_uuid = uuid.UUID(plan_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid plan_id format"})
+
+    try:
+        result = await delete_plan(
+            db,
+            plan_uuid,
+            deleted_by=uuid.UUID(user_id) if user_id else None,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "not found" in msg.lower():
+            return JSONResponse(status_code=404, content={"detail": msg})
+        return JSONResponse(status_code=400, content={"detail": msg})
+
+    return result
 
 
 # ---------------------------------------------------------------------------

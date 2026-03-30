@@ -2151,6 +2151,58 @@ async def archive_plan(
     }
 
 
+async def delete_plan(
+    db: AsyncSession,
+    plan_id: uuid.UUID,
+    *,
+    deleted_by: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Permanently delete a subscription plan.
+
+    Fails if any organisation is currently subscribed to this plan.
+    """
+    result = await db.execute(
+        select(SubscriptionPlan).where(SubscriptionPlan.id == plan_id)
+    )
+    plan = result.scalar_one_or_none()
+    if plan is None:
+        raise ValueError("Plan not found")
+
+    # Check if any org is using this plan
+    from app.modules.organisations.models import Organisation
+    sub_count = await db.execute(
+        select(func.count()).select_from(Organisation).where(
+            Organisation.plan_id == plan_id,
+            Organisation.deleted_at.is_(None),
+        )
+    )
+    count = sub_count.scalar() or 0
+    if count > 0:
+        raise ValueError(
+            f"Cannot delete plan — {count} organisation(s) are currently subscribed. "
+            "Move them to another plan first, or archive this plan instead."
+        )
+
+    plan_name = plan.name
+    await db.delete(plan)
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        action="plan.deleted",
+        user_id=deleted_by,
+        ip_address=ip_address,
+        entity_type="subscription_plan",
+        entity_id=plan_id,
+        after_value={"plan_name": plan_name},
+    )
+
+    logger.info("Permanently deleted subscription plan %s (%s)", plan_id, plan_name)
+
+    return {"id": str(plan_id), "name": plan_name, "deleted": True}
+
+
 # ---------------------------------------------------------------------------
 # Global Admin Reports (Req 46.1–46.5)
 # ---------------------------------------------------------------------------
