@@ -20,7 +20,7 @@ const adminNavItems: AdminNavItem[] = [
   { type: 'section', label: 'Configuration' },
   { to: '/admin/plans', label: 'Subscription Management' },
   { to: '/admin/feature-flags', label: 'Feature Flags' },
-  { to: '/admin/branding', label: 'Branding', flagKey: 'branding' },
+  { to: '/admin/branding', label: 'Branding' },
   { to: '/admin/integrations', label: 'Integrations' },
   { to: '/admin/settings', label: 'Settings' },
   { type: 'section', label: 'Monitoring' },
