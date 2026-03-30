@@ -2170,11 +2170,11 @@ async def delete_plan(
         raise ValueError("Plan not found")
 
     # Check if any org is using this plan
-    from app.modules.organisations.models import Organisation
+    from app.modules.admin.models import Organisation
     sub_count = await db.execute(
         select(func.count()).select_from(Organisation).where(
             Organisation.plan_id == plan_id,
-            Organisation.deleted_at.is_(None),
+            Organisation.status != 'deleted',
         )
     )
     count = sub_count.scalar() or 0
