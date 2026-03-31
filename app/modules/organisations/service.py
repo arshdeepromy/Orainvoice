@@ -1078,6 +1078,7 @@ async def public_signup(
     ip_address: str | None = None,
     base_url: str = "http://localhost",
     coupon_code: str | None = None,
+    billing_interval: str = "monthly",
 ) -> dict:
     """Handle public workshop signup — Requirement 8.6.
 
@@ -1122,7 +1123,23 @@ async def public_signup(
     # PAID PLAN FLOW — trial_duration == 0
     # -----------------------------------------------------------------------
     if not trial_ends_at:
-        plan_amount_cents = int(float(plan.monthly_price_nzd) * 100)
+        # Compute effective price for the selected billing interval
+        from decimal import Decimal as _Decimal
+        from app.modules.billing.interval_pricing import compute_effective_price as _compute_eff
+
+        interval_config = getattr(plan, "interval_config", None) or []
+        discount_percent = _Decimal("0")
+        for ic in interval_config:
+            if ic.get("interval") == billing_interval and ic.get("enabled"):
+                discount_percent = _Decimal(str(ic.get("discount_percent", 0)))
+                break
+
+        effective_price = _compute_eff(
+            _Decimal(str(plan.monthly_price_nzd)),
+            billing_interval,
+            discount_percent,
+        )
+        plan_amount_cents = int((effective_price * _Decimal("100")).to_integral_value())
 
         # $0 plans should skip payment entirely (same as trial flow)
         if plan_amount_cents == 0 and not coupon_code:
@@ -1131,6 +1148,7 @@ async def public_signup(
                 plan_id=plan_id,
                 status="active",
                 storage_quota_gb=plan.storage_quota_gb,
+                billing_interval=billing_interval,
             )
             db.add(org)
             await db.flush()
@@ -1241,13 +1259,16 @@ async def public_signup(
                 # (trial_ends_at is now set, so the `if not trial_ends_at`
                 # block will end and the trial flow will execute)
 
-            elif coupon_discount_type == "percentage":
-                plan_amount_cents = round(
-                    plan_amount_cents * (1 - coupon_discount_value / 100)
+            elif coupon_discount_type in ("percentage", "fixed_amount"):
+                from decimal import Decimal as _CouponDec
+                from app.modules.billing.interval_pricing import apply_coupon_to_interval_price
+
+                _eff_price = _CouponDec(plan_amount_cents) / _CouponDec("100")
+                _coupon_val = _CouponDec(str(coupon_discount_value))
+                _adjusted = apply_coupon_to_interval_price(
+                    _eff_price, coupon_discount_type, _coupon_val,
                 )
-            elif coupon_discount_type == "fixed_amount":
-                discount_cents = int(coupon_discount_value * 100)
-                plan_amount_cents = max(0, plan_amount_cents - discount_cents)
+                plan_amount_cents = int((_adjusted * _CouponDec("100")).to_integral_value())
 
         # If a trial-extension coupon was applied, skip the paid flow
         # entirely and fall through to the trial plan flow below.
@@ -1261,6 +1282,7 @@ async def public_signup(
                 plan_id=plan_id,
                 status="active",
                 storage_quota_gb=plan.storage_quota_gb,
+                billing_interval=billing_interval,
             )
             db.add(org)
             await db.flush()
@@ -1363,6 +1385,7 @@ async def public_signup(
                 "password": password,
                 "plan_id": str(plan_id),
                 "plan_name": plan.name,
+                "billing_interval": billing_interval,
                 "payment_amount_cents": payment_amount_cents,
                 "plan_amount_cents": breakdown["plan_amount_cents"],
                 "gst_amount_cents": breakdown["gst_amount_cents"],
@@ -1436,6 +1459,7 @@ async def public_signup(
         status="trial",
         trial_ends_at=trial_ends_at,
         storage_quota_gb=plan.storage_quota_gb,
+        billing_interval=billing_interval,
     )
     db.add(org)
     await db.flush()

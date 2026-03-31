@@ -12,10 +12,19 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from decimal import Decimal
+
 from app.core.audit import write_audit_log
 from app.config import settings
 from app.modules.admin.models import AuditLog, Coupon, Organisation, OrganisationCoupon, OrgStorageAddon, SmsPackagePurchase, SmsVerificationProvider, StoragePackage, SubscriptionPlan
 from app.modules.auth.models import User
+from app.modules.billing.interval_pricing import (
+    build_default_interval_config,
+    compute_effective_price,
+    compute_equivalent_monthly,
+    compute_savings_amount,
+    validate_interval_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1755,6 +1764,30 @@ async def get_integration_config(
 # ---------------------------------------------------------------------------
 
 
+def _build_intervals_from_config(
+    interval_config: list[dict],
+    monthly_price_nzd: float,
+) -> list[dict]:
+    """Compute IntervalPricing dicts from a plan's interval_config and base price."""
+    base = Decimal(str(monthly_price_nzd))
+    intervals = []
+    for item in interval_config:
+        interval = item.get("interval", "monthly")
+        discount = Decimal(str(item.get("discount_percent", 0)))
+        effective = compute_effective_price(base, interval, discount)
+        savings = compute_savings_amount(base, interval, discount)
+        eq_monthly = compute_equivalent_monthly(effective, interval)
+        intervals.append({
+            "interval": interval,
+            "enabled": item.get("enabled", False),
+            "discount_percent": float(discount),
+            "effective_price": float(effective),
+            "savings_amount": float(savings),
+            "equivalent_monthly": float(eq_monthly),
+        })
+    return intervals
+
+
 async def create_plan(
     db: AsyncSession,
     *,
@@ -1772,6 +1805,7 @@ async def create_plan(
     per_sms_cost_nzd: float = 0,
     sms_included_quota: int = 0,
     sms_package_pricing: list[dict] | None = None,
+    interval_config: list[dict] | None = None,
     created_by: uuid.UUID | None = None,
     ip_address: str | None = None,
 ) -> dict:
@@ -1790,6 +1824,12 @@ async def create_plan(
     if existing.scalar_one_or_none() is not None:
         raise ValueError(f"A plan with name '{name}' already exists")
 
+    # Validate or default interval_config
+    if interval_config is None:
+        resolved_interval_config = build_default_interval_config()
+    else:
+        resolved_interval_config = validate_interval_config(interval_config)
+
     plan = SubscriptionPlan(
         name=name,
         monthly_price_nzd=monthly_price_nzd,
@@ -1806,6 +1846,7 @@ async def create_plan(
         per_sms_cost_nzd=per_sms_cost_nzd,
         sms_included_quota=sms_included_quota,
         sms_package_pricing=sms_package_pricing or [],
+        interval_config=resolved_interval_config,
     )
     db.add(plan)
     await db.flush()
@@ -1843,6 +1884,10 @@ async def create_plan(
         "per_sms_cost_nzd": float(plan.per_sms_cost_nzd),
         "sms_included_quota": plan.sms_included_quota,
         "sms_package_pricing": plan.sms_package_pricing or [],
+        "interval_config": plan.interval_config or [],
+        "intervals": _build_intervals_from_config(
+            plan.interval_config or [], float(plan.monthly_price_nzd)
+        ),
         "created_at": plan.created_at,
         "updated_at": plan.updated_at,
     }
@@ -1880,6 +1925,10 @@ async def list_plans(
             "trial_duration": p.trial_duration or 0,
             "trial_duration_unit": p.trial_duration_unit or "days",
             "sms_included": p.sms_included,
+            "interval_config": p.interval_config or [],
+            "intervals": _build_intervals_from_config(
+                p.interval_config or [], float(p.monthly_price_nzd)
+            ),
             "created_at": p.created_at,
             "updated_at": p.updated_at,
         }
@@ -1913,6 +1962,10 @@ async def get_plan(
         "trial_duration": p.trial_duration or 0,
         "trial_duration_unit": p.trial_duration_unit or "days",
         "sms_included": p.sms_included,
+        "interval_config": p.interval_config or [],
+        "intervals": _build_intervals_from_config(
+            p.interval_config or [], float(p.monthly_price_nzd)
+        ),
         "created_at": p.created_at,
         "updated_at": p.updated_at,
     }
@@ -2006,8 +2059,12 @@ async def update_plan(
         "carjam_lookups_included", "enabled_modules", "is_public",
         "storage_tier_pricing", "trial_duration", "trial_duration_unit",
         "sms_included", "per_sms_cost_nzd", "sms_included_quota",
-        "sms_package_pricing",
+        "sms_package_pricing", "interval_config",
     }
+
+    # Validate interval_config if provided
+    if "interval_config" in updates and updates["interval_config"] is not None:
+        updates["interval_config"] = validate_interval_config(updates["interval_config"])
 
     # If renaming, check for duplicate
     if "name" in updates and updates["name"] is not None and updates["name"] != plan.name:
@@ -2070,6 +2127,10 @@ async def update_plan(
         "per_sms_cost_nzd": float(plan.per_sms_cost_nzd),
         "sms_included_quota": plan.sms_included_quota,
         "sms_package_pricing": plan.sms_package_pricing or [],
+        "interval_config": plan.interval_config or [],
+        "intervals": _build_intervals_from_config(
+            plan.interval_config or [], float(plan.monthly_price_nzd)
+        ),
         "created_at": plan.created_at,
         "updated_at": plan.updated_at,
     }
@@ -2209,39 +2270,93 @@ async def delete_plan(
 
 
 async def get_mrr_report(db: AsyncSession) -> dict:
-    """Platform MRR with plan breakdown and month-over-month trend.
+    """Platform MRR with plan breakdown, month-over-month trend, and interval breakdown.
 
-    Requirement 46.2: MRR with breakdown by plan type and month-over-month trend.
+    Requirement 46.2, 12.1, 12.2, 12.3: MRR normalised across billing intervals.
+    Each org's MRR contribution is computed via normalise_to_mrr(effective_price, interval).
     """
     from sqlalchemy import func as sa_func, case, extract, literal_column
-
-    # Current MRR: sum of monthly_price for all active/trial orgs grouped by plan
-    stmt = (
-        select(
-            SubscriptionPlan.id,
-            SubscriptionPlan.name,
-            SubscriptionPlan.monthly_price_nzd,
-            sa_func.count(Organisation.id).label("active_orgs"),
-        )
-        .join(Organisation, Organisation.plan_id == SubscriptionPlan.id)
-        .where(Organisation.status.in_(["active", "trial", "grace_period"]))
-        .group_by(SubscriptionPlan.id, SubscriptionPlan.name, SubscriptionPlan.monthly_price_nzd)
-        .order_by(SubscriptionPlan.name)
+    from app.modules.billing.interval_pricing import (
+        compute_effective_price as _compute_effective_price,
+        normalise_to_mrr as _normalise_to_mrr,
     )
-    result = await db.execute(stmt)
-    rows = result.all()
 
-    plan_breakdown = []
-    total_mrr = 0.0
-    for plan_id, plan_name, price, count in rows:
-        mrr = float(price) * count
-        total_mrr += mrr
-        plan_breakdown.append({
-            "plan_id": str(plan_id),
-            "plan_name": plan_name,
-            "active_orgs": count,
-            "mrr_nzd": round(mrr, 2),
-        })
+    # Fetch all active/trial orgs with their plan data for per-org MRR calculation
+    org_stmt = (
+        select(
+            Organisation.id,
+            Organisation.billing_interval,
+            SubscriptionPlan.id.label("plan_id"),
+            SubscriptionPlan.name.label("plan_name"),
+            SubscriptionPlan.monthly_price_nzd,
+            SubscriptionPlan.interval_config,
+        )
+        .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
+        .where(Organisation.status.in_(["active", "trial", "grace_period"]))
+    )
+    org_result = await db.execute(org_stmt)
+    org_rows = org_result.all()
+
+    # Compute per-org MRR and aggregate by plan and interval
+    plan_mrr: dict[str, dict] = {}  # plan_id -> {plan_name, active_orgs, mrr_nzd}
+    interval_mrr: dict[str, dict] = {}  # interval -> {org_count, mrr_nzd}
+    total_mrr = Decimal("0")
+
+    for org_id, billing_interval, plan_id, plan_name, monthly_price, interval_config in org_rows:
+        base_price = Decimal(str(monthly_price))
+        interval = billing_interval or "monthly"
+
+        # Find the discount for this org's billing interval from the plan's interval_config
+        discount = Decimal("0")
+        if interval_config:
+            for ic in interval_config:
+                if ic.get("interval") == interval and ic.get("enabled", False):
+                    discount = Decimal(str(ic.get("discount_percent", 0)))
+                    break
+
+        # Compute effective price for this org's interval, then normalise to MRR
+        effective = _compute_effective_price(base_price, interval, discount)
+        org_mrr = _normalise_to_mrr(effective, interval)
+        total_mrr += org_mrr
+
+        # Aggregate by plan
+        pid = str(plan_id)
+        if pid not in plan_mrr:
+            plan_mrr[pid] = {"plan_id": pid, "plan_name": plan_name, "active_orgs": 0, "mrr_nzd": Decimal("0")}
+        plan_mrr[pid]["active_orgs"] += 1
+        plan_mrr[pid]["mrr_nzd"] += org_mrr
+
+        # Aggregate by interval
+        if interval not in interval_mrr:
+            interval_mrr[interval] = {"interval": interval, "org_count": 0, "mrr_nzd": Decimal("0")}
+        interval_mrr[interval]["org_count"] += 1
+        interval_mrr[interval]["mrr_nzd"] += org_mrr
+
+    # Build plan breakdown sorted by name
+    plan_breakdown = sorted(
+        [
+            {
+                "plan_id": v["plan_id"],
+                "plan_name": v["plan_name"],
+                "active_orgs": v["active_orgs"],
+                "mrr_nzd": round(float(v["mrr_nzd"]), 2),
+            }
+            for v in plan_mrr.values()
+        ],
+        key=lambda x: x["plan_name"],
+    )
+
+    # Build interval breakdown in canonical order
+    interval_order = ["weekly", "fortnightly", "monthly", "annual"]
+    interval_breakdown = [
+        {
+            "interval": iv,
+            "org_count": interval_mrr[iv]["org_count"],
+            "mrr_nzd": round(float(interval_mrr[iv]["mrr_nzd"]), 2),
+        }
+        for iv in interval_order
+        if iv in interval_mrr
+    ]
 
     # Month-over-month trend: approximate from org created_at dates
     # For each of the last 6 months, count orgs that were active at that point
@@ -2279,9 +2394,10 @@ async def get_mrr_report(db: AsyncSession) -> dict:
         })
 
     return {
-        "total_mrr_nzd": round(total_mrr, 2),
+        "total_mrr_nzd": round(float(total_mrr), 2),
         "plan_breakdown": plan_breakdown,
         "month_over_month": month_over_month,
+        "interval_breakdown": interval_breakdown,
     }
 
 
@@ -4685,19 +4801,26 @@ def calculate_effective_price(
     discount_value: float,
     is_expired: bool,
 ) -> float:
-    """Pure function: compute discounted price.
+    """Pure function: compute discounted price using interval-aware coupon logic.
 
     Returns plan_price if expired or trial_extension type.
+    Delegates to apply_coupon_to_interval_price for percentage/fixed coupons.
     Requirements 11.1–11.6.
     """
     if is_expired:
         return plan_price
     if discount_type == "trial_extension":
         return plan_price
-    if discount_type == "percentage":
-        return round(plan_price * (1 - discount_value / 100), 2)
-    if discount_type == "fixed_amount":
-        return round(max(0.0, plan_price - discount_value), 2)
+    if discount_type in ("percentage", "fixed_amount"):
+        from decimal import Decimal as _Dec
+        from app.modules.billing.interval_pricing import apply_coupon_to_interval_price
+
+        result = apply_coupon_to_interval_price(
+            _Dec(str(plan_price)),
+            discount_type,
+            _Dec(str(discount_value)),
+        )
+        return float(result)
     return plan_price
 
 

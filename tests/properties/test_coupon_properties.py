@@ -55,9 +55,13 @@ def test_effective_price_bounds(plan_price, data, is_expired):
 @given(plan_price=plan_price_st, pct=percentage_st)
 @settings(max_examples=100, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 def test_percentage_discount_calculation(plan_price, pct):
-    """Percentage discount: result == round(plan_price * (1 - pct/100), 2)."""
+    """Percentage discount: result matches Decimal ROUND_HALF_UP rounding."""
+    from decimal import Decimal, ROUND_HALF_UP
     result = calculate_effective_price(plan_price, "percentage", pct, False)
-    expected = round(plan_price * (1 - pct / 100), 2)
+    expected = float(
+        (Decimal(str(plan_price)) * (Decimal("100") - Decimal(str(pct))) / Decimal("100"))
+        .quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    )
     assert result == expected, f"Expected {expected}, got {result} for price={plan_price}, pct={pct}"
 
 
@@ -65,9 +69,13 @@ def test_percentage_discount_calculation(plan_price, pct):
 @given(plan_price=plan_price_st, amount=fixed_amount_st)
 @settings(max_examples=100, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 def test_fixed_amount_discount_calculation(plan_price, amount):
-    """Fixed amount discount: result == max(0, round(plan_price - amount, 2))."""
+    """Fixed amount discount: result matches Decimal ROUND_HALF_UP with floor at 0."""
+    from decimal import Decimal, ROUND_HALF_UP
     result = calculate_effective_price(plan_price, "fixed_amount", amount, False)
-    expected = round(max(0.0, plan_price - amount), 2)
+    raw = Decimal(str(plan_price)) - Decimal(str(amount))
+    if raw < Decimal("0"):
+        raw = Decimal("0")
+    expected = float(raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
     assert result == expected, f"Expected {expected}, got {result} for price={plan_price}, amount={amount}"
 
 

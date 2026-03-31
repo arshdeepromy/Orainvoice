@@ -34,11 +34,19 @@ def _email_index_key(email: str) -> str:
     return f"pending_email:{digest}"
 
 
-async def create_pending_signup(data: dict) -> str:
+async def create_pending_signup(data: dict, *, billing_interval: str = "monthly") -> str:
     """Store a pending signup in Redis and return the generated ID.
 
     The plaintext ``password`` field is hashed with bcrypt before storage.
     Both the signup key and the email index key share the same TTL.
+
+    Parameters
+    ----------
+    data : dict
+        Signup form data.  May already contain ``billing_interval``.
+    billing_interval : str
+        Billing cadence chosen during signup.  Defaults to ``"monthly"``.
+        Ignored when *data* already contains a ``billing_interval`` key.
     """
     pending_id = str(uuid.uuid4())
 
@@ -46,6 +54,9 @@ async def create_pending_signup(data: dict) -> str:
     stored = dict(data)
     if "password" in stored:
         stored["password_hash"] = hash_password(stored.pop("password"))
+
+    # Ensure billing_interval is always present in the stored blob
+    stored.setdefault("billing_interval", billing_interval)
 
     payload = json.dumps(stored, default=str)
 
@@ -59,11 +70,17 @@ async def create_pending_signup(data: dict) -> str:
 
 
 async def get_pending_signup(pending_signup_id: str) -> dict | None:
-    """Retrieve a pending signup from Redis, or ``None`` if expired/missing."""
+    """Retrieve a pending signup from Redis, or ``None`` if expired/missing.
+
+    Ensures ``billing_interval`` is present in the returned dict, defaulting
+    to ``"monthly"`` for blobs created before the flexible-billing feature.
+    """
     raw = await redis_pool.get(_signup_key(pending_signup_id))
     if raw is None:
         return None
-    return json.loads(raw)
+    data = json.loads(raw)
+    data.setdefault("billing_interval", "monthly")
+    return data
 
 
 async def delete_pending_signup(pending_signup_id: str) -> None:

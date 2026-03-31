@@ -13,6 +13,246 @@ from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Constants for recurring billing retry / grace period
+# ---------------------------------------------------------------------------
+MAX_BILLING_RETRIES = 3
+GRACE_PERIOD_DAYS = 7
+
+
+# ---------------------------------------------------------------------------
+# Recurring billing (Req 5.1–5.6)
+# ---------------------------------------------------------------------------
+
+async def process_recurring_billing_task() -> dict:
+    """Find orgs due for billing and charge them.
+
+    Query: status='active', next_billing_date IS NOT NULL,
+           next_billing_date <= utcnow()
+
+    For each org:
+    1. Load plan + interval config → compute_effective_price
+    2. Apply active coupon discount (if any)
+    3. Get default OrgPaymentMethod
+    4. Call charge_org_payment_method
+    5. On success: advance next_billing_date by interval duration, reset retry count
+    6. On failure: increment retry, transition to grace_period after MAX_BILLING_RETRIES
+
+    Returns summary dict with charged, failed, skipped counts.
+    """
+    from decimal import Decimal
+
+    from sqlalchemy import select
+
+    from app.core.audit import write_audit_log
+    from app.core.database import async_session_factory
+    from app.integrations.stripe_billing import (
+        PaymentActionRequiredError,
+        PaymentFailedError,
+        charge_org_payment_method,
+    )
+    from app.modules.admin.models import (
+        Coupon,
+        Organisation,
+        OrganisationCoupon,
+        SubscriptionPlan,
+    )
+    from app.modules.billing.interval_pricing import (
+        apply_coupon_to_interval_price,
+        compute_effective_price,
+        compute_interval_duration,
+    )
+    from app.modules.billing.models import OrgPaymentMethod
+
+    now = datetime.now(timezone.utc)
+    charged = 0
+    failed = 0
+    skipped = 0
+    errors = []
+
+    async with async_session_factory() as session:
+        async with session.begin():
+            # Query orgs due for billing (Req 5.1)
+            stmt = (
+                select(Organisation)
+                .where(
+                    Organisation.status == "active",
+                    Organisation.next_billing_date.isnot(None),
+                    Organisation.next_billing_date <= now,
+                )
+            )
+            result = await session.execute(stmt)
+            due_orgs = result.scalars().all()
+
+            for org in due_orgs:
+                try:
+                    # 1. Load plan + interval config
+                    plan_result = await session.execute(
+                        select(SubscriptionPlan).where(SubscriptionPlan.id == org.plan_id)
+                    )
+                    plan = plan_result.scalar_one_or_none()
+                    if not plan:
+                        logger.warning("Plan %s not found for org %s, skipping", org.plan_id, org.id)
+                        skipped += 1
+                        continue
+
+                    billing_interval = getattr(org, "billing_interval", "monthly") or "monthly"
+
+                    # Find interval discount from plan config
+                    discount_percent = Decimal("0")
+                    interval_config = getattr(plan, "interval_config", None) or []
+                    for item in interval_config:
+                        if item.get("interval") == billing_interval and item.get("enabled", False):
+                            discount_percent = Decimal(str(item.get("discount_percent", 0)))
+                            break
+
+                    # Compute effective price (Req 5.2)
+                    base_price = Decimal(str(plan.monthly_price_nzd))
+                    effective_price = compute_effective_price(base_price, billing_interval, discount_percent)
+
+                    # 2. Apply active coupon discount (if any)
+                    coupon_result = await session.execute(
+                        select(OrganisationCoupon, Coupon)
+                        .join(Coupon, OrganisationCoupon.coupon_id == Coupon.id)
+                        .where(
+                            OrganisationCoupon.org_id == org.id,
+                            OrganisationCoupon.is_expired.is_(False),
+                        )
+                        .order_by(OrganisationCoupon.applied_at.desc())
+                        .limit(1)
+                    )
+                    coupon_row = coupon_result.one_or_none()
+
+                    if coupon_row:
+                        org_coupon, coupon = coupon_row
+                        effective_price = apply_coupon_to_interval_price(
+                            effective_price,
+                            coupon.discount_type,
+                            Decimal(str(coupon.discount_value)),
+                        )
+
+                    amount_cents = int((effective_price * Decimal("100")).to_integral_value())
+
+                    # Skip free plans (amount=0)
+                    if amount_cents <= 0:
+                        # Advance billing date even for free plans
+                        org.next_billing_date = org.next_billing_date + compute_interval_duration(billing_interval)
+                        skipped += 1
+                        continue
+
+                    # 3. Get default OrgPaymentMethod (Req 5.3)
+                    pm_result = await session.execute(
+                        select(OrgPaymentMethod).where(
+                            OrgPaymentMethod.org_id == org.id,
+                            OrgPaymentMethod.is_default.is_(True),
+                        )
+                    )
+                    default_pm = pm_result.scalar_one_or_none()
+
+                    if not default_pm:
+                        logger.warning(
+                            "No default payment method for org %s, skipping billing",
+                            org.id,
+                        )
+                        skipped += 1
+                        continue
+
+                    if not org.stripe_customer_id:
+                        logger.warning(
+                            "No Stripe customer ID for org %s, skipping billing",
+                            org.id,
+                        )
+                        skipped += 1
+                        continue
+
+                    # 4. Charge (Req 5.3)
+                    await charge_org_payment_method(
+                        customer_id=org.stripe_customer_id,
+                        payment_method_id=default_pm.stripe_payment_method_id,
+                        amount_cents=amount_cents,
+                        currency="nzd",
+                        metadata={
+                            "org_id": str(org.id),
+                            "plan_id": str(plan.id),
+                            "plan_name": plan.name,
+                            "billing_interval": billing_interval,
+                        },
+                    )
+
+                    # 5. On success: advance next_billing_date, reset retry count (Req 5.4)
+                    org.next_billing_date = org.next_billing_date + compute_interval_duration(billing_interval)
+                    org_settings = dict(org.settings) if org.settings else {}
+                    org_settings["billing_retry_count"] = 0
+                    org.settings = org_settings
+                    await session.flush()
+
+                    charged += 1
+                    logger.info(
+                        "Charged org %s: %d cents (%s), next billing %s",
+                        org.id,
+                        amount_cents,
+                        billing_interval,
+                        org.next_billing_date,
+                    )
+
+                except (PaymentFailedError, PaymentActionRequiredError) as exc:
+                    # 6. On failure: increment retry, transition after MAX_BILLING_RETRIES (Req 5.5)
+                    org_settings = dict(org.settings) if org.settings else {}
+                    retry_count = org_settings.get("billing_retry_count", 0) + 1
+                    org_settings["billing_retry_count"] = retry_count
+                    org.settings = org_settings
+
+                    logger.warning(
+                        "Payment failed for org %s (attempt %d/%d): %s",
+                        org.id,
+                        retry_count,
+                        MAX_BILLING_RETRIES,
+                        exc,
+                    )
+
+                    if retry_count >= MAX_BILLING_RETRIES:
+                        org.status = "grace_period"
+                        org_settings["grace_period_started_at"] = now.isoformat()
+                        org.settings = org_settings
+                        await session.flush()
+
+                        await write_audit_log(
+                            session=session,
+                            org_id=org.id,
+                            user_id=None,
+                            action="subscription.grace_period_entered",
+                            entity_type="organisation",
+                            entity_id=org.id,
+                            before_value={"status": "active"},
+                            after_value={
+                                "status": "grace_period",
+                                "billing_retry_count": retry_count,
+                            },
+                        )
+
+                    await session.flush()
+                    failed += 1
+                    errors.append(f"org {org.id}: {exc}")
+
+                except Exception as exc:
+                    # Catch-all: log and continue to next org (Req 5.6)
+                    logger.error(
+                        "Unexpected error billing org %s: %s",
+                        org.id,
+                        exc,
+                        exc_info=True,
+                    )
+                    failed += 1
+                    errors.append(f"org {org.id}: {exc}")
+
+    logger.info(
+        "Recurring billing complete: %d charged, %d failed, %d skipped",
+        charged,
+        failed,
+        skipped,
+    )
+    return {"charged": charged, "failed": failed, "skipped": skipped, "errors": errors}
+
 
 # ---------------------------------------------------------------------------
 # Trial expiry (Req 41.4, 41.5)
@@ -86,10 +326,25 @@ async def _send_trial_reminder(session, org, days_remaining: int) -> None:
 
 
 async def _convert_trial_to_active(session, org, now: datetime) -> None:
+    from decimal import Decimal
     from sqlalchemy import select
     from app.core.audit import write_audit_log
-    from app.integrations.stripe_billing import create_subscription_from_trial
-    from app.modules.admin.models import SubscriptionPlan
+    from app.integrations.stripe_billing import (
+        PaymentFailedError,
+        PaymentActionRequiredError,
+        charge_org_payment_method,
+    )
+    from app.modules.admin.models import (
+        Coupon,
+        OrganisationCoupon,
+        SubscriptionPlan,
+    )
+    from app.modules.billing.interval_pricing import (
+        apply_coupon_to_interval_price,
+        compute_effective_price,
+        compute_interval_duration,
+    )
+    from app.modules.billing.models import OrgPaymentMethod
 
     plan_result = await session.execute(select(SubscriptionPlan).where(SubscriptionPlan.id == org.plan_id))
     plan = plan_result.scalar_one_or_none()
@@ -98,13 +353,123 @@ async def _convert_trial_to_active(session, org, now: datetime) -> None:
     if not org.stripe_customer_id:
         raise ValueError(f"No Stripe customer ID for org {org.id}")
 
-    monthly_amount_cents = int(float(plan.monthly_price_nzd) * 100)
-    sub_result = await create_subscription_from_trial(customer_id=org.stripe_customer_id, monthly_amount_cents=monthly_amount_cents, metadata={"org_id": str(org.id), "plan_id": str(plan.id), "plan_name": plan.name})
+    # Read org billing interval (default to monthly for legacy orgs)
+    billing_interval = getattr(org, "billing_interval", "monthly") or "monthly"
 
-    org.status = "active"
-    org.stripe_subscription_id = sub_result["subscription_id"]
-    await session.flush()
-    await write_audit_log(session=session, org_id=org.id, user_id=None, action="subscription.trial_converted", entity_type="organisation", entity_id=org.id, before_value={"status": "trial"}, after_value={"status": "active", "stripe_subscription_id": sub_result["subscription_id"], "subscription_status": sub_result["status"]})
+    # Look up discount for the org's interval from plan's interval_config
+    discount_percent = Decimal("0")
+    interval_config = getattr(plan, "interval_config", None) or []
+    for item in interval_config:
+        if item.get("interval") == billing_interval and item.get("enabled", False):
+            discount_percent = Decimal(str(item.get("discount_percent", 0)))
+            break
+
+    # Compute effective price for the selected interval
+    base_price = Decimal(str(plan.monthly_price_nzd))
+    effective_price = compute_effective_price(base_price, billing_interval, discount_percent)
+
+    # Apply active coupon discount (if any)
+    coupon_result = await session.execute(
+        select(OrganisationCoupon, Coupon)
+        .join(Coupon, OrganisationCoupon.coupon_id == Coupon.id)
+        .where(
+            OrganisationCoupon.org_id == org.id,
+            OrganisationCoupon.is_expired.is_(False),
+        )
+        .order_by(OrganisationCoupon.applied_at.desc())
+        .limit(1)
+    )
+    coupon_row = coupon_result.one_or_none()
+
+    if coupon_row:
+        org_coupon, coupon = coupon_row
+        effective_price = apply_coupon_to_interval_price(
+            effective_price,
+            coupon.discount_type,
+            Decimal(str(coupon.discount_value)),
+        )
+
+    amount_cents = int((effective_price * Decimal("100")).to_integral_value())
+
+    # Get default payment method
+    pm_result = await session.execute(
+        select(OrgPaymentMethod).where(
+            OrgPaymentMethod.org_id == org.id,
+            OrgPaymentMethod.is_default.is_(True),
+        )
+    )
+    default_pm = pm_result.scalar_one_or_none()
+
+    if not default_pm:
+        raise ValueError(f"No default payment method for org {org.id}")
+
+    try:
+        # Charge the saved payment method (Req 4.1)
+        if amount_cents > 0:
+            await charge_org_payment_method(
+                customer_id=org.stripe_customer_id,
+                payment_method_id=default_pm.stripe_payment_method_id,
+                amount_cents=amount_cents,
+                currency="nzd",
+                metadata={
+                    "org_id": str(org.id),
+                    "plan_id": str(plan.id),
+                    "plan_name": plan.name,
+                    "billing_interval": billing_interval,
+                    "type": "trial_conversion",
+                },
+            )
+
+        # On success: set status to active and set next_billing_date (Req 4.2)
+        org.status = "active"
+        org.next_billing_date = now + compute_interval_duration(billing_interval)
+        await session.flush()
+
+        await write_audit_log(
+            session=session,
+            org_id=org.id,
+            user_id=None,
+            action="subscription.trial_converted",
+            entity_type="organisation",
+            entity_id=org.id,
+            before_value={"status": "trial"},
+            after_value={
+                "status": "active",
+                "next_billing_date": org.next_billing_date.isoformat(),
+                "billing_interval": billing_interval,
+                "amount_cents": amount_cents,
+            },
+        )
+
+    except (PaymentFailedError, PaymentActionRequiredError) as exc:
+        # On failure: set status to grace_period and log (Req 4.4)
+        org.status = "grace_period"
+        org_settings = dict(org.settings) if org.settings else {}
+        org_settings["grace_period_started_at"] = now.isoformat()
+        org_settings["billing_retry_count"] = 1
+        org.settings = org_settings
+        await session.flush()
+
+        logger.warning(
+            "Trial conversion payment failed for org %s: %s",
+            org.id,
+            exc,
+        )
+
+        await write_audit_log(
+            session=session,
+            org_id=org.id,
+            user_id=None,
+            action="subscription.trial_conversion_failed",
+            entity_type="organisation",
+            entity_id=org.id,
+            before_value={"status": "trial"},
+            after_value={
+                "status": "grace_period",
+                "error": str(exc),
+            },
+        )
+
 
 
 # ---------------------------------------------------------------------------

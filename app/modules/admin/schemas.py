@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -359,6 +360,25 @@ class StorageTierPricing(BaseModel):
     price_nzd_per_month: float = Field(..., ge=0, description="Monthly price in NZD for this tier")
 
 
+class IntervalConfigItem(BaseModel):
+    """Single interval configuration entry."""
+
+    interval: Literal["weekly", "fortnightly", "monthly", "annual"]
+    enabled: bool = False
+    discount_percent: float = Field(default=0, ge=0, le=100)
+
+
+class IntervalPricing(BaseModel):
+    """Computed interval pricing for API responses."""
+
+    interval: str
+    enabled: bool
+    discount_percent: float
+    effective_price: float
+    savings_amount: float
+    equivalent_monthly: float
+
+
 class PlanCreateRequest(BaseModel):
     """POST /api/v1/admin/plans request body."""
 
@@ -381,6 +401,10 @@ class PlanCreateRequest(BaseModel):
     sms_package_pricing: list[SmsPackageTierPricing] = Field(
         default_factory=list,
         description="SMS package add-on pricing tiers",
+    )
+    interval_config: list[IntervalConfigItem] | None = Field(
+        default=None,
+        description="Billing interval configuration; defaults to monthly-only when not provided",
     )
 
 
@@ -407,6 +431,10 @@ class PlanUpdateRequest(BaseModel):
         None,
         description="SMS package add-on pricing tiers",
     )
+    interval_config: list[IntervalConfigItem] | None = Field(
+        default=None,
+        description="Billing interval configuration",
+    )
 
 
 class PlanResponse(BaseModel):
@@ -428,6 +456,8 @@ class PlanResponse(BaseModel):
     per_sms_cost_nzd: float = 0
     sms_included_quota: int = 0
     sms_package_pricing: list[SmsPackageTierPricing] = Field(default_factory=list)
+    interval_config: list[IntervalConfigItem] = Field(default_factory=list)
+    intervals: list[IntervalPricing] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -460,12 +490,24 @@ class MrrMonthTrend(BaseModel):
     mrr_nzd: float
 
 
+class MrrIntervalBreakdown(BaseModel):
+    """MRR contribution from a single billing interval."""
+
+    interval: str = Field(..., description="Billing interval (weekly, fortnightly, monthly, annual)")
+    org_count: int = Field(..., description="Number of active orgs on this interval")
+    mrr_nzd: float = Field(..., description="Total MRR contribution from this interval")
+
+
 class MrrReportResponse(BaseModel):
     """GET /api/v1/admin/reports/mrr — Platform MRR report."""
 
     total_mrr_nzd: float = Field(..., description="Total platform MRR")
     plan_breakdown: list[MrrPlanBreakdown]
     month_over_month: list[MrrMonthTrend]
+    interval_breakdown: list[MrrIntervalBreakdown] = Field(
+        default_factory=list,
+        description="MRR breakdown by billing interval",
+    )
 
 
 class OrgOverviewRow(BaseModel):

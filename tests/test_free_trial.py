@@ -3,7 +3,6 @@
 Tests cover:
   - TrialStatusResponse schema validation
   - GET /api/v1/billing/trial endpoint logic
-  - create_subscription_from_trial Stripe integration
   - Celery trial expiry task: 3-day reminder + auto-conversion
   - Requirements: 41.1, 41.2, 41.3, 41.4, 41.5
 """
@@ -39,6 +38,7 @@ def _make_plan(
     monthly_price_nzd=49.00,
     is_public=True,
     is_archived=False,
+    interval_config=None,
 ):
     plan = MagicMock(spec=SubscriptionPlan)
     plan.id = plan_id or PLAN_ID
@@ -49,6 +49,9 @@ def _make_plan(
     plan.user_seats = 5
     plan.storage_quota_gb = 5
     plan.carjam_lookups_included = 100
+    plan.interval_config = interval_config or [
+        {"interval": "monthly", "enabled": True, "discount_percent": 0},
+    ]
     return plan
 
 
@@ -59,6 +62,7 @@ def _make_org(
     plan_id=None,
     stripe_customer_id="cus_test123",
     stripe_subscription_id=None,
+    billing_interval="monthly",
 ):
     org = MagicMock(spec=Organisation)
     org.id = org_id or ORG_ID
@@ -69,6 +73,7 @@ def _make_org(
     org.stripe_customer_id = stripe_customer_id
     org.stripe_subscription_id = stripe_subscription_id
     org.storage_quota_gb = 5
+    org.billing_interval = billing_interval
     return org
 
 
@@ -156,64 +161,6 @@ class TestTrialStatusSchema:
             status="trial",
         )
         assert resp.days_remaining == 0
-
-
-# ---------------------------------------------------------------------------
-# Stripe subscription creation tests
-# ---------------------------------------------------------------------------
-
-
-class TestCreateSubscriptionFromTrial:
-    """Test create_subscription_from_trial in stripe_billing.py."""
-
-    @pytest.mark.asyncio
-    @patch("app.integrations.stripe_billing.stripe")
-    async def test_creates_subscription_with_amount(self, mock_stripe):
-        from app.integrations.stripe_billing import create_subscription_from_trial
-
-        mock_sub = MagicMock()
-        mock_sub.id = "sub_test123"
-        mock_sub.status = "active"
-        mock_stripe.Subscription.create.return_value = mock_sub
-
-        result = await create_subscription_from_trial(
-            customer_id="cus_test123",
-            monthly_amount_cents=4900,
-            metadata={"org_id": "test"},
-        )
-
-        assert result["subscription_id"] == "sub_test123"
-        assert result["status"] == "active"
-        mock_stripe.Subscription.create.assert_called_once()
-        call_kwargs = mock_stripe.Subscription.create.call_args[1]
-        assert call_kwargs["customer"] == "cus_test123"
-        assert call_kwargs["items"][0]["price_data"]["unit_amount"] == 4900
-
-    @pytest.mark.asyncio
-    @patch("app.integrations.stripe_billing.stripe")
-    async def test_creates_subscription_with_price_id(self, mock_stripe):
-        from app.integrations.stripe_billing import create_subscription_from_trial
-
-        mock_sub = MagicMock()
-        mock_sub.id = "sub_test456"
-        mock_sub.status = "active"
-        mock_stripe.Subscription.create.return_value = mock_sub
-
-        result = await create_subscription_from_trial(
-            customer_id="cus_test123",
-            price_id="price_abc",
-        )
-
-        assert result["subscription_id"] == "sub_test456"
-        call_kwargs = mock_stripe.Subscription.create.call_args[1]
-        assert call_kwargs["items"] == [{"price": "price_abc"}]
-
-    @pytest.mark.asyncio
-    async def test_raises_without_price_or_amount(self):
-        from app.integrations.stripe_billing import create_subscription_from_trial
-
-        with pytest.raises(ValueError, match="Either price_id or monthly_amount_cents"):
-            await create_subscription_from_trial(customer_id="cus_test123")
 
 
 # ---------------------------------------------------------------------------
@@ -347,28 +294,39 @@ class TestConvertTrialToActive:
     """Test _convert_trial_to_active helper."""
 
     @pytest.mark.asyncio
-    @patch("app.integrations.stripe_billing.create_subscription_from_trial", new_callable=AsyncMock)
+    @patch("app.integrations.stripe_billing.charge_org_payment_method", new_callable=AsyncMock)
     @patch("app.core.audit.write_audit_log", new_callable=AsyncMock)
-    async def test_successful_conversion(self, mock_audit, mock_create_sub):
+    async def test_successful_conversion(self, mock_audit, mock_charge):
         from app.tasks.subscriptions import _convert_trial_to_active
 
         plan = _make_plan(monthly_price_nzd=49.00)
         org = _make_org(stripe_customer_id="cus_test123")
+        org.settings = {}
 
-        mock_create_sub.return_value = {
-            "subscription_id": "sub_new123",
-            "status": "active",
+        mock_charge.return_value = {
+            "payment_intent_id": "pi_new123",
+            "status": "succeeded",
+            "amount_cents": 4900,
         }
 
+        # Mock payment method
+        pm = MagicMock()
+        pm.stripe_payment_method_id = "pm_test123"
+        pm.is_default = True
+
         db = _mock_db_session()
-        db.execute = AsyncMock(return_value=_mock_scalar_result(plan))
+        # _convert_trial_to_active does 3 queries: plan, coupon, payment method
+        db.execute = AsyncMock(side_effect=[
+            _mock_scalar_result(plan),   # plan query
+            MagicMock(one_or_none=MagicMock(return_value=None)),  # coupon query
+            _mock_scalar_result(pm),     # payment method query
+        ])
 
         now = datetime.now(timezone.utc)
         await _convert_trial_to_active(db, org, now)
 
         assert org.status == "active"
-        assert org.stripe_subscription_id == "sub_new123"
-        mock_create_sub.assert_called_once()
+        assert org.next_billing_date is not None
         mock_audit.assert_called_once()
 
     @pytest.mark.asyncio

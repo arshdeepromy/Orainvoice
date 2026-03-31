@@ -57,6 +57,9 @@ const paidPlan = {
   monthly_price_nzd: 49,
   trial_duration: 0,
   trial_duration_unit: 'days',
+  intervals: [
+    { interval: 'monthly', enabled: true, discount_percent: 0, effective_price: 49, savings_amount: 0, equivalent_monthly: 49 },
+  ],
 }
 
 const trialPlan = {
@@ -65,6 +68,9 @@ const trialPlan = {
   monthly_price_nzd: 29,
   trial_duration: 14,
   trial_duration_unit: 'days',
+  intervals: [
+    { interval: 'monthly', enabled: true, discount_percent: 0, effective_price: 29, savings_amount: 0, equivalent_monthly: 29 },
+  ],
 }
 
 function setupDefaultMocks() {

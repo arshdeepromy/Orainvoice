@@ -121,6 +121,57 @@ class TestCreatePendingSignup:
         digest_part = email_key.split("pending_email:")[1]
         assert len(digest_part) == 64
 
+    @pytest.mark.asyncio
+    @patch("app.modules.auth.pending_signup.redis_pool")
+    async def test_billing_interval_defaults_to_monthly(self, mock_redis_module):
+        redis, pipe = _make_mock_redis()
+        mock_redis_module.pipeline = redis.pipeline
+
+        await create_pending_signup(_sample_data())
+
+        stored_json = pipe.setex.call_args_list[0][0][2]
+        stored = json.loads(stored_json)
+        assert stored["billing_interval"] == "monthly"
+
+    @pytest.mark.asyncio
+    @patch("app.modules.auth.pending_signup.redis_pool")
+    async def test_billing_interval_from_data_dict(self, mock_redis_module):
+        redis, pipe = _make_mock_redis()
+        mock_redis_module.pipeline = redis.pipeline
+
+        await create_pending_signup(_sample_data(billing_interval="annual"))
+
+        stored_json = pipe.setex.call_args_list[0][0][2]
+        stored = json.loads(stored_json)
+        assert stored["billing_interval"] == "annual"
+
+    @pytest.mark.asyncio
+    @patch("app.modules.auth.pending_signup.redis_pool")
+    async def test_billing_interval_from_kwarg(self, mock_redis_module):
+        redis, pipe = _make_mock_redis()
+        mock_redis_module.pipeline = redis.pipeline
+
+        await create_pending_signup(_sample_data(), billing_interval="weekly")
+
+        stored_json = pipe.setex.call_args_list[0][0][2]
+        stored = json.loads(stored_json)
+        assert stored["billing_interval"] == "weekly"
+
+    @pytest.mark.asyncio
+    @patch("app.modules.auth.pending_signup.redis_pool")
+    async def test_billing_interval_in_data_takes_precedence_over_kwarg(self, mock_redis_module):
+        redis, pipe = _make_mock_redis()
+        mock_redis_module.pipeline = redis.pipeline
+
+        await create_pending_signup(
+            _sample_data(billing_interval="annual"),
+            billing_interval="weekly",
+        )
+
+        stored_json = pipe.setex.call_args_list[0][0][2]
+        stored = json.loads(stored_json)
+        assert stored["billing_interval"] == "annual"
+
 
 # ---------------------------------------------------------------------------
 # get_pending_signup
@@ -137,7 +188,7 @@ class TestGetPendingSignup:
 
         result = await get_pending_signup("some-id")
 
-        assert result == data
+        assert result == {**data, "billing_interval": "monthly"}
         mock_redis.get.assert_called_once_with(_signup_key("some-id"))
 
     @pytest.mark.asyncio
@@ -148,6 +199,26 @@ class TestGetPendingSignup:
         result = await get_pending_signup("nonexistent")
 
         assert result is None
+
+    @pytest.mark.asyncio
+    @patch("app.modules.auth.pending_signup.redis_pool")
+    async def test_returns_stored_billing_interval(self, mock_redis):
+        data = {"org_name": "Test", "admin_email": "a@b.com", "billing_interval": "annual"}
+        mock_redis.get = AsyncMock(return_value=json.dumps(data))
+
+        result = await get_pending_signup("some-id")
+
+        assert result["billing_interval"] == "annual"
+
+    @pytest.mark.asyncio
+    @patch("app.modules.auth.pending_signup.redis_pool")
+    async def test_defaults_billing_interval_for_legacy_blob(self, mock_redis):
+        data = {"org_name": "Legacy", "admin_email": "old@test.com"}
+        mock_redis.get = AsyncMock(return_value=json.dumps(data))
+
+        result = await get_pending_signup("legacy-id")
+
+        assert result["billing_interval"] == "monthly"
 
 
 # ---------------------------------------------------------------------------

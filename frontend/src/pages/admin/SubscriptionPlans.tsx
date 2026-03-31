@@ -25,6 +25,12 @@ export interface SmsPackageTier {
   price_nzd: number
 }
 
+export interface IntervalConfigItem {
+  interval: 'weekly' | 'fortnightly' | 'monthly' | 'annual'
+  enabled: boolean
+  discount_percent: number
+}
+
 export interface Plan {
   id: string
   name: string
@@ -43,6 +49,7 @@ export interface Plan {
   per_sms_cost_nzd: number
   sms_included_quota: number
   sms_package_pricing: SmsPackageTier[]
+  interval_config: IntervalConfigItem[]
   created_at: string
   updated_at: string
 }
@@ -278,6 +285,35 @@ interface PlanFormData {
   per_sms_cost_nzd: number
   sms_included_quota: number
   sms_package_pricing: SmsPackageTier[]
+  interval_config: IntervalConfigItem[]
+}
+
+const INTERVAL_PERIODS_PER_YEAR: Record<string, number> = {
+  weekly: 52,
+  fortnightly: 26,
+  monthly: 12,
+  annual: 1,
+}
+
+const INTERVAL_LABELS: Record<string, string> = {
+  weekly: 'Weekly',
+  fortnightly: 'Fortnightly',
+  monthly: 'Monthly',
+  annual: 'Annual',
+}
+
+const DEFAULT_INTERVAL_CONFIG: IntervalConfigItem[] = [
+  { interval: 'weekly', enabled: false, discount_percent: 0 },
+  { interval: 'fortnightly', enabled: false, discount_percent: 0 },
+  { interval: 'monthly', enabled: true, discount_percent: 0 },
+  { interval: 'annual', enabled: false, discount_percent: 0 },
+]
+
+function computeEffectivePrice(baseMonthly: number, interval: string, discountPercent: number): number {
+  if (baseMonthly === 0) return 0
+  const periods = INTERVAL_PERIODS_PER_YEAR[interval] ?? 12
+  const perCycle = (baseMonthly * 12) / periods
+  return Math.round(perCycle * (1 - discountPercent / 100) * 100) / 100
 }
 
 const EMPTY_FORM: PlanFormData = {
@@ -296,6 +332,7 @@ const EMPTY_FORM: PlanFormData = {
   per_sms_cost_nzd: 0,
   sms_included_quota: 0,
   sms_package_pricing: [],
+  interval_config: DEFAULT_INTERVAL_CONFIG,
 }
 
 function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
@@ -308,7 +345,7 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
 }) {
   const [form, setForm] = useState<PlanFormData>(EMPTY_FORM)
   const [errors, setErrors] = useState<Record<string, string>>({})
-  const [activeTab, setActiveTab] = useState<'general' | 'modules' | 'storage'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'modules' | 'storage' | 'pricing'>('general')
 
   useEffect(() => {
     if (open) {
@@ -329,6 +366,9 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
           per_sms_cost_nzd: editPlan.per_sms_cost_nzd ?? 0,
           sms_included_quota: editPlan.sms_included_quota ?? 0,
           sms_package_pricing: editPlan.sms_package_pricing ?? [],
+          interval_config: (editPlan.interval_config ?? []).length > 0
+            ? editPlan.interval_config
+            : DEFAULT_INTERVAL_CONFIG,
         })
       } else {
         // Default: include all core modules
@@ -347,7 +387,23 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
     if (form.monthly_price_nzd < 0) errs.monthly_price_nzd = 'Must be >= 0'
     if (form.user_seats < 1) errs.user_seats = 'Must be >= 1'
     if (form.storage_quota_gb < 1) errs.storage_quota_gb = 'Must be >= 1'
-    if (Object.keys(errs).length) { setErrors(errs); setActiveTab('general'); return }
+    // Interval config validation
+    const enabledIntervals = form.interval_config.filter(ic => ic.enabled)
+    if (enabledIntervals.length === 0) errs.interval_config = 'At least one billing interval must be enabled'
+    for (const ic of form.interval_config) {
+      if (ic.enabled && (ic.discount_percent < 0 || ic.discount_percent > 100)) {
+        errs[`discount_${ic.interval}`] = 'Discount must be between 0 and 100'
+      }
+    }
+    if (Object.keys(errs).length) {
+      setErrors(errs)
+      if (errs.interval_config || Object.keys(errs).some(k => k.startsWith('discount_'))) {
+        setActiveTab('pricing')
+      } else {
+        setActiveTab('general')
+      }
+      return
+    }
     onSave(form)
   }
 
@@ -392,6 +448,7 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
     { key: 'general' as const, label: 'General' },
     { key: 'modules' as const, label: 'Modules' },
     { key: 'storage' as const, label: 'Storage' },
+    { key: 'pricing' as const, label: 'Pricing' },
   ]
 
   return (
@@ -624,6 +681,117 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
               <Button type="button" variant="secondary" size="sm" onClick={addStorageTier}>
                 Add storage tier
               </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Pricing tab */}
+        {activeTab === 'pricing' && (
+          <div className="space-y-4" role="tabpanel" aria-label="Pricing configuration">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900 mb-1">Intervals &amp; Discounts</h3>
+              <p className="text-xs text-gray-500">
+                Enable billing intervals and set discount percentages. Effective prices are computed from the base monthly price of {formatCurrency(form.monthly_price_nzd)}.
+              </p>
+            </div>
+
+            {errors.interval_config && (
+              <div className="rounded-md bg-red-50 border border-red-200 p-3">
+                <p className="text-sm text-red-700">{errors.interval_config}</p>
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {(form.interval_config.length > 0 ? form.interval_config : DEFAULT_INTERVAL_CONFIG).map((ic) => {
+                const isMonthly = ic.interval === 'monthly'
+                const effectivePrice = ic.enabled
+                  ? computeEffectivePrice(form.monthly_price_nzd, ic.interval, ic.discount_percent)
+                  : 0
+                const discountError = errors[`discount_${ic.interval}`]
+
+                return (
+                  <div
+                    key={ic.interval}
+                    className={`rounded-md border p-3 ${
+                      ic.enabled ? 'border-blue-200 bg-blue-50/50' : 'border-gray-200 bg-gray-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={ic.enabled}
+                          disabled={isMonthly}
+                          onChange={(e) => {
+                            const updated = form.interval_config.map(item =>
+                              item.interval === ic.interval
+                                ? { ...item, enabled: e.target.checked }
+                                : item
+                            )
+                            set('interval_config', updated)
+                          }}
+                          aria-label={`Enable ${INTERVAL_LABELS[ic.interval]} billing`}
+                        />
+                        <span className="font-medium">{INTERVAL_LABELS[ic.interval]}</span>
+                        {isMonthly && (
+                          <span className="text-xs text-gray-400">(always enabled)</span>
+                        )}
+                      </label>
+
+                      {ic.enabled && (
+                        <span className="text-sm font-semibold text-gray-900">
+                          {formatCurrency(effectivePrice)}
+                          <span className="text-xs font-normal text-gray-500">
+                            /{ic.interval === 'weekly' ? 'wk' : ic.interval === 'fortnightly' ? '2wk' : ic.interval === 'monthly' ? 'mo' : 'yr'}
+                          </span>
+                        </span>
+                      )}
+                    </div>
+
+                    {ic.enabled && (
+                      <div className="mt-2 ml-6 flex items-center gap-3">
+                        <div className="w-32">
+                          <label className="block text-xs text-gray-600 mb-0.5" htmlFor={`discount-${ic.interval}`}>
+                            Discount %
+                          </label>
+                          <input
+                            id={`discount-${ic.interval}`}
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="0.1"
+                            value={ic.discount_percent}
+                            onChange={(e) => {
+                              const val = Number(e.target.value)
+                              const updated = form.interval_config.map(item =>
+                                item.interval === ic.interval
+                                  ? { ...item, discount_percent: val }
+                                  : item
+                              )
+                              set('interval_config', updated)
+                            }}
+                            className={`block w-full rounded-md border px-2 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500 ${
+                              discountError ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                            }`}
+                            aria-label={`${INTERVAL_LABELS[ic.interval]} discount percentage`}
+                          />
+                          {discountError && (
+                            <p className="text-xs text-red-600 mt-0.5">{discountError}</p>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-500 pt-4">
+                          Effective: <span className="font-medium text-gray-700">{formatCurrency(effectivePrice)}</span>
+                          {ic.discount_percent > 0 && (
+                            <span className="ml-1 text-green-600">
+                              (save {ic.discount_percent}%)
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </div>
         )}

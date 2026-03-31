@@ -65,6 +65,7 @@ class SubscriptionPlan(Base):
     per_sms_cost_nzd: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, server_default="0")
     sms_included_quota: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     sms_package_pricing: Mapped[dict | None] = mapped_column(JSONB, nullable=True, server_default="'[]'")
+    interval_config: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="'[]'")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -98,7 +99,11 @@ class Organisation(Base):
         nullable=False,
         server_default="'active'",
     )
+    billing_interval: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="'monthly'"
+    )
     trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_billing_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stripe_customer_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     stripe_connect_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)

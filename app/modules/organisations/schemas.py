@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -509,6 +509,10 @@ class PublicSignupRequest(BaseModel):
     )
     coupon_code: str | None = Field(
         None, max_length=100, description="Optional coupon code for signup discount"
+    )
+    billing_interval: Literal["weekly", "fortnightly", "monthly", "annual"] = Field(
+        "monthly",
+        description="Billing interval for the subscription (defaults to monthly)",
     )
 
 

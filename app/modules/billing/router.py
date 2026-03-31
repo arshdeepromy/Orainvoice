@@ -21,6 +21,7 @@ import logging
 import math
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import stripe
 from fastapi import APIRouter, Depends, Header, Query, Request
@@ -36,11 +37,8 @@ from app.integrations.stripe_billing import (
     create_invoice_item,
     create_setup_intent,
     detach_payment_method,
-    get_subscription_details,
     get_subscription_invoices,
-    handle_subscription_webhook,
     set_default_payment_method,
-    update_subscription_plan,
 )
 from app.integrations.stripe_connect import (
     generate_connect_url,
@@ -52,6 +50,8 @@ from app.modules.auth.rbac import require_role
 from app.modules.billing.models import OrgPaymentMethod
 from app.modules.billing.schemas import (
     BillingDashboardResponse,
+    IntervalChangeRequest,
+    IntervalChangeResponse,
     PaymentMethodListResponse,
     PaymentMethodResponse,
     PlanChangeRequest,
@@ -64,6 +64,15 @@ from app.modules.billing.schemas import (
     StorageAddonStatusResponse,
     SubscriptionInvoiceResponse,
     TrialStatusResponse,
+)
+from app.modules.billing.interval_pricing import (
+    compute_effective_price,
+    compute_equivalent_monthly,
+    compute_interval_duration,
+    compute_savings_amount,
+    convert_coupon_duration_to_cycles,
+    build_default_interval_config,
+    INTERVAL_PERIODS_PER_YEAR,
 )
 from app.modules.payments.schemas import (
     StripeConnectCallbackResponse,
@@ -226,32 +235,8 @@ async def get_billing_dashboard(
     plan_price = float(plan.monthly_price_nzd) if plan else 0.0
     carjam_included = plan.carjam_lookups_included if plan else 0
 
-    # Next billing date from Stripe subscription
-    next_billing_date = None
-    if org.stripe_subscription_id:
-        try:
-            sub_details = await get_subscription_details(
-                subscription_id=org.stripe_subscription_id,
-            )
-            period_end = sub_details.get("current_period_end")
-            if period_end:
-                next_billing_date = datetime.fromtimestamp(period_end, tz=timezone.utc)
-        except Exception:
-            logger.warning(
-                "Could not fetch subscription details for org %s", org_uuid,
-            )
-
-    # Fallback: compute next billing date from org creation for active paid plans
-    if next_billing_date is None and org.status == "active" and plan and plan.trial_duration == 0:
-        from dateutil.relativedelta import relativedelta
-
-        anchor = org.created_at
-        now = datetime.now(timezone.utc)
-        # Walk forward month by month from creation until we find the next date
-        candidate = anchor
-        while candidate <= now:
-            candidate = candidate + relativedelta(months=1)
-        next_billing_date = candidate
+    # Next billing date from local Organisation field (Requirements: 8.1, 8.2, 8.3, 9.2, 9.3)
+    next_billing_date = None if org.status == "trial" else org.next_billing_date
 
     # Storage usage
     storage_used_gb = org.storage_used_bytes / (1024 ** 3)
@@ -308,7 +293,8 @@ async def get_billing_dashboard(
     sms_beyond_credits = max(0, sms_beyond_included - sms_credits_remaining)
     sms_overage_charge = sms_beyond_credits * per_sms_cost
 
-    # Estimated next invoice
+    # Estimated next invoice — use interval effective price (computed below)
+    # Placeholder; will be recalculated after interval pricing is computed.
     estimated_total = plan_price + storage_addon_charge + carjam_overage_charge + sms_overage_charge
 
     # Active coupon for this org
@@ -316,6 +302,7 @@ async def get_billing_dashboard(
     discount_type = None
     discount_value = None
     duration_months = None
+    coupon_duration_cycles = None
     effective_price_nzd = None
     coupon_is_expired = False
 
@@ -330,6 +317,27 @@ async def get_billing_dashboard(
         .limit(1)
     )
     coupon_row = coupon_result.one_or_none()
+
+    # --- Billing interval fields (Requirements: 9.1, 9.2, 9.3, 9.4) ---
+    # Compute interval effective price BEFORE coupon so coupon applies after interval discount
+    current_interval = getattr(org, "billing_interval", "monthly") or "monthly"
+
+    # Find discount for the org's current interval from the plan's interval_config
+    interval_discount = Decimal("0")
+    if plan and getattr(plan, "interval_config", None):
+        for cfg_item in plan.interval_config:
+            if cfg_item.get("interval") == current_interval and cfg_item.get("enabled"):
+                interval_discount = Decimal(str(cfg_item.get("discount_percent", 0)))
+                break
+
+    base_price_dec = Decimal(str(plan_price))
+    interval_eff_price = compute_effective_price(base_price_dec, current_interval, interval_discount)
+    equiv_monthly = compute_equivalent_monthly(interval_eff_price, current_interval)
+
+    # Recalculate estimated total using the interval effective price (not raw monthly base)
+    estimated_total = float(interval_eff_price) + storage_addon_charge + carjam_overage_charge + sms_overage_charge
+
+    # Apply coupon discount on top of the interval effective price (Req 11.1, 11.2)
     if coupon_row:
         org_coupon, coupon = coupon_row
         from app.modules.admin.service import calculate_effective_price
@@ -337,11 +345,16 @@ async def get_billing_dashboard(
         discount_type = coupon.discount_type
         discount_value = float(coupon.discount_value)
         duration_months = coupon.duration_months
+        # Convert coupon duration to billing cycles for the active interval (Req 11.3)
+        if duration_months is not None:
+            coupon_duration_cycles = convert_coupon_duration_to_cycles(
+                duration_months, current_interval,
+            )
         coupon_is_expired = org_coupon.is_expired
         effective_price_nzd = calculate_effective_price(
-            plan_price, discount_type, discount_value, coupon_is_expired,
+            float(interval_eff_price), discount_type, discount_value, coupon_is_expired,
         )
-        # Use effective price for the estimated total
+        # Use coupon-adjusted price for the estimated total
         estimated_total = effective_price_nzd + storage_addon_charge + carjam_overage_charge + sms_overage_charge
 
     # Past invoices from Stripe
@@ -358,6 +371,10 @@ async def get_billing_dashboard(
                 "Could not fetch past invoices for org %s", org_uuid,
             )
 
+    pending_interval_change = None
+    if hasattr(org, "settings") and org.settings:
+        pending_interval_change = org.settings.get("pending_interval_change")
+
     return BillingDashboardResponse(
         current_plan=plan_name,
         plan_monthly_price_nzd=plan_price,
@@ -372,10 +389,15 @@ async def get_billing_dashboard(
         user_seats=plan.user_seats if plan else 0,
         org_status=org.status,
         trial_ends_at=org.trial_ends_at if org.status == "trial" else None,
+        billing_interval=current_interval,
+        interval_effective_price=float(interval_eff_price),
+        equivalent_monthly_price=float(equiv_monthly),
+        pending_interval_change=pending_interval_change,
         active_coupon_code=active_coupon_code,
         discount_type=discount_type,
         discount_value=discount_value,
         duration_months=duration_months,
+        coupon_duration_cycles=coupon_duration_cycles,
         effective_price_nzd=round(effective_price_nzd, 2) if effective_price_nzd is not None else None,
         coupon_is_expired=coupon_is_expired,
         sms_included=sms_included,
@@ -389,6 +411,281 @@ async def get_billing_dashboard(
         storage_addon_package_name=storage_addon_package_name,
         past_invoices=past_invoices,
     )
+
+
+# ---------------------------------------------------------------------------
+# Available intervals — Requirements: 7.2
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/available-intervals",
+    status_code=200,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org Admin role required"},
+        404: {"description": "Organisation or plan not found"},
+    },
+    summary="Available billing intervals for current plan",
+    dependencies=[require_role("org_admin")],
+)
+async def get_available_intervals(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return available billing intervals with effective prices and savings.
+
+    Loads the current plan's interval_config and computes pricing for each
+    enabled interval using the plan's base monthly price.
+
+    Requirements: 7.2
+    """
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Organisation not found"},
+        )
+
+    plan_result = await db.execute(
+        select(SubscriptionPlan).where(SubscriptionPlan.id == org.plan_id)
+    )
+    plan = plan_result.scalar_one_or_none()
+    if plan is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Subscription plan not found"},
+        )
+
+    # Use plan's interval_config or fall back to default monthly-only
+    interval_config = plan.interval_config
+    if not interval_config:
+        interval_config = build_default_interval_config()
+
+    from decimal import Decimal
+
+    base_price = Decimal(str(plan.monthly_price_nzd))
+    intervals = []
+
+    for item in interval_config:
+        if not item.get("enabled", False):
+            continue
+
+        interval = item["interval"]
+        discount = Decimal(str(item.get("discount_percent", 0)))
+
+        effective = compute_effective_price(base_price, interval, discount)
+        savings = compute_savings_amount(base_price, interval, discount)
+        equiv_monthly = compute_equivalent_monthly(effective, interval)
+
+        intervals.append({
+            "interval": interval,
+            "enabled": True,
+            "discount_percent": float(discount),
+            "effective_price": float(effective),
+            "savings_amount": float(savings),
+            "equivalent_monthly": float(equiv_monthly),
+        })
+
+    return {
+        "current_interval": getattr(org, "billing_interval", "monthly"),
+        "intervals": intervals,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Change billing interval — Requirements: 7.3, 7.4, 7.5, 7.6
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/change-interval",
+    response_model=IntervalChangeResponse,
+    status_code=200,
+    responses={
+        400: {"description": "Invalid interval or no change needed"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org Admin role required"},
+        404: {"description": "Organisation or plan not found"},
+    },
+    summary="Change billing interval for current plan",
+    dependencies=[require_role("org_admin")],
+)
+async def change_billing_interval(
+    request: Request,
+    body: IntervalChangeRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Change the billing interval for the current plan.
+
+    Direction logic (local-only, no Stripe calls):
+    - Longer interval (fewer periods/year, e.g. monthly → annual):
+      immediate update — set org.billing_interval and recalculate
+      next_billing_date from now.
+    - Shorter interval (more periods/year, e.g. annual → monthly):
+      scheduled change — store pending change in org.settings with
+      effective_at = org.next_billing_date. The recurring billing task
+      applies it when the current period ends.
+
+    Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 9.1
+    """
+    from decimal import Decimal as _Dec
+
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # Load org
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Organisation not found"},
+        )
+
+    # Load plan
+    plan_result = await db.execute(
+        select(SubscriptionPlan).where(SubscriptionPlan.id == org.plan_id)
+    )
+    plan = plan_result.scalar_one_or_none()
+    if plan is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Subscription plan not found"},
+        )
+
+    new_interval = body.billing_interval
+    current_interval = getattr(org, "billing_interval", "monthly")
+
+    # No-op check
+    if new_interval == current_interval:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Already on this billing interval. No change needed."},
+        )
+
+    # Validate the requested interval is enabled in the plan's interval_config
+    interval_config = plan.interval_config
+    if not interval_config:
+        interval_config = build_default_interval_config()
+
+    enabled_intervals = {
+        item["interval"]
+        for item in interval_config
+        if item.get("enabled", False)
+    }
+
+    if new_interval not in enabled_intervals:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Interval '{new_interval}' is not available for this plan."},
+        )
+
+    # Compute new effective price
+    discount_percent = _Dec("0")
+    for item in interval_config:
+        if item["interval"] == new_interval:
+            discount_percent = _Dec(str(item.get("discount_percent", 0)))
+            break
+
+    base_price = _Dec(str(plan.monthly_price_nzd))
+    new_effective_price = compute_effective_price(base_price, new_interval, discount_percent)
+
+    # Determine direction: compare periods per year
+    current_periods = INTERVAL_PERIODS_PER_YEAR[current_interval]
+    new_periods = INTERVAL_PERIODS_PER_YEAR[new_interval]
+
+    # Longer interval = fewer periods/year → immediate change
+    # Shorter interval = more periods/year → scheduled change
+    is_immediate = new_periods < current_periods
+
+    previous_interval = current_interval
+
+    if is_immediate:
+        # Immediate change: update interval and recalculate next_billing_date
+        org.billing_interval = new_interval
+        org.next_billing_date = datetime.now(timezone.utc) + compute_interval_duration(new_interval)
+        await db.flush()
+
+        # Audit log
+        await write_audit_log(
+            session=db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            action="billing.interval_changed_immediate",
+            entity_type="organisation",
+            entity_id=org_uuid,
+            before_value={"billing_interval": previous_interval},
+            after_value={
+                "billing_interval": new_interval,
+                "effective_price": float(new_effective_price),
+            },
+            ip_address=ip_address,
+        )
+        await db.commit()
+
+        return IntervalChangeResponse(
+            success=True,
+            message=f"Billing interval changed to {new_interval} immediately.",
+            new_interval=new_interval,
+            new_effective_price=float(new_effective_price),
+            effective_immediately=True,
+            effective_at=None,
+        )
+    else:
+        # Scheduled change: store pending change, keep current interval
+        effective_at = org.next_billing_date
+
+        org_settings = dict(org.settings) if org.settings else {}
+        org_settings["pending_interval_change"] = {
+            "new_interval": new_interval,
+            "effective_at": effective_at.isoformat() if effective_at else None,
+        }
+        org.settings = org_settings
+        await db.flush()
+
+        # Audit log
+        await write_audit_log(
+            session=db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            action="billing.interval_change_scheduled",
+            entity_type="organisation",
+            entity_id=org_uuid,
+            before_value={"billing_interval": previous_interval},
+            after_value={
+                "billing_interval": new_interval,
+                "effective_price": float(new_effective_price),
+                "effective_at": effective_at.isoformat() if effective_at else None,
+            },
+            ip_address=ip_address,
+        )
+        await db.commit()
+
+        return IntervalChangeResponse(
+            success=True,
+            message=f"Billing interval change to {new_interval} scheduled for the end of the current billing period.",
+            new_interval=new_interval,
+            new_effective_price=float(new_effective_price),
+            effective_immediately=False,
+            effective_at=effective_at,
+        )
 
 
 @router.post(
@@ -1411,10 +1708,13 @@ async def upgrade_plan(
     """Upgrade the organisation's subscription plan immediately with prorated charges.
 
     Validates the target plan exists and is not archived, then updates the
-    organisation's plan, storage quota, and Stripe subscription with proration.
+    organisation's plan, storage quota, billing interval, and Stripe subscription
+    with proration based on the interval effective price.
 
-    Requirements: 43.1, 43.2
+    Requirements: 43.1, 43.2, 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7
     """
+    from decimal import Decimal as _Dec
+
     org_uuid, user_uuid, ip_address = _extract_org_context(request)
     if not org_uuid or not user_uuid:
         return JSONResponse(
@@ -1445,49 +1745,82 @@ async def upgrade_plan(
     if new_plan.is_archived:
         return JSONResponse(status_code=400, content={"detail": "Cannot upgrade to an archived plan"})
     if new_plan.id == org.plan_id:
-        return JSONResponse(status_code=400, content={"detail": "Already on this plan"})
+        # Same plan — but interval might differ, handled below via effective price check
+        pass
 
-    # Load current plan to verify this is actually an upgrade (higher price)
+    # Determine the billing interval: use request value or fall back to org's current
+    current_org_interval = getattr(org, "billing_interval", "monthly") or "monthly"
+    selected_interval = body.billing_interval or current_org_interval
+
+    # Validate the target plan supports the selected interval (Req 8.3)
+    new_plan_config = new_plan.interval_config if new_plan.interval_config else build_default_interval_config()
+    enabled_intervals = {
+        item["interval"]
+        for item in new_plan_config
+        if item.get("enabled", False)
+    }
+    if selected_interval not in enabled_intervals:
+        supported = ", ".join(sorted(enabled_intervals))
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": f"Interval '{selected_interval}' is not available for the target plan. "
+                          f"Supported intervals: {supported}."
+            },
+        )
+
+    # Compute effective prices for comparison
+    new_discount = _Dec("0")
+    for item in new_plan_config:
+        if item["interval"] == selected_interval:
+            new_discount = _Dec(str(item.get("discount_percent", 0)))
+            break
+
+    new_base_price = _Dec(str(new_plan.monthly_price_nzd))
+    new_effective_price = compute_effective_price(new_base_price, selected_interval, new_discount)
+
+    # Load current plan to compute current effective price
     current_plan_result = await db.execute(
         select(SubscriptionPlan).where(SubscriptionPlan.id == org.plan_id)
     )
     current_plan = current_plan_result.scalar_one_or_none()
-    if current_plan and float(new_plan.monthly_price_nzd) <= float(current_plan.monthly_price_nzd):
+
+    current_effective_price = _Dec("0")
+    if current_plan:
+        current_config = current_plan.interval_config if current_plan.interval_config else build_default_interval_config()
+        current_discount = _Dec("0")
+        for item in current_config:
+            if item["interval"] == current_org_interval and item.get("enabled"):
+                current_discount = _Dec(str(item.get("discount_percent", 0)))
+                break
+        current_effective_price = compute_effective_price(
+            _Dec(str(current_plan.monthly_price_nzd)), current_org_interval, current_discount,
+        )
+
+    # Same effective price → no change needed (Req 8.7)
+    if new_effective_price == current_effective_price and new_plan.id == org.plan_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "No change needed — the selected plan and interval result in the same effective price."},
+        )
+
+    # Verify this is an upgrade (higher effective price or higher base price)
+    if current_plan and float(new_plan.monthly_price_nzd) <= float(current_plan.monthly_price_nzd) and new_plan.id != org.plan_id:
         return JSONResponse(
             status_code=400,
             content={"detail": "Target plan is not an upgrade. Use the downgrade endpoint instead."},
         )
 
-    # Store before values for audit
+    # Store before values for audit / rollback
     before_plan_id = org.plan_id
     before_storage = org.storage_quota_gb
+    before_interval = current_org_interval
 
-    # Update org immediately
+    # Update org immediately (Req 8.5)
     org.plan_id = new_plan.id
     org.storage_quota_gb = max(org.storage_quota_gb, new_plan.storage_quota_gb)
+    org.billing_interval = selected_interval
     await db.flush()
-
-    # Update Stripe subscription with proration
-    prorated_charge_nzd = 0.0
-    if org.stripe_subscription_id:
-        try:
-            stripe_result = await update_subscription_plan(
-                subscription_id=org.stripe_subscription_id,
-                new_monthly_amount_cents=int(float(new_plan.monthly_price_nzd) * 100),
-                proration_behavior="create_prorations",
-            )
-            prorated_charge_nzd = stripe_result.get("prorated_amount_cents", 0) / 100.0
-        except Exception:
-            _logger = logging.getLogger(__name__)
-            _logger.exception("Stripe subscription update failed for org %s", org_uuid)
-            # Rollback org changes on Stripe failure
-            org.plan_id = before_plan_id
-            org.storage_quota_gb = before_storage
-            await db.flush()
-            return JSONResponse(
-                status_code=502,
-                content={"detail": "Failed to update subscription with Stripe. Plan not changed."},
-            )
 
     # Audit log
     await write_audit_log(
@@ -1500,11 +1833,14 @@ async def upgrade_plan(
         before_value={
             "plan_id": str(before_plan_id),
             "storage_quota_gb": before_storage,
+            "billing_interval": before_interval,
         },
         after_value={
             "plan_id": str(new_plan.id),
             "plan_name": new_plan.name,
             "storage_quota_gb": org.storage_quota_gb,
+            "billing_interval": selected_interval,
+            "effective_price": float(new_effective_price),
             "prorated_charge_nzd": prorated_charge_nzd,
         },
         ip_address=ip_address,
@@ -1513,7 +1849,7 @@ async def upgrade_plan(
 
     return PlanUpgradeResponse(
         success=True,
-        message=f"Upgraded to {new_plan.name}. Prorated charge of ${prorated_charge_nzd:.2f} NZD applied.",
+        message=f"Upgraded to {new_plan.name} ({selected_interval}). Prorated charge of ${prorated_charge_nzd:.2f} NZD applied.",
         new_plan_name=new_plan.name,
         prorated_charge_nzd=prorated_charge_nzd,
         effective_immediately=True,
@@ -1545,10 +1881,13 @@ async def downgrade_plan(
     """Downgrade the organisation's subscription plan at the next billing period.
 
     Validates the target plan, checks storage and user limits, and schedules
-    the downgrade. Returns warnings if the org exceeds the new plan's limits.
+    the downgrade. Stores both new_plan_id and billing_interval in pending settings.
+    Returns warnings if the org exceeds the new plan's limits.
 
-    Requirements: 43.1, 43.3, 43.4
+    Requirements: 43.1, 43.3, 43.4, 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7
     """
+    from decimal import Decimal as _Dec
+
     org_uuid, user_uuid, ip_address = _extract_org_context(request)
     if not org_uuid or not user_uuid:
         return JSONResponse(
@@ -1579,14 +1918,67 @@ async def downgrade_plan(
     if new_plan.is_archived:
         return JSONResponse(status_code=400, content={"detail": "Cannot downgrade to an archived plan"})
     if new_plan.id == org.plan_id:
-        return JSONResponse(status_code=400, content={"detail": "Already on this plan"})
+        # Same plan — but interval might differ, handled below via effective price check
+        pass
 
-    # Load current plan to verify this is actually a downgrade (lower price)
+    # Determine the billing interval: use request value or fall back to org's current
+    current_org_interval = getattr(org, "billing_interval", "monthly") or "monthly"
+    selected_interval = body.billing_interval or current_org_interval
+
+    # Validate the target plan supports the selected interval (Req 8.3)
+    new_plan_config = new_plan.interval_config if new_plan.interval_config else build_default_interval_config()
+    enabled_intervals = {
+        item["interval"]
+        for item in new_plan_config
+        if item.get("enabled", False)
+    }
+    if selected_interval not in enabled_intervals:
+        supported = ", ".join(sorted(enabled_intervals))
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": f"Interval '{selected_interval}' is not available for the target plan. "
+                          f"Supported intervals: {supported}."
+            },
+        )
+
+    # Compute effective prices for comparison
+    new_discount = _Dec("0")
+    for item in new_plan_config:
+        if item["interval"] == selected_interval:
+            new_discount = _Dec(str(item.get("discount_percent", 0)))
+            break
+
+    new_base_price = _Dec(str(new_plan.monthly_price_nzd))
+    new_effective_price = compute_effective_price(new_base_price, selected_interval, new_discount)
+
+    # Load current plan to compute current effective price
     current_plan_result = await db.execute(
         select(SubscriptionPlan).where(SubscriptionPlan.id == org.plan_id)
     )
     current_plan = current_plan_result.scalar_one_or_none()
-    if current_plan and float(new_plan.monthly_price_nzd) >= float(current_plan.monthly_price_nzd):
+
+    current_effective_price = _Dec("0")
+    if current_plan:
+        current_config = current_plan.interval_config if current_plan.interval_config else build_default_interval_config()
+        current_discount = _Dec("0")
+        for item in current_config:
+            if item["interval"] == current_org_interval and item.get("enabled"):
+                current_discount = _Dec(str(item.get("discount_percent", 0)))
+                break
+        current_effective_price = compute_effective_price(
+            _Dec(str(current_plan.monthly_price_nzd)), current_org_interval, current_discount,
+        )
+
+    # Same effective price → no change needed (Req 8.7)
+    if new_effective_price == current_effective_price and new_plan.id == org.plan_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "No change needed — the selected plan and interval result in the same effective price."},
+        )
+
+    # Verify this is a downgrade (lower effective price or lower base price)
+    if current_plan and float(new_plan.monthly_price_nzd) >= float(current_plan.monthly_price_nzd) and new_plan.id != org.plan_id:
         return JSONResponse(
             status_code=400,
             content={"detail": "Target plan is not a downgrade. Use the upgrade endpoint instead."},
@@ -1630,33 +2022,17 @@ async def downgrade_plan(
             warnings=warnings,
         )
 
-    # Schedule downgrade at next billing period via Stripe
-    effective_at = None
-    if org.stripe_subscription_id:
-        try:
-            stripe_result = await update_subscription_plan(
-                subscription_id=org.stripe_subscription_id,
-                new_monthly_amount_cents=int(float(new_plan.monthly_price_nzd) * 100),
-                proration_behavior="none",
-            )
-            # The change takes effect at the end of the current period
-            period_end = stripe_result.get("current_period_end")
-            if period_end:
-                effective_at = datetime.fromtimestamp(period_end, tz=timezone.utc)
-        except Exception:
-            _logger = logging.getLogger(__name__)
-            _logger.exception("Stripe subscription update failed for org %s", org_uuid)
-            return JSONResponse(
-                status_code=502,
-                content={"detail": "Failed to schedule downgrade with Stripe."},
-            )
+    # Schedule downgrade at next billing period (Req 8.6)
+    effective_at = org.next_billing_date
 
-    # Store the pending downgrade in org settings so it can be applied at period end
+    # Store the pending downgrade in org settings with billing_interval (Req 8.6)
     org_settings = dict(org.settings) if org.settings else {}
     org_settings["pending_downgrade"] = {
         "new_plan_id": str(new_plan.id),
         "new_plan_name": new_plan.name,
         "new_storage_quota_gb": new_plan.storage_quota_gb,
+        "billing_interval": selected_interval,
+        "effective_price": float(new_effective_price),
         "effective_at": effective_at.isoformat() if effective_at else None,
     }
     org.settings = org_settings
@@ -1673,10 +2049,13 @@ async def downgrade_plan(
         before_value={
             "plan_id": str(org.plan_id),
             "plan_name": current_plan.name if current_plan else "Unknown",
+            "billing_interval": current_org_interval,
         },
         after_value={
             "new_plan_id": str(new_plan.id),
             "new_plan_name": new_plan.name,
+            "billing_interval": selected_interval,
+            "effective_price": float(new_effective_price),
             "effective_at": effective_at.isoformat() if effective_at else None,
         },
         ip_address=ip_address,
@@ -1685,7 +2064,7 @@ async def downgrade_plan(
 
     return PlanDowngradeResponse(
         success=True,
-        message=f"Downgrade to {new_plan.name} scheduled for the start of your next billing period.",
+        message=f"Downgrade to {new_plan.name} ({selected_interval}) scheduled for the start of your next billing period.",
         new_plan_name=new_plan.name,
         effective_at=effective_at,
         warnings=[],
@@ -1744,17 +2123,48 @@ async def stripe_subscription_webhook(
     event_type = event.get("type", "")
     event_data = event.get("data", {})
 
-    # Process via integration layer
-    webhook_result = await handle_subscription_webhook(
-        event_type=event_type,
-        event_data=event_data,
-    )
+    # Parse webhook event inline (previously delegated to handle_subscription_webhook)
+    obj = event_data.get("object", {})
+    customer_id = obj.get("customer")
 
-    if not webhook_result.get("processed"):
+    _EVENT_ACTION_MAP = {
+        "invoice.payment_succeeded": "payment_succeeded",
+        "invoice.payment_failed": "payment_failed",
+        "customer.subscription.updated": "subscription_updated",
+        "customer.subscription.deleted": "subscription_deleted",
+        "invoice.created": "invoice_created",
+        "customer.updated": "customer_updated",
+        "setup_intent.succeeded": "setup_intent_succeeded",
+    }
+
+    action = _EVENT_ACTION_MAP.get(event_type)
+    if action is None:
         return {"status": "ignored", "event_type": event_type}
 
-    action = webhook_result.get("action")
-    customer_id = webhook_result.get("customer_id")
+    webhook_result: dict = {"processed": True, "action": action, "customer_id": customer_id}
+
+    if action == "payment_succeeded":
+        webhook_result["subscription_id"] = obj.get("subscription")
+        webhook_result["amount_paid"] = obj.get("amount_paid", 0)
+        webhook_result["invoice_pdf"] = obj.get("invoice_pdf")
+        webhook_result["hosted_invoice_url"] = obj.get("hosted_invoice_url")
+    elif action == "payment_failed":
+        webhook_result["attempt_count"] = obj.get("attempt_count", 0)
+        webhook_result["next_payment_attempt"] = obj.get("next_payment_attempt")
+    elif action == "subscription_updated":
+        webhook_result["status"] = obj.get("status")
+        webhook_result["cancel_at_period_end"] = obj.get("cancel_at_period_end", False)
+    elif action == "subscription_deleted":
+        webhook_result["subscription_id"] = obj.get("id")
+    elif action == "invoice_created":
+        webhook_result["billing_reason"] = obj.get("billing_reason", "")
+        webhook_result["invoice_id"] = obj.get("id")
+    elif action == "customer_updated":
+        inv_settings = obj.get("invoice_settings", {})
+        webhook_result["default_payment_method"] = inv_settings.get("default_payment_method")
+    elif action == "setup_intent_succeeded":
+        webhook_result["payment_method_id"] = obj.get("payment_method")
+        webhook_result["card_details"] = {}
 
     if not customer_id:
         return {"status": "processed", "action": action}

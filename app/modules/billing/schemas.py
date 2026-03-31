@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -107,6 +108,23 @@ class BillingDashboardResponse(BaseModel):
     trial_ends_at: datetime | None = Field(
         default=None, description="UTC timestamp when the trial ends"
     )
+    # Billing interval fields — Requirements: 9.1, 9.3, 9.4
+    billing_interval: str = Field(
+        default="monthly",
+        description="Current billing interval (weekly, fortnightly, monthly, annual)",
+    )
+    interval_effective_price: float = Field(
+        default=0.0,
+        description="Effective price per billing cycle at the current interval",
+    )
+    equivalent_monthly_price: float = Field(
+        default=0.0,
+        description="Equivalent monthly cost for the current interval",
+    )
+    pending_interval_change: dict | None = Field(
+        default=None,
+        description="Pending interval change details (null if none scheduled)",
+    )
     # Coupon fields
     active_coupon_code: str | None = Field(
         default=None, description="Active coupon code applied to this org"
@@ -119,6 +137,10 @@ class BillingDashboardResponse(BaseModel):
     )
     duration_months: int | None = Field(
         default=None, description="Coupon duration in months (null = perpetual)"
+    )
+    coupon_duration_cycles: int | None = Field(
+        default=None,
+        description="Coupon duration converted to billing cycles for the active interval (null = perpetual)",
     )
     effective_price_nzd: float | None = Field(
         default=None, description="Effective monthly price after coupon discount"
@@ -160,6 +182,41 @@ class BillingDashboardResponse(BaseModel):
     )
 
 # ---------------------------------------------------------------------------
+# Interval change schemas — Requirements: 7.1, 7.2, 9.1, 9.3, 9.4
+# ---------------------------------------------------------------------------
+
+
+class IntervalChangeRequest(BaseModel):
+    """POST /api/v1/billing/change-interval request body.
+
+    Requirements: 7.1, 7.2
+    """
+
+    billing_interval: Literal["weekly", "fortnightly", "monthly", "annual"] = Field(
+        description="Target billing interval"
+    )
+
+
+class IntervalChangeResponse(BaseModel):
+    """Response for interval change.
+
+    Requirements: 7.1, 7.2
+    """
+
+    success: bool = Field(description="Whether the interval change was applied or scheduled")
+    message: str = Field(description="Human-readable result message")
+    new_interval: str = Field(description="The new billing interval")
+    new_effective_price: float = Field(description="Effective price at the new interval")
+    effective_immediately: bool = Field(
+        description="Whether the change was applied immediately (True) or scheduled (False)"
+    )
+    effective_at: datetime | None = Field(
+        default=None,
+        description="When the change takes effect (null if immediate)",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Plan upgrade / downgrade schemas — Requirements: 43.1, 43.2, 43.3, 43.4
 # ---------------------------------------------------------------------------
 
@@ -167,10 +224,14 @@ class BillingDashboardResponse(BaseModel):
 class PlanChangeRequest(BaseModel):
     """Request body for POST /api/v1/billing/upgrade and /downgrade.
 
-    Requirements: 43.1
+    Requirements: 43.1, 8.4
     """
 
     new_plan_id: str = Field(description="UUID of the target subscription plan")
+    billing_interval: str | None = Field(
+        default=None,
+        description="Optional billing interval for the new plan (defaults to current org interval)",
+    )
 
 
 class PlanUpgradeResponse(BaseModel):

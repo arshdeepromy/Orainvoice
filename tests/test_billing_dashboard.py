@@ -3,7 +3,6 @@
 Covers:
 - GET /api/v1/billing endpoint logic
 - Aggregation of plan info, storage, Carjam usage, estimated invoice
-- get_subscription_details helper
 - Plain language billing data (no accounting jargon)
 
 Requirements: 44.1, 44.2
@@ -18,45 +17,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.modules.billing.schemas import BillingDashboardResponse, SubscriptionInvoiceResponse
-
-
-# ---------------------------------------------------------------------------
-# get_subscription_details tests
-# ---------------------------------------------------------------------------
-
-
-class TestGetSubscriptionDetails:
-    """Test the Stripe subscription details helper."""
-
-    @pytest.mark.asyncio
-    async def test_returns_period_end_and_status(self):
-        mock_sub = {
-            "current_period_end": 1738368000,
-            "status": "active",
-            "cancel_at_period_end": False,
-        }
-        with patch("app.integrations.stripe_billing.stripe") as mock_stripe:
-            mock_stripe.Subscription.retrieve.return_value = mock_sub
-            from app.integrations.stripe_billing import get_subscription_details
-
-            result = await get_subscription_details(subscription_id="sub_test123")
-
-        assert result["current_period_end"] == 1738368000
-        assert result["status"] == "active"
-        assert result["cancel_at_period_end"] is False
-
-    @pytest.mark.asyncio
-    async def test_handles_missing_fields(self):
-        mock_sub = {}
-        with patch("app.integrations.stripe_billing.stripe") as mock_stripe:
-            mock_stripe.Subscription.retrieve.return_value = mock_sub
-            from app.integrations.stripe_billing import get_subscription_details
-
-            result = await get_subscription_details(subscription_id="sub_empty")
-
-        assert result["current_period_end"] is None
-        assert result["status"] is None
-        assert result["cancel_at_period_end"] is False
 
 
 # ---------------------------------------------------------------------------

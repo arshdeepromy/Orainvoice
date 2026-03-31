@@ -741,6 +741,8 @@ async def cleanup_stale_sessions_task() -> dict:
 
 import asyncio
 
+from app.tasks.subscriptions import process_recurring_billing_task
+
 # (task_fn, interval_seconds, name)
 _DAILY_TASKS: list[tuple] = [
     (check_overdue_invoices_task, 3600, "overdue_invoices"),
@@ -757,6 +759,7 @@ _DAILY_TASKS: list[tuple] = [
     (sync_public_holidays_task, 15552000, "sync_public_holidays"),  # every ~6 months
     (cleanup_stale_sessions_task, 3600, "cleanup_sessions"),  # every hour
     (check_card_expiry_task, 86400, "check_card_expiry"),  # daily
+    (process_recurring_billing_task, 900, "recurring_billing"),  # every 15 minutes
 ]
 
 _stop_event: asyncio.Event | None = None

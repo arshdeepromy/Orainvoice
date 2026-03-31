@@ -122,11 +122,11 @@ class TestMrrReport:
     async def test_mrr_empty_platform(self):
         """MRR is zero when no organisations exist."""
         db = _mock_db()
-        # First call: plan breakdown query returns empty
+        # First call: per-org query returns empty
         # Subsequent calls: month-over-month queries return 0
         db.execute = AsyncMock(
             side_effect=[
-                _mock_execute_result([]),  # plan breakdown
+                _mock_execute_result([]),  # per-org rows
                 _mock_scalar_result(0),    # month 1
                 _mock_scalar_result(0),    # month 2
                 _mock_scalar_result(0),    # month 3
@@ -140,19 +140,22 @@ class TestMrrReport:
 
         assert result["total_mrr_nzd"] == 0.0
         assert result["plan_breakdown"] == []
+        assert result["interval_breakdown"] == []
         assert len(result["month_over_month"]) == 6
 
     @pytest.mark.asyncio
     async def test_mrr_with_active_orgs(self):
-        """MRR reflects active orgs × plan price."""
+        """MRR reflects active orgs × plan price (monthly interval, 0% discount)."""
         db = _mock_db()
         plan_id = uuid.uuid4()
+        monthly_config = [{"interval": "monthly", "enabled": True, "discount_percent": 0}]
 
-        # Plan breakdown: 2 orgs on Pro plan at $99
+        # Two orgs on Pro plan at $99, both monthly
         db.execute = AsyncMock(
             side_effect=[
                 _mock_execute_result([
-                    (plan_id, "Pro", 99.0, 2),
+                    (uuid.uuid4(), "monthly", plan_id, "Pro", 99.0, monthly_config),
+                    (uuid.uuid4(), "monthly", plan_id, "Pro", 99.0, monthly_config),
                 ]),
                 _mock_scalar_result(198.0),  # month 1
                 _mock_scalar_result(198.0),  # month 2
@@ -170,18 +173,31 @@ class TestMrrReport:
         assert result["plan_breakdown"][0]["plan_name"] == "Pro"
         assert result["plan_breakdown"][0]["active_orgs"] == 2
         assert result["plan_breakdown"][0]["mrr_nzd"] == 198.0
+        # Interval breakdown: all monthly
+        assert len(result["interval_breakdown"]) == 1
+        assert result["interval_breakdown"][0]["interval"] == "monthly"
+        assert result["interval_breakdown"][0]["org_count"] == 2
 
     @pytest.mark.asyncio
     async def test_mrr_multiple_plans(self):
         """MRR sums across multiple plans."""
         db = _mock_db()
+        plan_id_basic = uuid.uuid4()
+        plan_id_pro = uuid.uuid4()
+        monthly_config = [{"interval": "monthly", "enabled": True, "discount_percent": 0}]
+
+        # 3 orgs on Basic ($29) + 2 orgs on Pro ($99), all monthly
+        org_rows = [
+            (uuid.uuid4(), "monthly", plan_id_basic, "Basic", 29.0, monthly_config),
+            (uuid.uuid4(), "monthly", plan_id_basic, "Basic", 29.0, monthly_config),
+            (uuid.uuid4(), "monthly", plan_id_basic, "Basic", 29.0, monthly_config),
+            (uuid.uuid4(), "monthly", plan_id_pro, "Pro", 99.0, monthly_config),
+            (uuid.uuid4(), "monthly", plan_id_pro, "Pro", 99.0, monthly_config),
+        ]
 
         db.execute = AsyncMock(
             side_effect=[
-                _mock_execute_result([
-                    (uuid.uuid4(), "Basic", 29.0, 3),
-                    (uuid.uuid4(), "Pro", 99.0, 2),
-                ]),
+                _mock_execute_result(org_rows),
                 *[_mock_scalar_result(285.0) for _ in range(6)],
             ]
         )
@@ -207,6 +223,55 @@ class TestMrrReport:
         for entry in result["month_over_month"]:
             assert "month" in entry
             assert "mrr_nzd" in entry
+
+    @pytest.mark.asyncio
+    async def test_mrr_normalises_across_intervals(self):
+        """MRR normalises annual/weekly orgs to monthly equivalent.
+
+        Requirements 12.1, 12.2, 12.3.
+        """
+        db = _mock_db()
+        plan_id = uuid.uuid4()
+        interval_config = [
+            {"interval": "weekly", "enabled": True, "discount_percent": 0},
+            {"interval": "monthly", "enabled": True, "discount_percent": 0},
+            {"interval": "annual", "enabled": True, "discount_percent": 10},
+        ]
+
+        # Base monthly price = $120
+        # Monthly org: effective=$120, MRR=$120
+        # Weekly org: effective=120*12/52=$27.69, MRR=27.69*52/12=$120
+        # Annual org (10% discount): effective=120*12/1*0.9=$1296, MRR=1296/12=$108
+        org_rows = [
+            (uuid.uuid4(), "monthly", plan_id, "Pro", 120.0, interval_config),
+            (uuid.uuid4(), "weekly", plan_id, "Pro", 120.0, interval_config),
+            (uuid.uuid4(), "annual", plan_id, "Pro", 120.0, interval_config),
+        ]
+
+        db.execute = AsyncMock(
+            side_effect=[
+                _mock_execute_result(org_rows),
+                *[_mock_scalar_result(0) for _ in range(6)],
+            ]
+        )
+
+        result = await get_mrr_report(db)
+
+        # Total MRR: ~120 (weekly normalised) + 120 (monthly) + 108 (annual) ≈ 347.99
+        # Small rounding from weekly: effective=27.69, MRR=27.69*52/12=119.99
+        assert abs(result["total_mrr_nzd"] - 348.0) < 0.1
+        assert len(result["plan_breakdown"]) == 1
+        assert result["plan_breakdown"][0]["active_orgs"] == 3
+
+        # Interval breakdown should have 3 entries
+        assert len(result["interval_breakdown"]) == 3
+        intervals_by_name = {ib["interval"]: ib for ib in result["interval_breakdown"]}
+        assert intervals_by_name["monthly"]["org_count"] == 1
+        assert intervals_by_name["monthly"]["mrr_nzd"] == 120.0
+        assert intervals_by_name["weekly"]["org_count"] == 1
+        assert abs(intervals_by_name["weekly"]["mrr_nzd"] - 120.0) < 0.1
+        assert intervals_by_name["annual"]["org_count"] == 1
+        assert intervals_by_name["annual"]["mrr_nzd"] == 108.0
 
 
 # ---------------------------------------------------------------------------

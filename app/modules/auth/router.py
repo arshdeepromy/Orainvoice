@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from decimal import Decimal
 from typing import Union
 
 from fastapi import APIRouter, Depends, Request
@@ -48,6 +49,7 @@ from app.modules.auth.schemas import (
     PasswordResetResponse,
     PublicPlanListResponse,
     PublicPlanResponse,
+    PublicIntervalPricing,
     RefreshTokenRequest,
     ResendInviteRequest,
     ResendInviteResponse,
@@ -100,6 +102,12 @@ from app.modules.organisations.schemas import (
     PublicSignupResponse,
 )
 from app.modules.organisations.service import public_signup
+from app.modules.billing.interval_pricing import (
+    build_default_interval_config,
+    compute_effective_price,
+    compute_equivalent_monthly,
+    compute_savings_amount,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -2184,7 +2192,7 @@ async def list_public_plans(
     No authentication required. Used by the public signup page to
     populate the plan selector.
 
-    Requirements 6.1, 6.2.
+    Requirements 3.1, 3.2, 3.3, 3.4.
     """
     from sqlalchemy import select
 
@@ -2198,8 +2206,37 @@ async def list_public_plans(
     )
     plans = result.scalars().all()
 
-    return PublicPlanListResponse(
-        plans=[
+    plan_responses = []
+    for plan in plans:
+        # Get interval config or default to monthly-only for legacy plans
+        interval_config = plan.interval_config
+        if not interval_config:
+            interval_config = build_default_interval_config()
+
+        base_price = Decimal(str(plan.monthly_price_nzd))
+
+        # Build intervals array with only enabled intervals
+        intervals = []
+        for item in interval_config:
+            if not item.get("enabled", False):
+                continue
+            interval = item["interval"]
+            discount = Decimal(str(item.get("discount_percent", 0)))
+            effective = compute_effective_price(base_price, interval, discount)
+            savings = compute_savings_amount(base_price, interval, discount)
+            equiv_monthly = compute_equivalent_monthly(effective, interval)
+            intervals.append(
+                PublicIntervalPricing(
+                    interval=interval,
+                    enabled=True,
+                    discount_percent=float(discount),
+                    effective_price=float(effective),
+                    savings_amount=float(savings),
+                    equivalent_monthly=float(equiv_monthly),
+                )
+            )
+
+        plan_responses.append(
             PublicPlanResponse(
                 id=str(plan.id),
                 name=plan.name,
@@ -2209,10 +2246,12 @@ async def list_public_plans(
                 sms_included=plan.sms_included,
                 sms_included_quota=plan.sms_included_quota or 0,
                 per_sms_cost_nzd=float(plan.per_sms_cost_nzd or 0),
+                intervals=intervals,
             )
-            for plan in plans
-        ]
-    )
+        )
+
+    return PublicPlanListResponse(plans=plan_responses)
+
 
 
 # ---------------------------------------------------------------------------
@@ -2287,6 +2326,7 @@ async def signup(
             ip_address=ip_address,
             base_url=base_url,
             coupon_code=payload.coupon_code,
+            billing_interval=payload.billing_interval,
         )
         # Commit the transaction after successful signup
         await db.commit()
@@ -2348,11 +2388,18 @@ async def confirm_signup_payment(
 
     from app.core.audit import write_audit_log
     from app.core.redis import redis_pool
-    from app.integrations.stripe_billing import _ensure_stripe_key, create_stripe_customer
+    from app.integrations.stripe_billing import (
+        _ensure_stripe_key,
+        create_stripe_customer,
+    )
     from app.modules.admin.models import Organisation, SubscriptionPlan
     from app.modules.auth.models import User
     from app.modules.auth.pending_signup import delete_pending_signup, get_pending_signup
     from app.modules.billing.models import OrgPaymentMethod
+    from app.modules.billing.interval_pricing import (
+        compute_effective_price as _compute_eff,
+        INTERVAL_PERIODS_PER_YEAR,
+    )
 
     payment_intent_id = payload.payment_intent_id
     pending_signup_id = payload.pending_signup_id
@@ -2403,8 +2450,9 @@ async def confirm_signup_payment(
 
     # 4. Create Organisation (status=active) and User in DB
     plan_id = _uuid.UUID(pending["plan_id"])
+    billing_interval = pending.get("billing_interval", "monthly")
 
-    # Look up plan for storage_quota_gb
+    # Look up plan for storage_quota_gb and interval config
     plan_result = await db.execute(
         select(SubscriptionPlan).where(SubscriptionPlan.id == plan_id)
     )
@@ -2415,6 +2463,7 @@ async def confirm_signup_payment(
         name=pending["org_name"],
         plan_id=plan_id,
         status="active",
+        billing_interval=billing_interval,
         stripe_customer_id=stripe_customer_id,
         storage_quota_gb=storage_quota_gb,
     )
@@ -2478,6 +2527,39 @@ async def confirm_signup_payment(
             exc,
         )
 
+    # 5b. Set next_billing_date for paid plans (direct billing, no Stripe Subscription)
+    try:
+        from decimal import Decimal as _Dec
+        from app.modules.billing.interval_pricing import (
+            compute_interval_duration as _compute_interval_duration,
+        )
+
+        # Compute effective price for the selected billing interval
+        interval_config = getattr(plan, "interval_config", None) or []
+        discount_percent = _Dec("0")
+        for ic in interval_config:
+            if ic.get("interval") == billing_interval and ic.get("enabled"):
+                discount_percent = _Dec(str(ic.get("discount_percent", 0)))
+                break
+
+        effective_price = _compute_eff(
+            _Dec(str(plan.monthly_price_nzd)),
+            billing_interval,
+            discount_percent,
+        )
+        interval_amount_cents = int((effective_price * _Dec("100")).to_integral_value())
+
+        if interval_amount_cents > 0:
+            org.next_billing_date = datetime.now(timezone.utc) + _compute_interval_duration(billing_interval)
+            await db.flush()
+    except Exception as exc:
+        logger.error(
+            "Failed to set next_billing_date for org %s: %s",
+            org.id,
+            exc,
+            exc_info=True,
+        )
+
     # 6. Delete Pending_Signup from Redis (prevent replay)
     await delete_pending_signup(pending_signup_id)
 
@@ -2495,6 +2577,7 @@ async def confirm_signup_payment(
             "name": pending["org_name"],
             "plan_id": str(plan_id),
             "plan_name": pending.get("plan_name", ""),
+            "billing_interval": billing_interval,
             "status": "active",
             "admin_email": admin_email,
             "admin_user_id": str(admin_user.id),

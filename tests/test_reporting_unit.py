@@ -303,11 +303,11 @@ class TestMrrEdgeCases:
         """Suspended orgs should not contribute to MRR."""
         db = _mock_db()
 
-        # Plan breakdown returns empty (no active/trial/grace orgs)
+        # Per-org query returns empty (no active/trial/grace orgs)
         # because the only org is suspended
         db.execute = AsyncMock(
             side_effect=[
-                _mock_execute_result([]),  # plan breakdown (no qualifying orgs)
+                _mock_execute_result([]),  # per-org rows (no qualifying orgs)
                 *[_mock_scalar_result(0) for _ in range(6)],  # month-over-month
             ]
         )
@@ -321,12 +321,13 @@ class TestMrrEdgeCases:
         """Grace period orgs should still contribute to MRR."""
         db = _mock_db()
         plan_id = uuid.uuid4()
+        monthly_config = [{"interval": "monthly", "enabled": True, "discount_percent": 0}]
 
-        # One org in grace_period on a $79 plan
+        # One org in grace_period on a $79 plan (monthly)
         db.execute = AsyncMock(
             side_effect=[
                 _mock_execute_result([
-                    (plan_id, "Standard", 79.0, 1),
+                    (uuid.uuid4(), "monthly", plan_id, "Standard", 79.0, monthly_config),
                 ]),
                 *[_mock_scalar_result(79.0) for _ in range(6)],
             ]
@@ -341,14 +342,21 @@ class TestMrrEdgeCases:
     async def test_mrr_plan_breakdown_sums_correctly(self):
         """Total MRR equals sum of all plan breakdowns."""
         db = _mock_db()
+        plan_id_starter = uuid.uuid4()
+        plan_id_pro = uuid.uuid4()
+        plan_id_enterprise = uuid.uuid4()
+        monthly_config = [{"interval": "monthly", "enabled": True, "discount_percent": 0}]
+
+        # 5 Starter ($29) + 3 Pro ($99) + 1 Enterprise ($249), all monthly
+        org_rows = [
+            *[(uuid.uuid4(), "monthly", plan_id_starter, "Starter", 29.0, monthly_config) for _ in range(5)],
+            *[(uuid.uuid4(), "monthly", plan_id_pro, "Pro", 99.0, monthly_config) for _ in range(3)],
+            (uuid.uuid4(), "monthly", plan_id_enterprise, "Enterprise", 249.0, monthly_config),
+        ]
 
         db.execute = AsyncMock(
             side_effect=[
-                _mock_execute_result([
-                    (uuid.uuid4(), "Starter", 29.0, 5),
-                    (uuid.uuid4(), "Pro", 99.0, 3),
-                    (uuid.uuid4(), "Enterprise", 249.0, 1),
-                ]),
+                _mock_execute_result(org_rows),
                 *[_mock_scalar_result(691.0) for _ in range(6)],
             ]
         )

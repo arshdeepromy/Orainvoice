@@ -1,9 +1,10 @@
-import { useState, useEffect, FormEvent } from 'react'
+import { useState, useEffect, useMemo, FormEvent } from 'react'
 import apiClient from '@/api/client'
 import { Button, Input, AlertBanner, Spinner } from '@/components/ui'
 import { validateSignupForm } from './signup-validation'
 import { PasswordRequirements, PasswordMatch } from '@/components/auth/PasswordRequirements'
-import type { SignupFormData, SignupResponse, PublicPlan, PublicPlanListResponse, SignupBillingConfig } from './signup-types'
+import { IntervalSelector } from '@/components/billing/IntervalSelector'
+import type { SignupFormData, SignupResponse, PublicPlan, PublicPlanListResponse, SignupBillingConfig, IntervalPricing } from './signup-types'
 
 interface CouponResponse {
   id: string
@@ -38,6 +39,8 @@ export function SignupForm({ onComplete }: SignupFormProps) {
   const [couponValidating, setCouponValidating] = useState(false)
   const [showCouponInput, setShowCouponInput] = useState(false)
 
+  const [selectedInterval, setSelectedInterval] = useState('monthly')
+
   const [formData, setFormData] = useState<SignupFormData>({
     org_name: '',
     admin_email: '',
@@ -46,6 +49,7 @@ export function SignupForm({ onComplete }: SignupFormProps) {
     password: '',
     confirm_password: '',
     plan_id: '',
+    billing_interval: 'monthly',
     captcha_code: '',
     coupon_code: '',
   })
@@ -55,6 +59,19 @@ export function SignupForm({ onComplete }: SignupFormProps) {
 
   // Get selected plan for display
   const selectedPlan = plans.find(p => p.id === formData.plan_id) ?? null
+
+  // Collect all unique enabled intervals across all plans for the IntervalSelector
+  const availableIntervals = useMemo<IntervalPricing[]>(() => {
+    const intervalMap = new Map<string, IntervalPricing>()
+    for (const plan of plans) {
+      for (const iv of plan.intervals ?? []) {
+        if (iv.enabled && !intervalMap.has(iv.interval)) {
+          intervalMap.set(iv.interval, iv)
+        }
+      }
+    }
+    return Array.from(intervalMap.values())
+  }, [plans])
 
   // CAPTCHA state
   const [captchaUrl, setCaptchaUrl] = useState<string>('')
@@ -117,7 +134,7 @@ export function SignupForm({ onComplete }: SignupFormProps) {
     setPlansError(null)
     try {
       const res = await apiClient.get<PublicPlanListResponse>('/auth/plans')
-      setPlans(res.data.plans)
+      setPlans(res.data?.plans ?? [])
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
       setPlansError(status === 429
@@ -178,6 +195,11 @@ export function SignupForm({ onComplete }: SignupFormProps) {
     if (errors[field]) {
       setErrors(prev => { const next = { ...prev }; delete next[field]; return next })
     }
+  }
+
+  function handleIntervalChange(interval: string) {
+    setSelectedInterval(interval)
+    setFormData(prev => ({ ...prev, billing_interval: interval }))
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -300,61 +322,153 @@ export function SignupForm({ onComplete }: SignupFormProps) {
               <button type="button" onClick={fetchPlans} className="ml-2 text-blue-600 underline">Retry</button>
             </div>
           ) : (
-            <div className="space-y-2">
-              {plans.map(plan => {
-                const isSelected = formData.plan_id === plan.id
-                const hasTrial = plan.trial_duration > 0
-                const price = Number(plan.monthly_price_nzd)
-                const effectivePrice = couponApplied
-                  ? calculateEffectivePrice(price, couponApplied)
-                  : price
-                return (
-                  <label
-                    key={plan.id}
-                    className={`flex items-center justify-between rounded-md border p-3 cursor-pointer transition-colors ${
-                      isSelected ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="radio"
-                        name="plan_id"
-                        value={plan.id}
-                        checked={isSelected}
-                        onChange={() => handleFieldChange('plan_id', plan.id)}
-                        className="h-4 w-4 text-blue-600"
-                      />
-                      <div>
-                        <span className="font-medium text-gray-900">{plan.name}</span>
-                        {hasTrial && (
-                          <span className="ml-2 text-xs text-green-600 font-medium">
-                            {plan.trial_duration} {plan.trial_duration_unit} free trial
+            <div className="space-y-3">
+              {/* Interval selector above plan cards */}
+              {availableIntervals.length > 1 && (
+                <div className="flex justify-center">
+                  <IntervalSelector
+                    intervals={availableIntervals}
+                    selected={selectedInterval}
+                    onChange={handleIntervalChange}
+                    recommendedInterval="monthly"
+                  />
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {plans.map(plan => {
+                  const isSelected = formData.plan_id === plan.id
+                  const hasTrial = plan.trial_duration > 0
+                  const planIntervals = plan.intervals ?? []
+                  const intervalPricing = planIntervals.find(
+                    (iv) => iv.interval === selectedInterval && iv.enabled
+                  )
+                  const isUnavailable = !intervalPricing
+
+                  // Use interval effective_price if available, otherwise fall back to monthly_price_nzd
+                  const displayPrice = intervalPricing
+                    ? (intervalPricing.effective_price ?? 0)
+                    : Number(plan.monthly_price_nzd ?? 0)
+                  const discountPercent = intervalPricing?.discount_percent ?? 0
+                  const savingsAmount = intervalPricing?.savings_amount ?? 0
+                  const equivalentMonthly = intervalPricing?.equivalent_monthly ?? 0
+
+                  // Apply coupon on top of interval price
+                  const effectivePrice = couponApplied
+                    ? calculateEffectivePrice(displayPrice, couponApplied)
+                    : displayPrice
+
+                  // Compute coupon-adjusted equivalent monthly for non-monthly intervals
+                  const PERIODS_PER_YEAR: Record<string, number> = {
+                    weekly: 52,
+                    fortnightly: 26,
+                    monthly: 12,
+                    annual: 1,
+                  }
+                  const couponAdjustedEquivMonthly = couponApplied && effectivePrice !== displayPrice
+                    ? Math.round((effectivePrice * (PERIODS_PER_YEAR[selectedInterval] ?? 12) / 12) * 100) / 100
+                    : equivalentMonthly
+
+                  // Interval label suffix
+                  const intervalSuffix: Record<string, string> = {
+                    weekly: '/wk',
+                    fortnightly: '/2wk',
+                    monthly: '/mo',
+                    annual: '/yr',
+                  }
+                  const priceSuffix = intervalSuffix[selectedInterval] ?? '/mo'
+
+                  return (
+                    <label
+                      key={plan.id}
+                      className={`flex items-center justify-between rounded-md border p-3 transition-colors ${
+                        isUnavailable
+                          ? 'border-gray-200 bg-gray-50 opacity-60 cursor-not-allowed'
+                          : isSelected
+                            ? 'border-blue-500 bg-blue-50 cursor-pointer'
+                            : 'border-gray-200 hover:border-gray-300 cursor-pointer'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="radio"
+                          name="plan_id"
+                          value={plan.id}
+                          checked={isSelected}
+                          disabled={isUnavailable}
+                          onChange={() => handleFieldChange('plan_id', plan.id)}
+                          className="h-4 w-4 text-blue-600"
+                        />
+                        <div>
+                          <span className={`font-medium ${isUnavailable ? 'text-gray-400' : 'text-gray-900'}`}>
+                            {plan.name}
                           </span>
-                        )}
-                        {!hasTrial && (
-                          <span className="ml-2 text-xs text-amber-600 font-medium">
-                            Payment required upfront
-                          </span>
-                        )}
+                          {hasTrial && !isUnavailable && (
+                            <span className="ml-2 text-xs text-green-600 font-medium">
+                              {plan.trial_duration} {plan.trial_duration_unit} free trial
+                            </span>
+                          )}
+                          {!hasTrial && !isUnavailable && (
+                            <span className="ml-2 text-xs text-amber-600 font-medium">
+                              Payment required upfront
+                            </span>
+                          )}
+                          {isUnavailable && (
+                            <span className="ml-2 text-xs text-gray-400">
+                              Not available for {selectedInterval} billing
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                    <div className="text-right">
-                      {couponApplied && effectivePrice !== price ? (
-                        <>
-                          <span className="text-sm text-gray-400 line-through">${price.toFixed(2)}</span>
-                          <span className="ml-1 text-sm font-semibold text-gray-900">${effectivePrice.toFixed(2)}/mo</span>
-                          <span className="block text-xs text-gray-500">excl. GST</span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="text-sm font-semibold text-gray-900">${price.toFixed(2)}/mo</span>
-                          {price > 0 && <span className="block text-xs text-gray-500">excl. GST</span>}
-                        </>
+                      {!isUnavailable && (
+                        <div className="text-right">
+                          {/* Savings badge */}
+                          {discountPercent > 0 && (
+                            <span className="inline-block mb-0.5 rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700">
+                              Save {discountPercent}%
+                            </span>
+                          )}
+
+                          {couponApplied && effectivePrice !== displayPrice ? (
+                            <>
+                              <span className="text-sm text-gray-400 line-through">
+                                ${(displayPrice ?? 0).toFixed(2)}
+                              </span>
+                              <span className="ml-1 text-sm font-semibold text-gray-900">
+                                ${(effectivePrice ?? 0).toFixed(2)}{priceSuffix}
+                              </span>
+                              <span className="block text-xs text-gray-500">excl. GST</span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-sm font-semibold text-gray-900">
+                                ${(displayPrice ?? 0).toFixed(2)}{priceSuffix}
+                              </span>
+                              {displayPrice > 0 && (
+                                <span className="block text-xs text-gray-500">excl. GST</span>
+                              )}
+                            </>
+                          )}
+
+                          {/* Savings amount */}
+                          {savingsAmount > 0 && (
+                            <span className="block text-xs text-green-600">
+                              You save ${(savingsAmount ?? 0).toFixed(2)}{priceSuffix}
+                            </span>
+                          )}
+
+                          {/* Equivalent monthly cost for non-monthly intervals */}
+                          {selectedInterval !== 'monthly' && couponAdjustedEquivMonthly > 0 && (
+                            <span className="block text-xs text-gray-400">
+                              ${(couponAdjustedEquivMonthly ?? 0).toFixed(2)}/mo equivalent
+                            </span>
+                          )}
+                        </div>
                       )}
-                    </div>
-                  </label>
-                )
-              })}
+                    </label>
+                  )
+                })}
+              </div>
             </div>
           )}
           {errors.plan_id && <p className="mt-1 text-sm text-red-600">{errors.plan_id}</p>}

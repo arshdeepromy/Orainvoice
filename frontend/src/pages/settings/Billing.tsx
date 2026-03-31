@@ -10,6 +10,8 @@ import { DataTable, type Column } from '@/components/ui/DataTable'
 import { ToastContainer, useToast } from '@/components/ui/Toast'
 import { PaymentMethodManager } from '@/components/billing/PaymentMethodManager'
 import { CardForm } from '@/components/billing/CardForm'
+import { IntervalSelector } from '@/components/billing/IntervalSelector'
+import type { IntervalPricing } from '@/pages/auth/signup-types'
 import apiClient from '@/api/client'
 
 /* ── Types ── */
@@ -31,8 +33,16 @@ interface CouponInfo {
   discount_type: string
   discount_value: number
   duration_months: number | null
+  coupon_duration_cycles: number | null
   effective_price_nzd: number
   is_expired: boolean
+}
+
+interface PendingIntervalChange {
+  new_interval: string
+  previous_interval: string
+  new_effective_price: number
+  effective_at: string
 }
 
 interface BillingData {
@@ -41,6 +51,10 @@ interface BillingData {
   status: 'trial' | 'active' | 'grace_period' | 'suspended'
   trial_ends_at: string | null
   next_billing_date: string | null
+  billing_interval: string
+  interval_effective_price: number
+  equivalent_monthly_price: number
+  pending_interval_change: PendingIntervalChange | null
   estimated_next_invoice?: {
     plan_fee: number
     storage_addons: number
@@ -99,6 +113,31 @@ function formatBytes(bytes: number): string {
   return `${mb.toFixed(1)} MB`
 }
 
+const INTERVAL_SUFFIX: Record<string, string> = {
+  weekly: '/wk',
+  fortnightly: '/2wk',
+  monthly: '/mo',
+  annual: '/yr',
+}
+
+const INTERVAL_LABEL: Record<string, string> = {
+  weekly: 'Weekly',
+  fortnightly: 'Fortnightly',
+  monthly: 'Monthly',
+  annual: 'Annual',
+}
+
+const INTERVAL_PERIODS_PER_YEAR: Record<string, number> = {
+  weekly: 52,
+  fortnightly: 26,
+  monthly: 12,
+  annual: 1,
+}
+
+function formatIntervalPrice(amount: number, interval: string): string {
+  return `${formatNZD(amount)}${INTERVAL_SUFFIX[interval] ?? '/mo'}`
+}
+
 function daysUntil(dateStr: string): number {
   const target = new Date(dateStr)
   const now = new Date()
@@ -136,7 +175,23 @@ function TrialCountdown({ trialEndsAt }: { trialEndsAt: string }) {
 
 /* ── Current Plan Card ── */
 
-function CurrentPlanCard({ plan, status, coupon }: { plan: PlanInfo | undefined; status: string; coupon?: CouponInfo | null }) {
+function CurrentPlanCard({
+  plan,
+  status,
+  coupon,
+  billingInterval,
+  intervalEffectivePrice,
+  equivalentMonthlyPrice,
+  pendingIntervalChange,
+}: {
+  plan: PlanInfo | undefined
+  status: string
+  coupon?: CouponInfo | null
+  billingInterval: string
+  intervalEffectivePrice: number
+  equivalentMonthlyPrice: number
+  pendingIntervalChange: PendingIntervalChange | null
+}) {
   if (!plan) {
     return (
       <div className="rounded-lg border border-gray-200 p-5">
@@ -160,18 +215,49 @@ function CurrentPlanCard({ plan, status, coupon }: { plan: PlanInfo | undefined;
         <h3 className="text-lg font-semibold text-gray-900">Your plan</h3>
         <Badge variant={badge.variant}>{badge.label}</Badge>
       </div>
-      <p className="text-2xl font-bold text-gray-900">{plan.name}</p>
+      <p className="text-2xl font-bold text-gray-900">
+        {plan.name}
+        <span className="text-base font-medium text-gray-500 ml-2">
+          ({INTERVAL_LABEL[billingInterval] ?? 'Monthly'})
+        </span>
+      </p>
       {coupon && !coupon.is_expired ? (
         <div className="mt-1">
-          <p className="text-gray-400 line-through text-sm">{formatNZD(plan.monthly_price_nzd)} / month</p>
-          <p className="text-green-700 font-semibold">{formatNZD(coupon.effective_price_nzd)} / month</p>
+          <p className="text-gray-400 line-through text-sm">{formatIntervalPrice(intervalEffectivePrice, billingInterval)}</p>
+          <p className="text-green-700 font-semibold">{formatIntervalPrice(coupon.effective_price_nzd ?? 0, billingInterval)}</p>
+          {billingInterval !== 'monthly' && (coupon.effective_price_nzd ?? 0) > 0 && (
+            <p className="text-sm text-gray-500">
+              {formatNZD((coupon.effective_price_nzd ?? 0) * (INTERVAL_PERIODS_PER_YEAR[billingInterval] ?? 12) / 12)}/mo equivalent
+            </p>
+          )}
           <span className="inline-flex items-center gap-1 mt-1 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800">
             Coupon: {coupon.code} — {coupon.discount_type === 'percentage' ? `${coupon.discount_value}% off` : coupon.discount_type === 'fixed_amount' ? `${formatNZD(coupon.discount_value)} off` : 'Trial extension'}
-            {coupon.duration_months ? ` (${coupon.duration_months} months)` : ' (perpetual)'}
+            {coupon.duration_months
+              ? billingInterval !== 'monthly' && coupon.coupon_duration_cycles != null
+                ? ` (${coupon.coupon_duration_cycles} billing cycle${coupon.coupon_duration_cycles !== 1 ? 's' : ''})`
+                : ` (${coupon.duration_months} month${coupon.duration_months > 1 ? 's' : ''})`
+              : ' (perpetual)'}
           </span>
         </div>
       ) : (
-        <p className="text-gray-600 mt-1">{formatNZD(plan.monthly_price_nzd)} / month</p>
+        <div className="mt-1">
+          <p className="text-gray-600">{formatIntervalPrice(intervalEffectivePrice, billingInterval)}</p>
+          {billingInterval !== 'monthly' && equivalentMonthlyPrice > 0 && (
+            <p className="text-sm text-gray-500">{formatNZD(equivalentMonthlyPrice)}/mo equivalent</p>
+          )}
+        </div>
+      )}
+      {pendingIntervalChange && (
+        <div className="mt-3 rounded-md bg-amber-50 border border-amber-200 p-3">
+          <p className="text-sm text-amber-800">
+            Changing from{' '}
+            <span className="font-medium">{INTERVAL_LABEL[pendingIntervalChange.previous_interval] ?? pendingIntervalChange.previous_interval}</span>
+            {' '}to{' '}
+            <span className="font-medium">{INTERVAL_LABEL[pendingIntervalChange.new_interval] ?? pendingIntervalChange.new_interval}</span>
+            {' '}({formatIntervalPrice(pendingIntervalChange.new_effective_price ?? 0, pendingIntervalChange.new_interval)})
+            {' '}on {formatDate(pendingIntervalChange.effective_at ?? null)}
+          </p>
+        </div>
       )}
       <ul className="mt-3 space-y-1 text-sm text-gray-600">
         <li>Up to {plan.user_seats} users</li>
@@ -767,6 +853,7 @@ interface AvailablePlan {
   storage_quota_gb: number
   carjam_lookups_included: number
   trial_duration: number
+  intervals: IntervalPricing[]
 }
 
 function PlanChangeModal({
@@ -776,6 +863,7 @@ function PlanChangeModal({
   addToast,
   currentPlanName,
   currentPriceNzd,
+  currentInterval,
 }: {
   open: boolean
   onClose: () => void
@@ -783,10 +871,12 @@ function PlanChangeModal({
   addToast: (type: 'success' | 'error' | 'info', msg: string) => void
   currentPlanName: string
   currentPriceNzd: number
+  currentInterval: string
 }) {
   const [plans, setPlans] = useState<AvailablePlan[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
+  const [selectedInterval, setSelectedInterval] = useState<string>(currentInterval || 'monthly')
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState<{ success: boolean; message: string; warnings?: string[] } | null>(null)
 
@@ -794,15 +884,37 @@ function PlanChangeModal({
     if (!open) return
     setResult(null)
     setSelectedPlanId(null)
+    setSelectedInterval(currentInterval || 'monthly')
     setLoading(true)
     apiClient.get<{ plans: AvailablePlan[] }>('/auth/plans')
       .then(res => setPlans(res.data?.plans ?? []))
       .catch(() => addToast('error', 'Failed to load available plans'))
       .finally(() => setLoading(false))
-  }, [open, addToast])
+  }, [open, addToast, currentInterval])
+
+  // Collect all unique enabled intervals across all plans for the selector
+  const allIntervals: IntervalPricing[] = (() => {
+    const intervalMap = new Map<string, IntervalPricing>()
+    for (const plan of plans) {
+      for (const iv of plan.intervals ?? []) {
+        if (iv.enabled && !intervalMap.has(iv.interval)) {
+          intervalMap.set(iv.interval, iv)
+        }
+      }
+    }
+    return Array.from(intervalMap.values())
+  })()
+
+  // Helper: get interval pricing for a plan at the selected interval
+  function getPlanIntervalPricing(plan: AvailablePlan): IntervalPricing | undefined {
+    return (plan.intervals ?? []).find(
+      (iv) => iv.interval === selectedInterval && iv.enabled,
+    )
+  }
 
   const selectedPlan = plans.find(p => p.id === selectedPlanId)
-  const selectedPrice = selectedPlan ? Number(selectedPlan.monthly_price_nzd) : 0
+  const selectedPlanPricing = selectedPlan ? getPlanIntervalPricing(selectedPlan) : undefined
+  const selectedPrice = selectedPlanPricing?.effective_price ?? 0
   const isUpgrade = selectedPrice > currentPriceNzd
   const isDowngrade = selectedPrice < currentPriceNzd
 
@@ -814,10 +926,10 @@ function PlanChangeModal({
       const endpoint = isUpgrade ? '/billing/upgrade' : '/billing/downgrade'
       const res = await apiClient.post<{ success: boolean; message: string; warnings?: string[] }>(
         endpoint,
-        { new_plan_id: selectedPlanId },
+        { new_plan_id: selectedPlanId, billing_interval: selectedInterval },
       )
       setResult(res.data)
-      if (res.data.success) {
+      if (res.data?.success) {
         addToast('success', res.data.message)
         onComplete()
       }
@@ -839,17 +951,44 @@ function PlanChangeModal({
             <p className="text-sm text-gray-600">
               Current plan: <span className="font-semibold">{currentPlanName}</span> ({formatNZD(currentPriceNzd)}/mo)
             </p>
+
+            {/* Interval selector */}
+            {allIntervals.length > 1 && (
+              <div className="flex justify-center">
+                <IntervalSelector
+                  intervals={allIntervals}
+                  selected={selectedInterval}
+                  onChange={(iv) => {
+                    setSelectedInterval(iv)
+                    // Clear selection if the currently selected plan doesn't support the new interval
+                    if (selectedPlan && !getPlanIntervalPricing({ ...selectedPlan, intervals: selectedPlan.intervals ?? [] })) {
+                      // Re-check after interval change — handled by render
+                    }
+                  }}
+                />
+              </div>
+            )}
+
             <div className="space-y-2 max-h-64 overflow-y-auto">
               {plans
                 .filter(p => p.name !== currentPlanName)
                 .map(plan => {
-                  const price = Number(plan.monthly_price_nzd)
+                  const pricing = getPlanIntervalPricing(plan)
+                  const supportsInterval = !!pricing
+                  const price = pricing?.effective_price ?? 0
+                  const savings = pricing?.savings_amount ?? 0
+                  const equivalentMonthly = pricing?.equivalent_monthly ?? 0
                   const up = price > currentPriceNzd
+
                   return (
                     <label
                       key={plan.id}
-                      className={`flex items-center justify-between rounded-md border p-3 cursor-pointer transition-colors ${
-                        selectedPlanId === plan.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
+                      className={`flex items-center justify-between rounded-md border p-3 transition-colors ${
+                        !supportsInterval
+                          ? 'border-gray-100 bg-gray-50 opacity-50 cursor-not-allowed'
+                          : selectedPlanId === plan.id
+                            ? 'border-blue-500 bg-blue-50 cursor-pointer'
+                            : 'border-gray-200 hover:border-gray-300 cursor-pointer'
                       }`}
                     >
                       <div className="flex items-center gap-3">
@@ -859,34 +998,60 @@ function PlanChangeModal({
                           value={plan.id}
                           checked={selectedPlanId === plan.id}
                           onChange={() => setSelectedPlanId(plan.id)}
+                          disabled={!supportsInterval}
                           className="h-4 w-4 text-blue-600"
                         />
                         <div>
                           <span className="font-medium text-gray-900">{plan.name}</span>
-                          <span className={`ml-2 text-xs font-medium ${up ? 'text-green-600' : 'text-amber-600'}`}>
-                            {up ? 'Upgrade' : 'Downgrade'}
-                          </span>
+                          {supportsInterval && (
+                            <span className={`ml-2 text-xs font-medium ${up ? 'text-green-600' : 'text-amber-600'}`}>
+                              {up ? 'Upgrade' : 'Downgrade'}
+                            </span>
+                          )}
+                          {!supportsInterval && (
+                            <span className="ml-2 text-xs text-gray-400">
+                              Not available for {INTERVAL_LABEL[selectedInterval] ?? selectedInterval} billing
+                            </span>
+                          )}
                           <div className="text-xs text-gray-500">
                             {plan.user_seats} seats · {plan.storage_quota_gb} GB · {plan.carjam_lookups_included} Carjam lookups
                           </div>
                         </div>
                       </div>
-                      <span className="text-sm font-semibold text-gray-900">{formatNZD(price)}/mo</span>
+                      <div className="text-right">
+                        {supportsInterval ? (
+                          <>
+                            <span className="text-sm font-semibold text-gray-900">
+                              {formatIntervalPrice(price, selectedInterval)}
+                            </span>
+                            {savings > 0 && (
+                              <div className="text-xs text-green-600">Save {formatNZD(savings)}</div>
+                            )}
+                            {selectedInterval !== 'monthly' && equivalentMonthly > 0 && (
+                              <div className="text-xs text-gray-400">{formatNZD(equivalentMonthly)}/mo</div>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-xs text-gray-400">Unavailable</span>
+                        )}
+                      </div>
                     </label>
                   )
                 })}
             </div>
 
-            {selectedPlan && (
+            {selectedPlan && selectedPlanPricing && (
               <div className="rounded-md bg-gray-50 p-3 text-sm">
                 {isUpgrade ? (
                   <p className="text-gray-700">
-                    Upgrading to <span className="font-semibold">{selectedPlan.name}</span> takes effect immediately.
+                    Upgrading to <span className="font-semibold">{selectedPlan.name}</span> at{' '}
+                    {formatIntervalPrice(selectedPrice, selectedInterval)} takes effect immediately.
                     A prorated charge will be applied for the remainder of this billing period.
                   </p>
                 ) : (
                   <p className="text-gray-700">
-                    Downgrading to <span className="font-semibold">{selectedPlan.name}</span> takes effect at the start
+                    Downgrading to <span className="font-semibold">{selectedPlan.name}</span> at{' '}
+                    {formatIntervalPrice(selectedPrice, selectedInterval)} takes effect at the start
                     of your next billing period. You'll keep your current plan until then.
                   </p>
                 )}
@@ -899,7 +1064,7 @@ function PlanChangeModal({
             {result?.warnings && result.warnings.length > 0 && (
               <AlertBanner variant="warning" title="Action required">
                 <ul className="list-disc pl-4 space-y-1">
-                  {result.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                  {(result.warnings ?? []).map((w, i) => <li key={i}>{w}</li>)}
                 </ul>
               </AlertBanner>
             )}
@@ -911,11 +1076,219 @@ function PlanChangeModal({
               <Button
                 onClick={handleConfirm}
                 loading={submitting}
-                disabled={!selectedPlanId || result?.success}
+                disabled={!selectedPlanId || !selectedPlanPricing || result?.success}
               >
                 {isUpgrade ? 'Confirm upgrade' : isDowngrade ? 'Confirm downgrade' : 'Select a plan'}
               </Button>
               <Button variant="secondary" onClick={onClose}>Cancel</Button>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+/* ── Interval Change Modal ── */
+
+interface AvailableIntervalsResponse {
+  current_interval: string
+  intervals: IntervalPricing[]
+}
+
+type IntervalModalStep = 'select' | 'confirm'
+
+function IntervalChangeModal({
+  open,
+  onClose,
+  onComplete,
+  addToast,
+  currentInterval,
+}: {
+  open: boolean
+  onClose: () => void
+  onComplete: () => void
+  addToast: (type: 'success' | 'error' | 'info', msg: string) => void
+  currentInterval: string
+}) {
+  const [intervals, setIntervals] = useState<IntervalPricing[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selectedInterval, setSelectedInterval] = useState(currentInterval)
+  const [step, setStep] = useState<IntervalModalStep>('select')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const controller = new AbortController()
+    setStep('select')
+    setSelectedInterval(currentInterval)
+    setError(null)
+    setLoading(true)
+
+    const fetchIntervals = async () => {
+      try {
+        const res = await apiClient.get<AvailableIntervalsResponse>(
+          '/billing/available-intervals',
+          { signal: controller.signal },
+        )
+        setIntervals(res.data?.intervals ?? [])
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError('Failed to load available intervals')
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
+    fetchIntervals()
+    return () => controller.abort()
+  }, [open, currentInterval])
+
+  const selectedPricing = intervals.find((i) => i.interval === selectedInterval)
+  const currentPricing = intervals.find((i) => i.interval === currentInterval)
+  const isSameInterval = selectedInterval === currentInterval
+
+  // Determine direction: longer interval = fewer periods/year = immediate
+  const currentPeriods = INTERVAL_PERIODS_PER_YEAR[currentInterval] ?? 12
+  const selectedPeriods = INTERVAL_PERIODS_PER_YEAR[selectedInterval] ?? 12
+  const isLongerInterval = selectedPeriods < currentPeriods
+  const isShorterInterval = selectedPeriods > currentPeriods
+
+  const handleConfirm = async () => {
+    if (isSameInterval) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await apiClient.post<{
+        success: boolean
+        message: string
+        new_interval: string
+        new_effective_price: number
+        effective_immediately: boolean
+        effective_at: string | null
+      }>('/billing/change-interval', { billing_interval: selectedInterval })
+      if (res.data?.success) {
+        addToast('success', res.data.message ?? 'Billing interval changed')
+        onComplete()
+        onClose()
+      } else {
+        setError(res.data?.message ?? 'Failed to change interval')
+      }
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setError(detail ?? 'Failed to change billing interval')
+      addToast('error', detail ?? 'Failed to change billing interval')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const title = step === 'confirm' ? 'Confirm interval change' : 'Change billing interval'
+
+  return (
+    <Modal open={open} onClose={onClose} title={title} className="max-w-lg">
+      <div className="space-y-4">
+        {loading && (
+          <div className="flex justify-center py-8">
+            <Spinner label="Loading available intervals" />
+          </div>
+        )}
+
+        {error && <AlertBanner variant="error" title="Error">{error}</AlertBanner>}
+
+        {!loading && intervals.length === 0 && !error && (
+          <p className="text-sm text-gray-500">No other intervals are available for your current plan.</p>
+        )}
+
+        {!loading && intervals.length > 0 && step === 'select' && (
+          <>
+            <p className="text-sm text-gray-600">
+              Current interval: <span className="font-semibold">{INTERVAL_LABEL[currentInterval] ?? currentInterval}</span>
+            </p>
+
+            <div className="flex justify-center">
+              <IntervalSelector
+                intervals={intervals}
+                selected={selectedInterval}
+                onChange={setSelectedInterval}
+                recommendedInterval="monthly"
+              />
+            </div>
+
+            {selectedPricing && (
+              <div className="rounded-md bg-gray-50 p-4 space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Price</span>
+                  <span className="font-medium text-gray-900">
+                    {formatIntervalPrice(selectedPricing.effective_price ?? 0, selectedInterval)}
+                  </span>
+                </div>
+                {selectedInterval !== 'monthly' && (selectedPricing.equivalent_monthly ?? 0) > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Equivalent monthly</span>
+                    <span className="text-gray-700">{formatNZD(selectedPricing.equivalent_monthly ?? 0)}/mo</span>
+                  </div>
+                )}
+                {(selectedPricing.savings_amount ?? 0) > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">You save</span>
+                    <span className="font-medium text-green-700">
+                      {formatNZD(selectedPricing.savings_amount ?? 0)} per {selectedInterval === 'annual' ? 'year' : 'cycle'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="secondary" onClick={onClose}>Cancel</Button>
+              <Button disabled={isSameInterval} onClick={() => setStep('confirm')}>
+                Review change
+              </Button>
+            </div>
+          </>
+        )}
+
+        {!loading && step === 'confirm' && (
+          <>
+            <div className="rounded-md bg-gray-50 p-4 space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-gray-600">From</span>
+                <span className="font-medium text-gray-900">
+                  {INTERVAL_LABEL[currentInterval] ?? currentInterval}
+                  {currentPricing ? ` (${formatIntervalPrice(currentPricing.effective_price ?? 0, currentInterval)})` : ''}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">To</span>
+                <span className="font-medium text-gray-900">
+                  {INTERVAL_LABEL[selectedInterval] ?? selectedInterval}
+                  {selectedPricing ? ` (${formatIntervalPrice(selectedPricing.effective_price ?? 0, selectedInterval)})` : ''}
+                </span>
+              </div>
+            </div>
+
+            {isLongerInterval && (
+              <AlertBanner variant="info" title="Immediate change">
+                This change takes effect immediately. A prorated credit for your remaining{' '}
+                {INTERVAL_LABEL[currentInterval]?.toLowerCase() ?? 'current'} period will be applied to your new{' '}
+                {INTERVAL_LABEL[selectedInterval]?.toLowerCase() ?? 'selected'} billing cycle.
+              </AlertBanner>
+            )}
+
+            {isShorterInterval && (
+              <AlertBanner variant="info" title="Scheduled change">
+                This change takes effect at the end of your current billing period. You'll continue on your{' '}
+                {INTERVAL_LABEL[currentInterval]?.toLowerCase() ?? 'current'} plan until then.
+              </AlertBanner>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="secondary" onClick={() => setStep('select')}>Back</Button>
+              <Button onClick={handleConfirm} loading={submitting}>
+                Confirm change
+              </Button>
             </div>
           </>
         )}
@@ -932,6 +1305,7 @@ export function Billing() {
   const [loading, setLoading] = useState(true)
   const [addonOpen, setAddonOpen] = useState(false)
   const [planChangeOpen, setPlanChangeOpen] = useState(false)
+  const [intervalChangeOpen, setIntervalChangeOpen] = useState(false)
   const [stripePromise, setStripePromise] = useState<Promise<Stripe | null> | null>(null)
   const [showCardForm, setShowCardForm] = useState(false)
   const [pmRefreshKey, setPmRefreshKey] = useState(0)
@@ -978,12 +1352,17 @@ export function Billing() {
           discount_type: raw.discount_type,
           discount_value: Number(raw.discount_value ?? 0),
           duration_months: raw.duration_months ?? null,
+          coupon_duration_cycles: raw.coupon_duration_cycles ?? null,
           effective_price_nzd: Number(raw.effective_price_nzd ?? 0),
           is_expired: raw.coupon_is_expired ?? false,
         } : null,
         status: raw.org_status ?? 'trial',
         trial_ends_at: raw.trial_ends_at ?? null,
         next_billing_date: raw.next_billing_date ?? null,
+        billing_interval: raw.billing_interval ?? 'monthly',
+        interval_effective_price: Number(raw.interval_effective_price ?? 0),
+        equivalent_monthly_price: Number(raw.equivalent_monthly_price ?? 0),
+        pending_interval_change: raw.pending_interval_change ?? null,
         estimated_next_invoice: {
           plan_fee: Number(raw.plan_monthly_price_nzd ?? 0),
           storage_addons: Number(raw.storage_addon_charge_nzd ?? 0),
@@ -1070,7 +1449,15 @@ export function Billing() {
 
         {/* Plan + Next bill side by side on larger screens */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <CurrentPlanCard plan={billing.plan} status={billing.status} coupon={billing.coupon} />
+          <CurrentPlanCard
+            plan={billing.plan}
+            status={billing.status}
+            coupon={billing.coupon}
+            billingInterval={billing.billing_interval}
+            intervalEffectivePrice={billing.interval_effective_price}
+            equivalentMonthlyPrice={billing.equivalent_monthly_price}
+            pendingIntervalChange={billing.pending_interval_change}
+          />
           <NextBillEstimate
             nextBillingDate={billing.next_billing_date}
             estimate={billing.estimated_next_invoice}
@@ -1114,6 +1501,9 @@ export function Billing() {
         <div className="flex flex-wrap gap-3">
           <Button onClick={() => setPlanChangeOpen(true)}>
             Change plan
+          </Button>
+          <Button variant="secondary" onClick={() => setIntervalChangeOpen(true)}>
+            Change interval
           </Button>
         </div>
 
@@ -1162,6 +1552,16 @@ export function Billing() {
         addToast={addToast}
         currentPlanName={billing.plan?.name ?? 'Unknown'}
         currentPriceNzd={billing.plan?.monthly_price_nzd ?? 0}
+        currentInterval={billing.billing_interval ?? 'monthly'}
+      />
+
+      {/* Interval change modal */}
+      <IntervalChangeModal
+        open={intervalChangeOpen}
+        onClose={() => setIntervalChangeOpen(false)}
+        onComplete={fetchBilling}
+        addToast={addToast}
+        currentInterval={billing.billing_interval}
       />
     </div>
   )

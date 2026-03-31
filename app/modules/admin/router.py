@@ -34,6 +34,7 @@ from app.modules.admin.schemas import (
     CreateGlobalAdminResponse,
     ErrorLogStatusUpdateRequest,
     IntegrationConfigGetResponse,
+    MrrIntervalBreakdown,
     MrrPlanBreakdown,
     MrrMonthTrend,
     MrrReportResponse,
@@ -790,7 +791,7 @@ async def create_subscription_plan(
     """Create a new subscription plan.
 
     Only Global_Admin users can access this endpoint.
-    Requirements 40.1, 40.2, 40.4.
+    Requirements 40.1, 40.2, 40.4, 4.1, 4.5.
     """
     user_id = getattr(request.state, "user_id", None)
     ip_address = request.client.host if request.client else None
@@ -812,6 +813,7 @@ async def create_subscription_plan(
             per_sms_cost_nzd=payload.per_sms_cost_nzd,
             sms_included_quota=payload.sms_included_quota,
             sms_package_pricing=[t.model_dump() for t in payload.sms_package_pricing] if payload.sms_package_pricing else [],
+            interval_config=[ic.model_dump() for ic in payload.interval_config] if payload.interval_config else None,
             created_by=uuid.UUID(user_id) if user_id else None,
             ip_address=ip_address,
         )
@@ -819,6 +821,7 @@ async def create_subscription_plan(
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return PlanResponse(**result)
+
 
 
 @router.put(
@@ -862,6 +865,11 @@ async def update_subscription_plan(
         updates["sms_package_pricing"] = [
             t.model_dump() if hasattr(t, "model_dump") else t
             for t in updates["sms_package_pricing"]
+        ]
+    if "interval_config" in updates:
+        updates["interval_config"] = [
+            ic.model_dump() if hasattr(ic, "model_dump") else ic
+            for ic in updates["interval_config"]
         ]
 
     try:
@@ -1005,6 +1013,7 @@ async def get_mrr(
         total_mrr_nzd=data["total_mrr_nzd"],
         plan_breakdown=[MrrPlanBreakdown(**p) for p in data["plan_breakdown"]],
         month_over_month=[MrrMonthTrend(**m) for m in data["month_over_month"]],
+        interval_breakdown=[MrrIntervalBreakdown(**ib) for ib in data.get("interval_breakdown", [])],
     )
 
 
@@ -2063,9 +2072,7 @@ async def test_all_stripe(
         create_setup_intent,
         list_payment_methods,
         set_default_payment_method,
-        create_subscription_from_trial,
         create_invoice_item,
-        handle_subscription_webhook,
         _load_webhook_secret_from_db,
     )
 
@@ -2184,42 +2191,6 @@ async def test_all_stripe(
                 error_message=str(exc),
             ))
 
-        # 5. Create Subscription
-        try:
-            if test_customer_id:
-                sub = await create_subscription_from_trial(
-                    customer_id=test_customer_id,
-                    monthly_amount_cents=100,
-                    currency="nzd",
-                    metadata={"purpose": "automated_test_suite"},
-                )
-                assert sub.get("subscription_id"), "Missing subscription_id"
-                # Clean up the test subscription
-                import stripe as _stripe
-                try:
-                    _stripe.Subscription.delete(sub["subscription_id"])
-                except Exception:
-                    pass
-                results.append(StripeTestResult(
-                    test_name="Create Subscription",
-                    category="api_functions",
-                    status="passed",
-                ))
-            else:
-                results.append(StripeTestResult(
-                    test_name="Create Subscription",
-                    category="api_functions",
-                    status="skipped",
-                    skip_reason="No test customer available",
-                ))
-        except Exception as exc:
-            results.append(StripeTestResult(
-                test_name="Create Subscription",
-                category="api_functions",
-                status="failed",
-                error_message=str(exc),
-            ))
-
         # 6. Create Invoice Item
         try:
             if test_customer_id:
@@ -2293,131 +2264,6 @@ async def test_all_stripe(
                 status="failed",
                 error_message=str(exc),
             ))
-
-        # ---------------------------------------------------------------
-        # Webhook Handler Tests (mock event payloads)
-        # ---------------------------------------------------------------
-
-        webhook_tests = [
-            {
-                "test_name": "Webhook: invoice.created",
-                "event_type": "invoice.created",
-                "event_data": {
-                    "object": {
-                        "id": "in_test_123",
-                        "customer": "cus_test_123",
-                        "subscription": "sub_test_123",
-                        "billing_reason": "subscription_cycle",
-                    }
-                },
-                "expected_action": "invoice_created",
-            },
-            {
-                "test_name": "Webhook: invoice.payment_succeeded",
-                "event_type": "invoice.payment_succeeded",
-                "event_data": {
-                    "object": {
-                        "id": "in_test_456",
-                        "customer": "cus_test_123",
-                        "subscription": "sub_test_123",
-                        "amount_paid": 5000,
-                        "invoice_pdf": "https://stripe.com/test.pdf",
-                        "hosted_invoice_url": "https://stripe.com/test",
-                    }
-                },
-                "expected_action": "payment_succeeded",
-            },
-            {
-                "test_name": "Webhook: invoice.payment_failed",
-                "event_type": "invoice.payment_failed",
-                "event_data": {
-                    "object": {
-                        "id": "in_test_789",
-                        "customer": "cus_test_123",
-                        "subscription": "sub_test_123",
-                        "attempt_count": 1,
-                        "next_payment_attempt": 1700000000,
-                    }
-                },
-                "expected_action": "payment_failed",
-            },
-            {
-                "test_name": "Webhook: customer.subscription.updated",
-                "event_type": "customer.subscription.updated",
-                "event_data": {
-                    "object": {
-                        "id": "sub_test_123",
-                        "customer": "cus_test_123",
-                        "status": "active",
-                        "cancel_at_period_end": False,
-                    }
-                },
-                "expected_action": "subscription_updated",
-            },
-            {
-                "test_name": "Webhook: customer.subscription.deleted",
-                "event_type": "customer.subscription.deleted",
-                "event_data": {
-                    "object": {
-                        "id": "sub_test_123",
-                        "customer": "cus_test_123",
-                    }
-                },
-                "expected_action": "subscription_deleted",
-            },
-            {
-                "test_name": "Webhook: customer.updated",
-                "event_type": "customer.updated",
-                "event_data": {
-                    "object": {
-                        "id": "cus_test_123",
-                        "invoice_settings": {
-                            "default_payment_method": "pm_test_123",
-                        },
-                    }
-                },
-                "expected_action": "customer_updated",
-            },
-            {
-                "test_name": "Webhook: setup_intent.succeeded",
-                "event_type": "setup_intent.succeeded",
-                "event_data": {
-                    "object": {
-                        "id": "seti_test_123",
-                        "customer": "cus_test_123",
-                        "payment_method": "pm_test_123",
-                    }
-                },
-                "expected_action": "setup_intent_succeeded",
-            },
-        ]
-
-        for wh_test in webhook_tests:
-            try:
-                result = await handle_subscription_webhook(
-                    event_type=wh_test["event_type"],
-                    event_data=wh_test["event_data"],
-                )
-                if result.get("processed") and result.get("action") == wh_test["expected_action"]:
-                    results.append(StripeTestResult(
-                        test_name=wh_test["test_name"],
-                        category="webhook_handlers",
-                        status="passed",
-                    ))
-                else:
-                    results.append(StripeTestResult(
-                        test_name=wh_test["test_name"],
-                        category="webhook_handlers",
-                        status="failed",
-                        error_message=f"Handler returned processed={result.get('processed')}, action={result.get('action')} (expected {wh_test['expected_action']})",
-                    ))
-            except Exception as exc:
-                results.append(StripeTestResult(
-                    test_name=wh_test["test_name"],
-                    category="webhook_handlers",
-                    status="failed",
-                    error_message=str(exc),
-                ))
 
         # 15. Billing Portal Session
         try:

@@ -20,6 +20,23 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# --- Custom exceptions for payment handling --------------------------------
+
+
+class PaymentFailedError(Exception):
+    """Raised when a PaymentIntent fails due to a card error."""
+
+    def __init__(self, message: str, decline_code: str | None = None):
+        self.decline_code = decline_code
+        super().__init__(message)
+
+
+class PaymentActionRequiredError(Exception):
+    """Raised when a PaymentIntent requires additional authentication."""
+
+    pass
+
+
 # --- Dynamic Stripe key loader (reads from DB, caches for 5 min) ----------
 
 _cached_stripe_secret: str | None = None
@@ -287,6 +304,61 @@ async def create_payment_intent_no_customer(
         "client_secret": intent.client_secret,
     }
 
+async def charge_org_payment_method(
+    *,
+    customer_id: str,
+    payment_method_id: str,
+    amount_cents: int,
+    currency: str = "nzd",
+    metadata: dict | None = None,
+) -> dict:
+    """Charge a saved payment method off-session.
+
+    Creates a PaymentIntent with off_session=True, confirm=True.
+
+    Returns:
+        {"payment_intent_id": str, "status": str, "amount_cents": int}
+
+    Raises:
+        PaymentFailedError: on CardError (includes decline_code)
+        PaymentActionRequiredError: when authentication is needed
+    """
+    await _ensure_stripe_key()
+    try:
+        intent = stripe.PaymentIntent.create(
+            customer=customer_id,
+            payment_method=payment_method_id,
+            amount=amount_cents,
+            currency=currency,
+            off_session=True,
+            confirm=True,
+            metadata=metadata or {},
+        )
+    except stripe.error.CardError as e:
+        err = e.error
+        decline_code = err.decline_code if err else None
+        raise PaymentFailedError(str(e), decline_code=decline_code) from e
+
+    if intent.status == "requires_action":
+        raise PaymentActionRequiredError(
+            f"Payment {intent.id} requires additional authentication"
+        )
+
+    logger.info(
+        "Charged customer %s via payment method %s: PaymentIntent %s (%d %s)",
+        customer_id,
+        payment_method_id,
+        intent.id,
+        amount_cents,
+        currency,
+    )
+    return {
+        "payment_intent_id": intent.id,
+        "status": intent.status,
+        "amount_cents": amount_cents,
+    }
+
+
 
 async def create_payment_intent(
     *,
@@ -323,60 +395,6 @@ async def create_payment_intent(
     }
 
 
-
-async def create_subscription_from_trial(
-    *,
-    customer_id: str,
-    price_id: str | None = None,
-    monthly_amount_cents: int | None = None,
-    currency: str = "nzd",
-    metadata: dict | None = None,
-) -> dict:
-    """Create a Stripe Subscription for a customer whose trial has ended.
-
-    Either ``price_id`` (an existing Stripe Price) or ``monthly_amount_cents``
-    (to create an ad-hoc price) must be provided.
-
-    Returns a dict with ``subscription_id`` and ``status``.
-
-    Requirements: 41.5
-    """
-    sub_params: dict = {
-        "customer": customer_id,
-        "metadata": metadata or {},
-    }
-
-    if price_id:
-        sub_params["items"] = [{"price": price_id}]
-    elif monthly_amount_cents:
-        sub_params["items"] = [
-            {
-                "price_data": {
-                    "currency": currency,
-                    "unit_amount": monthly_amount_cents,
-                    "recurring": {"interval": "month"},
-                    "product_data": {"name": "WorkshopPro NZ Subscription"},
-                },
-            }
-        ]
-    else:
-        raise ValueError("Either price_id or monthly_amount_cents must be provided")
-
-    sub_params["payment_behavior"] = "default_incomplete"
-    sub_params["expand"] = ["latest_invoice.payment_intent"]
-
-    await _ensure_stripe_key()
-    subscription = stripe.Subscription.create(**sub_params)
-    logger.info(
-        "Created Stripe subscription %s for customer %s (status=%s)",
-        subscription.id,
-        customer_id,
-        subscription.status,
-    )
-    return {
-        "subscription_id": subscription.id,
-        "status": subscription.status,
-    }
 
 
 async def create_invoice_item(
@@ -473,24 +491,6 @@ async def report_metered_usage(
         "quantity": quantity,
     }
 
-async def get_subscription_details(
-    *,
-    subscription_id: str,
-) -> dict:
-    """Retrieve subscription details including next billing date.
-
-    Returns a dict with ``current_period_end`` (Unix timestamp),
-    ``status``, and ``cancel_at_period_end``.
-
-    Requirements: 44.1
-    """
-    await _ensure_stripe_key()
-    subscription = stripe.Subscription.retrieve(subscription_id)
-    return {
-        "current_period_end": subscription.get("current_period_end"),
-        "status": subscription.get("status"),
-        "cancel_at_period_end": subscription.get("cancel_at_period_end", False),
-    }
 
 
 async def get_subscription_invoices(
@@ -540,238 +540,10 @@ async def get_subscription_invoices(
 
 
 
-async def handle_subscription_webhook(
-    *,
-    event_type: str,
-    event_data: dict,
-) -> dict:
-    """Process Stripe subscription webhook events.
-
-    Handles:
-    - invoice.payment_succeeded: confirm payment, keep org active
-    - invoice.payment_failed: trigger dunning flow
-    - customer.subscription.updated: track status changes
-    - customer.subscription.deleted: handle cancellation
-
-    Requirements: 42.1, 42.3, 42.4
-    """
-    result: dict = {"event_type": event_type, "processed": False}
-
-    if event_type == "invoice.created":
-        invoice = event_data.get("object", {})
-        customer_id = invoice.get("customer")
-        invoice_id = invoice.get("id")
-        # Only add overage items to subscription invoices (not one-off)
-        subscription_id = invoice.get("subscription")
-        billing_reason = invoice.get("billing_reason", "")
-        result.update({
-            "processed": True,
-            "action": "invoice_created",
-            "customer_id": customer_id,
-            "invoice_id": invoice_id,
-            "subscription_id": subscription_id,
-            "billing_reason": billing_reason,
-        })
-        logger.info(
-            "Invoice created for customer %s (invoice=%s, reason=%s)",
-            customer_id,
-            invoice_id,
-            billing_reason,
-        )
-
-    elif event_type == "invoice.payment_succeeded":
-        invoice = event_data.get("object", {})
-        customer_id = invoice.get("customer")
-        subscription_id = invoice.get("subscription")
-        result.update({
-            "processed": True,
-            "action": "payment_succeeded",
-            "customer_id": customer_id,
-            "subscription_id": subscription_id,
-            "amount_paid": invoice.get("amount_paid", 0),
-            "invoice_pdf": invoice.get("invoice_pdf"),
-            "hosted_invoice_url": invoice.get("hosted_invoice_url"),
-        })
-        logger.info(
-            "Payment succeeded for customer %s subscription %s",
-            customer_id,
-            subscription_id,
-        )
-
-    elif event_type == "invoice.payment_failed":
-        invoice = event_data.get("object", {})
-        customer_id = invoice.get("customer")
-        subscription_id = invoice.get("subscription")
-        attempt_count = invoice.get("attempt_count", 0)
-        next_attempt = invoice.get("next_payment_attempt")
-        result.update({
-            "processed": True,
-            "action": "payment_failed",
-            "customer_id": customer_id,
-            "subscription_id": subscription_id,
-            "attempt_count": attempt_count,
-            "next_payment_attempt": next_attempt,
-        })
-        logger.warning(
-            "Payment failed for customer %s subscription %s (attempt %d)",
-            customer_id,
-            subscription_id,
-            attempt_count,
-        )
-
-    elif event_type == "customer.subscription.updated":
-        subscription = event_data.get("object", {})
-        cancel_at_period_end = subscription.get("cancel_at_period_end", False)
-        result.update({
-            "processed": True,
-            "action": "subscription_updated",
-            "subscription_id": subscription.get("id"),
-            "status": subscription.get("status"),
-            "customer_id": subscription.get("customer"),
-            "cancel_at_period_end": cancel_at_period_end,
-        })
-
-    elif event_type == "customer.subscription.deleted":
-        subscription = event_data.get("object", {})
-        result.update({
-            "processed": True,
-            "action": "subscription_deleted",
-            "subscription_id": subscription.get("id"),
-            "customer_id": subscription.get("customer"),
-        })
-        logger.info(
-            "Subscription %s deleted for customer %s",
-            subscription.get("id"),
-            subscription.get("customer"),
-        )
-
-    elif event_type == "customer.updated":
-        customer = event_data.get("object", {})
-        default_pm = (customer.get("invoice_settings") or {}).get("default_payment_method")
-        result.update({
-            "processed": True,
-            "action": "customer_updated",
-            "customer_id": customer.get("id"),
-            "default_payment_method": default_pm,
-        })
-        logger.info(
-            "Customer %s updated (default_payment_method=%s)",
-            customer.get("id"),
-            default_pm,
-        )
-
-    elif event_type == "setup_intent.succeeded":
-        setup_intent = event_data.get("object", {})
-        payment_method_id = setup_intent.get("payment_method")
-        customer_id = setup_intent.get("customer")
-
-        # Retrieve card details from Stripe
-        card_details: dict = {}
-        if payment_method_id:
-            try:
-                await _ensure_stripe_key()
-                pm = stripe.PaymentMethod.retrieve(payment_method_id)
-                card = pm.get("card", {})
-                card_details = {
-                    "brand": card.get("brand", "unknown"),
-                    "last4": card.get("last4", "0000"),
-                    "exp_month": card.get("exp_month", 0),
-                    "exp_year": card.get("exp_year", 0),
-                }
-            except Exception as exc:
-                logger.error(
-                    "Failed to retrieve payment method %s from Stripe: %s",
-                    payment_method_id,
-                    exc,
-                )
-
-        result.update({
-            "processed": True,
-            "action": "setup_intent_succeeded",
-            "customer_id": customer_id,
-            "payment_method_id": payment_method_id,
-            "card_details": card_details,
-        })
-        logger.info(
-            "SetupIntent succeeded for customer %s (payment_method=%s)",
-            customer_id,
-            payment_method_id,
-        )
-
-    return result
 
 
-async def update_subscription_plan(
-    *,
-    subscription_id: str,
-    new_monthly_amount_cents: int,
-    proration_behavior: str = "create_prorations",
-) -> dict:
-    """Update a Stripe subscription's price for plan upgrade/downgrade.
 
-    For upgrades, ``proration_behavior`` should be ``"create_prorations"``
-    (immediate with prorated charges).  For downgrades, use
-    ``"none"`` and schedule the change at the next billing period via
-    ``billing_cycle_anchor``.
 
-    Returns a dict with subscription details and prorated amount info.
-
-    Requirements: 43.2, 43.3
-    """
-    await _ensure_stripe_key()
-    subscription = stripe.Subscription.retrieve(subscription_id)
-    if not subscription or not subscription.get("items", {}).get("data"):
-        raise ValueError("Subscription not found or has no items")
-
-    # Use the first subscription item (the base plan item)
-    current_item = subscription["items"]["data"][0]
-
-    update_params: dict = {
-        "items": [
-            {
-                "id": current_item["id"],
-                "price_data": {
-                    "currency": "nzd",
-                    "unit_amount": new_monthly_amount_cents,
-                    "recurring": {"interval": "month"},
-                    "product_data": {"name": "WorkshopPro NZ Subscription"},
-                },
-            }
-        ],
-        "proration_behavior": proration_behavior,
-    }
-
-    updated_sub = stripe.Subscription.modify(subscription_id, **update_params)
-
-    # Retrieve the upcoming invoice to get the prorated amount
-    prorated_amount = 0
-    if proration_behavior == "create_prorations":
-        try:
-            upcoming = stripe.Invoice.upcoming(
-                customer=updated_sub["customer"],
-                subscription=subscription_id,
-            )
-            prorated_amount = upcoming.get("amount_due", 0)
-        except Exception:
-            logger.warning(
-                "Could not retrieve upcoming invoice for proration amount "
-                "(subscription %s)",
-                subscription_id,
-            )
-
-    logger.info(
-        "Updated subscription %s to %d cents/month (proration=%s)",
-        subscription_id,
-        new_monthly_amount_cents,
-        proration_behavior,
-    )
-
-    return {
-        "subscription_id": updated_sub["id"],
-        "status": updated_sub.get("status"),
-        "current_period_end": updated_sub.get("current_period_end"),
-        "prorated_amount_cents": prorated_amount,
-    }
 
 async def create_billing_portal_session(
     *,

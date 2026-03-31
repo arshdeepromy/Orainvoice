@@ -34,7 +34,6 @@ from app.integrations.stripe_connect import (
     verify_webhook_signature,
 )
 from app.integrations.stripe_billing import (
-    handle_subscription_webhook,
     report_metered_usage,
 )
 from app.modules.payments.service import (
@@ -625,97 +624,9 @@ class TestRefundProcessingFlow:
 class TestSubscriptionBillingFlow:
     """Integration tests for subscription billing lifecycle and metered usage.
 
-    Tests webhook event processing for payment success/failure, dunning,
-    grace period transitions, and metered usage reporting.
-    Requirements: 42.1, 42.2, 42.3, 42.4, 42.5, 42.6
+    Tests metered usage reporting, grace period transitions.
+    Requirements: 42.2, 42.5, 42.6
     """
-
-    @pytest.mark.asyncio
-    async def test_payment_succeeded_webhook_processing(self):
-        """invoice.payment_succeeded event is processed correctly (Req 42.1, 42.3)."""
-        result = await handle_subscription_webhook(
-            event_type="invoice.payment_succeeded",
-            event_data={
-                "object": {
-                    "customer": "cus_billing_ok",
-                    "subscription": "sub_monthly",
-                    "amount_paid": 4900,
-                    "invoice_pdf": "https://stripe.com/inv_pdf.pdf",
-                    "hosted_invoice_url": "https://stripe.com/inv_hosted",
-                }
-            },
-        )
-
-        assert result["processed"] is True
-        assert result["action"] == "payment_succeeded"
-        assert result["customer_id"] == "cus_billing_ok"
-        assert result["subscription_id"] == "sub_monthly"
-        assert result["amount_paid"] == 4900
-        assert result["invoice_pdf"] == "https://stripe.com/inv_pdf.pdf"
-
-    @pytest.mark.asyncio
-    async def test_payment_failed_webhook_triggers_dunning(self):
-        """invoice.payment_failed event captures attempt count for dunning (Req 42.4)."""
-        result = await handle_subscription_webhook(
-            event_type="invoice.payment_failed",
-            event_data={
-                "object": {
-                    "customer": "cus_fail_dunning",
-                    "subscription": "sub_fail",
-                    "attempt_count": 2,
-                    "next_payment_attempt": 1700200000,
-                }
-            },
-        )
-
-        assert result["processed"] is True
-        assert result["action"] == "payment_failed"
-        assert result["attempt_count"] == 2
-        assert result["next_payment_attempt"] == 1700200000
-
-    @pytest.mark.asyncio
-    async def test_subscription_updated_event(self):
-        """customer.subscription.updated event tracks status changes."""
-        result = await handle_subscription_webhook(
-            event_type="customer.subscription.updated",
-            event_data={
-                "object": {
-                    "id": "sub_updated",
-                    "status": "past_due",
-                    "customer": "cus_updated",
-                }
-            },
-        )
-
-        assert result["processed"] is True
-        assert result["action"] == "subscription_updated"
-        assert result["status"] == "past_due"
-
-    @pytest.mark.asyncio
-    async def test_subscription_deleted_event(self):
-        """customer.subscription.deleted event handles cancellation."""
-        result = await handle_subscription_webhook(
-            event_type="customer.subscription.deleted",
-            event_data={
-                "object": {
-                    "id": "sub_cancelled",
-                    "customer": "cus_cancelled",
-                }
-            },
-        )
-
-        assert result["processed"] is True
-        assert result["action"] == "subscription_deleted"
-        assert result["subscription_id"] == "sub_cancelled"
-
-    @pytest.mark.asyncio
-    async def test_unknown_event_type_not_processed(self):
-        """Unrecognised event types are ignored gracefully."""
-        result = await handle_subscription_webhook(
-            event_type="charge.refunded",
-            event_data={"object": {}},
-        )
-        assert result["processed"] is False
 
     @pytest.mark.asyncio
     async def test_metered_usage_reporting(self):
@@ -802,14 +713,3 @@ class TestSubscriptionBillingFlow:
 
         new_status = "active" if (action == "payment_succeeded" and org_status == "grace_period") else org_status
         assert new_status == "active"
-
-    @pytest.mark.asyncio
-    async def test_payment_failed_with_missing_fields_still_processes(self):
-        """Payment failed event with missing fields still processes gracefully."""
-        result = await handle_subscription_webhook(
-            event_type="invoice.payment_failed",
-            event_data={"object": {}},
-        )
-        assert result["processed"] is True
-        assert result["attempt_count"] == 0
-        assert result["customer_id"] is None

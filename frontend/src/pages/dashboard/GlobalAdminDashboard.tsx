@@ -15,6 +15,13 @@ interface GlobalAdminData {
   error_counts?: ErrorCounts
   integration_health?: IntegrationStatus[]
   billing_issues?: BillingIssue[]
+  interval_breakdown?: MrrIntervalBreakdown[]
+}
+
+interface MrrIntervalBreakdown {
+  interval: string
+  org_count: number
+  mrr_nzd: number
 }
 
 interface ErrorCounts {
@@ -112,7 +119,7 @@ export function GlobalAdminDashboard() {
           safeFetch<{ total_orgs?: number; active_orgs?: number; mrr?: number; churn_rate?: number }>(
             '/api/v2/admin/analytics/overview', {}
           ),
-          safeFetch<{ total_mrr_nzd?: number; mrr?: number }>('/admin/reports/mrr', {}),
+          safeFetch<{ total_mrr_nzd?: number; mrr?: number; interval_breakdown?: MrrIntervalBreakdown[] }>('/admin/reports/mrr', {}),
           safeFetch<{ by_severity?: Array<{ label: string; count_1h?: number; count_24h?: number; count_7d?: number; count?: number }>; total_24h?: number }>(
             '/admin/errors/dashboard', {}
           ),
@@ -144,6 +151,7 @@ export function GlobalAdminDashboard() {
         error_counts: errorCounts,
         integration_health: integrations,
         billing_issues: billing,
+        interval_breakdown: mrrData?.interval_breakdown ?? [],
       })
       setIsLoading(false)
     }
@@ -203,6 +211,33 @@ export function GlobalAdminDashboard() {
         <KpiCard label="Total Errors (24h)" value={totalErrors} variant={totalErrors > 0 ? 'warning' : undefined} />
         <KpiCard label="Billing Issues" value={data.billing_issues?.length || 0} variant={(data.billing_issues?.length || 0) > 0 ? 'error' : undefined} />
       </div>
+
+      {/* MRR Interval Breakdown */}
+      {(data.interval_breakdown ?? []).length > 0 && (
+        <section>
+          <h2 className="mb-3 text-lg font-medium text-gray-900">MRR by Billing Interval</h2>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {(data.interval_breakdown ?? []).map((ib) => {
+              const totalMrr = data.platform_mrr ?? 0
+              const pct = totalMrr > 0 ? ((ib.mrr_nzd / totalMrr) * 100) : 0
+              return (
+                <div
+                  key={ib.interval}
+                  className="rounded-lg border border-gray-200 bg-white p-4"
+                >
+                  <p className="text-sm font-medium capitalize text-gray-500">{ib.interval}</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-900">
+                    ${(ib.mrr_nzd ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2 })}
+                  </p>
+                  <p className="mt-0.5 text-xs text-gray-400">
+                    {ib.org_count} org{ib.org_count !== 1 ? 's' : ''} · {pct.toFixed(1)}%
+                  </p>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )}
 
       {data.churn_rate != null && data.churn_rate > 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">

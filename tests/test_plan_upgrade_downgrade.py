@@ -4,7 +4,6 @@ Covers:
 - Schema validation for PlanChangeRequest, PlanUpgradeResponse, PlanDowngradeResponse
 - Upgrade logic: immediate application, prorated charges
 - Downgrade logic: scheduled at next billing period, limit warnings
-- Stripe helper: update_subscription_plan
 """
 
 from __future__ import annotations
@@ -99,85 +98,6 @@ class TestPlanDowngradeResponse:
         )
         assert resp.effective_at is None
         assert resp.warnings == []
-
-
-# ---------------------------------------------------------------------------
-# Stripe helper tests
-# ---------------------------------------------------------------------------
-
-
-class TestUpdateSubscriptionPlan:
-    @pytest.mark.asyncio
-    @patch("app.integrations.stripe_billing.stripe")
-    async def test_upgrade_with_proration(self, mock_stripe):
-        """Upgrade should use create_prorations and return prorated amount."""
-        mock_stripe.Subscription.retrieve.return_value = {
-            "items": {"data": [{"id": "si_123", "price": {}}]},
-        }
-        mock_stripe.Subscription.modify.return_value = {
-            "id": "sub_abc",
-            "status": "active",
-            "customer": "cus_xyz",
-            "current_period_end": 1738368000,
-        }
-        mock_stripe.Invoice.upcoming.return_value = {
-            "amount_due": 1250,
-        }
-
-        from app.integrations.stripe_billing import update_subscription_plan
-
-        result = await update_subscription_plan(
-            subscription_id="sub_abc",
-            new_monthly_amount_cents=5000,
-            proration_behavior="create_prorations",
-        )
-
-        assert result["subscription_id"] == "sub_abc"
-        assert result["prorated_amount_cents"] == 1250
-        mock_stripe.Subscription.modify.assert_called_once()
-
-    @pytest.mark.asyncio
-    @patch("app.integrations.stripe_billing.stripe")
-    async def test_downgrade_no_proration(self, mock_stripe):
-        """Downgrade should use proration_behavior='none'."""
-        mock_stripe.Subscription.retrieve.return_value = {
-            "items": {"data": [{"id": "si_123", "price": {}}]},
-        }
-        mock_stripe.Subscription.modify.return_value = {
-            "id": "sub_abc",
-            "status": "active",
-            "customer": "cus_xyz",
-            "current_period_end": 1738368000,
-        }
-
-        from app.integrations.stripe_billing import update_subscription_plan
-
-        result = await update_subscription_plan(
-            subscription_id="sub_abc",
-            new_monthly_amount_cents=2000,
-            proration_behavior="none",
-        )
-
-        assert result["subscription_id"] == "sub_abc"
-        assert result["prorated_amount_cents"] == 0
-        call_kwargs = mock_stripe.Subscription.modify.call_args
-        assert call_kwargs[1]["proration_behavior"] == "none"
-
-    @pytest.mark.asyncio
-    @patch("app.integrations.stripe_billing.stripe")
-    async def test_no_subscription_items_raises(self, mock_stripe):
-        """Should raise ValueError when subscription has no items."""
-        mock_stripe.Subscription.retrieve.return_value = {
-            "items": {"data": []},
-        }
-
-        from app.integrations.stripe_billing import update_subscription_plan
-
-        with pytest.raises(ValueError, match="no items"):
-            await update_subscription_plan(
-                subscription_id="sub_abc",
-                new_monthly_amount_cents=5000,
-            )
 
 
 # ---------------------------------------------------------------------------

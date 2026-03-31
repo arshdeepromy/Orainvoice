@@ -1,3 +1,13 @@
+// Computed interval pricing returned by the public plans API
+export interface IntervalPricing {
+  interval: string
+  enabled: boolean
+  discount_percent: number
+  effective_price: number
+  savings_amount: number
+  equivalent_monthly: number
+}
+
 // Signup form data matching PublicSignupRequest
 export interface SignupFormData {
   org_name: string
@@ -7,6 +17,7 @@ export interface SignupFormData {
   password: string
   confirm_password: string
   plan_id: string
+  billing_interval: string
   captcha_code: string
   coupon_code: string
 }
@@ -46,6 +57,7 @@ export interface PublicPlan {
   monthly_price_nzd: number
   trial_duration: number
   trial_duration_unit: string
+  intervals: IntervalPricing[]
 }
 
 // Signup billing config from GET /api/v1/auth/signup-config

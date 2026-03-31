@@ -327,6 +327,16 @@ class ResendInviteResponse(BaseModel):
 # Public plan schemas (public signup flow)
 # ---------------------------------------------------------------------------
 
+class PublicIntervalPricing(BaseModel):
+    """Computed interval pricing for public plan responses."""
+    interval: str
+    enabled: bool
+    discount_percent: float
+    effective_price: float
+    savings_amount: float
+    equivalent_monthly: float
+
+
 class PublicPlanResponse(BaseModel):
     """Single plan returned by the public plans endpoint."""
     id: str
@@ -337,6 +347,7 @@ class PublicPlanResponse(BaseModel):
     sms_included: bool = False
     sms_included_quota: int = 0
     per_sms_cost_nzd: float = 0
+    intervals: list[PublicIntervalPricing] = Field(default_factory=list)
 
 
 class PublicPlanListResponse(BaseModel):
