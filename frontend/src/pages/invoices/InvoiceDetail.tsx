@@ -592,8 +592,9 @@ export default function InvoiceDetail() {
           {invoice.customer ? (
             <>
               <p className="font-medium text-gray-900">
-                {invoice.customer.first_name} {invoice.customer.last_name}
+                {invoice.customer.display_name || `${invoice.customer.first_name} ${invoice.customer.last_name}`}
               </p>
+              {invoice.customer.company_name && <p className="text-sm text-gray-700 font-medium">{invoice.customer.company_name}</p>}
               {invoice.customer.email && <p className="text-sm text-gray-600">{invoice.customer.email}</p>}
               {invoice.customer.phone && <p className="text-sm text-gray-600">{invoice.customer.phone}</p>}
               {invoice.customer.address && <p className="text-sm text-gray-600 mt-1">{invoice.customer.address}</p>}

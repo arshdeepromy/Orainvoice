@@ -78,6 +78,7 @@ PUBLIC_PATHS: set[str] = {
     "/api/webhooks/connexus/status",
     "/api/v1/ha/heartbeat",
     "/api/v1/ha/status",
+    "/api/v2/trade-families",
 }
 
 # Prefixes that are public (e.g. customer portal tokens).

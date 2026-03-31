@@ -2327,6 +2327,8 @@ async def signup(
             base_url=base_url,
             coupon_code=payload.coupon_code,
             billing_interval=payload.billing_interval,
+            country_code=payload.country_code,
+            trade_family_slug=payload.trade_family_slug,
         )
         # Commit the transaction after successful signup
         await db.commit()
@@ -2459,6 +2461,35 @@ async def confirm_signup_payment(
     plan = plan_result.scalar_one_or_none()
     storage_quota_gb = plan.storage_quota_gb if plan else 5
 
+    # Look up trade_category_id from trade_family_slug (if provided)
+    trade_category_id = None
+    trade_family_slug = pending.get("trade_family_slug")
+    if trade_family_slug:
+        from app.modules.trade_categories.models import TradeFamily, TradeCategory
+        family_result = await db.execute(
+            select(TradeFamily).where(
+                TradeFamily.slug == trade_family_slug,
+                TradeFamily.is_active == True,
+            )
+        )
+        family = family_result.scalar_one_or_none()
+        if family:
+            cat_result = await db.execute(
+                select(TradeCategory.id).where(
+                    TradeCategory.family_id == family.id,
+                    TradeCategory.is_active == True,
+                ).order_by(TradeCategory.display_name).limit(1)
+            )
+            cat_row = cat_result.first()
+            if cat_row:
+                trade_category_id = cat_row[0]
+
+    # Build initial settings with country_code if provided
+    initial_settings = {}
+    country_code = pending.get("country_code")
+    if country_code:
+        initial_settings["address_country"] = country_code
+
     org = Organisation(
         name=pending["org_name"],
         plan_id=plan_id,
@@ -2466,6 +2497,8 @@ async def confirm_signup_payment(
         billing_interval=billing_interval,
         stripe_customer_id=stripe_customer_id,
         storage_quota_gb=storage_quota_gb,
+        trade_category_id=trade_category_id,
+        settings=initial_settings,
     )
     db.add(org)
     await db.flush()

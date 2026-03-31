@@ -16,6 +16,8 @@ from typing import Any
 
 import httpx
 import jwt
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
 from jwt.exceptions import InvalidTokenError
 
 logger = logging.getLogger(__name__)
@@ -106,8 +108,8 @@ async def verify_firebase_id_token(
         raise ValueError("Could not fetch token verification keys")
 
     # Find the matching key
-    public_key_pem = public_keys.get(kid)
-    if not public_key_pem:
+    cert_pem = public_keys.get(kid)
+    if not cert_pem:
         # Keys might have rotated — force refresh and retry once
         global _cached_keys, _cache_expiry
         _cached_keys = None
@@ -117,16 +119,24 @@ async def verify_firebase_id_token(
         except Exception as e:
             raise ValueError(f"Could not refresh token verification keys: {e}")
 
-        public_key_pem = public_keys.get(kid)
-        if not public_key_pem:
+        cert_pem = public_keys.get(kid)
+        if not cert_pem:
             raise ValueError("Token signed with unknown key")
+
+    # Extract the public key from the X.509 certificate
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem.encode(), default_backend())
+        public_key = cert.public_key()
+    except Exception as e:
+        logger.error("Failed to parse X.509 certificate for kid=%s: %s", kid, e)
+        raise ValueError(f"Could not parse signing certificate: {e}")
 
     # Verify and decode the token
     expected_issuer = f"https://securetoken.google.com/{project_id}"
     try:
         payload = jwt.decode(
             id_token,
-            public_key_pem,
+            public_key,
             algorithms=["RS256"],
             audience=project_id,
             issuer=expected_issuer,

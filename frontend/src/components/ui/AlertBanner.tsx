@@ -38,7 +38,8 @@ export function AlertBanner({
 }: AlertBannerProps) {
   return (
     <div
-      className={`flex items-start gap-3 rounded-md border-l-4 p-4 ${variantClasses[variant]} ${className}`}
+      className={`flex items-start gap-3 border-l-4 p-4 ${variantClasses[variant]} ${className}`}
+      style={{ borderRadius: 'var(--card-radius)' }}
       role={variantRoles[variant]}
     >
       <span className="mt-0.5 text-lg" aria-hidden="true">

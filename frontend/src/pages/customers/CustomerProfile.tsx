@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Modal, Tabs, Input, Select } from '../../components/ui'
+import { useTenant } from '../../contexts/TenantContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -150,6 +151,8 @@ const INVOICE_STATUS_CONFIG: Record<string, { label: string; variant: BadgeVaria
 export default function CustomerProfilePage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
   const [customer, setCustomer] = useState<CustomerProfile | null>(null)
   const [loading, setLoading] = useState(true)
@@ -966,7 +969,8 @@ export default function CustomerProfilePage() {
               )}
             </div>
 
-            {/* WOF Expiry */}
+            {/* WOF Expiry — automotive only */}
+            {isAutomotive && (
             <div className="rounded-lg border border-gray-200 p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium text-gray-900">WOF Expiry</h3>
@@ -1037,6 +1041,7 @@ export default function CustomerProfilePage() {
                 </>
               )}
             </div>
+            )}
           </div>
         )}
         {reminderError && <p className="mt-2 text-sm text-red-600" role="alert">{reminderError}</p>}

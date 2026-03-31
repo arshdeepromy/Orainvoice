@@ -4,6 +4,7 @@ import { Button, Input, Spinner, Pagination, PageSizeSelect, Modal, Select } fro
 import { CustomerCreateModal } from '../../components/customers/CustomerCreateModal'
 import { CustomerEditModal } from '../../components/customers/CustomerEditModal'
 import { CustomerViewModal } from '../../components/customers/CustomerViewModal'
+import { useTenant } from '../../contexts/TenantContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -71,6 +72,9 @@ function formatNZD(amount: number | null | undefined): string {
 /* ------------------------------------------------------------------ */
 
 export default function CustomerList() {
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+
   const [searchQuery, setSearchQuery] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
@@ -510,7 +514,8 @@ export default function CustomerList() {
               )}
             </div>
 
-            {/* WOF Expiry */}
+            {/* WOF Expiry — automotive only */}
+            {isAutomotive && (
             <div className="rounded-lg border border-gray-200 p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium text-gray-900">WOF Expiry</h3>
@@ -580,6 +585,7 @@ export default function CustomerList() {
                 </>
               )}
             </div>
+            )}
           </div>
         )}
         {reminderError && <p className="mt-2 text-sm text-red-600" role="alert">{reminderError}</p>}

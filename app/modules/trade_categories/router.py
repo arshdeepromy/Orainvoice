@@ -31,6 +31,7 @@ from app.modules.trade_categories.schemas import (
     TradeFamilyCreate,
     TradeFamilyListResponse,
     TradeFamilyResponse,
+    TradeFamilyUpdate,
 )
 from app.modules.trade_categories.service import TradeCategoryService
 
@@ -48,11 +49,15 @@ categories_router = APIRouter()
     summary="List all active trade families",
 )
 async def list_trade_families(
+    country_code: str | None = Query(None, description="Filter by country code"),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Return all active trade families ordered by display_order."""
+    """Return all active trade families ordered by display_order.
+    
+    If country_code is provided, only returns families available in that country.
+    """
     svc = TradeCategoryService(db)
-    families = await svc.list_families()
+    families = await svc.list_families(country_code=country_code)
     return TradeFamilyListResponse(
         families=[TradeFamilyResponse.model_validate(f) for f in families],
         total=len(families),
@@ -106,6 +111,24 @@ admin_families_router = APIRouter()
 admin_categories_router = APIRouter()
 
 
+@admin_families_router.get(
+    "",
+    response_model=TradeFamilyListResponse,
+    summary="List all trade families (including inactive)",
+    dependencies=[require_role("global_admin")],
+)
+async def list_all_trade_families(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return ALL trade families including inactive ones (Global Admin only)."""
+    svc = TradeCategoryService(db)
+    families = await svc.list_all_families()
+    return TradeFamilyListResponse(
+        families=[TradeFamilyResponse.model_validate(f) for f in families],
+        total=len(families),
+    )
+
+
 @admin_families_router.post(
     "",
     response_model=TradeFamilyResponse,
@@ -120,6 +143,46 @@ async def create_trade_family(
     """Create a new trade family (Global Admin only)."""
     svc = TradeCategoryService(db)
     family = await svc.create_family(payload)
+    return TradeFamilyResponse.model_validate(family)
+
+
+@admin_families_router.put(
+    "/{slug}",
+    response_model=TradeFamilyResponse,
+    summary="Update a trade family",
+    dependencies=[require_role("global_admin")],
+)
+async def update_trade_family(
+    slug: str,
+    payload: TradeFamilyUpdate,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update a trade family (Global Admin only).
+    
+    Can enable/disable, set country restrictions, and update gated features.
+    """
+    svc = TradeCategoryService(db)
+    family = await svc.update_family(slug, payload)
+    if family is None:
+        raise HTTPException(status_code=404, detail="Trade family not found")
+    return TradeFamilyResponse.model_validate(family)
+
+
+@admin_families_router.get(
+    "/{slug}",
+    response_model=TradeFamilyResponse,
+    summary="Get a trade family by slug",
+    dependencies=[require_role("global_admin")],
+)
+async def get_trade_family(
+    slug: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Get a single trade family by slug (Global Admin only)."""
+    svc = TradeCategoryService(db)
+    family = await svc.get_family(slug)
+    if family is None:
+        raise HTTPException(status_code=404, detail="Trade family not found")
     return TradeFamilyResponse.model_validate(family)
 
 

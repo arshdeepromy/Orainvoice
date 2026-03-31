@@ -222,6 +222,8 @@ Full-stack implementation across data layer (Alembic migration), backend (models
   - Verify admin Coupons tab renders correctly, CRUD operations work, and signup coupon flow works end-to-end. Ask the user if questions arise.
 
 - [x] 11. Write property-based tests
+
+
   - [x] 11.1 Create `tests/properties/test_coupon_properties.py` with Hypothesis tests
     - **Property 2: Effective price calculation bounds** — For any plan_price ≥ 0, any discount_type, any discount_value > 0, any is_expired boolean: `0 ≤ calculate_effective_price(...) ≤ plan_price`. **Validates: Requirements 11.2–11.6**
     - **Property 3: Percentage discount calculation** — For any plan_price ≥ 0 and percentage 1–100, when not expired: result == `round(plan_price * (1 - pct/100), 2)`. **Validates: Requirements 5.3, 11.3**

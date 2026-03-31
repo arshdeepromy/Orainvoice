@@ -43,6 +43,19 @@ class TradeFamilyCreate(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=255)
     icon: str | None = None
     display_order: int = 0
+    country_codes: list[str] = Field(default_factory=list, description="ISO country codes (empty = all countries)")
+    gated_features: list[str] = Field(default_factory=list, description="Feature slugs gated behind this family")
+
+
+class TradeFamilyUpdate(BaseModel):
+    """Update a trade family."""
+
+    display_name: str | None = Field(None, min_length=1, max_length=255)
+    icon: str | None = None
+    display_order: int | None = None
+    is_active: bool | None = None
+    country_codes: list[str] | None = None
+    gated_features: list[str] | None = None
 
 
 class TradeFamilyResponse(BaseModel):
@@ -54,10 +67,38 @@ class TradeFamilyResponse(BaseModel):
     icon: str | None = None
     display_order: int
     is_active: bool
+    country_codes: list[str] = Field(default_factory=list)
+    gated_features: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("country_codes", mode="before")
+    @classmethod
+    def parse_country_codes(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            import json as _json
+            try:
+                return _json.loads(v)
+            except (ValueError, TypeError):
+                return []
+        return v if isinstance(v, list) else []
+
+    @field_validator("gated_features", mode="before")
+    @classmethod
+    def parse_gated_features(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            import json as _json
+            try:
+                return _json.loads(v)
+            except (ValueError, TypeError):
+                return []
+        return v if isinstance(v, list) else []
 
 
 class TradeFamilyListResponse(BaseModel):

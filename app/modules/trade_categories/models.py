@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -22,6 +22,7 @@ class TradeFamily(Base):
     """Grouping of related trade categories.
 
     Each family has a slug, display name, icon, and display order.
+    Country codes restrict which countries can see this family during signup.
     """
 
     __tablename__ = "trade_families"
@@ -36,6 +37,12 @@ class TradeFamily(Base):
     icon: Mapped[str | None] = mapped_column(String(100), nullable=True)
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    country_codes: Mapped[list] = mapped_column(
+        JSONB, default=list, nullable=False, server_default=text("'[]'::jsonb"),
+    )
+    gated_features: Mapped[list] = mapped_column(
+        JSONB, default=list, nullable=False, server_default=text("'[]'::jsonb"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

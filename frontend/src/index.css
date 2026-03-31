@@ -1,5 +1,6 @@
 @import './styles/print.css';
 @import './styles/responsive.css';
+@import './styles/themes.css';
 
 @tailwind base;
 @tailwind components;
@@ -26,7 +27,11 @@ html, body, #root {
 /* Global form element styling */
 @layer base {
   select {
-    @apply h-[42px] w-full appearance-none rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm transition-colors;
+    @apply h-[42px] w-full appearance-none border bg-white px-3 py-2 text-gray-900 shadow-sm;
+    border-color: var(--input-border);
+    border-radius: var(--input-radius);
+    transition: border-color var(--transition-speed) var(--transition-fn),
+                box-shadow var(--transition-speed) var(--transition-fn);
     background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%236b7280'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
     background-size: 20px 20px;
     background-position: right 8px center;
@@ -35,7 +40,9 @@ html, body, #root {
   }
   
   select:focus {
-    @apply outline-none ring-2 ring-blue-500 ring-offset-2 border-blue-500;
+    @apply outline-none ring-2 ring-offset-2;
+    --tw-ring-color: var(--input-focus-ring);
+    border-color: var(--input-focus-border);
   }
   
   /* Ensure inputs also have consistent height */
@@ -50,12 +57,18 @@ html, body, #root {
   input[type="time"],
   input[type="datetime-local"],
   textarea {
-    @apply h-[42px] w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm transition-colors;
+    @apply h-[42px] w-full border bg-white px-3 py-2 text-gray-900 shadow-sm;
+    border-color: var(--input-border);
+    border-radius: var(--input-radius);
+    transition: border-color var(--transition-speed) var(--transition-fn),
+                box-shadow var(--transition-speed) var(--transition-fn);
   }
   
   input:focus,
   textarea:focus {
-    @apply outline-none ring-2 ring-blue-500 ring-offset-2 border-blue-500;
+    @apply outline-none ring-2 ring-offset-2;
+    --tw-ring-color: var(--input-focus-ring);
+    border-color: var(--input-focus-border);
   }
   
   textarea {

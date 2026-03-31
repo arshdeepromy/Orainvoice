@@ -60,6 +60,7 @@ async def update_branding(
             support_email=payload.support_email,
             terms_url=payload.terms_url,
             auto_detect_domain=payload.auto_detect_domain,
+            platform_theme=payload.platform_theme,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

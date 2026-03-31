@@ -10,6 +10,7 @@ export interface PlatformBranding {
   support_email: string | null
   terms_url: string | null
   website_url: string | null
+  platform_theme: string
 }
 
 const DEFAULTS: PlatformBranding = {
@@ -20,6 +21,7 @@ const DEFAULTS: PlatformBranding = {
   support_email: null,
   terms_url: null,
   website_url: null,
+  platform_theme: 'classic',
 }
 
 interface PlatformBrandingContextValue {

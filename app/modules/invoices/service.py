@@ -1106,13 +1106,25 @@ async def get_invoice(
         )
         customer = cust_result.scalar_one_or_none()
         if customer:
+            # Build address: prefer plain text `address`, fall back to structured billing_address
+            cust_address = getattr(customer, "address", None)
+            if not cust_address:
+                ba = getattr(customer, "billing_address", None) or {}
+                if isinstance(ba, dict) and any(ba.values()):
+                    cust_address = ", ".join(filter(None, [
+                        ba.get("street"),
+                        ba.get("city"),
+                        ba.get("state"),
+                        ba.get("postal_code"),
+                        ba.get("country"),
+                    ]))
             result["customer"] = {
                 "id": str(customer.id),
                 "first_name": customer.first_name,
                 "last_name": customer.last_name,
                 "email": customer.email,
                 "phone": customer.phone or customer.mobile_phone,
-                "address": getattr(customer, "address", None),
+                "address": cust_address or None,
                 "company_name": getattr(customer, "company_name", None),
                 "display_name": getattr(customer, "display_name", None),
             }
@@ -3109,12 +3121,26 @@ async def generate_invoice_pdf(
         )
     )
     customer = cust_result.scalar_one_or_none()
+    # Build address: prefer plain text, fall back to structured billing_address
+    _cust_addr = customer.address if customer else None
+    if not _cust_addr and customer:
+        _ba = getattr(customer, "billing_address", None) or {}
+        if isinstance(_ba, dict) and any(_ba.values()):
+            _cust_addr = ", ".join(filter(None, [
+                _ba.get("street"),
+                _ba.get("city"),
+                _ba.get("state"),
+                _ba.get("postal_code"),
+                _ba.get("country"),
+            ]))
     customer_context = {
         "first_name": customer.first_name if customer else "Unknown",
         "last_name": customer.last_name if customer else "",
+        "display_name": getattr(customer, "display_name", None) if customer else None,
+        "company_name": getattr(customer, "company_name", None) if customer else None,
         "email": customer.email if customer else None,
         "phone": customer.phone if customer else None,
-        "address": customer.address if customer else None,
+        "address": _cust_addr or None,
     }
 
     # I18n labels for PDF --------------------------------------------------

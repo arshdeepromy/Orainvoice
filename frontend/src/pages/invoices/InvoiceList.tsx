@@ -1205,8 +1205,11 @@ export default function InvoiceList() {
                           <div className="bg-blue-50/50 rounded-lg p-4 border border-blue-100">
                             <p className="text-xs font-semibold text-blue-600 uppercase tracking-wider mb-1.5">Bill To</p>
                             <p className="font-semibold text-gray-900">
-                              {invoice.customer.first_name} {invoice.customer.last_name}
+                              {invoice.customer.display_name || `${invoice.customer.first_name} ${invoice.customer.last_name}`}
                             </p>
+                            {invoice.customer.company_name && (
+                              <p className="text-sm text-gray-700 font-medium">{invoice.customer.company_name}</p>
+                            )}
                             {invoice.customer.address && (
                               <p className="text-sm text-gray-600 mt-0.5 whitespace-pre-line">{invoice.customer.address}</p>
                             )}

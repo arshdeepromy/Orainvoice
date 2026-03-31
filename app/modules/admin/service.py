@@ -1653,7 +1653,9 @@ async def test_stripe_api_keys(
         stripe_lib.api_key = api_key
         balance = stripe_lib.Balance.retrieve()
 
-        if balance and balance.get("object") == "balance":
+        # Stripe v15+ returns proper objects, not dicts
+        balance_object = getattr(balance, "object", None) or (balance.get("object") if hasattr(balance, "get") else None)
+        if balance and balance_object == "balance":
             is_test = api_key.startswith("sk_test_")
             mode = "test mode" if is_test else "live mode"
             return {

@@ -20,6 +20,14 @@ export interface SignupFormData {
   billing_interval: string
   captcha_code: string
   coupon_code: string
+  country_code: string
+  trade_family_slug: string
+}
+
+// Trade family from /v2/trade-families API
+export interface TradeFamily {
+  slug: string
+  display_name: string
 }
 
 // Response from POST /api/v1/auth/signup matching PublicSignupResponse

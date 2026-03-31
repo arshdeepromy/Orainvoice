@@ -57,6 +57,9 @@ class PlatformBranding(Base):
     auto_detect_domain: Mapped[bool] = mapped_column(
         Boolean, server_default="true", nullable=False,
     )
+    platform_theme: Mapped[str] = mapped_column(
+        String(50), server_default="classic", nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

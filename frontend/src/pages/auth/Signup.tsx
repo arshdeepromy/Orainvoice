@@ -3,10 +3,30 @@ import { loadStripe, type Stripe } from '@stripe/stripe-js'
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js'
 import apiClient from '@/api/client'
 import { Button, Input, AlertBanner, Spinner } from '@/components/ui'
+import { CountrySelect } from '@/components/ui/CountrySelect'
 import { validateSignupForm } from './signup-validation'
 import { PasswordRequirements, PasswordMatch } from '@/components/auth/PasswordRequirements'
 import { usePlatformBranding } from '@/contexts/PlatformBrandingContext'
-import type { SignupFormData, SignupResponse, PublicPlan, PublicPlanListResponse } from './signup-types'
+import type { SignupFormData, SignupResponse, PublicPlan, PublicPlanListResponse, TradeFamily } from './signup-types'
+
+// Trade family icons
+const FAMILY_ICONS: Record<string, string> = {
+  'automotive-transport': '🚗',
+  'electrical-mechanical': '⚡',
+  'plumbing-gas': '🔧',
+  'building-construction': '🏗️',
+  'landscaping-outdoor': '🌿',
+  'cleaning-facilities': '🧹',
+  'it-technology': '💻',
+  'creative-professional': '🎨',
+  'accounting-legal-financial': '📊',
+  'health-wellness': '❤️',
+  'food-hospitality': '🍽️',
+  'retail': '🛍️',
+  'hair-beauty-personal-care': '💇',
+  'trades-support-hire': '🔨',
+  'freelancing-contracting': '📋',
+}
 
 interface CouponResponse {
   id: string
@@ -135,6 +155,10 @@ export function Signup() {
   const [couponValidating, setCouponValidating] = useState(false)
   const [showCouponInput, setShowCouponInput] = useState(false)
 
+  // Trade families state
+  const [tradeFamilies, setTradeFamilies] = useState<TradeFamily[]>([])
+  const [tradeFamiliesLoading, setTradeFamiliesLoading] = useState(true)
+
   const [formData, setFormData] = useState<SignupFormData>({
     org_name: '',
     admin_email: '',
@@ -143,8 +167,11 @@ export function Signup() {
     password: '',
     confirm_password: '',
     plan_id: '',
+    billing_interval: 'monthly',
     captcha_code: '',
     coupon_code: '',
+    country_code: 'NZ',
+    trade_family_slug: '',
   })
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [apiError, setApiError] = useState<string | null>(null)
@@ -178,8 +205,32 @@ export function Signup() {
     }
     loadStripeKey()
     fetchPlans()
+    fetchTradeFamilies()
     loadCaptcha()
   }, [])
+
+  // Refetch trade families when country changes
+  useEffect(() => {
+    fetchTradeFamilies()
+  }, [formData.country_code])
+
+  async function fetchTradeFamilies() {
+    setTradeFamiliesLoading(true)
+    try {
+      const countryParam = formData.country_code ? `?country_code=${formData.country_code}` : ''
+      const res = await apiClient.get<{ families: TradeFamily[] } | TradeFamily[]>(`/api/v2/trade-families${countryParam}`)
+      const data = res.data
+      const families = Array.isArray(data) ? data : (data?.families ?? [])
+      setTradeFamilies(families)
+      if (formData.trade_family_slug && !families.some(f => f.slug === formData.trade_family_slug)) {
+        setFormData(prev => ({ ...prev, trade_family_slug: '' }))
+      }
+    } catch {
+      setTradeFamilies([])
+    } finally {
+      setTradeFamiliesLoading(false)
+    }
+  }
 
   async function loadCaptcha() {
     setCaptchaLoading(true)
@@ -229,7 +280,7 @@ export function Signup() {
     setPlansError(null)
     try {
       const res = await apiClient.get<PublicPlanListResponse>('/auth/plans')
-      setPlans(res.data.plans)
+      setPlans(res.data?.plans ?? [])
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
       setPlansError(status === 429
@@ -313,6 +364,8 @@ export function Signup() {
         ...formData,
         confirm_password: undefined,
         coupon_code: couponApplied?.code || undefined,
+        country_code: formData.country_code || undefined,
+        trade_family_slug: formData.trade_family_slug || undefined,
       })
       setSignupResult(res.data)
 
@@ -402,7 +455,7 @@ export function Signup() {
           <Elements stripe={stripePromise} options={{ clientSecret: signupResult.stripe_client_secret! }}>
             <PaymentForm
               clientSecret={signupResult.stripe_client_secret!}
-              organisationId={signupResult.organisation_id}
+              organisationId={signupResult.organisation_id ?? signupResult.pending_signup_id ?? ''}
               planName={pName}
               amountDisplay={amountDisplay}
               onSuccess={() => setStep('done')}
@@ -469,6 +522,50 @@ export function Signup() {
           error={errors.admin_email}
           required
         />
+
+        {/* Country */}
+        <CountrySelect
+          label="Country"
+          value={formData.country_code}
+          onChange={code => handleFieldChange('country_code', code)}
+          error={errors.country_code}
+        />
+
+        {/* Business Type / Trade Family */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Business type</label>
+          {tradeFamiliesLoading ? (
+            <div className="h-[42px] flex items-center">
+              <Spinner size="sm" label="Loading..." />
+            </div>
+          ) : tradeFamilies.length === 0 ? (
+            <p className="text-sm text-gray-400">No business types available for this country</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto p-1">
+              {tradeFamilies.map(family => {
+                const icon = FAMILY_ICONS[family.slug] || '📦'
+                const isSelected = formData.trade_family_slug === family.slug
+                return (
+                  <button
+                    key={family.slug}
+                    type="button"
+                    onClick={() => handleFieldChange('trade_family_slug', isSelected ? '' : family.slug)}
+                    className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500
+                      ${isSelected
+                        ? 'border-blue-500 bg-blue-50 text-blue-800'
+                        : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-gray-700'
+                      }`}
+                  >
+                    <span className="text-base" aria-hidden="true">{icon}</span>
+                    <span className="truncate text-xs">{family.display_name}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+          {errors.trade_family_slug && <p className="mt-1 text-sm text-red-600">{errors.trade_family_slug}</p>}
+        </div>
 
         {/* Password */}
         <div>

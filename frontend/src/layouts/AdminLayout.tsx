@@ -1,8 +1,21 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFeatureFlags } from '@/contexts/FeatureFlagContext'
 import { GlobalSearchBar } from '@/components/search'
+
+/* Icons for profile menu */
+const UserIcon = () => (
+  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+  </svg>
+)
+
+const LogoutIcon = () => (
+  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+  </svg>
+)
 
 interface AdminNavItem {
   type?: 'section'
@@ -19,6 +32,7 @@ const adminNavItems: AdminNavItem[] = [
   { to: '/admin/users', label: 'Users' },
   { type: 'section', label: 'Configuration' },
   { to: '/admin/plans', label: 'Subscription Management' },
+  { to: '/admin/trade-families', label: 'Trade Families' },
   { to: '/admin/feature-flags', label: 'Feature Flags' },
   { to: '/admin/branding', label: 'Branding' },
   { to: '/admin/integrations', label: 'Integrations' },
@@ -37,9 +51,24 @@ const adminNavItems: AdminNavItem[] = [
 
 export function AdminLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const userMenuRef = useRef<HTMLDivElement>(null)
   const { user, logout } = useAuth()
   const { flags } = useFeatureFlags()
   const navigate = useNavigate()
+
+  // Close user menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setUserMenuOpen(false)
+      }
+    }
+    if (userMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [userMenuOpen])
 
   const handleLogout = async () => {
     await logout()
@@ -71,7 +100,7 @@ export function AdminLayout() {
   })()
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50">
+    <div className="flex h-screen overflow-hidden" style={{ backgroundColor: 'var(--content-bg)' }}>
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div
@@ -83,18 +112,19 @@ export function AdminLayout() {
 
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col bg-gray-900 transition-transform duration-200 ease-in-out lg:static lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col transition-transform duration-200 ease-in-out lg:static lg:translate-x-0 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
+        style={{ backgroundColor: 'var(--sidebar-bg)', borderRight: '1px solid var(--sidebar-border)' }}
         role="navigation"
         aria-label="Admin navigation"
       >
         {/* Admin branding */}
-        <div className="flex h-16 items-center gap-3 border-b border-gray-700 px-4">
-          <div className="h-8 w-8 rounded-md bg-indigo-500 flex items-center justify-center text-white text-sm font-bold">
+        <div className="flex h-16 items-center gap-3 px-4" style={{ borderBottom: '1px solid var(--sidebar-border)' }}>
+          <div className="h-8 w-8 rounded-md flex items-center justify-center text-white text-sm font-bold" style={{ backgroundColor: 'var(--color-primary)' }}>
             A
           </div>
-          <span className="text-lg font-semibold text-white truncate">
+          <span className="text-lg font-semibold truncate" style={{ color: 'var(--sidebar-active-text, #fff)' }}>
             Admin Console
           </span>
           <button
@@ -115,7 +145,7 @@ export function AdminLayout() {
               if (item.type === 'section') {
                 return (
                   <li key={item.label} className={idx > 0 ? 'pt-4' : ''}>
-                    <span className="px-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                    <span className="px-3 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--sidebar-text-muted)' }}>
                       {item.label}
                     </span>
                   </li>
@@ -127,11 +157,14 @@ export function AdminLayout() {
                     to={item.to!}
                     onClick={() => setSidebarOpen(false)}
                     className={({ isActive }) =>
-                      `flex items-center rounded-lg px-3 min-h-[44px] text-sm font-medium transition-colors ${
-                        isActive
-                          ? 'bg-gray-800 text-white'
-                          : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                      `flex items-center rounded-lg px-3 min-h-[44px] text-sm font-medium transition-all duration-[var(--transition-speed)] ${
+                        isActive ? 'sidebar-nav-active' : 'sidebar-nav-item'
                       }`
+                    }
+                    style={({ isActive }) =>
+                      isActive
+                        ? { backgroundColor: 'var(--sidebar-active-bg)', color: 'var(--sidebar-active-text)' }
+                        : { color: 'var(--sidebar-text)' }
                     }
                   >
                     {item.label}
@@ -182,14 +215,54 @@ export function AdminLayout() {
           <span className="text-sm text-gray-600 hidden sm:inline">
             {user?.email ?? 'Admin'}
           </span>
-          <button
-            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full bg-indigo-100 text-sm font-medium text-indigo-700 hover:bg-indigo-200"
-            aria-label="Admin user menu"
-            onClick={handleLogout}
-            title="Sign out"
-          >
-            {(user?.name ?? 'A').charAt(0).toUpperCase()}
-          </button>
+          
+          {/* Profile dropdown */}
+          <div className="relative" ref={userMenuRef}>
+            <button
+              className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full bg-indigo-100 text-sm font-medium text-indigo-700 hover:bg-indigo-200"
+              aria-label="Admin user menu"
+              aria-expanded={userMenuOpen}
+              aria-haspopup="true"
+              onClick={() => setUserMenuOpen(!userMenuOpen)}
+            >
+              {(user?.name ?? user?.email ?? 'A').charAt(0).toUpperCase()}
+            </button>
+            
+            {userMenuOpen && (
+              <div 
+                className="absolute right-0 mt-2 w-48 rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 z-50"
+                role="menu"
+                aria-orientation="vertical"
+              >
+                <div className="py-1">
+                  <div className="px-4 py-2 border-b border-gray-100">
+                    <p className="text-sm font-medium text-gray-900 truncate">
+                      {user?.name ?? 'Admin'}
+                    </p>
+                    <p className="text-xs text-gray-500 truncate">
+                      {user?.email}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => { setUserMenuOpen(false); navigate('/admin/profile') }}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 min-h-[44px]"
+                    role="menuitem"
+                  >
+                    <UserIcon />
+                    Profile
+                  </button>
+                  <button
+                    onClick={() => { setUserMenuOpen(false); handleLogout() }}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 min-h-[44px]"
+                    role="menuitem"
+                  >
+                    <LogoutIcon />
+                    Sign out
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </header>
 
         {/* Page content */}

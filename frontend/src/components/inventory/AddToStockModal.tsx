@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import apiClient from '../../api/client'
 import { Modal, Button, FormField, Badge, Spinner } from '../ui'
 import { useToast, ToastContainer } from '../ui/Toast'
+import { useTenant } from '../../contexts/TenantContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -139,10 +140,10 @@ function FluidsIcon() {
   )
 }
 
-const CATEGORIES: { key: Category; label: string; icon: () => React.JSX.Element }[] = [
+const CATEGORIES: { key: Category; label: string; icon: () => React.JSX.Element; automotiveOnly?: boolean }[] = [
   { key: 'part', label: 'Parts', icon: PartsIcon },
-  { key: 'tyre', label: 'Tyres', icon: TyresIcon },
-  { key: 'fluid', label: 'Fluids / Oils', icon: FluidsIcon },
+  { key: 'tyre', label: 'Tyres', icon: TyresIcon, automotiveOnly: true },
+  { key: 'fluid', label: 'Fluids / Oils', icon: FluidsIcon, automotiveOnly: true },
 ]
 
 /* ------------------------------------------------------------------ */
@@ -150,11 +151,16 @@ const CATEGORIES: { key: Category; label: string; icon: () => React.JSX.Element 
 /* ------------------------------------------------------------------ */
 
 function CategorySelector({ onSelect }: { onSelect: (cat: Category) => void }) {
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+
+  const visibleCategories = CATEGORIES.filter(c => !c.automotiveOnly || isAutomotive)
+
   return (
     <div>
       <p className="mb-4 text-sm text-gray-600">Select a product category to get started.</p>
-      <div className="grid grid-cols-3 gap-4">
-        {CATEGORIES.map(({ key, label, icon: Icon }) => (
+      <div className={`grid gap-4 ${visibleCategories.length === 1 ? 'grid-cols-1 max-w-[200px] mx-auto' : visibleCategories.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+        {visibleCategories.map(({ key, label, icon: Icon }) => (
           <button
             key={key}
             type="button"

@@ -138,10 +138,11 @@
     <td style="vertical-align:top; width:55%; padding-right:20px;">
       <div class="bill-to-box">
         <div class="bill-to-label">Bill To</div>
-        <div class="bill-to-name">{{ customer.first_name }} {{ customer.last_name }}</div>
+        <div class="bill-to-name">{{ customer.display_name or (customer.first_name ~ ' ' ~ customer.last_name) }}</div>
+        {% if customer.company_name %}<div class="bill-to-detail" style="font-weight:600;">{{ customer.company_name }}</div>{% endif %}
+        {% if customer.address %}<div class="bill-to-detail">{{ customer.address }}</div>{% endif %}
         {% if customer.email %}<div class="bill-to-detail">{{ customer.email }}</div>{% endif %}
         {% if customer.phone %}<div class="bill-to-detail">{{ customer.phone }}</div>{% endif %}
-        {% if customer.address %}<div class="bill-to-detail">{{ customer.address }}</div>{% endif %}
       </div>
     </td>
     <td style="vertical-align:top; width:45%;">

@@ -24,6 +24,7 @@ from app.modules.trade_categories.schemas import (
     TradeCategoryUpdate,
     TradeFamilyCreate,
     TradeFamilyResponse,
+    TradeFamilyUpdate,
 )
 
 
@@ -37,13 +38,41 @@ class TradeCategoryService:
     # Trade Families
     # ------------------------------------------------------------------
 
-    async def list_families(self) -> list[TradeFamily]:
-        """Return all active trade families ordered by display_order."""
-        stmt = (
-            select(TradeFamily)
-            .where(TradeFamily.is_active.is_(True))
-            .order_by(TradeFamily.display_order)
-        )
+    async def list_families(
+        self,
+        *,
+        include_inactive: bool = False,
+        country_code: str | None = None,
+    ) -> list[TradeFamily]:
+        """Return trade families ordered by display_order.
+        
+        Args:
+            include_inactive: If True, include inactive families
+            country_code: If provided, filter to families available in this country
+        """
+        stmt = select(TradeFamily).order_by(TradeFamily.display_order)
+        
+        if not include_inactive:
+            stmt = stmt.where(TradeFamily.is_active.is_(True))
+
+        result = await self.db.execute(stmt)
+        families = list(result.scalars().all())
+        
+        # Filter by country if specified
+        if country_code:
+            filtered = []
+            for f in families:
+                codes = f.country_codes or []
+                # Empty list means available to all countries
+                if not codes or country_code in codes:
+                    filtered.append(f)
+            return filtered
+        
+        return families
+
+    async def list_all_families(self) -> list[TradeFamily]:
+        """Return ALL trade families (including inactive) for admin view."""
+        stmt = select(TradeFamily).order_by(TradeFamily.display_order)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
@@ -54,10 +83,31 @@ class TradeCategoryService:
             display_name=data.display_name,
             icon=data.icon,
             display_order=data.display_order,
+            country_codes=data.country_codes,
+            gated_features=data.gated_features,
         )
         self.db.add(family)
         await self.db.flush()
         return family
+
+    async def update_family(
+        self, slug: str, data: TradeFamilyUpdate,
+    ) -> TradeFamily | None:
+        """Update a trade family."""
+        family = await self._get_family_by_slug(slug)
+        if family is None:
+            return None
+
+        update_fields = data.model_dump(exclude_unset=True)
+        for field, value in update_fields.items():
+            setattr(family, field, value)
+
+        await self.db.flush()
+        return family
+
+    async def get_family(self, slug: str) -> TradeFamily | None:
+        """Get a single trade family by slug."""
+        return await self._get_family_by_slug(slug)
 
     # ------------------------------------------------------------------
     # Trade Categories

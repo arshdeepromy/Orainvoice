@@ -1,10 +1,30 @@
 import { useState, useEffect, useMemo, FormEvent } from 'react'
 import apiClient from '@/api/client'
 import { Button, Input, AlertBanner, Spinner } from '@/components/ui'
+import { CountrySelect } from '@/components/ui/CountrySelect'
 import { validateSignupForm } from './signup-validation'
 import { PasswordRequirements, PasswordMatch } from '@/components/auth/PasswordRequirements'
 import { IntervalSelector } from '@/components/billing/IntervalSelector'
-import type { SignupFormData, SignupResponse, PublicPlan, PublicPlanListResponse, SignupBillingConfig, IntervalPricing } from './signup-types'
+import type { SignupFormData, SignupResponse, PublicPlan, PublicPlanListResponse, SignupBillingConfig, IntervalPricing, TradeFamily } from './signup-types'
+
+// Trade family icons (same as TradeStep.tsx)
+const FAMILY_ICONS: Record<string, string> = {
+  'automotive-transport': '🚗',
+  'electrical-mechanical': '⚡',
+  'plumbing-gas': '🔧',
+  'building-construction': '🏗️',
+  'landscaping-outdoor': '🌿',
+  'cleaning-facilities': '🧹',
+  'it-technology': '💻',
+  'creative-professional': '🎨',
+  'accounting-legal-financial': '📊',
+  'health-wellness': '❤️',
+  'food-hospitality': '🍽️',
+  'retail': '🛍️',
+  'hair-beauty-personal-care': '💇',
+  'trades-support-hire': '🔨',
+  'freelancing-contracting': '📋',
+}
 
 interface CouponResponse {
   id: string
@@ -32,6 +52,10 @@ export function SignupForm({ onComplete }: SignupFormProps) {
   const [plansError, setPlansError] = useState<string | null>(null)
   const [billingConfig, setBillingConfig] = useState<SignupBillingConfig | null>(null)
 
+  // Trade families state
+  const [tradeFamilies, setTradeFamilies] = useState<TradeFamily[]>([])
+  const [tradeFamiliesLoading, setTradeFamiliesLoading] = useState(true)
+
   // Coupon state
   const [couponCode, setCouponCode] = useState('')
   const [couponApplied, setCouponApplied] = useState<CouponResponse | null>(null)
@@ -52,6 +76,8 @@ export function SignupForm({ onComplete }: SignupFormProps) {
     billing_interval: 'monthly',
     captcha_code: '',
     coupon_code: '',
+    country_code: 'NZ',
+    trade_family_slug: '',
   })
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [apiError, setApiError] = useState<string | null>(null)
@@ -82,9 +108,36 @@ export function SignupForm({ onComplete }: SignupFormProps) {
 
   useEffect(() => {
     fetchPlans()
+    fetchTradeFamilies()
     loadCaptcha()
     apiClient.get('/auth/signup-config').then(res => setBillingConfig(res.data)).catch(() => {})
   }, [])
+
+  // Refetch trade families when country changes
+  useEffect(() => {
+    fetchTradeFamilies()
+  }, [formData.country_code])
+
+  async function fetchTradeFamilies() {
+    setTradeFamiliesLoading(true)
+    try {
+      // Fetch trade families filtered by selected country
+      const countryParam = formData.country_code ? `?country_code=${formData.country_code}` : ''
+      const res = await apiClient.get<{ families: TradeFamily[] } | TradeFamily[]>(`/api/v2/trade-families${countryParam}`)
+      const data = res.data
+      const families = Array.isArray(data) ? data : (data?.families ?? [])
+      setTradeFamilies(families)
+      // Clear selection if current selection is no longer available
+      if (formData.trade_family_slug && !families.some(f => f.slug === formData.trade_family_slug)) {
+        setFormData(prev => ({ ...prev, trade_family_slug: '' }))
+      }
+    } catch {
+      // Non-critical, just leave empty
+      setTradeFamilies([])
+    } finally {
+      setTradeFamiliesLoading(false)
+    }
+  }
 
   async function loadCaptcha() {
     setCaptchaLoading(true)
@@ -223,6 +276,8 @@ export function SignupForm({ onComplete }: SignupFormProps) {
         ...formData,
         confirm_password: undefined,
         coupon_code: couponApplied?.code || undefined,
+        country_code: formData.country_code || undefined,
+        trade_family_slug: formData.trade_family_slug || undefined,
       })
       onComplete(res.data, selectedPlan)
     } catch (err: unknown) {
@@ -285,6 +340,48 @@ export function SignupForm({ onComplete }: SignupFormProps) {
           error={errors.admin_email}
           required
         />
+
+        {/* Country */}
+        <CountrySelect
+          label="Country"
+          value={formData.country_code}
+          onChange={code => handleFieldChange('country_code', code)}
+          error={errors.country_code}
+        />
+
+        {/* Business Type / Trade Family */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Business type</label>
+          {tradeFamiliesLoading ? (
+            <div className="h-[42px] flex items-center">
+              <Spinner size="sm" label="Loading..." />
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto p-1">
+              {tradeFamilies.map(family => {
+                const icon = FAMILY_ICONS[family.slug] || '📦'
+                const isSelected = formData.trade_family_slug === family.slug
+                return (
+                  <button
+                    key={family.slug}
+                    type="button"
+                    onClick={() => handleFieldChange('trade_family_slug', isSelected ? '' : family.slug)}
+                    className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500
+                      ${isSelected
+                        ? 'border-blue-500 bg-blue-50 text-blue-800'
+                        : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-gray-700'
+                      }`}
+                  >
+                    <span className="text-base" aria-hidden="true">{icon}</span>
+                    <span className="truncate text-xs">{family.display_name}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+          {errors.trade_family_slug && <p className="mt-1 text-sm text-red-600">{errors.trade_family_slug}</p>}
+        </div>
 
         {/* Password */}
         <div>

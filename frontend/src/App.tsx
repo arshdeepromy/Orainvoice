@@ -6,6 +6,7 @@ import { ModuleProvider } from '@/contexts/ModuleContext'
 import { FeatureFlagProvider } from '@/contexts/FeatureFlagContext'
 import { LocaleProvider } from '@/contexts/LocaleContext'
 import { PlatformBrandingProvider } from '@/contexts/PlatformBrandingContext'
+import { ThemeProvider } from '@/contexts/ThemeContext'
 import { Spinner } from '@/components/ui'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Login, MfaVerify, PasswordResetRequest, PasswordResetComplete, VerifyEmail } from '@/pages/auth'
@@ -38,6 +39,8 @@ import { Integrations } from '@/pages/admin/Integrations'
 import { UserManagement } from '@/pages/admin/UserManagement'
 import { SubscriptionPlans } from '@/pages/admin/SubscriptionPlans'
 import { FeatureFlags } from '@/pages/admin/FeatureFlags'
+import { GlobalAdminProfile } from '@/pages/admin/GlobalAdminProfile'
+import TradeFamilies from '@/pages/admin/TradeFamilies'
 
 /* ── Org pages (lazy loaded) ── */
 const CustomerList = lazy(() => import('@/pages/customers/CustomerList'))
@@ -260,6 +263,8 @@ function AppRoutes() {
             <Route path="audit-log" element={<SafePage name="admin-audit-log"><AuditLog /></SafePage>} />
             <Route path="reports" element={<SafePage name="admin-reports"><AdminReports /></SafePage>} />
             <Route path="integrations" element={<SafePage name="admin-integrations"><Integrations /></SafePage>} />
+            <Route path="trade-families" element={<SafePage name="admin-trade-families"><TradeFamilies /></SafePage>} />
+            <Route path="profile" element={<SafePage name="admin-profile"><GlobalAdminProfile /></SafePage>} />
             <Route index element={<Navigate to="dashboard" replace />} />
           </Route>
         </Route>
@@ -428,6 +433,7 @@ function App() {
       <BrowserRouter>
         <LocaleProvider>
           <PlatformBrandingProvider>
+            <ThemeProvider>
             <AuthProvider>
               <TenantProvider>
                 <ModuleProvider>
@@ -437,6 +443,7 @@ function App() {
                 </ModuleProvider>
               </TenantProvider>
             </AuthProvider>
+            </ThemeProvider>
           </PlatformBrandingProvider>
         </LocaleProvider>
       </BrowserRouter>

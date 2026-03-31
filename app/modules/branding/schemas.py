@@ -21,6 +21,7 @@ class BrandingUpdate(BaseModel):
     support_email: str | None = None
     terms_url: str | None = None
     auto_detect_domain: bool | None = None
+    platform_theme: str | None = Field(None, max_length=50, description="Active theme ID (e.g. classic, violet)")
 
 
 class BrandingResponse(BaseModel):
@@ -34,6 +35,7 @@ class BrandingResponse(BaseModel):
     support_email: str | None = None
     terms_url: str | None = None
     auto_detect_domain: bool
+    platform_theme: str = "classic"
     created_at: datetime
     updated_at: datetime
 
@@ -49,6 +51,7 @@ class PublicBrandingResponse(BaseModel):
     support_email: str | None = None
     terms_url: str | None = None
     website_url: str | None = None
+    platform_theme: str = "classic"
 
     model_config = {"from_attributes": True}
 

@@ -514,6 +514,12 @@ class PublicSignupRequest(BaseModel):
         "monthly",
         description="Billing interval for the subscription (defaults to monthly)",
     )
+    country_code: str | None = Field(
+        None, max_length=2, description="ISO 3166-1 alpha-2 country code (e.g. NZ, AU)"
+    )
+    trade_family_slug: str | None = Field(
+        None, max_length=100, description="Trade family slug (e.g. automotive-transport)"
+    )
 
 
 class OrgCarjamUsageResponse(BaseModel):

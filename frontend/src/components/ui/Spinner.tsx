@@ -14,7 +14,8 @@ export function Spinner({ size = 'md', label = 'Loading', className = '' }: Spin
   return (
     <div className={`flex items-center justify-center ${className}`} role="status" aria-label={label}>
       <svg
-        className={`animate-spin text-blue-600 ${sizeClasses[size]}`}
+        className={`animate-spin ${sizeClasses[size]}`}
+        style={{ color: 'var(--color-primary)' }}
         xmlns="http://www.w3.org/2000/svg"
         fill="none"
         viewBox="0 0 24 24"

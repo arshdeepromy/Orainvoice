@@ -21,6 +21,7 @@ import logging
 import time
 
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -108,13 +109,20 @@ class RateLimitMiddleware:
     async def _get_redis(self) -> Redis | None:
         """Return the shared Redis pool, cached after first successful ping."""
         if self._redis is not None:
-            return self._redis
+            # Verify the cached connection is still alive
+            try:
+                await asyncio.wait_for(self._redis.ping(), timeout=0.3)
+                return self._redis
+            except Exception:
+                # Connection went stale, reset and try fresh
+                self._redis = None
         try:
             from app.core.redis import redis_pool
             await asyncio.wait_for(redis_pool.ping(), timeout=0.5)
             self._redis = redis_pool
             return self._redis
-        except Exception:
+        except Exception as exc:
+            logger.warning("Rate limiter Redis connection failed: %s: %s", type(exc).__name__, exc)
             return None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -145,13 +153,16 @@ class RateLimitMiddleware:
 
         try:
             await self._apply_rate_limits(scope, receive, send, request, redis)
-        except Exception:
-            # Redis went away mid-request — bifurcate response.
+        except (RedisError, ConnectionError, TimeoutError, OSError) as exc:
+            # Redis connection/operation errors — bifurcate response.
             self._redis = None  # Reset so next request retries connection
             path = request.url.path
             if is_auth_endpoint(path):
                 logger.error(
-                    "Rate limiter Redis error during check — blocking auth request: %s", path,
+                    "Rate limiter Redis error — blocking auth request: %s (error: %s: %s)",
+                    path,
+                    type(exc).__name__,
+                    exc,
                 )
                 response = JSONResponse(
                     status_code=503,
@@ -160,9 +171,24 @@ class RateLimitMiddleware:
                 await response(scope, receive, send)
             else:
                 logger.warning(
-                    "Rate limiter Redis error during check — allowing non-auth request through: %s", path,
+                    "Rate limiter Redis error — allowing non-auth request through: %s (error: %s: %s)",
+                    path,
+                    type(exc).__name__,
+                    exc,
                 )
                 await self.app(scope, receive, send)
+        except Exception as exc:
+            # Unexpected error (likely a bug) — log with full traceback but don't block
+            path = request.url.path
+            logger.exception(
+                "Rate limiter unexpected error — allowing request through: %s (error: %s: %s)",
+                path,
+                type(exc).__name__,
+                exc,
+            )
+            # Fail open for unexpected errors to avoid blocking legitimate requests
+            # due to bugs in the rate limiter itself
+            await self.app(scope, receive, send)
 
     async def _apply_rate_limits(
         self, scope: Scope, receive: Receive, send: Send, request: Request, redis: Redis,

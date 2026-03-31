@@ -6,6 +6,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
 import { ToastContainer, useToast } from '@/components/ui/Toast'
 import apiClient from '@/api/client'
+import { THEMES } from '@/themes/registry'
 
 export interface PlatformBranding {
   id: string
@@ -18,6 +19,7 @@ export interface PlatformBranding {
   support_email: string | null
   terms_url: string | null
   auto_detect_domain: boolean
+  platform_theme: string
   created_at: string
   updated_at: string
 }
@@ -60,6 +62,7 @@ export function BrandingConfig() {
         support_email: branding.support_email,
         terms_url: branding.terms_url,
         auto_detect_domain: branding.auto_detect_domain,
+        platform_theme: branding.platform_theme,
       })
       setBranding(res.data)
       addToast('success', 'Branding saved successfully')
@@ -185,6 +188,50 @@ export function BrandingConfig() {
                 onChange={(e) => handleChange('terms_url', e.target.value)}
                 placeholder="https://example.com/terms"
               />
+            </div>
+          </section>
+
+          {/* Theme */}
+          <section className="rounded-lg border border-gray-200 bg-white p-5 space-y-4">
+            <h2 className="text-lg font-semibold text-gray-900">Platform Theme</h2>
+            <p className="text-sm text-gray-500">Choose the visual theme applied across the entire platform. Changes take effect on next page load for all users.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {THEMES.map((theme) => {
+                const isSelected = (branding.platform_theme || 'classic') === theme.id
+                return (
+                  <button
+                    key={theme.id}
+                    type="button"
+                    onClick={() => handleChange('platform_theme', theme.id)}
+                    className={`relative flex items-start gap-4 rounded-xl border-2 p-4 text-left transition-all ${
+                      isSelected
+                        ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200'
+                        : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    {/* Color swatch preview */}
+                    <div className="flex flex-col gap-1 shrink-0">
+                      <div
+                        className="h-10 w-10 rounded-lg shadow-sm border border-gray-200"
+                        style={{ backgroundColor: theme.previewColors.sidebar }}
+                      />
+                      <div
+                        className="h-3 w-10 rounded-full"
+                        style={{ backgroundColor: theme.previewColors.primary }}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-gray-900">{theme.label}</span>
+                        {isSelected && (
+                          <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">Active</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5">{theme.description}</p>
+                    </div>
+                  </button>
+                )
+              })}
             </div>
           </section>
 

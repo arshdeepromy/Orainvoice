@@ -1079,6 +1079,8 @@ async def public_signup(
     base_url: str = "http://localhost",
     coupon_code: str | None = None,
     billing_interval: str = "monthly",
+    country_code: str | None = None,
+    trade_family_slug: str | None = None,
 ) -> dict:
     """Handle public workshop signup — Requirement 8.6.
 
@@ -1116,6 +1118,34 @@ async def public_signup(
     if email_result.scalar_one_or_none() is not None:
         raise ValueError("A user with this email already exists")
 
+    # 3. Look up trade_category_id from trade_family_slug (if provided)
+    trade_category_id = None
+    if trade_family_slug:
+        from app.modules.trade_categories.models import TradeFamily, TradeCategory
+        family_result = await db.execute(
+            select(TradeFamily).where(
+                TradeFamily.slug == trade_family_slug,
+                TradeFamily.is_active == True,
+            )
+        )
+        family = family_result.scalar_one_or_none()
+        if family:
+            # Get the first active category in this family
+            cat_result = await db.execute(
+                select(TradeCategory.id).where(
+                    TradeCategory.family_id == family.id,
+                    TradeCategory.is_active == True,
+                ).order_by(TradeCategory.display_name).limit(1)
+            )
+            cat_row = cat_result.first()
+            if cat_row:
+                trade_category_id = cat_row[0]
+
+    # Build initial settings with country_code if provided
+    initial_settings = {}
+    if country_code:
+        initial_settings["address_country"] = country_code
+
     now = datetime.now(timezone.utc)
     trial_ends_at = _compute_trial_end(plan, now)
 
@@ -1149,6 +1179,8 @@ async def public_signup(
                 status="active",
                 storage_quota_gb=plan.storage_quota_gb,
                 billing_interval=billing_interval,
+                trade_category_id=trade_category_id,
+                settings=initial_settings,
             )
             db.add(org)
             await db.flush()
@@ -1283,6 +1315,8 @@ async def public_signup(
                 status="active",
                 storage_quota_gb=plan.storage_quota_gb,
                 billing_interval=billing_interval,
+                trade_category_id=trade_category_id,
+                settings=initial_settings,
             )
             db.add(org)
             await db.flush()
@@ -1394,6 +1428,8 @@ async def public_signup(
                 "coupon_code": coupon_code,
                 "coupon_discount_type": coupon_discount_type,
                 "coupon_discount_value": coupon_discount_value,
+                "country_code": country_code,
+                "trade_family_slug": trade_family_slug,
                 "ip_address": ip_address,
                 "created_at": now.isoformat(),
             }
@@ -1460,6 +1496,8 @@ async def public_signup(
         trial_ends_at=trial_ends_at,
         storage_quota_gb=plan.storage_quota_gb,
         billing_interval=billing_interval,
+        trade_category_id=trade_category_id,
+        settings=initial_settings,
     )
     db.add(org)
     await db.flush()

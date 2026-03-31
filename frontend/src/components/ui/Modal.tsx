@@ -59,8 +59,9 @@ export function Modal({ open, onClose, title, children, className = '' }: ModalP
   return (
     <dialog
       ref={dialogRef}
-      className={`fixed top-[5vh] left-1/2 -translate-x-1/2 rounded-lg bg-white p-0 shadow-2xl backdrop:bg-black/50
-        w-full max-h-[90vh] overflow-hidden ${className || 'max-w-lg'}`}
+      className={`fixed top-[5vh] left-1/2 -translate-x-1/2 bg-white p-0 shadow-2xl backdrop:bg-black/50 backdrop:backdrop-blur-sm
+        w-full max-h-[90vh] overflow-hidden animate-fadeIn ${className || 'max-w-lg'}`}
+      style={{ borderRadius: 'var(--modal-radius)', boxShadow: 'var(--modal-shadow)' }}
       aria-labelledby="modal-title"
       onClick={(e) => {
         // Prevent closing when clicking the backdrop — modals should only

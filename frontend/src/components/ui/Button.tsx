@@ -10,15 +10,6 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   children: React.ReactNode
 }
 
-const variantClasses: Record<ButtonVariant, string> = {
-  primary:
-    'bg-blue-600 text-white hover:bg-blue-700 focus-visible:ring-blue-500',
-  secondary:
-    'bg-gray-200 text-gray-900 hover:bg-gray-300 focus-visible:ring-gray-400',
-  danger:
-    'bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-500',
-}
-
 const sizeClasses: Record<ButtonSize, string> = {
   sm: 'px-3 py-1.5 text-sm',
   md: 'px-4 py-2 text-base',
@@ -32,16 +23,37 @@ export function Button({
   disabled,
   children,
   className = '',
+  style,
   ...props
 }: ButtonProps) {
   const isDisabled = disabled || loading
 
+  const variantStyle: React.CSSProperties =
+    variant === 'primary'
+      ? { backgroundColor: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }
+      : variant === 'danger'
+        ? { backgroundColor: 'var(--btn-danger-bg)', color: '#fff' }
+        : { backgroundColor: 'var(--btn-secondary-bg)', color: 'var(--btn-secondary-text)' }
+
+  const hoverClass =
+    variant === 'primary'
+      ? 'hover:[background-color:var(--btn-primary-hover)]'
+      : variant === 'danger'
+        ? 'hover:[background-color:var(--btn-danger-hover)]'
+        : 'hover:[background-color:var(--btn-secondary-hover)]'
+
   return (
     <button
-      className={`inline-flex items-center justify-center rounded-md font-medium transition-colors
-        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2
+      className={`inline-flex items-center justify-center font-medium
+        transition-all duration-[var(--transition-speed)]
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[var(--color-primary-ring)]
         disabled:opacity-50 disabled:cursor-not-allowed
-        ${variantClasses[variant]} ${sizeClasses[size]} ${className}`}
+        ${hoverClass} ${sizeClasses[size]} ${className}`}
+      style={{
+        borderRadius: 'var(--btn-radius)',
+        ...variantStyle,
+        ...style,
+      }}
       disabled={isDisabled}
       aria-disabled={isDisabled}
       aria-busy={loading}

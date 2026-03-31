@@ -151,7 +151,7 @@ export function OrgLayout() {
   }, [userMenuOpen])
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50">
+    <div className="flex h-screen overflow-hidden" style={{ backgroundColor: 'var(--content-bg)' }}>
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div
@@ -163,14 +163,15 @@ export function OrgLayout() {
 
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col bg-white border-r border-gray-200 transition-transform duration-200 ease-in-out lg:static lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col transition-transform duration-200 ease-in-out lg:static lg:translate-x-0 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
+        style={{ backgroundColor: 'var(--sidebar-bg)', borderRight: '1px solid var(--sidebar-border)' }}
         role="navigation"
         aria-label="Main navigation"
       >
         {/* Org branding */}
-        <div className="flex h-16 items-center gap-3 border-b border-gray-200 px-4">
+        <div className="flex h-16 items-center gap-3 px-4" style={{ borderBottom: '1px solid var(--sidebar-border)' }}>
           {(() => {
             const mode = branding?.sidebar_display_mode || 'icon_and_name'
             const hasLogo = !!branding?.logo_url
@@ -198,7 +199,7 @@ export function OrgLayout() {
                   )
                 )}
                 {showName && (
-                  <span className="text-lg font-semibold text-gray-900 truncate">
+                  <span className="text-lg font-semibold truncate" style={{ color: 'var(--sidebar-text)' }}>
                     {orgName}
                   </span>
                 )}
@@ -223,11 +224,14 @@ export function OrgLayout() {
                   to={item.to}
                   onClick={() => setSidebarOpen(false)}
                   className={({ isActive }) =>
-                    `flex items-center gap-3 rounded-lg px-3 min-h-[44px] text-sm font-medium transition-colors ${
-                      isActive
-                        ? 'bg-[var(--color-primary)]/10 text-[var(--color-primary)]'
-                        : 'text-gray-700 hover:bg-gray-100'
+                    `flex items-center gap-3 rounded-lg px-3 min-h-[44px] text-sm font-medium transition-all duration-[var(--transition-speed)] ${
+                      isActive ? 'sidebar-nav-active' : 'sidebar-nav-item'
                     }`
+                  }
+                  style={({ isActive }) =>
+                    isActive
+                      ? { backgroundColor: 'var(--sidebar-active-bg)', color: 'var(--sidebar-active-text)', borderLeft: '3px solid var(--sidebar-active-border)' }
+                      : { color: 'var(--sidebar-text)' }
                   }
                 >
                   <item.icon />
