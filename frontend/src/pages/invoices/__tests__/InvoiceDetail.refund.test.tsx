@@ -5,6 +5,11 @@ import React from 'react'
 
 vi.mock('react-router-dom', () => ({
   useParams: () => ({ id: 'inv-test-123' }),
+  useNavigate: () => vi.fn(),
+}))
+
+vi.mock('../../../contexts/TenantContext', () => ({
+  useTenant: () => ({ tradeFamily: 'automotive-transport' }),
 }))
 
 vi.mock('../../../api/client', () => ({

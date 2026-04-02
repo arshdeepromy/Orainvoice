@@ -171,6 +171,57 @@ async def seed() -> None:
                     flags_updated += 1
             print(f"Feature flags with org_override: {flags_updated} added, {len(all_flags)} total")
 
+            # ---------------------------------------------------------
+            # 7. Ensure a default "Main" branch exists for the demo org.
+            #    If missing, create it and assign branchless entities.
+            #    Requirements: 14.3, 14.4
+            # ---------------------------------------------------------
+            branch_result = await session.execute(
+                text(
+                    "SELECT id FROM branches WHERE org_id = CAST(:org_id AS uuid) "
+                    "AND name = 'Main' AND is_active = true"
+                ),
+                {"org_id": org_id},
+            )
+            main_branch_row = branch_result.first()
+
+            if main_branch_row:
+                main_branch_id = str(main_branch_row[0])
+                print(f"Main branch already exists ({main_branch_id}) — skipping.")
+            else:
+                main_branch_id = str(uuid.uuid4())
+                await session.execute(
+                    text("""
+                        INSERT INTO branches (id, org_id, name, is_active, is_default)
+                        VALUES (CAST(:id AS uuid), CAST(:org_id AS uuid), 'Main', true, true)
+                    """),
+                    {"id": main_branch_id, "org_id": org_id},
+                )
+                print(f"Main branch created ({main_branch_id})")
+
+                # Assign branchless entities to the Main branch
+                tables_with_branch = [
+                    "invoices",
+                    "job_cards",
+                    "customer_claims",
+                ]
+                for tbl in tables_with_branch:
+                    try:
+                        res = await session.execute(
+                            text(f"""
+                                UPDATE {tbl}
+                                SET branch_id = CAST(:branch_id AS uuid)
+                                WHERE org_id = CAST(:org_id AS uuid)
+                                  AND branch_id IS NULL
+                            """),
+                            {"branch_id": main_branch_id, "org_id": org_id},
+                        )
+                        if res.rowcount:
+                            print(f"  Assigned {res.rowcount} branchless {tbl} to Main branch")
+                    except Exception:
+                        # Table may not exist yet — skip silently
+                        pass
+
         # ---------------------------------------------------------
         # Print credentials
         # ---------------------------------------------------------

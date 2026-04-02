@@ -264,6 +264,12 @@ def create_app() -> FastAPI:
     app.include_router(kiosk_router, prefix="/api/v1/kiosk", tags=["kiosk"])
     app.include_router(scheduling_router, prefix="/api/v1/scheduling", tags=["scheduling"])
 
+    # --- Claims module ---
+    from app.modules.claims.router import router as claims_router
+    from app.modules.claims.router import customer_claims_router
+    app.include_router(claims_router, prefix="/api/v1/claims", tags=["claims"])
+    app.include_router(customer_claims_router, prefix="/api/v1/customers", tags=["customer-claims"])
+
     # --- Dashboard (branch-scoped metrics) ---
     from app.modules.organisations.dashboard_router import router as dashboard_router
     app.include_router(dashboard_router, prefix="/api/v1/dashboard", tags=["dashboard"])

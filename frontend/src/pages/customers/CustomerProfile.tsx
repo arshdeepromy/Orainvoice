@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Modal, Tabs, Input, Select } from '../../components/ui'
 import { useTenant } from '../../contexts/TenantContext'
+import { useCustomerClaims } from '../../hooks/useCustomerClaims'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -200,6 +201,8 @@ export default function CustomerProfilePage() {
   const [vehicleDateEdits, setVehicleDateEdits] = useState<Record<string, { service_due_date?: string; wof_expiry?: string }>>({})
 
   /* ---- Fetch profile ---- */
+  const { data: claimsData, loading: claimsLoading } = useCustomerClaims(id)
+
   const fetchProfile = useCallback(async () => {
     if (!id) return
     setLoading(true)
@@ -658,11 +661,88 @@ export default function CustomerProfilePage() {
         </dl>
       </section>
 
-      {/* Tabs: Vehicles & Invoices */}
+      {/* Tabs: Vehicles, Invoices & Claims */}
       <Tabs
         tabs={[
           { id: 'vehicles', label: `Vehicles (${customer.vehicles.length})`, content: vehiclesTab },
           { id: 'invoices', label: `Invoices (${customer.invoices.length})`, content: invoicesTab },
+          {
+            id: 'claims',
+            label: `Claims (${claimsData?.total_claims ?? 0})`,
+            content: (
+              <div className="space-y-4">
+                {/* Summary stats */}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div className="rounded-lg border border-gray-200 p-4">
+                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Total Claims</p>
+                    <p className="mt-1 text-xl font-semibold text-gray-900">{(claimsData?.total_claims ?? 0).toLocaleString()}</p>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 p-4">
+                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Open Claims</p>
+                    <p className="mt-1 text-xl font-semibold text-amber-600">{(claimsData?.open_claims ?? 0).toLocaleString()}</p>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 p-4">
+                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Total Cost to Business</p>
+                    <p className="mt-1 text-xl font-semibold text-red-600">{formatNZD(claimsData?.total_cost_to_business ?? 0)}</p>
+                  </div>
+                </div>
+
+                {/* New Claim button */}
+                <div className="flex justify-end">
+                  <Button size="sm" onClick={() => navigate(`/claims/new?customer_id=${id}`)}>
+                    New Claim
+                  </Button>
+                </div>
+
+                {/* Claims list */}
+                {claimsLoading ? (
+                  <Spinner size="sm" />
+                ) : (claimsData?.claims ?? []).length === 0 ? (
+                  <p className="text-sm text-gray-500">No claims for this customer.</p>
+                ) : (
+                  <div className="overflow-x-auto rounded-lg border border-gray-200">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <caption className="sr-only">Customer claims</caption>
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Type</th>
+                          <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
+                          <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Description</th>
+                          <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Created</th>
+                          <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Cost</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200 bg-white">
+                        {(claimsData?.claims ?? []).map((claim) => {
+                          const statusCfg: Record<string, { label: string; variant: BadgeVariant }> = {
+                            open: { label: 'Open', variant: 'info' },
+                            investigating: { label: 'Investigating', variant: 'warning' },
+                            approved: { label: 'Approved', variant: 'success' },
+                            rejected: { label: 'Rejected', variant: 'error' },
+                            resolved: { label: 'Resolved', variant: 'neutral' },
+                          }
+                          const cfg = statusCfg[claim.status] ?? { label: claim.status, variant: 'neutral' as BadgeVariant }
+                          return (
+                            <tr
+                              key={claim.id}
+                              className="hover:bg-gray-50 cursor-pointer"
+                              onClick={() => navigate(`/claims/${claim.id}`)}
+                            >
+                              <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 capitalize">{(claim.claim_type ?? '').replace(/_/g, ' ')}</td>
+                              <td className="whitespace-nowrap px-4 py-3 text-sm"><Badge variant={cfg.variant}>{cfg.label}</Badge></td>
+                              <td className="px-4 py-3 text-sm text-gray-700 max-w-xs truncate">{claim.description}</td>
+                              <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{formatDate(claim.created_at)}</td>
+                              <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums">{formatNZD(claim.cost_to_business ?? 0)}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            ),
+          },
         ]}
         defaultTab="vehicles"
       />

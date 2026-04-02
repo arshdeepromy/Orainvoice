@@ -124,6 +124,8 @@ class PurchaseOrderService:
 
         self._recalculate_total(po)
         await self.db.flush()
+        # Refresh to ensure lines are loaded in async context (avoid greenlet error)
+        await self.db.refresh(po, ["lines"])
         return po
 
     async def get_purchase_order(

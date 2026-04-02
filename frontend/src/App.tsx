@@ -131,6 +131,12 @@ const BranchStockTransfers = lazy(() => import('@/pages/inventory/StockTransfers
 const StaffSchedule = lazy(() => import('@/pages/scheduling/StaffSchedule'))
 const GlobalBranchOverview = lazy(() => import('@/pages/admin/GlobalBranchOverview'))
 
+/* Claims pages */
+const ClaimsList = lazy(() => import('@/pages/claims/ClaimsList'))
+const ClaimDetail = lazy(() => import('@/pages/claims/ClaimDetail'))
+const ClaimCreateForm = lazy(() => import('@/pages/claims/ClaimCreateForm'))
+const ClaimsReports = lazy(() => import('@/pages/claims/ClaimsReports'))
+
 function LazyFallback() {
   return (
     <div className="flex items-center justify-center p-8">
@@ -373,6 +379,12 @@ function AppRoutes() {
 
           {/* Branch Stock Transfers */}
           <Route path="/branch-transfers" element={<SafePage name="branch-transfers"><BranchStockTransfers /></SafePage>} />
+
+          {/* Claims */}
+          <Route path="/claims" element={<SafePage name="claims"><ClaimsList /></SafePage>} />
+          <Route path="/claims/new" element={<SafePage name="claim-create"><ClaimCreateForm /></SafePage>} />
+          <Route path="/claims/reports" element={<SafePage name="claims-reports"><ClaimsReports /></SafePage>} />
+          <Route path="/claims/:id" element={<SafePage name="claim-detail"><ClaimDetail /></SafePage>} />
 
           {/* Staff Schedule (branch-scoped) */}
           <Route path="/staff-schedule" element={<SafePage name="staff-schedule"><StaffSchedule /></SafePage>} />

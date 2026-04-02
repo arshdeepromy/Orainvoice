@@ -188,25 +188,25 @@ Frontend-only implementation that enhances BranchManagement.tsx with a two-step 
     - Refresh the browser, verify the selection is restored
     - _Requirements: 6.4_
 
-- [-] 10. Deployment — Rebuild frontend, run migrations, git push
-  - [-] 10.1 Rebuild Vite frontend in Docker container
+- [x] 10. Deployment — Rebuild frontend, run migrations, git push
+  - [x] 10.1 Rebuild Vite frontend in Docker container
     - Run `docker compose build frontend --no-cache` to rebuild the frontend with all new component changes
     - Verify the build completes without errors (check for TypeScript/Vite build warnings)
     - Run `docker compose up -d frontend nginx` to deploy the new frontend
     - _No backend changes or migrations needed for this feature_
 
-  - [~] 10.2 Run Alembic migrations on local dev containers (if any pending)
+  - [x] 10.2 Run Alembic migrations on local dev containers (if any pending)
     - Run `docker compose exec -T app alembic upgrade head` to apply any pending migrations
     - Verify migrations complete successfully
     - _Note: This feature has no new migrations, but run to ensure environment is current_
 
-  - [~] 10.3 Git commit and push all changes
+  - [x] 10.3 Git commit and push all changes
     - Stage all modified and new files
     - Commit with message: "feat(branch): add staff assignment to branch creation + enhanced branch selector"
     - Push to the current branch
     - Verify push succeeds
 
-- [~] 11. Final verification — End-to-end smoke test
+- [x] 11. Final verification — End-to-end smoke test
   - Open the app in browser at the deployed URL
   - Create a new branch with staff assignment
   - Verify the enhanced BranchSelector shows active styling when a branch is selected

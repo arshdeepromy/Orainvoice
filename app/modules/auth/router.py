@@ -2503,6 +2503,10 @@ async def confirm_signup_payment(
     db.add(org)
     await db.flush()
 
+    # Auto-create default "Main" branch (Req 14.1, 14.2)
+    from app.modules.organisations.service import create_default_main_branch
+    await create_default_main_branch(db, org_id=org.id)
+
     # Hash the raw password from the pending signup data
     from app.modules.auth.password import hash_password as _hash_pw
     raw_password = pending.get("password", "")

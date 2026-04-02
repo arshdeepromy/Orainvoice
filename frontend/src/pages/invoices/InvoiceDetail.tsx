@@ -507,6 +507,20 @@ export default function InvoiceDetail() {
           <Button size="sm" variant="primary" onClick={handleDownloadPDF} loading={downloading}>
             Download PDF
           </Button>
+          {!isVoided && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                const params = new URLSearchParams()
+                params.set('invoice_id', invoice.id)
+                if (invoice.customer_id) params.set('customer_id', invoice.customer_id)
+                navigate(`/claims/new?${params.toString()}`)
+              }}
+            >
+              Report Issue
+            </Button>
+          )}
         </div>
       </div>
 

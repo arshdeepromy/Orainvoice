@@ -67,7 +67,7 @@ class PurchaseOrder(Base):
     )
 
     # Relationships
-    branch = relationship("Branch")
+    branch = relationship("Branch", lazy="selectin")
     lines: Mapped[list["PurchaseOrderLine"]] = relationship(
         "PurchaseOrderLine", back_populates="purchase_order",
         cascade="all, delete-orphan", lazy="selectin",

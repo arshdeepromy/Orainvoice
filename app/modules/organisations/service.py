@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit_log
 from app.modules.admin.models import Organisation, SubscriptionPlan
 from app.modules.auth.models import User
+from app.modules.organisations.models import Branch
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,26 @@ ALL_ONBOARDING_FIELDS = ONBOARDING_SETTINGS_KEYS | {
     "org_name",
     "first_service_name",
 }
+
+
+async def create_default_main_branch(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+) -> Branch:
+    """Auto-create a default 'Main' branch for a newly created organisation.
+
+    Requirements: 14.1, 14.2
+    """
+    branch = Branch(
+        org_id=org_id,
+        name="Main",
+        is_active=True,
+        is_default=True,
+    )
+    db.add(branch)
+    await db.flush()
+    return branch
 
 
 async def save_onboarding_step(
@@ -1602,6 +1623,9 @@ async def public_signup(
             db.add(org)
             await db.flush()
 
+            # Auto-create default "Main" branch (Req 14.1, 14.2)
+            await create_default_main_branch(db, org_id=org.id)
+
             from app.modules.auth.password import hash_password as _hash_pw
 
             admin_user = User(
@@ -1737,6 +1761,9 @@ async def public_signup(
             )
             db.add(org)
             await db.flush()
+
+            # Auto-create default "Main" branch (Req 14.1, 14.2)
+            await create_default_main_branch(db, org_id=org.id)
 
             from app.modules.auth.password import hash_password as _hash_pw
 
@@ -1918,6 +1945,9 @@ async def public_signup(
     )
     db.add(org)
     await db.flush()
+
+    # Auto-create default "Main" branch (Req 14.1, 14.2)
+    await create_default_main_branch(db, org_id=org.id)
 
     # Create Org_Admin user with hashed password
     from app.modules.auth.password import hash_password

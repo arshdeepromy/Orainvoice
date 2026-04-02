@@ -54,6 +54,9 @@ class Branch(Base):
     notification_preferences: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default="'{}'"
     )
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="true"
     )
