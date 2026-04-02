@@ -25,6 +25,8 @@ export interface BranchContextValue {
   branches: Branch[]
   selectBranch: (id: string | null) => void
   isLoading: boolean
+  /** True when the user is a branch_admin — branch is locked and cannot be switched */
+  isBranchLocked: boolean
 }
 
 const STORAGE_KEY = 'selected_branch_id'
@@ -57,12 +59,32 @@ export function BranchProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false)
   const [, setUserBranchIds] = useState<string[]>([])
 
-  // Fetch branches when authenticated with an org
+  const isBranchLocked = user?.role === 'branch_admin'
+
+  // For branch_admin: auto-lock to assigned branch, skip fetch + validation
   useEffect(() => {
-    if (!isAuthenticated || !user?.org_id || user?.role === 'global_admin') {
-      setBranches([])
-      setUserBranchIds([])
+    if (!isAuthenticated || !user?.org_id || !isBranchLocked) return
+
+    const assignedBranch = user.branch_ids?.[0] ?? null
+    if (assignedBranch) {
+      localStorage.setItem(STORAGE_KEY, assignedBranch)
+      setSelectedBranchId(assignedBranch)
+    } else {
+      localStorage.removeItem(STORAGE_KEY)
       setSelectedBranchId(null)
+    }
+    setBranches([])
+    setUserBranchIds([])
+  }, [isAuthenticated, user?.org_id, isBranchLocked, user?.branch_ids])
+
+  // Fetch branches when authenticated with an org (non-branch_admin only)
+  useEffect(() => {
+    if (!isAuthenticated || !user?.org_id || user?.role === 'global_admin' || isBranchLocked) {
+      if (!isBranchLocked) {
+        setBranches([])
+        setUserBranchIds([])
+        setSelectedBranchId(null)
+      }
       return
     }
 
@@ -108,11 +130,11 @@ export function BranchProvider({ children }: { children: ReactNode }) {
 
     fetchBranches()
     return () => controller.abort()
-  }, [isAuthenticated, user?.org_id, user?.role])
+  }, [isAuthenticated, user?.org_id, user?.role, isBranchLocked])
 
-  // Re-validate on API responses by adding a response interceptor
+  // Re-validate on API responses by adding a response interceptor (skip for branch_admin)
   useEffect(() => {
-    if (!isAuthenticated || !user?.org_id) return
+    if (!isAuthenticated || !user?.org_id || isBranchLocked) return
 
     const interceptorId = apiClient.interceptors.response.use(
       (response) => {
@@ -157,8 +179,9 @@ export function BranchProvider({ children }: { children: ReactNode }) {
       branches,
       selectBranch,
       isLoading,
+      isBranchLocked,
     }),
-    [selectedBranchId, branches, selectBranch, isLoading],
+    [selectedBranchId, branches, selectBranch, isLoading, isBranchLocked],
   )
 
   return (

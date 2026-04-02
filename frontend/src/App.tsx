@@ -202,6 +202,13 @@ function RequireGlobalAdmin() {
   return <Outlet />
 }
 
+/** Redirect branch_admin users away from org-level settings to /dashboard */
+function RequireOrgAdmin() {
+  const { isBranchAdmin } = useAuth()
+  if (isBranchAdmin) return <Navigate to="/dashboard" replace />
+  return <Outlet />
+}
+
 function RequireAutomotive() {
   const { tradeFamily } = useTenant()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
@@ -326,8 +333,10 @@ function AppRoutes() {
           {/* Reports */}
           <Route path="/reports" element={<SafePage name="reports"><ReportsPage /></SafePage>} />
 
-          {/* Settings */}
-          <Route path="/settings" element={<SafePage name="settings"><OrgSettingsPage /></SafePage>} />
+          {/* Settings (org_admin only — branch_admin redirected to /dashboard) */}
+          <Route element={<RequireOrgAdmin />}>
+            <Route path="/settings" element={<SafePage name="settings"><OrgSettingsPage /></SafePage>} />
+          </Route>
 
           {/* Notifications */}
           <Route path="/notifications" element={<SafePage name="notifications"><NotificationsPage /></SafePage>} />

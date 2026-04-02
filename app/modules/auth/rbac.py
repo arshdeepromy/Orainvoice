@@ -34,12 +34,13 @@ from fastapi import Depends, HTTPException, Request
 GLOBAL_ADMIN = "global_admin"
 FRANCHISE_ADMIN = "franchise_admin"
 ORG_ADMIN = "org_admin"
+BRANCH_ADMIN = "branch_admin"
 LOCATION_MANAGER = "location_manager"
 SALESPERSON = "salesperson"
 STAFF_MEMBER = "staff_member"
 KIOSK = "kiosk"
 
-ALL_ROLES = {GLOBAL_ADMIN, FRANCHISE_ADMIN, ORG_ADMIN, LOCATION_MANAGER, SALESPERSON, STAFF_MEMBER, KIOSK}
+ALL_ROLES = {GLOBAL_ADMIN, FRANCHISE_ADMIN, ORG_ADMIN, BRANCH_ADMIN, LOCATION_MANAGER, SALESPERSON, STAFF_MEMBER, KIOSK}
 
 # ---------------------------------------------------------------------------
 # Permission-based RBAC
@@ -49,6 +50,13 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
     "global_admin": ["*"],
     "franchise_admin": ["franchise.read", "reports.read"],
     "org_admin": ["org.*", "users.*", "modules.*", "settings.*", "reports.*", "billing.*"],
+    "branch_admin": [
+        "invoices.*", "customers.*", "vehicles.*", "quotes.*", "jobs.*",
+        "bookings.*", "inventory.*", "catalogue.*", "expenses.*",
+        "purchase_orders.*", "scheduling.*", "pos.*", "staff.*",
+        "projects.*", "time_tracking.*", "claims.*", "notifications.*",
+        "data_io.*", "reports.*",
+    ],
     "location_manager": [
         "invoices.*", "customers.*", "jobs.*", "inventory.*", "staff.*",
         "scheduling.*", "bookings.*", "pos.*", "reports.read",
@@ -157,6 +165,15 @@ SALESPERSON_DENIED_WRITE_PREFIXES: tuple[str, ...] = (
     "/api/v1/org/branches",
 )
 
+# Paths that Branch Admin is DENIED (org-level admin, billing, user management, branch management)
+BRANCH_ADMIN_DENIED_PREFIXES: tuple[str, ...] = (
+    "/api/v1/org/users",
+    "/api/v1/billing/",
+    "/api/v1/billing",
+    "/api/v1/admin/",
+    "/api/v1/org/branches",
+)
+
 # Franchise admin: read-only access to aggregate reports only
 FRANCHISE_ADMIN_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/api/v2/franchise/",
@@ -235,7 +252,7 @@ def require_role(*allowed_roles: str):
             )
 
         # For org-scoped roles, verify org membership
-        if role in (ORG_ADMIN, SALESPERSON, LOCATION_MANAGER, STAFF_MEMBER, KIOSK) and not org_id:
+        if role in (ORG_ADMIN, BRANCH_ADMIN, SALESPERSON, LOCATION_MANAGER, STAFF_MEMBER, KIOSK) and not org_id:
             raise HTTPException(
                 status_code=403,
                 detail="Organisation membership required",
@@ -245,12 +262,12 @@ def require_role(*allowed_roles: str):
 
 
 def require_any_org_role():
-    """Dependency that allows org_admin, salesperson, and location_manager.
+    """Dependency that allows org_admin, branch_admin, salesperson, and location_manager.
 
     Useful for endpoints accessible to all org-level users with data access
     (e.g. invoices, customers, vehicles).
     """
-    return require_role(ORG_ADMIN, SALESPERSON, LOCATION_MANAGER)
+    return require_role(ORG_ADMIN, BRANCH_ADMIN, SALESPERSON, LOCATION_MANAGER)
 
 
 def require_global_admin():
@@ -268,8 +285,13 @@ def require_org_admin_or_global():
     return require_role(ORG_ADMIN, GLOBAL_ADMIN)
 
 def require_any_org_member():
-    """Dependency that allows any org-level role (org_admin, salesperson, location_manager, staff_member)."""
-    return require_role(ORG_ADMIN, SALESPERSON, LOCATION_MANAGER, STAFF_MEMBER)
+    """Dependency that allows any org-level role (org_admin, branch_admin, salesperson, location_manager, staff_member)."""
+    return require_role(ORG_ADMIN, BRANCH_ADMIN, SALESPERSON, LOCATION_MANAGER, STAFF_MEMBER)
+
+
+def require_branch_admin_or_above():
+    """Dependency that allows branch_admin, org_admin, or global_admin."""
+    return require_role(BRANCH_ADMIN, ORG_ADMIN, GLOBAL_ADMIN)
 
 
 def require_location_manager_or_above():
@@ -314,6 +336,17 @@ def check_role_path_access(role: str, path: str, method: str = "GET") -> str | N
             "/api/v1/billing",
         )):
             return "Location managers cannot access billing or user management"
+
+    elif role == BRANCH_ADMIN:
+        if _matches_any_prefix(path, GLOBAL_ADMIN_ONLY_PREFIXES):
+            return "Branch admin role cannot access this resource"
+        if _matches_any_prefix(path, BRANCH_ADMIN_DENIED_PREFIXES):
+            return "Branch admin role cannot access this resource"
+        # Allow GET on org/settings (branding), deny write methods
+        if method.upper() in ("POST", "PUT", "DELETE", "PATCH") and _matches_any_prefix(
+            path, ("/api/v1/org/settings",)
+        ):
+            return "Branch admin role cannot modify this resource"
 
     elif role == SALESPERSON:
         if _matches_any_prefix(path, SALESPERSON_DENIED_PREFIXES):
@@ -363,7 +396,7 @@ async def enforce_rbac(request: Request):
     path = request.url.path
 
     # Verify org membership for org-scoped roles
-    if role in (ORG_ADMIN, SALESPERSON, LOCATION_MANAGER, STAFF_MEMBER, KIOSK) and not org_id:
+    if role in (ORG_ADMIN, BRANCH_ADMIN, SALESPERSON, LOCATION_MANAGER, STAFF_MEMBER, KIOSK) and not org_id:
         # Org roles must have an org_id in their token
         raise HTTPException(
             status_code=403,

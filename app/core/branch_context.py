@@ -41,21 +41,62 @@ class BranchContextMiddleware:
         request = Request(scope)
         branch_header = request.headers.get("x-branch-id")
 
+        # --- Parse header UUID early (needed by branch_admin check) ---
+        branch_id: uuid.UUID | None = None
+        if branch_header:
+            try:
+                branch_id = uuid.UUID(branch_header)
+            except (ValueError, AttributeError):
+                response = JSONResponse(
+                    status_code=403,
+                    content={"detail": "Invalid branch context"},
+                )
+                await response(scope, receive, send)
+                return
+
+        # --- branch_admin auto-scoping ---
+        role = getattr(request.state, "role", None)
+
+        if role == "branch_admin":
+            user_branch_ids = getattr(request.state, "branch_ids", None) or []
+
+            if not user_branch_ids:
+                # No branch assigned — deny all data access
+                response = JSONResponse(
+                    status_code=403,
+                    content={"detail": "No branch assignment. Contact your org admin."},
+                )
+                await response(scope, receive, send)
+                return
+
+            assigned_branch = uuid.UUID(str(user_branch_ids[0]))
+
+            if branch_header:
+                # Validate header matches assigned branch
+                if branch_id != assigned_branch:
+                    response = JSONResponse(
+                        status_code=403,
+                        content={"detail": "Invalid branch context"},
+                    )
+                    await response(scope, receive, send)
+                    return
+            else:
+                # No header = "All Branches" — deny for branch_admin
+                response = JSONResponse(
+                    status_code=403,
+                    content={"detail": "Invalid branch context"},
+                )
+                await response(scope, receive, send)
+                return
+
+            request.state.branch_id = assigned_branch
+            await self.app(scope, receive, send)
+            return
+
         if not branch_header:
             # No header → "All Branches" scope
             request.state.branch_id = None
             await self.app(scope, receive, send)
-            return
-
-        # --- Validate UUID format ---
-        try:
-            branch_id = uuid.UUID(branch_header)
-        except (ValueError, AttributeError):
-            response = JSONResponse(
-                status_code=403,
-                content={"detail": "Invalid branch context"},
-            )
-            await response(scope, receive, send)
             return
 
         # --- Validate branch belongs to user's org ---

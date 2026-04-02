@@ -9,7 +9,7 @@ import {
 import type { ReactNode } from 'react'
 import apiClient, { setAccessToken, isAccessTokenValid, getAccessToken, doTokenRefresh } from '@/api/client'
 
-export type UserRole = 'global_admin' | 'org_admin' | 'salesperson' | 'kiosk'
+export type UserRole = 'global_admin' | 'org_admin' | 'branch_admin' | 'salesperson' | 'kiosk'
 
 export interface AuthUser {
   id: string
@@ -17,6 +17,7 @@ export interface AuthUser {
   name: string
   role: UserRole
   org_id: string | null
+  branch_ids?: string[]
 }
 
 /** Decode a JWT payload (no signature verification — the server is trusted). */
@@ -40,6 +41,7 @@ function userFromToken(token: string): AuthUser | null {
     name: email.split('@')[0],
     role: (payload.role as UserRole) ?? 'salesperson',
     org_id: (payload.org_id as string) ?? null,
+    branch_ids: (payload.branch_ids as string[] | undefined) ?? undefined,
   }
 }
 
@@ -67,6 +69,7 @@ interface AuthContextValue {
   refreshProfile: () => Promise<void>
   isGlobalAdmin: boolean
   isOrgAdmin: boolean
+  isBranchAdmin: boolean
   isSalesperson: boolean
   isKiosk: boolean
 }
@@ -318,6 +321,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       refreshProfile,
       isGlobalAdmin: user?.role === 'global_admin',
       isOrgAdmin: user?.role === 'org_admin',
+      isBranchAdmin: user?.role === 'branch_admin',
       isSalesperson: user?.role === 'salesperson',
       isKiosk: user?.role === 'kiosk',
     }),

@@ -87,13 +87,18 @@ export function OrgLayout() {
   const userMenuRef = useRef<HTMLDivElement>(null)
   const { settings, tradeFamily } = useTenant()
   const { isEnabled } = useModules()
-  const { isGlobalAdmin, user, logout } = useAuth()
+  const { isGlobalAdmin, isBranchAdmin, user, logout } = useAuth()
   const { flags } = useFeatureFlags()
   const navigate = useNavigate()
   const branding = settings?.branding
 
   // Active branch indicator state
-  const { selectedBranchId: activeBranchId, branches: branchList } = useBranch()
+  const { selectedBranchId: activeBranchId, branches: branchList, isBranchLocked } = useBranch()
+
+  // Branch name for branch_admin badge
+  // The branches array is empty for branch_admin (fetch is skipped due to RBAC),
+  // so we show "My Branch" as a static indicator. The branch context is auto-locked.
+  const branchAdminBranchName = isBranchAdmin ? 'My Branch' : null
   const activeBranchIndicator = useMemo(
     () => getActiveBranchIndicatorState(activeBranchId, branchList),
     [activeBranchId, branchList],
@@ -287,11 +292,19 @@ export function OrgLayout() {
             </kbd>
           </button>
 
-          {/* Branch selector */}
-          <BranchSelector />
+          {/* Branch selector — hidden for branch_admin (locked to single branch) */}
+          {!isBranchLocked && <BranchSelector />}
 
-          {/* Active branch indicator */}
-          {activeBranchIndicator.visible && (
+          {/* Static branch badge for branch_admin */}
+          {isBranchAdmin && branchAdminBranchName && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 border border-blue-200 px-2.5 py-1 text-xs font-medium text-blue-700">
+              <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden="true" />
+              <span className="truncate max-w-[120px] sm:max-w-[200px]">{branchAdminBranchName}</span>
+            </span>
+          )}
+
+          {/* Active branch indicator (non-branch_admin) */}
+          {!isBranchAdmin && activeBranchIndicator.visible && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 border border-blue-200 px-2.5 py-1 text-xs font-medium text-blue-700">
               <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden="true" />
               <span className="truncate max-w-[120px] sm:max-w-[200px]">{activeBranchIndicator.branchName}</span>

@@ -1038,6 +1038,7 @@ async def verify_mfa(
         org_id=token_org_id,
         role=user.role,
         email=user.email,
+        branch_ids=user.branch_ids,
     )
     refresh_token = create_refresh_token()
 

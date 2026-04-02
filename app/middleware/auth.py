@@ -169,6 +169,7 @@ class AuthMiddleware:
             request.state.org_id = None
             request.state.role = None
             request.state.assigned_location_ids = []
+            request.state.branch_ids = []
             request.state.franchise_group_id = None
             await self.app(scope, receive, send)
             return
@@ -225,6 +226,7 @@ class AuthMiddleware:
         request.state.org_id = org_id  # May be None for global_admin
         request.state.role = role
         request.state.assigned_location_ids = payload.get("assigned_location_ids", [])
+        request.state.branch_ids = payload.get("branch_ids", [])
         request.state.franchise_group_id = payload.get("franchise_group_id")
 
         # REM-10: Global admin org context enforcement.

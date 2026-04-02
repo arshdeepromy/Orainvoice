@@ -192,6 +192,7 @@ async def authenticate_user(
         org_id=token_org_id,
         role=user.role,
         email=user.email,
+        branch_ids=user.branch_ids,
     )
     refresh_token = create_refresh_token()
 
@@ -763,6 +764,7 @@ async def _do_rotation(
         org_id=token_org_id,
         role=user.role,
         email=user.email,
+        branch_ids=user.branch_ids,
     )
     new_refresh_token = create_refresh_token()
 
@@ -898,6 +900,7 @@ async def authenticate_google(
         org_id=token_org_id,
         role=user.role,
         email=user.email,
+        branch_ids=user.branch_ids,
     )
     refresh_token = create_refresh_token()
 
@@ -1364,6 +1367,7 @@ async def verify_passkey_login(
         org_id=token_org_id,
         role=user.role,
         email=user.email,
+        branch_ids=user.branch_ids,
     )
     refresh_token = create_refresh_token()
 
@@ -2163,6 +2167,7 @@ async def verify_email_and_set_password(
         org_id=token_org_id,
         role=user.role,
         email=user.email,
+        branch_ids=user.branch_ids,
     )
     refresh_token = create_refresh_token()
 
@@ -2530,6 +2535,7 @@ async def verify_signup_email(
         org_id=token_org_id,
         role=user.role,
         email=user.email,
+        branch_ids=user.branch_ids,
     )
     refresh_token = create_refresh_token()
 

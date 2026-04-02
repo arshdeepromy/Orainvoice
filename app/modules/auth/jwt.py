@@ -65,11 +65,12 @@ def create_access_token(
     email: str,
     assigned_location_ids: list[str] | None = None,
     franchise_group_id: uuid.UUID | None = None,
+    branch_ids: list[str] | None = None,
 ) -> str:
     """Create a signed JWT access token (15-min expiry by default).
 
-    Includes role, assigned_location_ids, and franchise_group_id claims
-    for RBAC enforcement.
+    Includes role, assigned_location_ids, franchise_group_id, and
+    branch_ids claims for RBAC enforcement.
     """
     now = datetime.now(timezone.utc)
     payload = {
@@ -79,6 +80,7 @@ def create_access_token(
         "email": email,
         "assigned_location_ids": [str(lid) for lid in (assigned_location_ids or [])],
         "franchise_group_id": str(franchise_group_id) if franchise_group_id else None,
+        "branch_ids": [str(bid) for bid in (branch_ids or [])],
         "iat": now,
         "exp": now + timedelta(minutes=settings.access_token_expire_minutes),
         "type": "access",
