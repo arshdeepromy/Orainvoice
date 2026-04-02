@@ -263,6 +263,7 @@ async def list_invoices_endpoint(
         issue_date_to=issue_date_to,
         limit=limit,
         offset=offset,
+        branch_id=getattr(request.state, "branch_id", None),
     )
 
     return InvoiceListResponse(

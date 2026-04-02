@@ -165,6 +165,7 @@ async def list_job_cards_endpoint(
         active_only=active_only,
         limit=limit,
         offset=offset,
+        branch_id=getattr(request.state, "branch_id", None),
     )
 
     return JobCardListResponse(

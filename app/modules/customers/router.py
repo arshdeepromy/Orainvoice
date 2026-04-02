@@ -114,7 +114,8 @@ async def list_customers(
         )
 
     result = await search_customers(
-        db, org_id=org_uuid, query=q, limit=limit, offset=offset, include_vehicles=include_vehicles
+        db, org_id=org_uuid, query=q, limit=limit, offset=offset, include_vehicles=include_vehicles,
+        branch_id=getattr(request.state, "branch_id", None),
     )
 
     return CustomerListResponse(

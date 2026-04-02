@@ -171,6 +171,7 @@ async def list_quotes_endpoint(
         status=status,
         limit=limit,
         offset=offset,
+        branch_id=getattr(request.state, "branch_id", None),
     )
 
     return QuoteListResponse(
