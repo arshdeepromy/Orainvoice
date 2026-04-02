@@ -552,20 +552,20 @@ This implementation plan covers the Customer Claims & Returns module, which prov
     - Verify note appears in the timeline
     - _Requirements: 13.10_
 
-- [ ] 21. Rebuild containers and git push
+- [x] 21. Rebuild containers and git push
   - [x] 21.1 Rebuild Docker containers with all changes
     - Run `docker compose build app --no-cache`
     - Run `docker compose up -d app`
     - Verify app starts successfully and migrations run
     - _Requirements: 13.12_
 
-  - [-] 21.2 Git commit and push all changes
+  - [x] 21.2 Git commit and push all changes
     - Stage all new and modified files
     - Commit with descriptive message
     - Push to remote
     - _Requirements: 13.12_
 
-- [ ] 22. Final E2E checkpoint
+- [x] 22. Final E2E checkpoint
   - Run all Playwright E2E tests against the running containers
   - Verify all tests pass end-to-end
   - Ensure all tests pass, ask the user if questions arise.
