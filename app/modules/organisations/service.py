@@ -433,6 +433,423 @@ async def create_branch(
     }
 
 
+async def update_branch(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    user_id: uuid.UUID,
+    name: str | None = None,
+    address: str | None = None,
+    phone: str | None = None,
+    email: str | None = None,
+    logo_url: str | None = None,
+    operating_hours: dict | None = None,
+    timezone: str | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Update an existing branch's fields.
+
+    Accepts optional fields: name, address, phone, email, logo_url,
+    operating_hours, timezone.  Only non-None values are applied.
+
+    Validates:
+    - name is not empty string (raises ValueError)
+    - branch belongs to org (returns None → caller should 404)
+
+    Writes an audit log entry with before/after values.
+
+    Returns a dict with the updated branch data, or None if not found.
+
+    Requirements: 1.1, 1.2, 1.3, 1.4, 1.5
+    """
+    # Validate name is not empty string
+    if name is not None and name.strip() == "":
+        raise ValueError("Branch name cannot be empty")
+
+    # Fetch branch and validate org ownership
+    result = await db.execute(
+        select(Branch).where(Branch.id == branch_id, Branch.org_id == org_id)
+    )
+    branch = result.scalar_one_or_none()
+    if branch is None:
+        return None  # Caller should return 404
+
+    # Capture before values for audit log
+    before_value = {
+        "name": branch.name,
+        "address": branch.address,
+        "phone": branch.phone,
+        "email": branch.email,
+        "logo_url": branch.logo_url,
+        "operating_hours": branch.operating_hours,
+        "timezone": branch.timezone,
+    }
+
+    updated_fields: list[str] = []
+
+    if name is not None:
+        branch.name = name
+        updated_fields.append("name")
+    if address is not None:
+        branch.address = address
+        updated_fields.append("address")
+    if phone is not None:
+        branch.phone = phone
+        updated_fields.append("phone")
+    if email is not None:
+        branch.email = email
+        updated_fields.append("email")
+    if logo_url is not None:
+        branch.logo_url = logo_url
+        updated_fields.append("logo_url")
+    if operating_hours is not None:
+        branch.operating_hours = operating_hours
+        updated_fields.append("operating_hours")
+    if timezone is not None:
+        branch.timezone = timezone
+        updated_fields.append("timezone")
+
+    if updated_fields:
+        await db.flush()
+
+        # Capture after values for audit log
+        after_value = {
+            "name": branch.name,
+            "address": branch.address,
+            "phone": branch.phone,
+            "email": branch.email,
+            "logo_url": branch.logo_url,
+            "operating_hours": branch.operating_hours,
+            "timezone": branch.timezone,
+            "updated_fields": updated_fields,
+        }
+
+        await write_audit_log(
+            session=db,
+            org_id=org_id,
+            user_id=user_id,
+            action="org.branch_updated",
+            entity_type="branch",
+            entity_id=branch_id,
+            before_value=before_value,
+            after_value=after_value,
+            ip_address=ip_address,
+        )
+
+    return {
+        "id": str(branch.id),
+        "name": branch.name,
+        "address": branch.address,
+        "phone": branch.phone,
+        "email": branch.email,
+        "logo_url": branch.logo_url,
+        "operating_hours": branch.operating_hours,
+        "timezone": branch.timezone,
+        "is_hq": branch.is_hq,
+        "is_active": branch.is_active,
+        "created_at": branch.created_at.isoformat() if branch.created_at else None,
+        "updated_at": branch.updated_at.isoformat() if branch.updated_at else None,
+    }
+
+
+async def deactivate_branch(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    user_id: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict | None:
+    """Soft-delete a branch by setting is_active = False.
+
+    Validates:
+    - Branch exists and belongs to org (returns None → caller should 404)
+    - Branch is not the only active branch in the org (raises ValueError → 400)
+    - Branch is not HQ while other active branches exist (raises ValueError → 400)
+
+    Writes an audit log entry recording the deactivation.
+
+    Returns a dict with the deactivated branch data, or None if not found.
+
+    Requirements: 2.1, 2.3, 2.4, 2.5, 6.3
+    """
+    from sqlalchemy import func as sa_func
+
+    # Fetch branch and validate org ownership
+    result = await db.execute(
+        select(Branch).where(Branch.id == branch_id, Branch.org_id == org_id)
+    )
+    branch = result.scalar_one_or_none()
+    if branch is None:
+        return None  # Caller should return 404
+
+    # Count active branches in the org
+    count_result = await db.execute(
+        select(sa_func.count(Branch.id)).where(
+            Branch.org_id == org_id,
+            Branch.is_active.is_(True),
+        )
+    )
+    active_count = count_result.scalar() or 0
+
+    # Reject if this is the only active branch
+    if active_count <= 1:
+        raise ValueError("Cannot deactivate the only active branch")
+
+    # Reject if branch is HQ and other active branches exist
+    if branch.is_hq:
+        raise ValueError(
+            "Cannot deactivate HQ branch while other active branches exist"
+        )
+
+    # Soft-delete
+    before_value = {"is_active": branch.is_active}
+    branch.is_active = False
+    await db.flush()
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="org.branch_deactivated",
+        entity_type="branch",
+        entity_id=branch_id,
+        before_value=before_value,
+        after_value={"is_active": False},
+        ip_address=ip_address,
+    )
+
+    return {
+        "id": str(branch.id),
+        "name": branch.name,
+        "address": branch.address,
+        "phone": branch.phone,
+        "email": branch.email,
+        "logo_url": branch.logo_url,
+        "operating_hours": branch.operating_hours,
+        "timezone": branch.timezone,
+        "is_hq": branch.is_hq,
+        "is_active": branch.is_active,
+        "created_at": branch.created_at.isoformat() if branch.created_at else None,
+        "updated_at": branch.updated_at.isoformat() if branch.updated_at else None,
+    }
+
+
+async def reactivate_branch(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    user_id: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict | None:
+    """Reactivate a previously deactivated branch by setting is_active = True.
+
+    Validates:
+    - Branch exists and belongs to org (returns None → caller should 404)
+
+    Writes an audit log entry recording the reactivation.
+
+    Returns a dict with the reactivated branch data, or None if not found.
+
+    Requirements: 2.6
+    """
+    # Fetch branch and validate org ownership
+    result = await db.execute(
+        select(Branch).where(Branch.id == branch_id, Branch.org_id == org_id)
+    )
+    branch = result.scalar_one_or_none()
+    if branch is None:
+        return None  # Caller should return 404
+
+    before_value = {"is_active": branch.is_active}
+    branch.is_active = True
+    await db.flush()
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="org.branch_reactivated",
+        entity_type="branch",
+        entity_id=branch_id,
+        before_value=before_value,
+        after_value={"is_active": True},
+        ip_address=ip_address,
+    )
+
+    return {
+        "id": str(branch.id),
+        "name": branch.name,
+        "address": branch.address,
+        "phone": branch.phone,
+        "email": branch.email,
+        "logo_url": branch.logo_url,
+        "operating_hours": branch.operating_hours,
+        "timezone": branch.timezone,
+        "is_hq": branch.is_hq,
+        "is_active": branch.is_active,
+        "created_at": branch.created_at.isoformat() if branch.created_at else None,
+        "updated_at": branch.updated_at.isoformat() if branch.updated_at else None,
+    }
+
+
+async def get_branch_settings(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    branch_id: uuid.UUID,
+) -> dict | None:
+    """Return branch settings fields for the given branch.
+
+    Returns a dict with settings fields, or None if branch not found.
+
+    Requirements: 3.1
+    """
+    result = await db.execute(
+        select(Branch).where(Branch.id == branch_id, Branch.org_id == org_id)
+    )
+    branch = result.scalar_one_or_none()
+    if branch is None:
+        return None  # Caller should return 404
+
+    return {
+        "id": str(branch.id),
+        "name": branch.name,
+        "address": branch.address,
+        "phone": branch.phone,
+        "email": branch.email,
+        "logo_url": branch.logo_url,
+        "operating_hours": branch.operating_hours,
+        "timezone": branch.timezone,
+        "notification_preferences": branch.notification_preferences,
+    }
+
+
+async def update_branch_settings(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    user_id: uuid.UUID,
+    address: str | None = None,
+    phone: str | None = None,
+    email: str | None = None,
+    logo_url: str | None = None,
+    operating_hours: dict | None = None,
+    timezone: str | None = None,
+    notification_preferences: dict | None = None,
+    ip_address: str | None = None,
+) -> dict | None:
+    """Update branch settings fields.
+
+    Accepts optional fields: address, phone, email, logo_url,
+    operating_hours, timezone, notification_preferences.
+    Only non-None values are applied.
+
+    Validates IANA timezone string using zoneinfo.ZoneInfo; rejects
+    invalid values with ValueError (→ 400).
+
+    Writes an audit log entry with before/after values.
+
+    Returns a dict with the updated settings, or None if not found.
+
+    Requirements: 3.1, 3.5, 22.4
+    """
+    from zoneinfo import ZoneInfo
+
+    # Validate timezone if provided
+    if timezone is not None:
+        try:
+            ZoneInfo(timezone)
+        except (KeyError, ValueError):
+            raise ValueError(f"Invalid timezone: {timezone}")
+
+    # Fetch branch and validate org ownership
+    result = await db.execute(
+        select(Branch).where(Branch.id == branch_id, Branch.org_id == org_id)
+    )
+    branch = result.scalar_one_or_none()
+    if branch is None:
+        return None  # Caller should return 404
+
+    # Capture before values for audit log
+    before_value = {
+        "address": branch.address,
+        "phone": branch.phone,
+        "email": branch.email,
+        "logo_url": branch.logo_url,
+        "operating_hours": branch.operating_hours,
+        "timezone": branch.timezone,
+        "notification_preferences": branch.notification_preferences,
+    }
+
+    updated_fields: list[str] = []
+
+    if address is not None:
+        branch.address = address
+        updated_fields.append("address")
+    if phone is not None:
+        branch.phone = phone
+        updated_fields.append("phone")
+    if email is not None:
+        branch.email = email
+        updated_fields.append("email")
+    if logo_url is not None:
+        branch.logo_url = logo_url
+        updated_fields.append("logo_url")
+    if operating_hours is not None:
+        branch.operating_hours = operating_hours
+        updated_fields.append("operating_hours")
+    if timezone is not None:
+        branch.timezone = timezone
+        updated_fields.append("timezone")
+    if notification_preferences is not None:
+        branch.notification_preferences = notification_preferences
+        updated_fields.append("notification_preferences")
+
+    if updated_fields:
+        await db.flush()
+
+        after_value = {
+            "address": branch.address,
+            "phone": branch.phone,
+            "email": branch.email,
+            "logo_url": branch.logo_url,
+            "operating_hours": branch.operating_hours,
+            "timezone": branch.timezone,
+            "notification_preferences": branch.notification_preferences,
+            "updated_fields": updated_fields,
+        }
+
+        await write_audit_log(
+            session=db,
+            org_id=org_id,
+            user_id=user_id,
+            action="org.branch_settings_updated",
+            entity_type="branch",
+            entity_id=branch_id,
+            before_value=before_value,
+            after_value=after_value,
+            ip_address=ip_address,
+        )
+
+    return {
+        "id": str(branch.id),
+        "name": branch.name,
+        "address": branch.address,
+        "phone": branch.phone,
+        "email": branch.email,
+        "logo_url": branch.logo_url,
+        "operating_hours": branch.operating_hours,
+        "timezone": branch.timezone,
+        "notification_preferences": branch.notification_preferences,
+    }
+
+
 async def assign_user_branches(
     db: AsyncSession,
     *,

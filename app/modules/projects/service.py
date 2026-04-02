@@ -39,10 +39,13 @@ class ProjectService:
         status: str | None = None,
         customer_id: uuid.UUID | None = None,
         search: str | None = None,
+        branch_id: uuid.UUID | None = None,
     ) -> tuple[list[Project], int]:
         """List projects with pagination and filtering."""
         stmt = select(Project).where(Project.org_id == org_id)
 
+        if branch_id is not None:
+            stmt = stmt.where(Project.branch_id == branch_id)
         if status is not None:
             stmt = stmt.where(Project.status == status)
         if customer_id is not None:
@@ -68,10 +71,16 @@ class ProjectService:
         payload: ProjectCreate,
         *,
         created_by: uuid.UUID | None = None,
+        branch_id: uuid.UUID | None = None,
     ) -> Project:
         """Create a new project."""
         if payload.status and payload.status not in PROJECT_STATUSES:
             raise ValueError(f"Invalid status: {payload.status}")
+
+        # Validate branch is active if provided (Req 2.2)
+        if branch_id is not None:
+            from app.core.branch_validation import validate_branch_active
+            await validate_branch_active(self.db, branch_id)
 
         project = Project(
             org_id=org_id,
@@ -86,6 +95,7 @@ class ProjectService:
             target_end_date=payload.target_end_date,
             status=payload.status,
             created_by=created_by,
+            branch_id=branch_id,
         )
         self.db.add(project)
         await self.db.flush()

@@ -103,11 +103,17 @@ async def create_job_card(
     assigned_to: uuid.UUID | None = None,
     line_items_data: list[dict] | None = None,
     ip_address: str | None = None,
+    branch_id: uuid.UUID | None = None,
 ) -> dict:
     """Create a new job card in Open status.
 
     Requirements: 59.1
     """
+    # Validate branch is active if provided (Req 2.2)
+    if branch_id is not None:
+        from app.core.branch_validation import validate_branch_active
+        await validate_branch_active(db, branch_id)
+
     # Validate customer exists and belongs to org
     cust_result = await db.execute(
         select(Customer).where(
@@ -147,6 +153,7 @@ async def create_job_card(
         org_id=org_id,
         customer_id=customer_id,
         vehicle_rego=vehicle_rego,
+        branch_id=branch_id,
         status="open",
         description=description,
         notes=notes,
@@ -269,6 +276,7 @@ async def list_job_cards(
     active_only: bool = False,
     limit: int = 25,
     offset: int = 0,
+    branch_id: uuid.UUID | None = None,
 ) -> dict:
     """Search and filter job cards with pagination.
 
@@ -278,6 +286,10 @@ async def list_job_cards(
     Requirements: 59.5
     """
     base_filter = [JobCard.org_id == org_id]
+
+    # Branch filter
+    if branch_id is not None:
+        base_filter.append(JobCard.branch_id == branch_id)
 
     if status:
         # Support comma-separated status values (e.g. "open,in_progress")

@@ -232,8 +232,13 @@ class Customer(Base):
         ),
     )
 
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), nullable=True
+    )
+
     # Relationships
     organisation = relationship("Organisation", backref="customers")
     fleet_account: Mapped[FleetAccount | None] = relationship(
         back_populates="customers"
     )
+    branch = relationship("Branch")

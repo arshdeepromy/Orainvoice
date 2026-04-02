@@ -38,9 +38,14 @@ class ExpenseService:
         category: str | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
+        branch_id: uuid.UUID | None = None,
     ) -> tuple[list[Expense], int]:
         """List expenses with pagination and filtering."""
         stmt = select(Expense).where(Expense.org_id == org_id)
+
+        # Branch filter
+        if branch_id is not None:
+            stmt = stmt.where(Expense.branch_id == branch_id)
 
         if job_id is not None:
             stmt = stmt.where(Expense.job_id == job_id)
@@ -67,8 +72,14 @@ class ExpenseService:
         payload: ExpenseCreate,
         *,
         created_by: uuid.UUID | None = None,
+        branch_id: uuid.UUID | None = None,
     ) -> Expense:
         """Create a new expense."""
+        # Validate branch is active if provided (Req 2.2)
+        if branch_id is not None:
+            from app.core.branch_validation import validate_branch_active
+            await validate_branch_active(self.db, branch_id)
+
         expense = Expense(
             org_id=org_id,
             job_id=payload.job_id,
@@ -87,6 +98,7 @@ class ExpenseService:
             tax_inclusive=payload.tax_inclusive,
             expense_type=payload.expense_type,
             created_by=created_by,
+            branch_id=branch_id,
         )
         self.db.add(expense)
         await self.db.flush()

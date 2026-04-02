@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import apiClient from '@/api/client'
 import { Button, Badge, Spinner, Modal } from '@/components/ui'
+import { useBranch } from '@/contexts/BranchContext'
 
 /* ── Types ── */
 interface Expense {
@@ -9,7 +10,7 @@ interface Expense {
   tax_amount: string; category: string | null; reference_number: string | null
   notes: string | null; receipt_file_key: string | null; is_pass_through: boolean
   is_billable: boolean; is_invoiced: boolean; tax_inclusive: boolean
-  expense_type: string; created_at: string
+  expense_type: string; created_at: string; branch_id?: string | null
 }
 interface Customer { id: string; display_name: string | null; first_name: string; last_name: string }
 interface MileageRate { id?: string; start_date: string | null; rate_per_unit: string; currency: string }
@@ -56,46 +57,115 @@ function FieldRow({ label, required, children }: { label: string; required?: boo
 function ReceiptZone({ fileKey, onUpload, onRemove }: { fileKey: string; onUpload: (f: File) => void; onRemove: () => void }) {
   const [uploading, setUploading] = useState(false)
   const [dragging, setDragging] = useState(false)
+  const [localPreview, setLocalPreview] = useState<string | null>(null)
+  const [localFileName, setLocalFileName] = useState('')
+  const [previewOpen, setPreviewOpen] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  const isImage = (name: string) => /\.(jpe?g|png|webp|gif)$/i.test(name)
+  const isPdf = (name: string) => /\.pdf$/i.test(name)
 
   const handleFile = async (file: File) => {
     setUploading(true)
+    setLocalFileName(file.name)
+    // Create local blob URL for preview (works for both images and PDFs)
+    const url = URL.createObjectURL(file)
+    setLocalPreview(url)
     try { onUpload(file) } finally { setUploading(false) }
   }
 
+  const handleRemove = () => {
+    if (localPreview) URL.revokeObjectURL(localPreview)
+    setLocalPreview(null)
+    setLocalFileName('')
+    onRemove()
+  }
+
   return (
-    <div
-      onDragOver={e => { e.preventDefault(); setDragging(true) }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f) }}
-      className={`rounded-lg border-2 border-dashed p-6 text-center transition-colors ${dragging ? 'border-blue-400 bg-blue-50' : 'border-gray-300 bg-gray-50'}`}
-    >
-      {fileKey ? (
-        <div className="space-y-2">
-          <div className="text-green-600 text-sm font-medium">✓ Receipt attached</div>
-          <button type="button" onClick={onRemove} className="text-xs text-red-500 hover:underline">Remove</button>
-        </div>
-      ) : (
-        <>
-          <div className="mx-auto mb-3 h-12 w-12 rounded-lg bg-blue-100 flex items-center justify-center">
-            <svg className="h-6 w-6 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
+    <>
+      <div
+        onDragOver={e => { e.preventDefault(); setDragging(true) }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f) }}
+        className={`rounded-lg border-2 border-dashed p-4 text-center transition-colors ${dragging ? 'border-blue-400 bg-blue-50' : fileKey ? 'border-green-300 bg-green-50' : 'border-gray-300 bg-gray-50'}`}
+      >
+        {fileKey ? (
+          <div className="space-y-2">
+            {/* Thumbnail preview */}
+            {localPreview && isImage(localFileName) ? (
+              <img src={localPreview} alt="Receipt" className="mx-auto h-24 w-auto rounded-md object-cover border border-gray-200 shadow-sm" />
+            ) : isPdf(localFileName || fileKey) ? (
+              <div className="mx-auto h-24 w-20 rounded-md bg-red-50 border border-red-200 flex flex-col items-center justify-center">
+                <svg className="h-8 w-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                </svg>
+                <span className="text-[10px] font-semibold text-red-600 mt-1">PDF</span>
+              </div>
+            ) : (
+              <div className="mx-auto h-16 w-16 rounded-md bg-gray-100 border border-gray-200 flex items-center justify-center">
+                <svg className="h-7 w-7 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" />
+                </svg>
+              </div>
+            )}
+            <p className="text-xs text-gray-500 truncate max-w-[200px] mx-auto">{localFileName || 'Receipt'}</p>
+            <div className="flex items-center justify-center gap-3">
+              <button type="button" onClick={() => setPreviewOpen(true)}
+                className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium">
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                Preview
+              </button>
+              <button type="button" onClick={handleRemove}
+                className="text-xs text-red-500 hover:text-red-700 font-medium">Remove</button>
+            </div>
           </div>
-          <p className="text-sm text-gray-600 font-medium">Drag or Drop your Receipts</p>
-          <p className="text-xs text-gray-400 mb-3">Maximum file size allowed is 10MB</p>
-          <button type="button" onClick={() => inputRef.current?.click()}
-            className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-            </svg>
-            {uploading ? 'Uploading…' : 'Upload your Files'}
-          </button>
-          <input ref={inputRef} type="file" accept="image/*,.pdf" className="hidden"
-            onChange={e => { if (e.target.files?.[0]) handleFile(e.target.files[0]) }} />
-        </>
-      )}
-    </div>
+        ) : (
+          <>
+            <div className="mx-auto mb-3 h-12 w-12 rounded-lg bg-blue-100 flex items-center justify-center">
+              <svg className="h-6 w-6 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <p className="text-sm text-gray-600 font-medium">Drag or Drop your Receipts</p>
+            <p className="text-xs text-gray-400 mb-3">Maximum file size allowed is 10MB</p>
+            <button type="button" onClick={() => inputRef.current?.click()}
+              className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+              </svg>
+              {uploading ? 'Uploading…' : 'Upload your Files'}
+            </button>
+            <input ref={inputRef} type="file" accept="image/*,.pdf" className="hidden"
+              onChange={e => { if (e.target.files?.[0]) handleFile(e.target.files[0]) }} />
+          </>
+        )}
+      </div>
+
+      {/* Preview Modal */}
+      <Modal open={previewOpen} onClose={() => setPreviewOpen(false)} title={localFileName || 'Receipt Preview'}>
+        <div className="flex items-center justify-center min-h-[300px]">
+          {localPreview && isImage(localFileName) ? (
+            <img src={localPreview} alt="Receipt preview" className="max-h-[70vh] max-w-full rounded-lg shadow-md" />
+          ) : localPreview && isPdf(localFileName) ? (
+            <div className="w-full h-[70vh]">
+              <iframe src={localPreview} className="w-full h-full rounded-lg border border-gray-200" title="PDF Preview" />
+            </div>
+          ) : localPreview ? (
+            <div className="text-center space-y-3">
+              <p className="text-sm text-gray-500">Preview not available for this file type</p>
+              <a href={localPreview} download={localFileName} className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700">
+                Download file
+              </a>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-400">No file to preview</p>
+          )}
+        </div>
+      </Modal>
+    </>
   )
 }
 
@@ -169,6 +239,7 @@ function CustomerSearch({ onChange }: { value: string; onChange: (id: string, na
 
 /* ── Record Expense Tab ── */
 function RecordExpenseTab({ onSaved }: { onSaved: () => void }) {
+  const { selectedBranchId } = useBranch()
   const today = new Date().toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })
   void today // used for display reference
   const [form, setForm] = useState({
@@ -206,6 +277,7 @@ function RecordExpenseTab({ onSaved }: { onSaved: () => void }) {
         tax_inclusive: form.tax_inclusive,
         receipt_file_key: form.receipt_file_key || null,
         expense_type: 'expense',
+        branch_id: selectedBranchId || undefined,
       })
       setSuccess(true)
       setForm({ date: new Date().toISOString().split('T')[0], category: '', amount: '', tax_rate: '', reference: '', notes: '', customer_id: '', tax_inclusive: false, receipt_file_key: '' })
@@ -289,6 +361,7 @@ function RecordExpenseTab({ onSaved }: { onSaved: () => void }) {
 
 /* ── Record Mileage Tab ── */
 function RecordMileageTab({ onSaved }: { onSaved: () => void }) {
+  const { selectedBranchId } = useBranch()
   const [form, setForm] = useState({
     date: new Date().toISOString().split('T')[0],
     employee: '', calc_method: 'distance', distance: '', amount: '',
@@ -335,6 +408,7 @@ function RecordMileageTab({ onSaved }: { onSaved: () => void }) {
         customer_id: form.customer_id || null,
         tax_inclusive: form.tax_inclusive,
         expense_type: 'mileage',
+        branch_id: selectedBranchId || undefined,
       })
       setSuccess(true)
       setForm({ date: new Date().toISOString().split('T')[0], employee: '', calc_method: 'distance', distance: '', amount: '', tax_rate: '', reference: '', notes: '', customer_id: '', tax_inclusive: false })
@@ -646,6 +720,7 @@ function BulkAddTab({ onSaved }: { onSaved: () => void }) {
 
 /* ── Main Page ── */
 export default function ExpenseList() {
+  const { branches: branchList } = useBranch()
   const [tab, setTab] = useState<Tab>('expense')
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [total, setTotal] = useState(0)
@@ -653,6 +728,12 @@ export default function ExpenseList() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const pageSize = 20
+
+  /* Receipt preview modal state */
+  const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null)
+  const [receiptPreviewName, setReceiptPreviewName] = useState('')
+  const [receiptPreviewOpen, setReceiptPreviewOpen] = useState(false)
+  const [receiptLoading, setReceiptLoading] = useState(false)
 
   const fetchExpenses = useCallback(async () => {
     setLoading(true)
@@ -722,6 +803,7 @@ export default function ExpenseList() {
                     <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Date</th>
                     <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Description</th>
                     <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Category</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Branch</th>
                     <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Amount</th>
                     <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Type</th>
                     <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
@@ -734,6 +816,9 @@ export default function ExpenseList() {
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{new Date(exp.date).toLocaleDateString('en-NZ')}</td>
                       <td className="px-4 py-3 text-sm text-gray-900 max-w-xs truncate">{exp.description}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{catLabel(exp.category)}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-500">
+                        {exp.branch_id ? ((branchList ?? []).find(b => b.id === exp.branch_id)?.name ?? '—') : '—'}
+                      </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-right font-medium tabular-nums">{formatNZD(exp.amount)}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm">
                         {exp.expense_type === 'mileage' ? <Badge variant="info">Mileage</Badge> : <Badge variant="neutral">Expense</Badge>}
@@ -743,7 +828,25 @@ export default function ExpenseList() {
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm">
                         {exp.receipt_file_key ? (
-                          <a href={`/api/v2/files/${exp.receipt_file_key}`} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline text-xs">View</a>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              setReceiptLoading(true)
+                              setReceiptPreviewName(exp.receipt_file_key?.split('/').pop() ?? 'Receipt')
+                              setReceiptPreviewOpen(true)
+                              try {
+                                const res = await apiClient.get(`/api/v2/uploads/${exp.receipt_file_key}`, { responseType: 'blob' })
+                                const blob = res.data as Blob
+                                const url = URL.createObjectURL(blob)
+                                setReceiptPreviewUrl(url)
+                              } catch {
+                                setReceiptPreviewUrl(null)
+                              } finally {
+                                setReceiptLoading(false)
+                              }
+                            }}
+                            className="text-blue-600 hover:underline text-xs"
+                          >View</button>
                         ) : <span className="text-gray-400 text-xs">—</span>}
                       </td>
                     </tr>
@@ -764,6 +867,23 @@ export default function ExpenseList() {
           </>
         )}
       </div>
+
+      {/* Receipt Preview Modal */}
+      <Modal open={receiptPreviewOpen} onClose={() => { setReceiptPreviewOpen(false); if (receiptPreviewUrl) { URL.revokeObjectURL(receiptPreviewUrl); setReceiptPreviewUrl(null) } }} title={receiptPreviewName}>
+        <div className="flex items-center justify-center min-h-[300px]">
+          {receiptLoading ? (
+            <Spinner label="Loading receipt..." />
+          ) : receiptPreviewUrl ? (
+            receiptPreviewName.toLowerCase().endsWith('.pdf') ? (
+              <iframe src={receiptPreviewUrl} className="w-full h-[70vh] rounded-lg border border-gray-200" title="PDF Preview" />
+            ) : (
+              <img src={receiptPreviewUrl} alt="Receipt" className="max-h-[70vh] max-w-full rounded-lg shadow-md" />
+            )
+          ) : (
+            <p className="text-sm text-red-500">Failed to load receipt. The file may no longer exist.</p>
+          )}
+        </div>
+      </Modal>
     </div>
   )
 }

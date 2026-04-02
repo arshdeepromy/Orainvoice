@@ -5,6 +5,7 @@ import { CustomerCreateModal } from '../../components/customers/CustomerCreateMo
 import { CustomerEditModal } from '../../components/customers/CustomerEditModal'
 import { CustomerViewModal } from '../../components/customers/CustomerViewModal'
 import { useTenant } from '../../contexts/TenantContext'
+import { useBranch } from '@/contexts/BranchContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -24,6 +25,7 @@ interface CustomerSearchResult {
   receivables?: number
   unused_credits?: number
   reminders_enabled?: boolean
+  branch_id?: string | null
 }
 
 interface CustomerListResponse {
@@ -73,6 +75,7 @@ function formatNZD(amount: number | null | undefined): string {
 
 export default function CustomerList() {
   const { tradeFamily } = useTenant()
+  const { branches: branchList } = useBranch()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
   const [searchQuery, setSearchQuery] = useState('')
@@ -309,6 +312,7 @@ export default function CustomerList() {
                 <tr>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Name</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Company Name</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Branch</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Email</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Work Phone</th>
                   <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Receivables (BCY)</th>
@@ -320,7 +324,7 @@ export default function CustomerList() {
               <tbody className="divide-y divide-gray-200 bg-white">
                 {!data.customers || data.customers.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-12 text-center text-sm text-gray-500">
+                    <td colSpan={9} className="px-4 py-12 text-center text-sm text-gray-500">
                       {searchQuery ? 'No customers match your search.' : 'No customers yet. Create your first customer to get started.'}
                     </td>
                   </tr>
@@ -336,6 +340,9 @@ export default function CustomerList() {
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">
                         {c.company_name || '—'}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-500">
+                        {c.branch_id ? ((branchList ?? []).find(b => b.id === c.branch_id)?.name ?? '—') : 'All'}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">
                         {c.email || '—'}

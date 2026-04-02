@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import apiClient from '../../api/client'
 import { Button, Input, Badge, Spinner, Modal } from '../../components/ui'
 import { AddToStockModal } from '../../components/inventory/AddToStockModal'
+import { useBranch } from '@/contexts/BranchContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -28,6 +29,8 @@ interface StockItem {
   cost_per_unit: number | null
   sell_price: number | null
   created_at: string
+  branch_name: string | null
+  branch_id: string | null
 }
 
 interface StockItemListResponse {
@@ -42,6 +45,7 @@ interface StockItemListResponse {
  * Requirements: 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 7.2, 7.3
  */
 export default function StockLevels() {
+  const { selectedBranchId } = useBranch()
   const [stockItems, setStockItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -263,6 +267,9 @@ export default function StockLevels() {
               <tr>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Type</th>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Item</th>
+                {!selectedBranchId && (
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Branch</th>
+                )}
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Part Number</th>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Barcode</th>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Location</th>
@@ -280,7 +287,7 @@ export default function StockLevels() {
             <tbody className="divide-y divide-gray-200 bg-white">
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={14} className="px-4 py-12 text-center text-sm text-gray-500">
+                  <td colSpan={selectedBranchId ? 14 : 15} className="px-4 py-12 text-center text-sm text-gray-500">
                     No items match your filter.
                   </td>
                 </tr>
@@ -292,6 +299,9 @@ export default function StockLevels() {
                       <p className="font-medium text-gray-900">{s.item_name}</p>
                       {s.subtitle && <p className="text-xs text-gray-500">{s.subtitle}</p>}
                     </td>
+                    {!selectedBranchId && (
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{s.branch_name ?? 'All'}</td>
+                    )}
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{s.part_number || '—'}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{s.barcode || '—'}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{s.location || '—'}</td>

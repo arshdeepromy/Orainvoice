@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react'
 import apiClient from '@/api/client'
 import { useTenant } from '@/contexts/TenantContext'
+import { useBranch } from '@/contexts/BranchContext'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
+import { Badge } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
 
 interface OrgAdminData {
   revenue_summary?: {
@@ -33,11 +36,36 @@ interface OrgAdminData {
   }
 }
 
+interface BranchMetric {
+  branch_id: string
+  branch_name: string
+  revenue: number
+  invoice_count: number
+  invoice_value: number
+  customer_count: number
+  staff_count: number
+  expenses: number
+}
+
+interface BranchMetricsData {
+  metrics: BranchMetric[]
+  totals: BranchMetric | null
+}
+
+interface BranchComparisonData {
+  branches: BranchMetric[]
+}
+
 export function OrgAdminDashboard() {
   const { settings } = useTenant()
+  const { selectedBranchId, branches } = useBranch()
   const [data, setData] = useState<OrgAdminData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [branchMetrics, setBranchMetrics] = useState<BranchMetricsData | null>(null)
+  const [compareMode, setCompareMode] = useState(false)
+  const [selectedCompare, setSelectedCompare] = useState<string[]>([])
+  const [comparison, setComparison] = useState<BranchComparisonData | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -70,6 +98,50 @@ export function OrgAdminDashboard() {
       cancelled = true
     }
   }, [])
+
+  // Fetch branch metrics
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchBranchMetrics = async () => {
+      try {
+        const res = await apiClient.get<BranchMetricsData>(
+          '/dashboard/branch-metrics',
+          { signal: controller.signal },
+        )
+        setBranchMetrics(res.data ?? null)
+      } catch (err: unknown) {
+        if (!(err as { name?: string })?.name?.includes('Cancel')) {
+          // Silently fail
+        }
+      }
+    }
+    fetchBranchMetrics()
+    return () => controller.abort()
+  }, [selectedBranchId])
+
+  // Fetch comparison data
+  useEffect(() => {
+    if (!compareMode || selectedCompare.length < 2) {
+      setComparison(null)
+      return
+    }
+    const controller = new AbortController()
+    const fetchComparison = async () => {
+      try {
+        const res = await apiClient.get<BranchComparisonData>(
+          '/dashboard/branch-comparison',
+          { params: { branch_ids: selectedCompare.join(',') }, signal: controller.signal },
+        )
+        setComparison(res.data ?? null)
+      } catch (err: unknown) {
+        if (!(err as { name?: string })?.name?.includes('Cancel')) {
+          // Silently fail
+        }
+      }
+    }
+    fetchComparison()
+    return () => controller.abort()
+  }, [compareMode, selectedCompare])
 
   if (isLoading) return <Spinner size="lg" label="Loading dashboard" className="py-20" />
   if (error) return <AlertBanner variant="error">{error}</AlertBanner>
@@ -144,50 +216,121 @@ export function OrgAdminDashboard() {
         )}
       </div>
 
-      {/* Recent overdue invoices */}
-      {data.outstanding && data.outstanding.invoices && data.outstanding.invoices.length > 0 && (
+      {/* Branch metrics section */}
+      {branchMetrics && (branchMetrics.metrics ?? []).length > 0 && (
         <section>
-          <h2 className="mb-3 text-lg font-medium text-gray-900">Outstanding Invoices</h2>
-          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                    Invoice
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                    Customer
-                  </th>
-                  <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                    Amount Due
-                  </th>
-                  <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                    Days Overdue
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200 bg-white">
-                {data.outstanding.invoices.slice(0, 10).map((inv) => (
-                  <tr key={inv.invoice_id} className={inv.days_overdue > 0 ? 'bg-red-50' : ''}>
-                    <td className="px-4 py-3 text-sm text-gray-900">
-                      {inv.invoice_number || inv.invoice_id}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-900">{inv.customer_name}</td>
-                    <td className="px-4 py-3 text-sm text-gray-900 text-right">
-                      ${Number(inv.balance_due).toLocaleString('en-NZ', { minimumFractionDigits: 2 })}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-right">
-                      {inv.days_overdue > 0 ? (
-                        <span className="text-red-600 font-medium">{inv.days_overdue} days</span>
-                      ) : (
-                        <span className="text-gray-500">-</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-medium text-gray-900">
+              {selectedBranchId ? 'Branch Metrics' : 'Branch Performance Summary'}
+            </h2>
+            {!selectedBranchId && (branches ?? []).length > 1 && (
+              <Button size="sm" variant="secondary" onClick={() => setCompareMode(!compareMode)}>
+                {compareMode ? 'Exit Compare' : 'Compare Branches'}
+              </Button>
+            )}
           </div>
+
+          {!compareMode && (
+            <div className="overflow-x-auto rounded-lg border border-gray-200">
+              <table className="min-w-full divide-y divide-gray-200" role="grid">
+                <caption className="sr-only">Branch performance metrics</caption>
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Branch</th>
+                    <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Revenue</th>
+                    <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Invoices</th>
+                    <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Customers</th>
+                    <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Staff</th>
+                    <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Expenses</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200 bg-white">
+                  {(branchMetrics.metrics ?? []).map((m) => (
+                    <tr key={m.branch_id} className="hover:bg-gray-50">
+                      <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-gray-900">{m.branch_name ?? '—'}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-900">${(m.revenue ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2 })}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-700">{m.invoice_count ?? 0}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-700">{m.customer_count ?? 0}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-700">{m.staff_count ?? 0}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-700">${(m.expenses ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2 })}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Compare Branches mode */}
+          {compareMode && (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                {(branches ?? []).map((b) => {
+                  const isSelected = selectedCompare.includes(b.id)
+                  return (
+                    <button
+                      key={b.id}
+                      onClick={() => {
+                        setSelectedCompare((prev) =>
+                          isSelected ? prev.filter((x) => x !== b.id) : [...prev, b.id],
+                        )
+                      }}
+                      className={`rounded-full px-3 py-1 text-sm font-medium border transition-colors ${
+                        isSelected
+                          ? 'bg-blue-100 border-blue-400 text-blue-800'
+                          : 'bg-gray-100 border-gray-300 text-gray-600 hover:bg-gray-200'
+                      }`}
+                    >
+                      {b.name}
+                    </button>
+                  )
+                })}
+              </div>
+              {selectedCompare.length < 2 && (
+                <p className="text-sm text-gray-500">Select at least 2 branches to compare.</p>
+              )}
+              {comparison && (comparison.branches ?? []).length >= 2 && (
+                <div className="overflow-x-auto rounded-lg border border-gray-200">
+                  <table className="min-w-full divide-y divide-gray-200" role="grid">
+                    <caption className="sr-only">Branch comparison</caption>
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Metric</th>
+                        {(comparison.branches ?? []).map((b) => (
+                          <th key={b.branch_id} scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">{b.branch_name}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200 bg-white">
+                      {(['revenue', 'invoice_count', 'customer_count', 'staff_count', 'expenses'] as const).map((metric) => {
+                        const values = (comparison.branches ?? []).map((b) => (b[metric] ?? 0) as number)
+                        const maxVal = Math.max(...values)
+                        const minVal = Math.min(...values)
+                        const label = metric.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+                        const isCurrency = metric === 'revenue' || metric === 'expenses'
+                        return (
+                          <tr key={metric} className="hover:bg-gray-50">
+                            <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-gray-900">{label}</td>
+                            {(comparison.branches ?? []).map((b) => {
+                              const val = (b[metric] ?? 0) as number
+                              const isMax = val === maxVal && values.filter((v) => v === maxVal).length === 1
+                              const isMin = val === minVal && values.filter((v) => v === minVal).length === 1
+                              return (
+                                <td key={b.branch_id} className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums">
+                                  <span className={isMax ? 'text-green-700 font-semibold' : isMin ? 'text-red-600' : 'text-gray-900'}>
+                                    {isCurrency ? `$${val.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}` : val.toLocaleString()}
+                                  </span>
+                                </td>
+                              )
+                            })}
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </section>
       )}
     </div>

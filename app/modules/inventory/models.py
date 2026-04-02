@@ -131,6 +131,10 @@ class StockItem(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False,
     )
 
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), nullable=True,
+    )
+
     __table_args__ = (
         CheckConstraint(
             "catalogue_type IN ('part', 'tyre', 'fluid')",
@@ -139,6 +143,7 @@ class StockItem(Base):
     )
 
     # Relationships
+    branch = relationship("Branch")
     movements = relationship("StockMovement", back_populates="stock_item", lazy="dynamic")
 
 

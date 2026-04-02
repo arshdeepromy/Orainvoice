@@ -3980,3 +3980,315 @@ async def regenerate_portal_token(
         "portal_token_expires_at": new_expiry.isoformat(),
     }
 
+
+
+# ---------------------------------------------------------------------------
+# Global Admin — Branch Overview (Req 7.1, 7.2, 7.3, 21.1, 21.2, 21.3, 21.4)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/branches",
+    summary="Paginated branch list across all organisations",
+    dependencies=[require_role("global_admin")],
+)
+async def list_all_branches(
+    search: str | None = None,
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 25,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return a paginated list of all branches across all organisations.
+
+    Supports filtering by organisation name (search) and branch status
+    (active/inactive).
+
+    Only Global_Admin users can access this endpoint.
+    Requirements: 21.1, 21.2
+    """
+    from app.modules.organisations.models import Branch
+    from app.modules.admin.models import Organisation
+    from sqlalchemy import func
+
+    base_query = (
+        select(
+            Branch.id,
+            Branch.name.label("branch_name"),
+            Branch.is_active,
+            Branch.is_hq,
+            Branch.address,
+            Branch.phone,
+            Branch.email,
+            Branch.timezone,
+            Branch.created_at,
+            Organisation.name.label("org_name"),
+            Organisation.id.label("org_id"),
+        )
+        .join(Organisation, Branch.org_id == Organisation.id)
+    )
+
+    count_query = (
+        select(func.count(Branch.id))
+        .join(Organisation, Branch.org_id == Organisation.id)
+    )
+
+    if search:
+        search_filter = f"%{search}%"
+        base_query = base_query.where(
+            Organisation.name.ilike(search_filter) | Branch.name.ilike(search_filter)
+        )
+        count_query = count_query.where(
+            Organisation.name.ilike(search_filter) | Branch.name.ilike(search_filter)
+        )
+
+    if status == "active":
+        base_query = base_query.where(Branch.is_active == True)  # noqa: E712
+        count_query = count_query.where(Branch.is_active == True)  # noqa: E712
+    elif status == "inactive":
+        base_query = base_query.where(Branch.is_active == False)  # noqa: E712
+        count_query = count_query.where(Branch.is_active == False)  # noqa: E712
+
+    total = (await db.execute(count_query)).scalar() or 0
+
+    offset = (page - 1) * page_size
+    base_query = base_query.order_by(Branch.created_at.desc()).offset(offset).limit(page_size)
+
+    result = await db.execute(base_query)
+    rows = result.all()
+
+    branches = []
+    for r in rows:
+        branches.append({
+            "id": str(r.id),
+            "branch_name": r.branch_name,
+            "org_name": r.org_name,
+            "org_id": str(r.org_id),
+            "is_active": r.is_active,
+            "is_hq": r.is_hq,
+            "address": r.address,
+            "phone": r.phone,
+            "email": r.email,
+            "timezone": r.timezone,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+
+    return {
+        "branches": branches,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@router.get(
+    "/branches/{branch_id}",
+    summary="Branch detail with users and activity",
+    dependencies=[require_role("global_admin")],
+)
+async def get_branch_detail(
+    branch_id: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return detailed branch information including assigned users and
+    recent activity.
+
+    Only Global_Admin users can access this endpoint.
+    Requirements: 21.3
+    """
+    from app.modules.organisations.models import Branch
+    from app.modules.admin.models import Organisation
+    from app.modules.auth.models import User
+
+    try:
+        branch_uuid = uuid.UUID(branch_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid branch_id format"})
+
+    # Fetch branch with org info
+    result = await db.execute(
+        select(Branch, Organisation.name.label("org_name"))
+        .join(Organisation, Branch.org_id == Organisation.id)
+        .where(Branch.id == branch_uuid)
+    )
+    row = result.one_or_none()
+    if not row:
+        return JSONResponse(status_code=404, content={"detail": "Branch not found"})
+
+    branch = row[0]
+    org_name = row[1]
+
+    # Fetch users assigned to this branch
+    user_result = await db.execute(
+        select(User.id, User.email, User.first_name, User.last_name, User.role, User.is_active)
+        .where(
+            User.org_id == branch.org_id,
+            User.is_active == True,  # noqa: E712
+        )
+    )
+    users = []
+    for u in user_result.all():
+        # Check if user is assigned to this branch via branch_ids JSONB
+        users.append({
+            "id": str(u.id),
+            "email": u.email,
+            "name": f"{u.first_name or ''} {u.last_name or ''}".strip(),
+            "role": u.role,
+            "is_active": u.is_active,
+        })
+
+    return {
+        "id": str(branch.id),
+        "name": branch.name,
+        "org_id": str(branch.org_id),
+        "org_name": org_name,
+        "address": branch.address,
+        "phone": branch.phone,
+        "email": branch.email,
+        "logo_url": branch.logo_url,
+        "operating_hours": branch.operating_hours,
+        "timezone": branch.timezone,
+        "is_hq": branch.is_hq,
+        "is_active": branch.is_active,
+        "notification_preferences": branch.notification_preferences,
+        "created_at": branch.created_at.isoformat() if branch.created_at else None,
+        "updated_at": branch.updated_at.isoformat() if branch.updated_at else None,
+        "users": users,
+    }
+
+
+@router.get(
+    "/branch-summary",
+    summary="Platform-wide branch statistics",
+    dependencies=[require_role("global_admin")],
+)
+async def branch_summary(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return platform-wide branch statistics.
+
+    Shows total active branches, total inactive, and average branches
+    per organisation.
+
+    Only Global_Admin users can access this endpoint.
+    Requirements: 21.4
+    """
+    from app.modules.organisations.models import Branch
+    from app.modules.admin.models import Organisation
+    from sqlalchemy import func, case
+    from decimal import Decimal
+
+    # Total active and inactive branches
+    stats_result = await db.execute(
+        select(
+            func.count(Branch.id).label("total_branches"),
+            func.count(Branch.id).filter(Branch.is_active == True).label("active_branches"),  # noqa: E712
+            func.count(Branch.id).filter(Branch.is_active == False).label("inactive_branches"),  # noqa: E712
+        )
+    )
+    stats = stats_result.one()
+
+    # Count orgs with at least one branch
+    org_count_result = await db.execute(
+        select(func.count(func.distinct(Branch.org_id)))
+    )
+    orgs_with_branches = org_count_result.scalar() or 0
+
+    avg_branches = (
+        round(stats.total_branches / orgs_with_branches, 2)
+        if orgs_with_branches > 0
+        else 0
+    )
+
+    return {
+        "total_branches": stats.total_branches,
+        "active_branches": stats.active_branches,
+        "inactive_branches": stats.inactive_branches,
+        "orgs_with_branches": orgs_with_branches,
+        "average_branches_per_org": avg_branches,
+    }
+
+
+@router.get(
+    "/org-branch-revenue",
+    summary="Organisation table with branch counts and revenue",
+    dependencies=[require_role("global_admin")],
+)
+async def org_branch_revenue(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return a table of organisations with their branch counts and revenue.
+
+    Shows org name, active branch count, total monthly revenue, and
+    per-branch average revenue.
+
+    Only Global_Admin users can access this endpoint.
+    Requirements: 7.1, 7.2, 7.3
+    """
+    from app.modules.organisations.models import Branch
+    from app.modules.admin.models import Organisation
+    from app.modules.invoices.models import Invoice
+    from sqlalchemy import func
+    from decimal import Decimal
+
+    # Get orgs with branch counts
+    org_branch_result = await db.execute(
+        select(
+            Organisation.id,
+            Organisation.name,
+            func.count(Branch.id).filter(Branch.is_active == True).label("active_branch_count"),  # noqa: E712
+        )
+        .outerjoin(Branch, Branch.org_id == Organisation.id)
+        .where(Organisation.status != "deleted")
+        .group_by(Organisation.id, Organisation.name)
+        .order_by(Organisation.name)
+    )
+    org_rows = org_branch_result.all()
+
+    orgs = []
+    total_active_branches = 0
+    total_revenue = Decimal("0")
+
+    for row in org_rows:
+        # Get revenue for this org (last 30 days)
+        from datetime import datetime, timedelta, timezone as tz
+        thirty_days_ago = datetime.now(tz.utc) - timedelta(days=30)
+
+        rev_result = await db.execute(
+            select(
+                func.coalesce(func.sum(Invoice.total), 0).label("revenue"),
+            ).where(
+                Invoice.org_id == row.id,
+                Invoice.status != "voided",
+                Invoice.status != "draft",
+                Invoice.created_at >= thirty_days_ago,
+            )
+        )
+        revenue = Decimal(str(rev_result.scalar() or 0))
+
+        branch_count = row.active_branch_count or 0
+        avg_revenue = (
+            round(revenue / branch_count, 2) if branch_count > 0 else Decimal("0")
+        )
+
+        total_active_branches += branch_count
+        total_revenue += revenue
+
+        orgs.append({
+            "org_id": str(row.id),
+            "org_name": row.name,
+            "active_branch_count": branch_count,
+            "total_monthly_revenue": str(revenue),
+            "per_branch_avg_revenue": str(avg_revenue),
+        })
+
+    return {
+        "organisations": orgs,
+        "summary": {
+            "total_active_branches": total_active_branches,
+            "total_revenue": str(total_revenue),
+            "average_branches_per_org": (
+                round(total_active_branches / len(orgs), 2) if orgs else 0
+            ),
+        },
+    }

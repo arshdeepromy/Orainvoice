@@ -40,6 +40,13 @@ apiClient.interceptors.request.use((config) => {
     config.headers.Authorization = `Bearer ${accessToken}`
   }
 
+  // Inject X-Branch-Id header from localStorage when a specific branch is selected.
+  // If the value is null or "all", omit the header so the backend returns all-branch data.
+  const branchId = localStorage.getItem('selected_branch_id')
+  if (branchId && branchId !== 'all') {
+    config.headers['X-Branch-Id'] = branchId
+  }
+
   // Fix v2 URL paths: calls using `/api/v2/...` would get double-prefixed
   // as `/api/v1/api/v2/...` because baseURL is `/api/v1`.
   // Strip the baseURL for absolute API paths so they resolve correctly.

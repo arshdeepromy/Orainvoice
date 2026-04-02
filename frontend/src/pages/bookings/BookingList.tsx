@@ -7,6 +7,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import apiClient from '@/api/client'
 import { Pagination, PageSizeSelect } from '@/components/ui'
+import { useBranch } from '@/contexts/BranchContext'
 
 interface BookingItem {
   id: string
@@ -21,6 +22,7 @@ interface BookingItem {
   status: string
   notes: string | null
   created_at: string
+  branch_id?: string | null
 }
 
 type BadgeVariant = 'info' | 'success' | 'warning' | 'error' | 'neutral'
@@ -48,6 +50,7 @@ function formatDateTime(iso: string): string {
 }
 
 export default function BookingList() {
+  const { branches: branchList } = useBranch()
   const [bookings, setBookings] = useState<BookingItem[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -153,6 +156,7 @@ export default function BookingList() {
               <thead className="bg-gray-50">
                 <tr>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Customer</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Branch</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Service</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Date/Time</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Status</th>
@@ -167,6 +171,9 @@ export default function BookingList() {
                       <td className="px-4 py-3 text-sm text-gray-900">
                         <div>{b.customer_name}</div>
                         {b.customer_email && <div className="text-xs text-gray-500">{b.customer_email}</div>}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-500">
+                        {b.branch_id ? ((branchList ?? []).find(br => br.id === b.branch_id)?.name ?? '—') : '—'}
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-700">{b.service_type ?? '—'}</td>
                       <td className="px-4 py-3 text-sm text-gray-700">{formatDateTime(b.start_time)}</td>

@@ -96,6 +96,7 @@ async def search_customers(
     limit: int = 20,
     offset: int = 0,
     include_vehicles: bool = False,
+    branch_id: uuid.UUID | None = None,
 ) -> dict:
     """Search customers by name, phone, or email.
 
@@ -122,6 +123,12 @@ async def search_customers(
         Customer.org_id == org_id,
         Customer.is_anonymised.is_(False),
     ]
+
+    # Branch filter — for customers, include shared customers (branch_id IS NULL)
+    if branch_id is not None:
+        base_filter.append(
+            or_(Customer.branch_id == branch_id, Customer.branch_id.is_(None))
+        )
 
     if query and query.strip():
         search_term = query.strip()
@@ -273,6 +280,7 @@ async def create_customer(
     address: str | None = None,
     notes: str | None = None,
     ip_address: str | None = None,
+    branch_id: uuid.UUID | None = None,
     # New fields
     customer_type: str = "individual",
     salutation: str | None = None,
@@ -295,6 +303,11 @@ async def create_customer(
 
     Requirements: 11.4, 11.5, 11.6
     """
+    # Validate branch is active if provided (Req 2.2)
+    if branch_id is not None:
+        from app.core.branch_validation import validate_branch_active
+        await validate_branch_active(db, branch_id)
+
     # Auto-generate display_name if not provided
     if not display_name:
         if customer_type == "business" and company_name:
@@ -328,6 +341,7 @@ async def create_customer(
         custom_fields=custom_fields or {},
         notes=notes,
         remarks=remarks,
+        branch_id=branch_id,
     )
     db.add(customer)
     await db.flush()

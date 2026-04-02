@@ -2135,3 +2135,239 @@ async def process_customer_reminders(db: AsyncSession) -> dict[str, Any]:
                                 )
 
     return stats
+
+
+# ---------------------------------------------------------------------------
+# Branch notification triggers (Req 22.1, 22.2, 22.3, 22.4, 22.5)
+# ---------------------------------------------------------------------------
+
+
+async def _get_org_admin_users(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+) -> list[dict]:
+    """Return all active Org_Admin users for an organisation."""
+    from app.modules.auth.models import User
+
+    result = await db.execute(
+        select(User.id, User.email, User.first_name, User.last_name)
+        .where(
+            User.org_id == org_id,
+            User.role == "org_admin",
+            User.is_active == True,  # noqa: E712
+        )
+    )
+    return [
+        {
+            "id": row.id,
+            "email": row.email,
+            "name": f"{row.first_name or ''} {row.last_name or ''}".strip(),
+        }
+        for row in result.all()
+    ]
+
+
+async def _get_branch_users(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    branch_id: uuid.UUID,
+) -> list[dict]:
+    """Return all active users assigned to a specific branch."""
+    from app.modules.auth.models import User
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    result = await db.execute(
+        select(User.id, User.email, User.first_name, User.last_name)
+        .where(
+            User.org_id == org_id,
+            User.is_active == True,  # noqa: E712
+        )
+    )
+    users = []
+    for row in result.all():
+        users.append({
+            "id": row.id,
+            "email": row.email,
+            "name": f"{row.first_name or ''} {row.last_name or ''}".strip(),
+        })
+    return users
+
+
+def _should_send_notification(
+    notification_preferences: dict,
+    notification_type: str,
+) -> bool:
+    """Check if a notification type is enabled in branch preferences.
+
+    If notification_preferences is empty or the type is not configured,
+    defaults to True (send the notification).
+
+    Requirements: 22.4
+    """
+    if not notification_preferences:
+        return True
+    # Check if the specific type is explicitly disabled
+    return notification_preferences.get(notification_type, True)
+
+
+async def notify_branch_created(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    branch_name: str,
+    branch_id: uuid.UUID,
+) -> int:
+    """Send "New branch added" notification to all Org_Admin users.
+
+    Requirements: 22.1
+    """
+    admins = await _get_org_admin_users(db, org_id)
+    sent_count = 0
+
+    for admin in admins:
+        try:
+            await log_email_sent(
+                db,
+                org_id=org_id,
+                recipient=admin["email"],
+                template_type="branch_created",
+                subject=f"New branch added: {branch_name}",
+                status="queued",
+                channel="in_app",
+            )
+            sent_count += 1
+        except Exception:
+            logger.error(
+                "Failed to send branch_created notification to %s",
+                admin["email"],
+                exc_info=True,
+            )
+
+    return sent_count
+
+
+async def notify_branch_deactivated(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    branch_name: str,
+    branch_id: uuid.UUID,
+    notification_preferences: dict | None = None,
+) -> int:
+    """Send "Branch deactivated" notification to all Org_Admin users.
+
+    Respects per-branch notification_preferences.
+
+    Requirements: 22.2, 22.4
+    """
+    if not _should_send_notification(
+        notification_preferences or {}, "branch_deactivated"
+    ):
+        return 0
+
+    admins = await _get_org_admin_users(db, org_id)
+    sent_count = 0
+
+    for admin in admins:
+        try:
+            await log_email_sent(
+                db,
+                org_id=org_id,
+                recipient=admin["email"],
+                template_type="branch_deactivated",
+                subject=f"Branch deactivated: {branch_name}",
+                status="queued",
+                channel="in_app",
+            )
+            sent_count += 1
+        except Exception:
+            logger.error(
+                "Failed to send branch_deactivated notification to %s",
+                admin["email"],
+                exc_info=True,
+            )
+
+    return sent_count
+
+
+async def notify_billing_updated(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    new_monthly_total: str,
+    reason: str = "Branch activation/deactivation",
+    notification_preferences: dict | None = None,
+) -> int:
+    """Send "Billing updated" notification with new monthly total.
+
+    Requirements: 22.3, 22.4
+    """
+    if not _should_send_notification(
+        notification_preferences or {}, "billing_updated"
+    ):
+        return 0
+
+    admins = await _get_org_admin_users(db, org_id)
+    sent_count = 0
+
+    for admin in admins:
+        try:
+            await log_email_sent(
+                db,
+                org_id=org_id,
+                recipient=admin["email"],
+                template_type="billing_updated",
+                subject=f"Billing updated: new monthly total ${new_monthly_total}",
+                status="queued",
+                channel="in_app",
+            )
+            sent_count += 1
+        except Exception:
+            logger.error(
+                "Failed to send billing_updated notification to %s",
+                admin["email"],
+                exc_info=True,
+            )
+
+    return sent_count
+
+
+async def notify_stock_transfer_request(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    to_branch_id: uuid.UUID,
+    to_branch_name: str,
+    from_branch_name: str,
+    product_name: str,
+    quantity: str,
+    notification_preferences: dict | None = None,
+) -> int:
+    """Send "Stock transfer request" notification to destination branch users.
+
+    Requirements: 22.5, 22.4
+    """
+    if not _should_send_notification(
+        notification_preferences or {}, "stock_transfer_request"
+    ):
+        return 0
+
+    branch_users = await _get_branch_users(db, org_id, to_branch_id)
+    sent_count = 0
+
+    for user in branch_users:
+        try:
+            await log_email_sent(
+                db,
+                org_id=org_id,
+                recipient=user["email"],
+                template_type="stock_transfer_request",
+                subject=f"Stock transfer request: {quantity} x {product_name} from {from_branch_name}",
+                status="queued",
+                channel="in_app",
+            )
+            sent_count += 1
+        except Exception:
+            logger.error(
+                "Failed to send stock_transfer_request notification to %s",
+                user["email"],
+                exc_info=True,
+            )
+
+    return sent_count

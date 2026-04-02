@@ -294,8 +294,9 @@ export default function InvoiceDetail() {
     try {
       const res = await apiClient.post<{ id: string }>(`/invoices/${invoice.id}/duplicate`)
       navigate(`/invoices/${res.data.id}`)
-    } catch {
-      setActionMessage('Failed to duplicate invoice.')
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setActionMessage(detail || 'Failed to duplicate invoice.')
     } finally {
       setDuplicating(false)
     }
@@ -314,8 +315,9 @@ export default function InvoiceDetail() {
       setVoidReason('')
       fetchInvoice()
       setActionMessage('Invoice voided successfully.')
-    } catch {
-      setVoidError('Failed to void invoice. Please try again.')
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setVoidError(detail || 'Failed to void invoice. Please try again.')
     } finally {
       setVoiding(false)
     }
@@ -328,8 +330,9 @@ export default function InvoiceDetail() {
     try {
       await apiClient.post(`/invoices/${invoice.id}/email`)
       setActionMessage('Invoice emailed to customer.')
-    } catch {
-      setActionMessage('Failed to email invoice.')
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setActionMessage(detail || 'Failed to email invoice.')
     } finally {
       setEmailing(false)
     }
@@ -378,8 +381,9 @@ export default function InvoiceDetail() {
       a.download = `${invoice.invoice_number || 'draft'}.pdf`
       a.click()
       URL.revokeObjectURL(url)
-    } catch {
-      setActionMessage('Failed to download PDF.')
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setActionMessage(detail || 'Failed to download PDF.')
     } finally {
       setDownloading(false)
     }

@@ -414,6 +414,104 @@ async def get_billing_dashboard(
 
 
 # ---------------------------------------------------------------------------
+# Branch billing — Requirements: 4.5, 5.1, 5.2, 6.4
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/branch-cost-preview",
+    status_code=200,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org Admin role required"},
+        404: {"description": "Organisation or plan not found"},
+    },
+    summary="Preview cost of adding a branch",
+    dependencies=[require_role("org_admin")],
+)
+async def get_branch_cost_preview(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return a cost preview for adding one more branch to the organisation.
+
+    Shows per-branch cost, prorated charge for the current period,
+    current total, and projected new total.
+
+    Requirements: 4.5, 5.1, 5.2
+    """
+    from app.modules.billing.branch_billing import preview_branch_addition
+    from app.modules.billing.schemas import BranchCostPreviewResponse
+
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        preview = await preview_branch_addition(db, org_uuid)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc)},
+        )
+
+    return BranchCostPreviewResponse(**preview)
+
+
+@router.get(
+    "/branch-cost-breakdown",
+    status_code=200,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org Admin role required"},
+        404: {"description": "Organisation or plan not found"},
+    },
+    summary="Per-branch cost breakdown",
+    dependencies=[require_role("org_admin")],
+)
+async def get_branch_cost_breakdown(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return per-branch cost breakdown for the billing dashboard.
+
+    Lists each active branch with its name, HQ label, and cost
+    contribution to the total subscription.
+
+    Requirements: 4.5, 6.4
+    """
+    from app.modules.billing.branch_billing import get_branch_cost_breakdown as _get_breakdown
+    from app.modules.billing.schemas import BranchCostBreakdownResponse, BranchCostBreakdownItem
+
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        breakdown = await _get_breakdown(db, org_uuid)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc)},
+        )
+
+    return BranchCostBreakdownResponse(
+        branches=[BranchCostBreakdownItem(**b) for b in breakdown["branches"]],
+        per_branch_cost=breakdown["per_branch_cost"],
+        total_cost=breakdown["total_cost"],
+        branch_count=breakdown["branch_count"],
+        billing_interval=breakdown["billing_interval"],
+        currency=breakdown["currency"],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Available intervals — Requirements: 7.2
 # ---------------------------------------------------------------------------
 

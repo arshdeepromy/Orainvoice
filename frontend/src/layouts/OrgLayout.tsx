@@ -5,6 +5,9 @@ import { useModules } from '@/contexts/ModuleContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFeatureFlags } from '@/contexts/FeatureFlagContext'
 import { GlobalSearchBar } from '@/components/search'
+import { BranchSelector } from '@/components/branch/BranchSelector'
+import { useBranch } from '@/contexts/BranchContext'
+import { getActiveBranchIndicatorState } from '@/pages/settings/branch-staff-helpers'
 
 interface QuickAction {
   label: string
@@ -54,6 +57,8 @@ const navItems: NavItem[] = [
   { to: '/floor-plan', label: 'Floor Plan', icon: FloorPlanIcon, module: 'tables', flagKey: 'tables' },
   { to: '/kitchen', label: 'Kitchen Display', icon: KitchenIcon, module: 'kitchen_display', flagKey: 'kitchen_display' },
   { to: '/franchise', label: 'Franchise', icon: FranchiseIcon, module: 'franchise', flagKey: 'franchise' },
+  { to: '/branch-transfers', label: 'Branch Transfers', icon: InventoryIcon, adminOnly: true },
+  { to: '/staff-schedule', label: 'Staff Schedule', icon: ScheduleIcon, adminOnly: true },
   { to: '/assets', label: 'Assets', icon: AssetsIcon, module: 'assets', flagKey: 'assets' },
   { to: '/compliance', label: 'Compliance', icon: ComplianceIcon, module: 'compliance_docs', flagKey: 'compliance_docs' },
   { to: '/loyalty', label: 'Loyalty', icon: LoyaltyIcon, module: 'loyalty', flagKey: 'loyalty' },
@@ -85,6 +90,13 @@ export function OrgLayout() {
   const { flags } = useFeatureFlags()
   const navigate = useNavigate()
   const branding = settings?.branding
+
+  // Active branch indicator state
+  const { selectedBranchId: activeBranchId, branches: branchList } = useBranch()
+  const activeBranchIndicator = useMemo(
+    () => getActiveBranchIndicatorState(activeBranchId, branchList),
+    [activeBranchId, branchList],
+  )
 
   // "View as Org" mode for global admin
   const viewAsOrg = useMemo(() => {
@@ -273,6 +285,17 @@ export function OrgLayout() {
               ⌘K
             </kbd>
           </button>
+
+          {/* Branch selector */}
+          <BranchSelector />
+
+          {/* Active branch indicator */}
+          {activeBranchIndicator.visible && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 border border-blue-200 px-2.5 py-1 text-xs font-medium text-blue-700">
+              <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden="true" />
+              <span className="truncate max-w-[120px] sm:max-w-[200px]">{activeBranchIndicator.branchName}</span>
+            </span>
+          )}
 
           <div className="flex-1" />
 

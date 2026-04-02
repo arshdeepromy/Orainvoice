@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { Button, Badge, Spinner, Modal, Input, Select } from '@/components/ui'
+import { useBranch } from '@/contexts/BranchContext'
 
 interface Supplier { id: string; name: string; contact_name?: string | null; email?: string | null; phone?: string | null; address?: string | null }
 interface CataloguePart {
@@ -36,6 +37,7 @@ interface PurchaseOrder {
   notes: string | null
   created_at: string
   lines: POLine[]
+  branch_id?: string | null
 }
 
 interface NewLine {
@@ -71,6 +73,7 @@ function formatNZD(amount: number) {
 
 export default function POList() {
   const navigate = useNavigate()
+  const { branches: branchList, selectedBranchId } = useBranch()
   const [orders, setOrders] = useState<PurchaseOrder[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -275,6 +278,7 @@ export default function POList() {
     try {
       await apiClient.post('/api/v2/purchase-orders', {
         supplier_id: createSupplierId,
+        branch_id: selectedBranchId || undefined,
         expected_delivery: createExpectedDelivery || null,
         notes: createNotes.trim() || null,
         lines: createLines.map(l => ({
@@ -380,6 +384,7 @@ export default function POList() {
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">PO Number</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Supplier</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Branch</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Expected Delivery</th>
                   <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Total</th>
@@ -391,6 +396,9 @@ export default function POList() {
                   <tr key={po.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => navigate(`/purchase-orders/${po.id}`)}>
                     <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-blue-600">{po.po_number}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">{supplierMap[po.supplier_id] || po.supplier_id.slice(0, 8)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-500">
+                      {po.branch_id ? ((branchList ?? []).find(b => b.id === po.branch_id)?.name ?? '—') : '—'}
+                    </td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm">{statusBadge(po.status)}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{po.expected_delivery || '—'}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-right font-medium text-gray-900">{formatNZD(Number(po.total_amount))}</td>

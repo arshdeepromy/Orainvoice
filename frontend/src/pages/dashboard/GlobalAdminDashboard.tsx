@@ -338,6 +338,9 @@ export function GlobalAdminDashboard() {
 
       {/* HA Cluster Status */}
       <HAStatusPanel />
+
+      {/* Branch Revenue by Organisation */}
+      <OrgBranchRevenueSection />
     </div>
   )
 }
@@ -632,5 +635,95 @@ function IntegrationCostCardView({ card }: { card: IntegrationCostCard }) {
         </p>
       )}
     </div>
+  )
+}
+
+
+/* ── Org Branch Revenue Section ── */
+
+interface OrgBranchRevenue {
+  org_id: string
+  org_name: string
+  active_branch_count: number
+  total_monthly_revenue: number
+  per_branch_avg_revenue: number
+}
+
+interface OrgBranchRevenueResponse {
+  orgs: OrgBranchRevenue[]
+  platform_total_branches: number
+  platform_total_revenue: number
+  avg_branches_per_org: number
+}
+
+function OrgBranchRevenueSection() {
+  const [data, setData] = useState<OrgBranchRevenueResponse | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchData = async () => {
+      try {
+        const res = await apiClient.get<OrgBranchRevenueResponse>(
+          '/admin/org-branch-revenue',
+          { signal: controller.signal },
+        )
+        setData(res.data ?? null)
+      } catch {
+        // Silently fail — section just won't render
+      }
+    }
+    fetchData()
+    return () => controller.abort()
+  }, [])
+
+  if (!data || (data.orgs ?? []).length === 0) return null
+
+  const fmt = (v: number) =>
+    `$${(v ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+  return (
+    <section>
+      <h2 className="mb-3 text-lg font-medium text-gray-900">Branch Revenue by Organisation</h2>
+
+      {/* Platform summary */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+        <div className="rounded-lg border border-gray-200 bg-white p-4">
+          <p className="text-sm text-gray-500">Total Active Branches</p>
+          <p className="text-xl font-semibold text-gray-900">{data.platform_total_branches ?? 0}</p>
+        </div>
+        <div className="rounded-lg border border-gray-200 bg-white p-4">
+          <p className="text-sm text-gray-500">Total Branch Revenue</p>
+          <p className="text-xl font-semibold text-gray-900">{fmt(data.platform_total_revenue ?? 0)}</p>
+        </div>
+        <div className="rounded-lg border border-gray-200 bg-white p-4">
+          <p className="text-sm text-gray-500">Avg Branches / Org</p>
+          <p className="text-xl font-semibold text-gray-900">{(data.avg_branches_per_org ?? 0).toFixed(1)}</p>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto rounded-lg border border-gray-200">
+        <table className="min-w-full divide-y divide-gray-200" role="grid">
+          <caption className="sr-only">Organisation branch revenue</caption>
+          <thead className="bg-gray-50">
+            <tr>
+              <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Organisation</th>
+              <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Active Branches</th>
+              <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Monthly Revenue</th>
+              <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Per-Branch Avg</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200 bg-white">
+            {(data.orgs ?? []).map((org) => (
+              <tr key={org.org_id} className="hover:bg-gray-50">
+                <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-gray-900">{org.org_name ?? '—'}</td>
+                <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-700">{org.active_branch_count ?? 0}</td>
+                <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-900">{fmt(org.total_monthly_revenue ?? 0)}</td>
+                <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-700">{fmt(org.per_branch_avg_revenue ?? 0)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   )
 }

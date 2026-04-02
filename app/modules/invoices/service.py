@@ -260,6 +260,11 @@ async def create_invoice(
     """
     from app.modules.vehicles.models import CustomerVehicle
     
+    # Validate branch is active if provided (Req 2.2)
+    if branch_id is not None:
+        from app.core.branch_validation import validate_branch_active
+        await validate_branch_active(db, branch_id)
+
     # Validate customer exists and belongs to org
     cust_result = await db.execute(
         select(Customer).where(
@@ -2134,6 +2139,7 @@ async def search_invoices(
     issue_date_to: date | None = None,
     limit: int = 25,
     offset: int = 0,
+    branch_id: uuid.UUID | None = None,
 ) -> dict:
     """Search and filter invoices with pagination.
 
@@ -2154,6 +2160,10 @@ async def search_invoices(
 
     # Base query: join invoices with customers to enable customer field search
     base_filter = [Invoice.org_id == org_id]
+
+    # Branch filter
+    if branch_id is not None:
+        base_filter.append(Invoice.branch_id == branch_id)
 
     # Status filter
     if status:

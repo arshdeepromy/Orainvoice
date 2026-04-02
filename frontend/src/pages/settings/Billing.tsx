@@ -488,6 +488,97 @@ function SmsUsageCard({
   )
 }
 
+/* ── Branch Cost Breakdown ── */
+
+interface BranchCostEntry {
+  branch_id: string
+  branch_name: string
+  is_hq: boolean
+  cost_per_cycle: number
+}
+
+interface BranchCostBreakdownData {
+  branches: BranchCostEntry[]
+  per_branch_cost: number
+  total_cost: number
+  branch_count: number
+  billing_interval: string
+  currency: string
+}
+
+function BranchCostBreakdown() {
+  const [data, setData] = useState<BranchCostBreakdownData | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchBreakdown = async () => {
+      setLoading(true)
+      try {
+        const res = await apiClient.get<BranchCostBreakdownData>(
+          '/billing/branch-cost-breakdown',
+          { signal: controller.signal },
+        )
+        setData(res.data ?? null)
+      } catch (err: unknown) {
+        if (!(err as { name?: string })?.name?.includes('Cancel')) {
+          // Silently fail — section just won't render
+        }
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchBreakdown()
+    return () => controller.abort()
+  }, [])
+
+  if (loading) return null
+  if (!data || (data.branches ?? []).length <= 1) return null
+
+  const interval = data.billing_interval ?? 'monthly'
+  const suffix = INTERVAL_SUFFIX[interval] ?? '/mo'
+
+  return (
+    <div className="rounded-lg border border-gray-200 p-5">
+      <h3 className="text-lg font-semibold text-gray-900 mb-3">Branch Cost Breakdown</h3>
+      <div className="overflow-x-auto">
+        <table className="min-w-full divide-y divide-gray-200" role="grid">
+          <caption className="sr-only">Per-branch subscription cost breakdown</caption>
+          <thead className="bg-gray-50">
+            <tr>
+              <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Branch</th>
+              <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Cost{suffix}</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200 bg-white">
+            {(data.branches ?? []).map((b) => (
+              <tr key={b.branch_id} className="hover:bg-gray-50">
+                <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">
+                  {b.branch_name}
+                  {b.is_hq && (
+                    <Badge variant="info" className="ml-2">HQ</Badge>
+                  )}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-900">
+                  {formatNZD(b.cost_per_cycle ?? 0)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="bg-gray-50">
+              <td className="px-4 py-3 text-sm font-semibold text-gray-900">Total ({data.branch_count ?? 0} branches)</td>
+              <td className="px-4 py-3 text-sm text-right tabular-nums font-semibold text-gray-900">
+                {formatNZD(data.total_cost ?? 0)}{suffix}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 /* ── Past Invoices ── */
 
 function PastInvoices({ invoices }: { invoices: PastInvoice[] }) {
@@ -1531,6 +1622,9 @@ export function Billing() {
             <p className="text-sm text-gray-500">Stripe is not configured. Payment method management is unavailable.</p>
           </div>
         )}
+
+        {/* Branch cost breakdown */}
+        <BranchCostBreakdown />
 
         {/* Past invoices */}
         <PastInvoices invoices={invoices} />

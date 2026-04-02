@@ -3,6 +3,7 @@ import apiClient from '../../api/client'
 import { Spinner, Badge, Button, PrintButton } from '../../components/ui'
 import DateRangeFilter, { type DateRange } from './DateRangeFilter'
 import ExportButtons from './ExportButtons'
+import { useBranch } from '@/contexts/BranchContext'
 
 interface OutstandingInvoice {
   id: string
@@ -33,6 +34,7 @@ const fmt = (v: number | undefined) => v != null ? `$${v.toLocaleString('en-NZ',
  * Requirements: 45.1, 45.5
  */
 export default function OutstandingInvoices() {
+  const { selectedBranchId } = useBranch()
   const [range, setRange] = useState<DateRange>(defaultRange)
   const [data, setData] = useState<OutstandingData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -43,9 +45,9 @@ export default function OutstandingInvoices() {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<OutstandingData>('/reports/outstanding', {
-        params: { start_date: range.from, end_date: range.to },
-      })
+      const params: Record<string, string> = { start_date: range.from, end_date: range.to }
+      if (selectedBranchId) params.branch_id = selectedBranchId
+      const res = await apiClient.get<OutstandingData>('/reports/outstanding', { params })
       setData(res.data)
     } catch {
       setError('Failed to load outstanding invoices.')

@@ -75,6 +75,9 @@ class JobCard(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -85,6 +88,7 @@ class JobCard(Base):
 
     # Relationships
     organisation = relationship("Organisation", backref="job_cards")
+    branch = relationship("Branch")
     customer = relationship("Customer", backref="job_cards")
     assigned_staff = relationship(
         "StaffMember", foreign_keys=[assigned_to], backref="assigned_job_cards"

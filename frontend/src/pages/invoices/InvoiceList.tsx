@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Spinner, Modal, Badge } from '../../components/ui'
 import { useTenant } from '@/contexts/TenantContext'
+import { useBranch } from '@/contexts/BranchContext'
 import { CreditNoteModal } from '../../components/invoices/CreditNoteModal'
 import { RefundModal } from '../../components/invoices/RefundModal'
+import InvoiceCreate from './InvoiceCreate'
 import {
   computeCreditableAmount,
   computePaymentSummary,
@@ -35,6 +37,7 @@ interface InvoiceSummary {
   issue_date: string | null
   due_date?: string | null
   created_at?: string
+  branch_id?: string | null
 }
 
 interface InvoiceListResponse {
@@ -342,8 +345,11 @@ const PRINT_STYLES = `
 
 export default function InvoiceList() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { id: routeId } = useParams<{ id: string }>()
+  const isCreating = location.pathname === '/invoices/new'
   const { tradeFamily } = useTenant()
+  const { branches: branchList } = useBranch()
   // Null tradeFamily treated as automotive for backward compat
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
@@ -505,7 +511,10 @@ export default function InvoiceList() {
       showMsg('Invoice sent to customer.')
       fetchDetail(invoice.id)
       fetchInvoices(searchQuery, statusFilter, page)
-    } catch { showMsg('Failed to send invoice.', 'error') }
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      showMsg(detail || 'Failed to send invoice.', 'error')
+    }
     finally { setActionLoading(''); setSendMenuOpen(false) }
   }
 
@@ -517,7 +526,10 @@ export default function InvoiceList() {
       showMsg('Invoice marked as sent.')
       fetchDetail(invoice.id)
       fetchInvoices(searchQuery, statusFilter, page)
-    } catch { showMsg('Failed to mark as sent.', 'error') }
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      showMsg(detail || 'Failed to mark as sent.', 'error')
+    }
     finally { setActionLoading(''); setSendMenuOpen(false) }
   }
 
@@ -531,7 +543,10 @@ export default function InvoiceList() {
       setVoidReason('')
       fetchDetail(invoice.id)
       fetchInvoices(searchQuery, statusFilter, page)
-    } catch { showMsg('Failed to void invoice.', 'error') }
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      showMsg(detail || 'Failed to void invoice.', 'error')
+    }
     finally { setActionLoading('') }
   }
 
@@ -544,7 +559,10 @@ export default function InvoiceList() {
       showMsg('Invoice duplicated.')
       fetchInvoices(searchQuery, statusFilter, page)
       if (newId) setSelectedId(newId)
-    } catch { showMsg('Failed to duplicate.', 'error') }
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      showMsg(detail || 'Failed to duplicate.', 'error')
+    }
     finally { setActionLoading(''); setMoreMenuOpen(false) }
   }
 
@@ -559,7 +577,10 @@ export default function InvoiceList() {
       a.download = `${invoice.invoice_number || 'draft'}.pdf`
       a.click()
       URL.revokeObjectURL(url)
-    } catch { showMsg('Failed to download PDF.', 'error') }
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      showMsg(detail || 'Failed to download PDF.', 'error')
+    }
     finally { setActionLoading(''); setPdfMenuOpen(false) }
   }
 
@@ -599,7 +620,10 @@ export default function InvoiceList() {
       setPaymentNote('')
       fetchDetail(invoice.id)
       fetchInvoices(searchQuery, statusFilter, page)
-    } catch { showMsg('Failed to record payment.', 'error') }
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      showMsg(detail || 'Failed to record payment.', 'error')
+    }
     finally { setActionLoading('') }
   }
 
@@ -654,7 +678,10 @@ export default function InvoiceList() {
         setInvoice(null)
       }
       fetchInvoices(searchQuery, statusFilter, page)
-    } catch { showMsg('Failed to delete invoice.', 'error') }
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      showMsg(detail || 'Failed to delete invoice.', 'error')
+    }
     finally { setActionLoading('') }
   }
 
@@ -773,6 +800,12 @@ export default function InvoiceList() {
                     <p className="text-xs text-gray-500 mt-0.5">
                       {inv.invoice_number || 'Draft'} · {formatDateShort(inv.issue_date ?? inv.created_at)}
                     </p>
+                    {inv.branch_id && (() => {
+                      const branch = (branchList ?? []).find(b => b.id === inv.branch_id)
+                      return branch ? (
+                        <p className="text-[10px] text-gray-400 mt-0.5 truncate">{branch.name}</p>
+                      ) : null
+                    })()}
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
                     <p className="text-sm font-semibold tabular-nums text-gray-900">
@@ -834,10 +867,16 @@ export default function InvoiceList() {
       </div>
 
       {/* ============================================================ */}
-      {/*  RIGHT PANEL — Invoice Detail                                 */}
+      {/*  RIGHT PANEL — Invoice Detail or Create                       */}
       {/* ============================================================ */}
       <div className="flex-1 flex flex-col overflow-hidden" data-print-content>
-        {!selectedId && !detailLoading && (
+        {isCreating && (
+          <div className="flex-1 overflow-y-auto">
+            <InvoiceCreate />
+          </div>
+        )}
+
+        {!isCreating && !selectedId && !detailLoading && (
           <div className="flex-1 flex items-center justify-center text-gray-400">
             <div className="text-center">
               <svg className="w-16 h-16 mx-auto mb-4 text-gray-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
@@ -848,13 +887,13 @@ export default function InvoiceList() {
           </div>
         )}
 
-        {detailLoading && (
+        {!isCreating && detailLoading && (
           <div className="flex-1 flex items-center justify-center">
             <Spinner label="Loading invoice" />
           </div>
         )}
 
-        {detailError && !detailLoading && (
+        {!isCreating && detailError && !detailLoading && (
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
               <p className="text-sm text-red-600 mb-2">{detailError}</p>
@@ -863,7 +902,7 @@ export default function InvoiceList() {
           </div>
         )}
 
-        {invoice && !detailLoading && (
+        {!isCreating && invoice && !detailLoading && (
           <>
             {/* ---- Top toolbar ---- */}
             <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white" data-print-hide>

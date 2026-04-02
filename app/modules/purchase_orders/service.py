@@ -61,9 +61,12 @@ class PurchaseOrderService:
         page_size: int = 50,
         status: str | None = None,
         supplier_id: uuid.UUID | None = None,
+        branch_id: uuid.UUID | None = None,
     ) -> tuple[list[PurchaseOrder], int]:
         """List POs with pagination and filtering."""
         stmt = select(PurchaseOrder).where(PurchaseOrder.org_id == org_id)
+        if branch_id is not None:
+            stmt = stmt.where(PurchaseOrder.branch_id == branch_id)
         if status is not None:
             stmt = stmt.where(PurchaseOrder.status == status)
         if supplier_id is not None:
@@ -83,8 +86,14 @@ class PurchaseOrderService:
         payload: PurchaseOrderCreate,
         *,
         created_by: uuid.UUID | None = None,
+        branch_id: uuid.UUID | None = None,
     ) -> PurchaseOrder:
         """Create a new purchase order with line items."""
+        # Validate branch is active if provided (Req 2.2)
+        if branch_id is not None:
+            from app.core.branch_validation import validate_branch_active
+            await validate_branch_active(self.db, branch_id)
+
         po_number = await self._next_po_number(org_id)
         po = PurchaseOrder(
             org_id=org_id,
@@ -95,6 +104,7 @@ class PurchaseOrderService:
             expected_delivery=payload.expected_delivery,
             notes=payload.notes,
             created_by=created_by,
+            branch_id=branch_id,
         )
         self.db.add(po)
         await self.db.flush()

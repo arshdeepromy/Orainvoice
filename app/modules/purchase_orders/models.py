@@ -59,11 +59,15 @@ class PurchaseOrder(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), nullable=True,
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False,
     )
 
     # Relationships
+    branch = relationship("Branch")
     lines: Mapped[list["PurchaseOrderLine"]] = relationship(
         "PurchaseOrderLine", back_populates="purchase_order",
         cascade="all, delete-orphan", lazy="selectin",

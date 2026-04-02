@@ -403,3 +403,51 @@ class StripeTestAllResponse(BaseModel):
     summary: dict = Field(
         description="Counts: total, passed, failed, skipped",
     )
+
+
+# ---------------------------------------------------------------------------
+# Branch billing schemas — Requirements: 4.5, 5.1, 5.2, 6.4
+# ---------------------------------------------------------------------------
+
+
+class BranchCostPreviewResponse(BaseModel):
+    """GET /api/v1/billing/branch-cost-preview response.
+
+    Shows the cost impact of adding one more branch.
+    Requirements: 4.5, 5.1, 5.2
+    """
+
+    current_branch_count: int = Field(description="Current number of active branches")
+    new_branch_count: int = Field(description="Branch count after adding one")
+    per_branch_cost: float = Field(description="Cost per branch per billing cycle")
+    prorated_charge: float = Field(description="Prorated charge for remainder of current period")
+    current_total: float = Field(description="Current total subscription cost")
+    new_total: float = Field(description="Projected total after adding the branch")
+    billing_interval: str = Field(description="Current billing interval")
+    currency: str = Field(default="nzd", description="Currency code")
+
+
+class BranchCostBreakdownItem(BaseModel):
+    """Single branch in the cost breakdown."""
+
+    branch_id: str = Field(description="Branch UUID")
+    branch_name: str = Field(description="Branch name")
+    is_hq: bool = Field(description="Whether this is the HQ branch")
+    cost_per_cycle: float = Field(description="Cost per billing cycle for this branch")
+
+
+class BranchCostBreakdownResponse(BaseModel):
+    """GET /api/v1/billing/branch-cost-breakdown response.
+
+    Per-branch cost breakdown for the billing dashboard.
+    Requirements: 4.5, 6.4
+    """
+
+    branches: list[BranchCostBreakdownItem] = Field(
+        default_factory=list, description="Per-branch cost breakdown"
+    )
+    per_branch_cost: float = Field(description="Cost per branch per billing cycle")
+    total_cost: float = Field(description="Total subscription cost for all branches")
+    branch_count: int = Field(description="Number of active branches")
+    billing_interval: str = Field(description="Current billing interval")
+    currency: str = Field(default="nzd", description="Currency code")

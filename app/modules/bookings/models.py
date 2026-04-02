@@ -110,6 +110,9 @@ class Booking(Base):
     booking_data_json: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default="{}"
     )
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

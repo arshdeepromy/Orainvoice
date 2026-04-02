@@ -16,8 +16,16 @@ from app.modules.organisations.schemas import (
     AssignUserBranchesResponse,
     BranchCreateRequest,
     BranchCreateResponse,
+    BranchDeactivateResponse,
+    BranchDetailResponse,
     BranchListResponse,
+    BranchReactivateResponse,
     BranchResponse,
+    BranchSettingsResponse,
+    BranchSettingsUpdateRequest,
+    BranchSettingsUpdateResponse,
+    BranchUpdateRequest,
+    BranchUpdateResponse,
     MFAPolicyUpdateRequest,
     MFAPolicyUpdateResponse,
     OrgCarjamUsageResponse,
@@ -41,14 +49,19 @@ from app.modules.organisations.service import (
     SeatLimitExceeded,
     assign_user_branches,
     create_branch,
+    deactivate_branch,
     deactivate_org_user,
+    get_branch_settings,
     get_org_settings,
     invite_org_user,
     list_branches,
     list_org_users,
     list_salespeople,
+    reactivate_branch,
     revoke_user_sessions,
     save_onboarding_step,
+    update_branch,
+    update_branch_settings,
     update_mfa_policy,
     update_org_settings,
     update_org_user,
@@ -433,6 +446,353 @@ async def assign_user_to_branches(
         message="User assigned to branches",
         user_id=result["user_id"],
         branch_ids=result["branch_ids"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Branch CRUD — Update, Deactivate, Reactivate, Settings (Task 9.1)
+# Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 2.1, 2.5, 2.6, 3.1, 3.5
+# ---------------------------------------------------------------------------
+
+
+@router.put(
+    "/branches/{branch_id}",
+    response_model=BranchUpdateResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Branch not found"},
+    },
+    summary="Update a branch",
+    dependencies=[require_role("org_admin")],
+)
+async def update_branch_endpoint(
+    branch_id: str,
+    payload: BranchUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update branch fields for the current organisation.
+
+    Only Org_Admin role can update branches. Only provided (non-null)
+    fields are updated; omitted fields remain unchanged.
+
+    Requirements: 1.1, 1.2, 1.3, 1.4, 1.5
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+        branch_uuid = uuid.UUID(branch_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid UUID format"},
+        )
+
+    update_kwargs = {
+        k: v for k, v in payload.model_dump().items() if v is not None
+    }
+
+    try:
+        result = await update_branch(
+            db,
+            org_id=org_uuid,
+            branch_id=branch_uuid,
+            user_id=user_uuid,
+            ip_address=ip_address,
+            **update_kwargs,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    if result is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Branch not found"},
+        )
+
+    return BranchUpdateResponse(
+        message="Branch updated",
+        branch=BranchDetailResponse(**result),
+    )
+
+
+@router.delete(
+    "/branches/{branch_id}",
+    response_model=BranchDeactivateResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Branch not found"},
+    },
+    summary="Deactivate (soft-delete) a branch",
+    dependencies=[require_role("org_admin")],
+)
+async def deactivate_branch_endpoint(
+    branch_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Soft-delete a branch by setting is_active = False.
+
+    Rejects if the branch is the only active branch or is HQ while
+    other active branches exist.
+
+    Requirements: 2.1, 2.5
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+        branch_uuid = uuid.UUID(branch_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid UUID format"},
+        )
+
+    try:
+        result = await deactivate_branch(
+            db,
+            org_id=org_uuid,
+            branch_id=branch_uuid,
+            user_id=user_uuid,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    if result is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Branch not found"},
+        )
+
+    return BranchDeactivateResponse(
+        message="Branch deactivated",
+        branch=BranchDetailResponse(**result),
+    )
+
+
+@router.post(
+    "/branches/{branch_id}/reactivate",
+    response_model=BranchReactivateResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Branch not found"},
+    },
+    summary="Reactivate a deactivated branch",
+    dependencies=[require_role("org_admin")],
+)
+async def reactivate_branch_endpoint(
+    branch_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Reactivate a previously deactivated branch.
+
+    Requirements: 2.6
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+        branch_uuid = uuid.UUID(branch_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid UUID format"},
+        )
+
+    try:
+        result = await reactivate_branch(
+            db,
+            org_id=org_uuid,
+            branch_id=branch_uuid,
+            user_id=user_uuid,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    if result is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Branch not found"},
+        )
+
+    return BranchReactivateResponse(
+        message="Branch reactivated",
+        branch=BranchDetailResponse(**result),
+    )
+
+
+@router.get(
+    "/branches/{branch_id}/settings",
+    response_model=BranchSettingsResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Branch not found"},
+    },
+    summary="Get branch settings",
+    dependencies=[require_role("org_admin")],
+)
+async def get_branch_settings_endpoint(
+    branch_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return settings for a specific branch.
+
+    Requirements: 3.1
+    """
+    org_id = getattr(request.state, "org_id", None)
+
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        branch_uuid = uuid.UUID(branch_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid UUID format"},
+        )
+
+    result = await get_branch_settings(
+        db,
+        org_id=org_uuid,
+        branch_id=branch_uuid,
+    )
+
+    if result is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Branch not found"},
+        )
+
+    return BranchSettingsResponse(**result)
+
+
+@router.put(
+    "/branches/{branch_id}/settings",
+    response_model=BranchSettingsUpdateResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Branch not found"},
+    },
+    summary="Update branch settings",
+    dependencies=[require_role("org_admin")],
+)
+async def update_branch_settings_endpoint(
+    branch_id: str,
+    payload: BranchSettingsUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update settings for a specific branch.
+
+    Only provided (non-null) fields are updated. Validates IANA timezone
+    strings; rejects invalid values with 400.
+
+    Requirements: 3.1, 3.5, 22.4
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = request.client.host if request.client else None
+
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+        branch_uuid = uuid.UUID(branch_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid UUID format"},
+        )
+
+    update_kwargs = {
+        k: v for k, v in payload.model_dump().items() if v is not None
+    }
+
+    try:
+        result = await update_branch_settings(
+            db,
+            org_id=org_uuid,
+            branch_id=branch_uuid,
+            user_id=user_uuid,
+            ip_address=ip_address,
+            **update_kwargs,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc)},
+        )
+
+    if result is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Branch not found"},
+        )
+
+    return BranchSettingsUpdateResponse(
+        message="Branch settings updated",
+        settings=BranchSettingsResponse(**result),
     )
 
 
@@ -1238,4 +1598,143 @@ async def get_org_holidays(
             }
             for h in holidays
         ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Branch Dashboard — metrics and comparison (Req 15, 16)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/dashboard/branch-metrics",
+    summary="Branch-scoped dashboard metrics",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def branch_metrics(
+    request: Request,
+    branch_id: str | None = None,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return dashboard metrics scoped to a branch or aggregated org-wide.
+
+    When branch_id is provided, returns metrics for that branch only.
+    When omitted, returns org-wide aggregated metrics.
+
+    Requirements: 15.1, 15.2, 15.3, 15.4
+    """
+    from app.modules.organisations.dashboard_service import get_branch_metrics
+
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id format"},
+        )
+
+    branch_uuid = None
+    if branch_id:
+        try:
+            branch_uuid = uuid.UUID(branch_id)
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Invalid branch_id format"},
+            )
+
+    data = await get_branch_metrics(db, org_uuid, branch_id=branch_uuid)
+
+    # Serialize Decimal values to strings for JSON
+    return {
+        "branch_id": data["branch_id"],
+        "revenue": str(data["revenue"]),
+        "invoice_count": data["invoice_count"],
+        "invoice_value": str(data["invoice_value"]),
+        "customer_count": data["customer_count"],
+        "staff_count": data["staff_count"],
+        "total_expenses": str(data["total_expenses"]),
+    }
+
+
+@router.get(
+    "/dashboard/branch-comparison",
+    summary="Compare multiple branches side by side",
+    dependencies=[require_role("org_admin")],
+)
+async def branch_comparison(
+    request: Request,
+    branch_ids: str = "",
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return side-by-side metrics for selected branches.
+
+    Pass branch_ids as a comma-separated list of UUIDs.
+
+    Requirements: 16.1, 16.2, 16.3, 16.4
+    """
+    from app.modules.organisations.dashboard_service import get_branch_comparison
+
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id format"},
+        )
+
+    # Parse comma-separated branch IDs
+    parsed_ids = []
+    if branch_ids.strip():
+        for bid_str in branch_ids.split(","):
+            bid_str = bid_str.strip()
+            if bid_str:
+                try:
+                    parsed_ids.append(uuid.UUID(bid_str))
+                except ValueError:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"detail": f"Invalid branch_id: {bid_str}"},
+                    )
+
+    data = await get_branch_comparison(db, org_uuid, parsed_ids)
+
+    # Serialize Decimal values
+    serialized_branches = []
+    for bm in data["branches"]:
+        serialized_branches.append({
+            "branch_id": bm["branch_id"],
+            "branch_name": bm["branch_name"],
+            "revenue": str(bm["revenue"]),
+            "invoice_count": bm["invoice_count"],
+            "invoice_value": str(bm["invoice_value"]),
+            "customer_count": bm["customer_count"],
+            "staff_count": bm["staff_count"],
+            "total_expenses": str(bm["total_expenses"]),
+        })
+
+    highlights = {}
+    for key, val in data.get("highlights", {}).items():
+        highlights[key] = {
+            "highest": {"branch": val["highest"]["branch"], "value": str(val["highest"]["value"])},
+            "lowest": {"branch": val["lowest"]["branch"], "value": str(val["lowest"]["value"])},
+        }
+
+    return {
+        "branches": serialized_branches,
+        "highlights": highlights,
     }

@@ -5,6 +5,7 @@ import { Button, Input, Select, Spinner, Modal } from '../../components/ui'
 import { CustomerCreateModal } from '../../components/customers/CustomerCreateModal'
 import { VehicleLiveSearch } from '../../components/vehicles/VehicleLiveSearch'
 import { useTenant } from '../../contexts/TenantContext'
+import { useBranch } from '@/contexts/BranchContext'
 import { ModuleGate } from '../../components/common/ModuleGate'
 import { useModules } from '../../contexts/ModuleContext'
 
@@ -702,6 +703,7 @@ export default function InvoiceCreate() {
   const navigate = useNavigate()
   const isEditMode = Boolean(editId)
   const { settings, tradeFamily } = useTenant()
+  const { selectedBranchId } = useBranch()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const { isEnabled } = useModules()
   const vehiclesEnabled = isEnabled('vehicles')
@@ -1097,6 +1099,7 @@ export default function InvoiceCreate() {
   // Build payload
   const buildPayload = (status: 'draft' | 'sent') => ({
     customer_id: customer?.id,
+    branch_id: selectedBranchId || undefined,
     // Only include vehicle fields when vehicles module is enabled and trade is automotive
     ...(isAutomotive && vehiclesEnabled ? {
       vehicle_rego: vehicles[0]?.rego,
@@ -1254,22 +1257,22 @@ export default function InvoiceCreate() {
   }
 
   return (
-    <div className="bg-gray-50">
+    <div className="bg-gray-100 min-h-full">
       {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold text-gray-900">{isEditMode ? 'Edit Invoice' : 'New Invoice'}</h1>
-          <div className="flex items-center gap-3">
-            <Button variant="secondary" onClick={handleCancel}>Cancel</Button>
-            <Button variant="secondary" onClick={handleSaveDraft} loading={saving}>Save as Draft</Button>
-            <Button variant="secondary" onClick={() => { if (validate()) setPaidModalOpen(true) }} loading={paidSaving}>Mark Paid &amp; Email</Button>
-            <Button onClick={handleSaveAndSend} loading={saving}>Save and Send</Button>
+      <div className="bg-white border-b border-gray-200 px-6 py-3 sticky top-0 z-10">
+        <div className="max-w-4xl mx-auto flex items-center justify-between">
+          <h1 className="text-lg font-semibold text-gray-900">{isEditMode ? 'Edit Invoice' : 'New Invoice'}</h1>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={handleCancel}>Cancel</Button>
+            <Button variant="secondary" size="sm" onClick={handleSaveDraft} loading={saving}>Save as Draft</Button>
+            <Button variant="secondary" size="sm" onClick={() => { if (validate()) setPaidModalOpen(true) }} loading={paidSaving}>Mark Paid &amp; Email</Button>
+            <Button size="sm" onClick={handleSaveAndSend} loading={saving}>Save and Send</Button>
           </div>
         </div>
       </div>
 
-      <div className="px-6 py-6">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-6">
+      <div className="px-6 py-8">
+        <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 p-8 space-y-6">
           
           {/* Customer and Invoice Details */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1785,11 +1788,11 @@ export default function InvoiceCreate() {
           )}
 
           {/* Bottom Actions */}
-          <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
-            <Button variant="secondary" onClick={handleCancel}>Cancel</Button>
-            <Button variant="secondary" onClick={handleSaveDraft} loading={saving}>Save as Draft</Button>
-            <Button variant="secondary" onClick={() => { if (validate()) setPaidModalOpen(true) }} loading={paidSaving}>Mark Paid &amp; Email</Button>
-            <Button onClick={handleSaveAndSend} loading={saving}>Save and Send</Button>
+          <div className="flex justify-end gap-2 pt-4 border-t border-gray-200">
+            <Button variant="secondary" size="sm" onClick={handleCancel}>Cancel</Button>
+            <Button variant="secondary" size="sm" onClick={handleSaveDraft} loading={saving}>Save as Draft</Button>
+            <Button variant="secondary" size="sm" onClick={() => { if (validate()) setPaidModalOpen(true) }} loading={paidSaving}>Mark Paid &amp; Email</Button>
+            <Button size="sm" onClick={handleSaveAndSend} loading={saving}>Save and Send</Button>
           </div>
         </div>
       </div>

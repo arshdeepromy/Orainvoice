@@ -4,6 +4,7 @@ import { Spinner, PrintButton } from '../../components/ui'
 import DateRangeFilter, { type DateRange } from './DateRangeFilter'
 import ExportButtons from './ExportButtons'
 import SimpleBarChart from './SimpleBarChart'
+import { useBranch } from '@/contexts/BranchContext'
 
 interface RevenueData {
   total_revenue: number
@@ -30,6 +31,7 @@ const fmt = (v: number) => `$${v.toLocaleString('en-NZ', { minimumFractionDigits
  * Requirements: 45.1, 45.2, 45.3, 45.4
  */
 export default function RevenueSummary() {
+  const { selectedBranchId } = useBranch()
   const [range, setRange] = useState<DateRange>(defaultRange)
   const [data, setData] = useState<RevenueData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -39,16 +41,16 @@ export default function RevenueSummary() {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<RevenueData>('/reports/revenue', {
-        params: { start_date: range.from, end_date: range.to },
-      })
+      const params: Record<string, string> = { start_date: range.from, end_date: range.to }
+      if (selectedBranchId) params.branch_id = selectedBranchId
+      const res = await apiClient.get<RevenueData>('/reports/revenue', { params })
       setData(res.data)
     } catch {
       setError('Failed to load revenue report.')
     } finally {
       setLoading(false)
     }
-  }, [range])
+  }, [range, selectedBranchId])
 
   useEffect(() => { fetch() }, [fetch])
 
@@ -59,7 +61,7 @@ export default function RevenueSummary() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-6 no-print">
         <DateRangeFilter value={range} onChange={setRange} />
         <div className="flex items-center gap-2">
-          <ExportButtons endpoint="/reports/revenue" params={{ start_date: range.from, end_date: range.to }} />
+          <ExportButtons endpoint="/reports/revenue" params={{ start_date: range.from, end_date: range.to, ...(selectedBranchId ? { branch_id: selectedBranchId } : {}) }} />
           <PrintButton label="Print Report" />
         </div>
       </div>

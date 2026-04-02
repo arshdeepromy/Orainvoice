@@ -192,6 +192,7 @@ async def create_quote(
     shipping_charges: Decimal | None = None,
     adjustment: Decimal | None = None,
     ip_address: str | None = None,
+    branch_id: uuid.UUID | None = None,
 ) -> dict:
     """Create a new quote in Draft status.
 
@@ -199,6 +200,11 @@ async def create_quote(
 
     Requirements: 58.1, 58.4, 58.6
     """
+    # Validate branch is active if provided (Req 2.2)
+    if branch_id is not None:
+        from app.core.branch_validation import validate_branch_active
+        await validate_branch_active(db, branch_id)
+
     # Validate customer exists and belongs to org
     cust_result = await db.execute(
         select(Customer).where(
@@ -254,6 +260,7 @@ async def create_quote(
         vehicle_model=vehicle_model,
         vehicle_year=vehicle_year,
         project_id=project_id,
+        branch_id=branch_id,
         status="draft",
         valid_until=valid_until,
         subtotal=totals["subtotal"],
@@ -349,9 +356,14 @@ async def list_quotes(
     status: str | None = None,
     limit: int = 25,
     offset: int = 0,
+    branch_id: uuid.UUID | None = None,
 ) -> dict:
     """Search and filter quotes with pagination."""
     base_filter = [Quote.org_id == org_id]
+
+    # Branch filter
+    if branch_id is not None:
+        base_filter.append(Quote.branch_id == branch_id)
 
     if status:
         base_filter.append(Quote.status == status)

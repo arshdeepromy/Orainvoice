@@ -56,27 +56,30 @@ async def get_revenue_summary(
     org_id: uuid.UUID,
     period_start: date,
     period_end: date,
+    branch_id: uuid.UUID | None = None,
 ) -> dict:
     """Revenue summary for the organisation within the date range.
 
     Excludes voided invoices from revenue reporting (Req 19.7).
     Accounts for refunds (credit notes + refund payments) in the period.
+    When branch_id is provided, scopes data to that branch only.
+    Requirements: 20.1
     """
-    result = await db.execute(
-        select(
-            func.coalesce(func.sum(Invoice.subtotal), 0).label("total_revenue"),
-            func.coalesce(func.sum(Invoice.gst_amount), 0).label("total_gst"),
-            func.coalesce(func.sum(Invoice.total), 0).label("total_inclusive"),
-            func.count(Invoice.id).label("invoice_count"),
-        )
-        .where(
-            Invoice.org_id == org_id,
-            Invoice.status != "voided",
-            Invoice.status != "draft",
-            Invoice.issue_date >= period_start,
-            Invoice.issue_date <= period_end,
-        )
+    inv_query = select(
+        func.coalesce(func.sum(Invoice.subtotal), 0).label("total_revenue"),
+        func.coalesce(func.sum(Invoice.gst_amount), 0).label("total_gst"),
+        func.coalesce(func.sum(Invoice.total), 0).label("total_inclusive"),
+        func.count(Invoice.id).label("invoice_count"),
+    ).where(
+        Invoice.org_id == org_id,
+        Invoice.status != "voided",
+        Invoice.status != "draft",
+        Invoice.issue_date >= period_start,
+        Invoice.issue_date <= period_end,
     )
+    if branch_id is not None:
+        inv_query = inv_query.where(Invoice.branch_id == branch_id)
+    result = await db.execute(inv_query)
     row = result.one()
     count = row.invoice_count or 0
     total_rev = Decimal(str(row.total_inclusive or 0))
@@ -176,10 +179,15 @@ async def get_invoice_status_report(
 async def get_outstanding_invoices(
     db: AsyncSession,
     org_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
 ) -> dict:
-    """All invoices with an outstanding balance (issued, partially_paid, overdue)."""
+    """All invoices with an outstanding balance (issued, partially_paid, overdue).
+
+    When branch_id is provided, scopes data to that branch only.
+    Requirements: 20.3
+    """
     today = date.today()
-    result = await db.execute(
+    outstanding_query = (
         select(
             Invoice.id,
             Invoice.invoice_number,
@@ -198,8 +206,11 @@ async def get_outstanding_invoices(
             Invoice.status.in_(["issued", "partially_paid", "overdue"]),
             Invoice.balance_due > 0,
         )
-        .order_by(Invoice.due_date.asc().nullslast())
     )
+    if branch_id is not None:
+        outstanding_query = outstanding_query.where(Invoice.branch_id == branch_id)
+    outstanding_query = outstanding_query.order_by(Invoice.due_date.asc().nullslast())
+    result = await db.execute(outstanding_query)
     rows = result.all()
     invoices = []
     total_outstanding = Decimal("0")
@@ -283,16 +294,18 @@ async def get_gst_return(
     org_id: uuid.UUID,
     period_start: date,
     period_end: date,
+    branch_id: uuid.UUID | None = None,
 ) -> dict:
     """GST return summary formatted for IRD filing.
 
     Separates standard-rated and zero-rated (GST-exempt) line items.
     Accounts for refunds/credit notes processed within the period,
     using the credit note's created_at date (not the original invoice date).
-    Req 45.6
+    When branch_id is provided, scopes data to that branch only.
+    Req 45.6, 20.2
     """
     # Standard-rated items (not GST-exempt)
-    std_result = await db.execute(
+    std_query = (
         select(
             func.coalesce(func.sum(LineItem.line_total), 0).label("std_sales"),
         )
@@ -306,10 +319,13 @@ async def get_gst_return(
             Invoice.issue_date <= period_end,
         )
     )
+    if branch_id is not None:
+        std_query = std_query.where(Invoice.branch_id == branch_id)
+    std_result = await db.execute(std_query)
     std_sales = Decimal(str(std_result.scalar() or 0))
 
     # Zero-rated / GST-exempt items
-    zero_result = await db.execute(
+    zero_query = (
         select(
             func.coalesce(func.sum(LineItem.line_total), 0).label("zero_sales"),
         )
@@ -323,22 +339,25 @@ async def get_gst_return(
             Invoice.issue_date <= period_end,
         )
     )
+    if branch_id is not None:
+        zero_query = zero_query.where(Invoice.branch_id == branch_id)
+    zero_result = await db.execute(zero_query)
     zero_sales = Decimal(str(zero_result.scalar() or 0))
 
     # Total GST collected from invoices
-    gst_result = await db.execute(
-        select(
-            func.coalesce(func.sum(Invoice.gst_amount), 0).label("total_gst"),
-            func.coalesce(func.sum(Invoice.total), 0).label("total_sales"),
-        )
-        .where(
-            Invoice.org_id == org_id,
-            Invoice.status != "voided",
-            Invoice.status != "draft",
-            Invoice.issue_date >= period_start,
-            Invoice.issue_date <= period_end,
-        )
+    gst_query = select(
+        func.coalesce(func.sum(Invoice.gst_amount), 0).label("total_gst"),
+        func.coalesce(func.sum(Invoice.total), 0).label("total_sales"),
+    ).where(
+        Invoice.org_id == org_id,
+        Invoice.status != "voided",
+        Invoice.status != "draft",
+        Invoice.issue_date >= period_start,
+        Invoice.issue_date <= period_end,
     )
+    if branch_id is not None:
+        gst_query = gst_query.where(Invoice.branch_id == branch_id)
+    gst_result = await db.execute(gst_query)
     gst_row = gst_result.one()
     total_gst = Decimal(str(gst_row.total_gst or 0))
     total_sales = Decimal(str(gst_row.total_sales or 0))
@@ -409,10 +428,12 @@ async def get_customer_statement(
     customer_id: uuid.UUID,
     period_start: date,
     period_end: date,
+    branch_id: uuid.UUID | None = None,
 ) -> dict:
     """Printable customer statement with invoices and payments.
 
-    Req 45.7
+    When branch_id is provided, includes only transactions associated with that branch.
+    Req 45.7, 20.4
     """
     # Fetch customer
     cust_result = await db.execute(
@@ -428,7 +449,7 @@ async def get_customer_statement(
     customer_name = f"{customer.first_name} {customer.last_name}"
 
     # Fetch invoices in the period (non-voided, non-draft)
-    inv_result = await db.execute(
+    inv_stmt = (
         select(Invoice)
         .where(
             Invoice.org_id == org_id,
@@ -438,8 +459,11 @@ async def get_customer_statement(
             Invoice.issue_date >= period_start,
             Invoice.issue_date <= period_end,
         )
-        .order_by(Invoice.issue_date.asc())
     )
+    if branch_id is not None:
+        inv_stmt = inv_stmt.where(Invoice.branch_id == branch_id)
+    inv_stmt = inv_stmt.order_by(Invoice.issue_date.asc())
+    inv_result = await db.execute(inv_stmt)
     invoices = inv_result.scalars().all()
 
     # Fetch payments in the period

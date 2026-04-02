@@ -6,6 +6,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { Button, Input, Select, Spinner, Pagination, PageSizeSelect } from '../../components/ui'
+import { useBranch } from '@/contexts/BranchContext'
 
 interface Quote {
   id: string
@@ -16,6 +17,7 @@ interface Quote {
   total: string | number
   valid_until: string | null
   created_at: string | null
+  branch_id?: string | null
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -80,6 +82,7 @@ function expiresInColor(validUntil: string | null | undefined, status: string): 
 
 export default function QuoteList() {
   const navigate = useNavigate()
+  const { branches: branchList } = useBranch()
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [page, setPage] = useState(1)
@@ -258,6 +261,7 @@ export default function QuoteList() {
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Date</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Quote Number</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Customer Name</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Branch</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
                   <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Expires In</th>
                   <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Amount</th>
@@ -267,7 +271,7 @@ export default function QuoteList() {
               <tbody className="divide-y divide-gray-200 bg-white">
                 {quotes.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-12 text-center text-sm text-gray-500">
+                    <td colSpan={8} className="px-4 py-12 text-center text-sm text-gray-500">
                       {hasFilters ? 'No quotes match your filters.' : 'No quotes yet. Create your first quote to get started.'}
                     </td>
                   </tr>
@@ -286,6 +290,9 @@ export default function QuoteList() {
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">
                         {q.customer_name || '—'}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-500">
+                        {q.branch_id ? ((branchList ?? []).find(b => b.id === q.branch_id)?.name ?? '—') : '—'}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm">
                         <span className={`font-medium uppercase text-xs ${STATUS_COLOR[q.status] ?? 'text-gray-500'}`}>

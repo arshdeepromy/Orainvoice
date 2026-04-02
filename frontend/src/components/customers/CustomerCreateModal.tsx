@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
 import apiClient from '../../api/client'
 import { Button, Input, Select, Modal, PhoneInput } from '../ui'
+import { useBranch } from '@/contexts/BranchContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -239,10 +240,15 @@ function DisplayNameSelector({
 /* ------------------------------------------------------------------ */
 
 export function CustomerCreateModal({ open, onClose, onCustomerCreated, kioskMode = false }: CustomerCreateModalProps) {
+  const { selectedBranchId, branches: branchList } = useBranch()
   const [activeTab, setActiveTab] = useState<TabId>('details')
   
   // Customer type
   const [customerType, setCustomerType] = useState<'individual' | 'business'>('individual')
+  
+  // Branch assignment
+  const [customerBranchId, setCustomerBranchId] = useState<string>('')
+  const [sharedAcrossBranches, setSharedAcrossBranches] = useState(false)
   
   // Primary contact / identity
   const [salutation, setSalutation] = useState('')
@@ -286,6 +292,8 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated, kioskMod
   const resetForm = () => {
     setActiveTab('details')
     setCustomerType('individual')
+    setCustomerBranchId(selectedBranchId ?? '')
+    setSharedAcrossBranches(false)
     setSalutation('')
     setFirstName('')
     setLastName('')
@@ -335,6 +343,7 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated, kioskMod
     try {
       const payload: Record<string, unknown> = {
         customer_type: customerType,
+        branch_id: sharedAcrossBranches ? null : (customerBranchId || selectedBranchId || null),
         salutation: salutation || undefined,
         first_name: firstName.trim(),
         last_name: lastName.trim(),
@@ -482,6 +491,37 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated, kioskMod
             </label>
           </div>
         </div>
+        )}
+
+        {/* Branch Assignment — hidden in kiosk */}
+        {!kioskMode && (branchList ?? []).length > 0 && (
+          <div className="space-y-2">
+            <Select
+              label="Branch"
+              options={[
+                { value: '', label: 'Select branch' },
+                ...(branchList ?? []).map((b) => ({ value: b.id, label: b.name })),
+              ]}
+              value={sharedAcrossBranches ? '' : (customerBranchId || selectedBranchId || '')}
+              onChange={(e) => {
+                setCustomerBranchId(e.target.value)
+                if (e.target.value) setSharedAcrossBranches(false)
+              }}
+              disabled={sharedAcrossBranches}
+            />
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sharedAcrossBranches}
+                onChange={(e) => {
+                  setSharedAcrossBranches(e.target.checked)
+                  if (e.target.checked) setCustomerBranchId('')
+                }}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-700">Shared across all branches</span>
+            </label>
+          </div>
         )}
 
         {/* Primary Contact — kiosk: just First + Last, no salutation */}

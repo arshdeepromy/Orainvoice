@@ -613,6 +613,12 @@ NOTIFICATION_CATEGORIES: dict[str, list[str]] = {
         "login_alert",
         "account_locked",
     ],
+    "Branch Management": [
+        "branch_added",
+        "branch_deactivated",
+        "branch_billing_updated",
+        "stock_transfer_request",
+    ],
 }
 
 # Flat set of all valid notification types

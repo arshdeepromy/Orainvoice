@@ -4,6 +4,7 @@ import apiClient from '../../api/client'
 import { Button, Modal } from '../../components/ui'
 import { useModules } from '../../contexts/ModuleContext'
 import { useTenant } from '../../contexts/TenantContext'
+import { useBranch } from '@/contexts/BranchContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -505,6 +506,7 @@ export default function QuoteCreate() {
   const { id: editId } = useParams<{ id: string }>()
   const isEditMode = Boolean(editId)
   const { tradeFamily } = useTenant()
+  const { selectedBranchId } = useBranch()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const { isEnabled } = useModules()
   const projectsEnabled = isEnabled('projects')
@@ -749,6 +751,7 @@ export default function QuoteCreate() {
   // Build payload — sends fields matching backend QuoteCreate/QuoteUpdate schemas
   const buildPayload = () => ({
     customer_id: customer?.id,
+    branch_id: selectedBranchId || undefined,
     ...(isAutomotive ? {
       vehicle_rego: vehicle?.rego ?? (vehicleRego.trim() || undefined),
       vehicle_make: vehicle?.make ?? undefined,
@@ -828,21 +831,21 @@ export default function QuoteCreate() {
   }
 
   return (
-    <div className="bg-gray-50">
-      {/* Header — matches InvoiceCreate */}
-      <div className="bg-white border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold text-gray-900">{isEditMode ? 'Edit Quote' : 'New Quote'}</h1>
-          <div className="flex items-center gap-3">
-            <Button variant="secondary" onClick={handleCancel} disabled={isBusy}>Cancel</Button>
-            <Button variant="secondary" onClick={handleSaveDraft} loading={saving} disabled={isBusy}>Save as Draft</Button>
-            <Button onClick={handleSaveAndSend} loading={sendingAndSaving} disabled={isBusy}>Save and Send</Button>
+    <div className="bg-gray-100 min-h-full">
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200 px-6 py-3 sticky top-0 z-10">
+        <div className="max-w-4xl mx-auto flex items-center justify-between">
+          <h1 className="text-lg font-semibold text-gray-900">{isEditMode ? 'Edit Quote' : 'New Quote'}</h1>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={handleCancel} disabled={isBusy}>Cancel</Button>
+            <Button variant="secondary" size="sm" onClick={handleSaveDraft} loading={saving} disabled={isBusy}>Save as Draft</Button>
+            <Button size="sm" onClick={handleSaveAndSend} loading={sendingAndSaving} disabled={isBusy}>Save and Send</Button>
           </div>
         </div>
       </div>
 
-      <div className="px-6 py-6">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-6">
+      <div className="px-6 py-8">
+        <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 p-8 space-y-6">
 
           {/* Customer and Quote Details — 2-column layout like InvoiceCreate */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1053,11 +1056,11 @@ export default function QuoteCreate() {
             <p className="text-sm text-red-600" role="alert">{errors.submit}</p>
           )}
 
-          {/* Bottom Actions — matches InvoiceCreate */}
-          <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
-            <Button variant="secondary" onClick={handleCancel} disabled={isBusy}>Cancel</Button>
-            <Button variant="secondary" onClick={handleSaveDraft} loading={saving} disabled={isBusy}>Save as Draft</Button>
-            <Button onClick={handleSaveAndSend} loading={sendingAndSaving} disabled={isBusy}>Save and Send</Button>
+          {/* Bottom Actions */}
+          <div className="flex justify-end gap-2 pt-4 border-t border-gray-200">
+            <Button variant="secondary" size="sm" onClick={handleCancel} disabled={isBusy}>Cancel</Button>
+            <Button variant="secondary" size="sm" onClick={handleSaveDraft} loading={saving} disabled={isBusy}>Save as Draft</Button>
+            <Button size="sm" onClick={handleSaveAndSend} loading={sendingAndSaving} disabled={isBusy}>Save and Send</Button>
           </div>
         </div>
       </div>

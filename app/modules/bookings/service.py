@@ -215,6 +215,15 @@ async def create_booking(
     ip_address: str | None = None,
 ) -> dict:
     """Create a new booking."""
+    # Validate branch is active if provided (Req 2.2)
+    if branch_id is not None:
+        from app.core.branch_validation import validate_branch_active
+        await validate_branch_active(db, branch_id)
+
+        # Validate booking falls within branch operating hours (Req 3.4)
+        from app.core.branch_validation import validate_booking_operating_hours
+        await validate_booking_operating_hours(db, branch_id, scheduled_at, duration_minutes)
+
     # Prevent backdated bookings
     now = datetime.now(scheduled_at.tzinfo) if scheduled_at.tzinfo else datetime.utcnow()
     if scheduled_at < now:
@@ -280,6 +289,7 @@ async def create_booking(
         customer_email=customer.email,
         customer_phone=customer.phone,
         vehicle_rego=vehicle_rego,
+        branch_id=branch_id,
         staff_id=assigned_to,
         service_type=service_type,
         service_catalogue_id=service_catalogue_id,
@@ -564,6 +574,8 @@ async def list_bookings(
     ]
     if status:
         filters.append(Booking.status == status)
+    if branch_id is not None:
+        filters.append(Booking.branch_id == branch_id)
 
     count_q = select(sa_func.count(Booking.id)).where(*filters)
     total = (await db.execute(count_q)).scalar() or 0

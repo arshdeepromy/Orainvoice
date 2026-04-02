@@ -335,6 +335,22 @@ class BranchCreateRequest(BaseModel):
     phone: Optional[str] = Field(None, max_length=50, description="Branch phone number")
 
 
+class BranchUpdateRequest(BaseModel):
+    """PUT /api/v1/org/branches/{branch_id} request body.
+
+    All fields are optional — only provided (non-null) fields are updated.
+    Requirements: 1.1, 1.2, 1.3, 1.4, 1.5
+    """
+
+    name: Optional[str] = Field(None, min_length=1, max_length=255, description="Branch name")
+    address: Optional[str] = Field(None, max_length=2000, description="Branch address")
+    phone: Optional[str] = Field(None, max_length=50, description="Branch phone number")
+    email: Optional[str] = Field(None, max_length=255, description="Branch email")
+    logo_url: Optional[str] = Field(None, max_length=2048, description="Branch logo URL")
+    operating_hours: Optional[dict] = Field(None, description="Operating hours JSON (day-of-week keys)")
+    timezone: Optional[str] = Field(None, max_length=50, description="IANA timezone string")
+
+
 class BranchResponse(BaseModel):
     """Single branch in API responses."""
 
@@ -359,6 +375,87 @@ class BranchCreateResponse(BaseModel):
 
     message: str
     branch: BranchResponse
+
+
+class BranchDetailResponse(BaseModel):
+    """Extended branch response with all fields including settings.
+
+    Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 2.1, 2.6
+    """
+
+    id: str = Field(..., description="Branch UUID")
+    name: str = Field(..., description="Branch name")
+    address: Optional[str] = Field(None, description="Branch address")
+    phone: Optional[str] = Field(None, description="Branch phone number")
+    email: Optional[str] = Field(None, description="Branch email")
+    logo_url: Optional[str] = Field(None, description="Branch logo URL")
+    operating_hours: Optional[dict] = Field(None, description="Operating hours JSON")
+    timezone: Optional[str] = Field(None, description="IANA timezone string")
+    is_hq: bool = Field(False, description="Whether this is the HQ branch")
+    is_active: bool = Field(True, description="Whether the branch is active")
+    created_at: Optional[str] = Field(None, description="ISO 8601 creation timestamp")
+    updated_at: Optional[str] = Field(None, description="ISO 8601 update timestamp")
+
+
+class BranchUpdateResponse(BaseModel):
+    """PUT /api/v1/org/branches/{branch_id} response."""
+
+    message: str
+    branch: BranchDetailResponse
+
+
+class BranchDeactivateResponse(BaseModel):
+    """DELETE /api/v1/org/branches/{branch_id} response."""
+
+    message: str
+    branch: BranchDetailResponse
+
+
+class BranchReactivateResponse(BaseModel):
+    """POST /api/v1/org/branches/{branch_id}/reactivate response."""
+
+    message: str
+    branch: BranchDetailResponse
+
+
+class BranchSettingsResponse(BaseModel):
+    """GET /api/v1/org/branches/{branch_id}/settings response.
+
+    Requirements: 3.1
+    """
+
+    id: str = Field(..., description="Branch UUID")
+    name: str = Field(..., description="Branch name")
+    address: Optional[str] = Field(None, description="Branch address")
+    phone: Optional[str] = Field(None, description="Branch phone number")
+    email: Optional[str] = Field(None, description="Branch email")
+    logo_url: Optional[str] = Field(None, description="Branch logo URL")
+    operating_hours: Optional[dict] = Field(None, description="Operating hours JSON")
+    timezone: Optional[str] = Field(None, description="IANA timezone string")
+    notification_preferences: Optional[dict] = Field(None, description="Notification preferences JSON")
+
+
+class BranchSettingsUpdateRequest(BaseModel):
+    """PUT /api/v1/org/branches/{branch_id}/settings request body.
+
+    All fields are optional — only provided (non-null) fields are updated.
+    Requirements: 3.1, 3.5, 22.4
+    """
+
+    address: Optional[str] = Field(None, max_length=2000, description="Branch address")
+    phone: Optional[str] = Field(None, max_length=50, description="Branch phone number")
+    email: Optional[str] = Field(None, max_length=255, description="Branch email")
+    logo_url: Optional[str] = Field(None, max_length=2048, description="Branch logo URL")
+    operating_hours: Optional[dict] = Field(None, description="Operating hours JSON (day-of-week keys)")
+    timezone: Optional[str] = Field(None, max_length=50, description="IANA timezone string")
+    notification_preferences: Optional[dict] = Field(None, description="Notification preferences JSON")
+
+
+class BranchSettingsUpdateResponse(BaseModel):
+    """PUT /api/v1/org/branches/{branch_id}/settings response."""
+
+    message: str
+    settings: BranchSettingsResponse
 
 
 class AssignUserBranchesRequest(BaseModel):

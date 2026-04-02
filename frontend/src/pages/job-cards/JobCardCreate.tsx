@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import apiClient from '../../api/client'
 import { Button, Input, Spinner, Modal } from '../../components/ui'
 import { useTenant } from '../../contexts/TenantContext'
+import { useBranch } from '@/contexts/BranchContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -311,6 +312,7 @@ function VehicleRegoLookup({
 
 export default function JobCardCreate() {
   const { tradeFamily } = useTenant()
+  const { selectedBranchId } = useBranch()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
   const [customer, setCustomer] = useState<Customer | null>(null)
@@ -357,6 +359,7 @@ export default function JobCardCreate() {
     try {
       await apiClient.post('/job-cards', {
         customer_id: customer?.id,
+        branch_id: selectedBranchId || undefined,
         ...(isAutomotive && vehicle?.id ? { vehicle_id: vehicle.id } : {}),
         description: description.trim(),
         notes: notes.trim() || undefined,

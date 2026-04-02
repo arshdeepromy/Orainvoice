@@ -89,22 +89,30 @@ async def revenue_report(
     start_date: str | None = Query(None, description="Custom start (YYYY-MM-DD)"),
     end_date: str | None = Query(None, description="Custom end (YYYY-MM-DD)"),
     export: ExportFormat | None = Query(None, description="Export format"),
+    branch_id: str | None = Query(None, description="Optional branch UUID to scope report"),
     db: AsyncSession = Depends(get_db_session),
 ):
     """Revenue summary for the organisation.
 
-    Requirements: 45.1, 45.2, 45.3
+    Requirements: 45.1, 45.2, 45.3, 20.1
     """
     org_id = _extract_org_id(request)
     if not org_id:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    branch_uuid = None
+    if branch_id:
+        try:
+            branch_uuid = uuid.UUID(branch_id)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid branch_id format"})
 
     period_start, period_end = resolve_date_range(
         preset.value if preset else None,
         _parse_date(start_date),
         _parse_date(end_date),
     )
-    data = await get_revenue_summary(db, org_id, period_start, period_end)
+    data = await get_revenue_summary(db, org_id, period_start, period_end, branch_id=branch_uuid)
     return RevenueSummaryResponse(**data)
 
 
@@ -155,17 +163,25 @@ async def invoice_status_report(
 )
 async def outstanding_invoices_report(
     request: Request,
+    branch_id: str | None = Query(None, description="Optional branch UUID to scope report"),
     db: AsyncSession = Depends(get_db_session),
 ):
     """Outstanding invoices report with one-click reminder button.
 
-    Requirements: 45.1, 45.5
+    Requirements: 45.1, 45.5, 20.3
     """
     org_id = _extract_org_id(request)
     if not org_id:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
 
-    data = await get_outstanding_invoices(db, org_id)
+    branch_uuid = None
+    if branch_id:
+        try:
+            branch_uuid = uuid.UUID(branch_id)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid branch_id format"})
+
+    data = await get_outstanding_invoices(db, org_id, branch_id=branch_uuid)
     return OutstandingInvoicesResponse(**data)
 
 
@@ -221,22 +237,30 @@ async def gst_return_report(
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
     export: ExportFormat | None = Query(None),
+    branch_id: str | None = Query(None, description="Optional branch UUID to scope report"),
     db: AsyncSession = Depends(get_db_session),
 ):
     """GST return summary formatted for IRD filing.
 
-    Requirements: 45.6
+    Requirements: 45.6, 20.2
     """
     org_id = _extract_org_id(request)
     if not org_id:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    branch_uuid = None
+    if branch_id:
+        try:
+            branch_uuid = uuid.UUID(branch_id)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid branch_id format"})
 
     period_start, period_end = resolve_date_range(
         preset.value if preset else None,
         _parse_date(start_date),
         _parse_date(end_date),
     )
-    data = await get_gst_return(db, org_id, period_start, period_end)
+    data = await get_gst_return(db, org_id, period_start, period_end, branch_id=branch_uuid)
     return GSTReturnResponse(**data)
 
 
@@ -257,22 +281,30 @@ async def customer_statement_report(
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
     export: ExportFormat | None = Query(None),
+    branch_id: str | None = Query(None, description="Optional branch UUID to scope report"),
     db: AsyncSession = Depends(get_db_session),
 ):
     """Printable/emailable customer statement.
 
-    Requirements: 45.7
+    Requirements: 45.7, 20.4
     """
     org_id = _extract_org_id(request)
     if not org_id:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    branch_uuid = None
+    if branch_id:
+        try:
+            branch_uuid = uuid.UUID(branch_id)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid branch_id format"})
 
     period_start, period_end = resolve_date_range(
         preset.value if preset else None,
         _parse_date(start_date),
         _parse_date(end_date),
     )
-    data = await get_customer_statement(db, org_id, customer_id, period_start, period_end)
+    data = await get_customer_statement(db, org_id, customer_id, period_start, period_end, branch_id=branch_uuid)
     if data is None:
         return JSONResponse(status_code=404, content={"detail": "Customer not found"})
     return CustomerStatementResponse(**data)

@@ -3,6 +3,7 @@ import apiClient from '../../api/client'
 import { Button, Spinner, PrintButton } from '../../components/ui'
 import DateRangeFilter, { type DateRange } from './DateRangeFilter'
 import ExportButtons from './ExportButtons'
+import { useBranch } from '@/contexts/BranchContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -201,8 +202,11 @@ export default function CustomerStatement() {
     setLoading(true)
     setError('')
     try {
+      const params: Record<string, string> = { start_date: range.from, end_date: range.to }
+      const branchId = localStorage.getItem('selected_branch_id')
+      if (branchId && branchId !== 'all') params.branch_id = branchId
       const res = await apiClient.get<StatementData>(`/reports/customer-statement/${customer.id}`, {
-        params: { start_date: range.from, end_date: range.to },
+        params,
       })
       setData(res.data)
     } catch {

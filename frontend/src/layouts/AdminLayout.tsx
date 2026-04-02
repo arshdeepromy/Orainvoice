@@ -29,6 +29,7 @@ const adminNavItems: AdminNavItem[] = [
   { type: 'section', label: 'Core' },
   { to: '/admin/dashboard', label: 'Dashboard' },
   { to: '/admin/organisations', label: 'Organisations' },
+  { to: '/admin/branches', label: 'Branches' },
   { to: '/admin/users', label: 'Users' },
   { type: 'section', label: 'Configuration' },
   { to: '/admin/plans', label: 'Subscription Management' },

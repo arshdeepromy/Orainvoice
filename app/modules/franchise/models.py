@@ -67,41 +67,7 @@ class Location(Base):
     )
 
 
-class StockTransfer(Base):
-    """A stock transfer request between two locations."""
-
-    __tablename__ = "stock_transfers"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
-    )
-    org_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False,
-    )
-    from_location_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False,
-    )
-    to_location_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False,
-    )
-    product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False,
-    )
-    quantity: Mapped[Decimal] = mapped_column(
-        Numeric(12, 3), nullable=False,
-    )
-    status: Mapped[str] = mapped_column(
-        String(20), server_default="pending", nullable=False,
-    )
-    requested_by: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True,
-    )
-    approved_by: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False,
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
-    )
+# Re-export StockTransfer from the authoritative branch-management module.
+# The franchise module previously owned this model but the table has been
+# migrated to the branch-based schema (migration 0130).
+from app.modules.inventory.transfer_models import StockTransfer  # noqa: F401, E402

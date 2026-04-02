@@ -3,6 +3,7 @@ import apiClient from '../../api/client'
 import { Spinner, PrintButton } from '../../components/ui'
 import DateRangeFilter, { type DateRange } from './DateRangeFilter'
 import ExportButtons from './ExportButtons'
+import { useBranch } from '@/contexts/BranchContext'
 
 interface GstData {
   total_sales: number
@@ -32,6 +33,7 @@ const fmtNeg = (v: number | undefined) => v != null && v > 0 ? `-$${v.toLocaleSt
  * Requirements: 45.6
  */
 export default function GstReturnSummary() {
+  const { selectedBranchId } = useBranch()
   const [range, setRange] = useState<DateRange>(defaultRange)
   const [data, setData] = useState<GstData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -41,9 +43,9 @@ export default function GstReturnSummary() {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<GstData>('/reports/gst-return', {
-        params: { start_date: range.from, end_date: range.to },
-      })
+      const params: Record<string, string> = { start_date: range.from, end_date: range.to }
+      if (selectedBranchId) params.branch_id = selectedBranchId
+      const res = await apiClient.get<GstData>('/reports/gst-return', { params })
       setData(res.data)
     } catch {
       setError('Failed to load GST return summary.')

@@ -6,6 +6,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react'
 import apiClient from '@/api/client'
+import { useBranch } from '@/contexts/BranchContext'
 
 interface Project {
   id: string
@@ -17,6 +18,7 @@ interface Project {
   start_date: string | null
   target_end_date: string | null
   created_at: string
+  branch_id?: string | null
 }
 
 const STATUS_OPTIONS = [
@@ -28,6 +30,7 @@ const STATUS_OPTIONS = [
 ]
 
 export default function ProjectList() {
+  const { branches: branchList } = useBranch()
   const [projects, setProjects] = useState<Project[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -103,6 +106,7 @@ export default function ProjectList() {
             <thead>
               <tr>
                 <th>Name</th>
+                <th>Branch</th>
                 <th>Status</th>
                 <th>Contract Value</th>
                 <th>Budget</th>
@@ -114,6 +118,7 @@ export default function ProjectList() {
               {projects.map(project => (
                 <tr key={project.id} role="row">
                   <td>{project.name}</td>
+                  <td>{project.branch_id ? ((branchList ?? []).find(b => b.id === project.branch_id)?.name ?? '—') : '—'}</td>
                   <td>
                     <span className={`status-badge status-${project.status}`}>
                       {project.status.replace('_', ' ')}

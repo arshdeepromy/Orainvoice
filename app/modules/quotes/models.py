@@ -121,6 +121,9 @@ class Quote(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -130,7 +133,8 @@ class Quote(Base):
         {"extend_existing": True},
     )
 
-    # Relationships removed — V2 model is authoritative for this table
+    # Relationships
+    branch = relationship("Branch")
 
 
 # ---------------------------------------------------------------------------

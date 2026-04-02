@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { TenantProvider, useTenant } from '@/contexts/TenantContext'
 import { ModuleProvider } from '@/contexts/ModuleContext'
 import { FeatureFlagProvider } from '@/contexts/FeatureFlagContext'
+import { BranchProvider } from '@/contexts/BranchContext'
 import { LocaleProvider } from '@/contexts/LocaleContext'
 import { PlatformBrandingProvider } from '@/contexts/PlatformBrandingContext'
 import { ThemeProvider } from '@/contexts/ThemeContext'
@@ -124,6 +125,11 @@ const LocationDetail = lazy(() => import('@/pages/franchise/LocationDetail'))
 
 /* Kiosk (standalone, outside OrgLayout) */
 const KioskPage = lazy(() => import('@/pages/kiosk/KioskPage'))
+
+/* Branch management pages */
+const BranchStockTransfers = lazy(() => import('@/pages/inventory/StockTransfers'))
+const StaffSchedule = lazy(() => import('@/pages/scheduling/StaffSchedule'))
+const GlobalBranchOverview = lazy(() => import('@/pages/admin/GlobalBranchOverview'))
 
 function LazyFallback() {
   return (
@@ -264,6 +270,7 @@ function AppRoutes() {
             <Route path="reports" element={<SafePage name="admin-reports"><AdminReports /></SafePage>} />
             <Route path="integrations" element={<SafePage name="admin-integrations"><Integrations /></SafePage>} />
             <Route path="trade-families" element={<SafePage name="admin-trade-families"><TradeFamilies /></SafePage>} />
+            <Route path="branches" element={<SafePage name="admin-branches"><GlobalBranchOverview /></SafePage>} />
             <Route path="profile" element={<SafePage name="admin-profile"><GlobalAdminProfile /></SafePage>} />
             <Route index element={<Navigate to="dashboard" replace />} />
           </Route>
@@ -289,7 +296,7 @@ function AppRoutes() {
 
           {/* Invoices */}
           <Route path="/invoices" element={<SafePage name="invoices"><InvoiceList /></SafePage>} />
-          <Route path="/invoices/new" element={<SafePage name="invoice-create"><InvoiceCreate /></SafePage>} />
+          <Route path="/invoices/new" element={<SafePage name="invoice-create"><InvoiceList /></SafePage>} />
           <Route path="/invoices/:id/edit" element={<SafePage name="invoice-edit"><InvoiceCreate /></SafePage>} />
           <Route path="/invoices/:id" element={<SafePage name="invoice-detail"><InvoiceList /></SafePage>} />
 
@@ -363,6 +370,12 @@ function AppRoutes() {
           <Route path="/franchise" element={<SafePage name="franchise"><FranchiseDashboard /></SafePage>} />
           <Route path="/locations" element={<SafePage name="locations"><LocationList /></SafePage>} />
           <Route path="/stock-transfers" element={<SafePage name="stock-transfers"><StockTransfers /></SafePage>} />
+
+          {/* Branch Stock Transfers */}
+          <Route path="/branch-transfers" element={<SafePage name="branch-transfers"><BranchStockTransfers /></SafePage>} />
+
+          {/* Staff Schedule (branch-scoped) */}
+          <Route path="/staff-schedule" element={<SafePage name="staff-schedule"><StaffSchedule /></SafePage>} />
 
           {/* Assets */}
           <Route path="/assets" element={<SafePage name="assets"><AssetList /></SafePage>} />
@@ -438,7 +451,9 @@ function App() {
               <TenantProvider>
                 <ModuleProvider>
                   <FeatureFlagProvider>
+                    <BranchProvider>
                     <AppRoutes />
+                    </BranchProvider>
                   </FeatureFlagProvider>
                 </ModuleProvider>
               </TenantProvider>
