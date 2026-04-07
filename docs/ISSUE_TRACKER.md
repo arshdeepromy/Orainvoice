@@ -3498,3 +3498,33 @@ Applied to all three sync hooks:
 
 **Related Issues**: ISSUE-044 (same "closed transaction" class of bug in staff router)
 
+
+---
+
+### ISSUE-105: Xero Credentials page fails to load on standby-prod — missing value_encrypted column
+
+- **Date**: 2026-04-08
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: On the standby-prod environment (localhost:8082), navigating to Admin > Integrations > Xero Credentials shows "Failed to load — Could not load Xero credentials. Please try again." The endpoint `GET /admin/platform-settings/xero` returns 500.
+
+**Root Cause**: During the standby-prod container rebuild, alembic migration 0139 was stamped (skipped) instead of executed because the `platform_settings` table already existed. However, the table was created by an earlier mechanism without the `value_encrypted BYTEA` column that migration 0139 adds. The `PlatformSetting` ORM model references `value_encrypted`, so any query against the table fails with a column-not-found error.
+
+The migration itself uses `IF NOT EXISTS` for the column addition, so it would have been safe to run — but the stamp-past approach skipped it entirely because the table name matched.
+
+**Fix Applied**: Manually added the missing column via direct SQL:
+```sql
+ALTER TABLE platform_settings ADD COLUMN value_encrypted BYTEA;
+```
+
+**Lesson**: When stamping past migrations on HA-replicated databases, check not just whether the table exists but whether all columns from the migration exist. Migrations that add columns to existing tables (like 0139) must be run, not stamped.
+
+**Files Changed**: None (database DDL fix only)
+
+**Similar Bugs Found & Fixed**: None — other stamped migration (0130 stock_transfers) was a pure CREATE TABLE that already existed with the correct schema.
+
+**Related Issues**: N/A
+
