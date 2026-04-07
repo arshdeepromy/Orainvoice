@@ -25,6 +25,15 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Idempotent: skip if table already exists (e.g. from HA replication)
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = 'public' AND table_name = 'stock_transfers'"
+    ))
+    if result.scalar():
+        return
+
     op.create_table(
         "stock_transfers",
         sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
