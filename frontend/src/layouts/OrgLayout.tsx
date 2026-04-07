@@ -57,8 +57,8 @@ const navItems: NavItem[] = [
   { to: '/floor-plan', label: 'Floor Plan', icon: FloorPlanIcon, module: 'tables', flagKey: 'tables' },
   { to: '/kitchen', label: 'Kitchen Display', icon: KitchenIcon, module: 'kitchen_display', flagKey: 'kitchen_display' },
   { to: '/franchise', label: 'Franchise', icon: FranchiseIcon, module: 'franchise', flagKey: 'franchise' },
-  { to: '/branch-transfers', label: 'Branch Transfers', icon: InventoryIcon, adminOnly: true },
-  { to: '/staff-schedule', label: 'Staff Schedule', icon: ScheduleIcon, adminOnly: true },
+  { to: '/branch-transfers', label: 'Branch Transfers', icon: InventoryIcon, module: 'branch_management', adminOnly: true },
+  { to: '/staff-schedule', label: 'Staff Schedule', icon: ScheduleIcon, module: 'branch_management', adminOnly: true },
   { to: '/assets', label: 'Assets', icon: AssetsIcon, module: 'assets', flagKey: 'assets' },
   { to: '/compliance', label: 'Compliance', icon: ComplianceIcon, module: 'compliance_docs', flagKey: 'compliance_docs' },
   { to: '/loyalty', label: 'Loyalty', icon: LoyaltyIcon, module: 'loyalty', flagKey: 'loyalty' },
@@ -87,6 +87,7 @@ export function OrgLayout() {
   const userMenuRef = useRef<HTMLDivElement>(null)
   const { settings, tradeFamily } = useTenant()
   const { isEnabled } = useModules()
+  const isBranchModuleEnabled = isEnabled('branch_management')
   const { isGlobalAdmin, isBranchAdmin, user, logout } = useAuth()
   const { flags } = useFeatureFlags()
   const navigate = useNavigate()
@@ -292,11 +293,11 @@ export function OrgLayout() {
             </kbd>
           </button>
 
-          {/* Branch selector — hidden for branch_admin (locked to single branch) */}
-          {!isBranchLocked && <BranchSelector />}
+          {/* Branch selector — hidden when branch_management module disabled or branch_admin (locked to single branch) */}
+          {isBranchModuleEnabled && !isBranchLocked && <BranchSelector />}
 
           {/* Static branch badge for branch_admin */}
-          {isBranchAdmin && branchAdminBranchName && (
+          {isBranchModuleEnabled && isBranchAdmin && branchAdminBranchName && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 border border-blue-200 px-2.5 py-1 text-xs font-medium text-blue-700">
               <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden="true" />
               <span className="truncate max-w-[120px] sm:max-w-[200px]">{branchAdminBranchName}</span>
@@ -304,7 +305,7 @@ export function OrgLayout() {
           )}
 
           {/* Active branch indicator (non-branch_admin) */}
-          {!isBranchAdmin && activeBranchIndicator.visible && (
+          {isBranchModuleEnabled && !isBranchAdmin && activeBranchIndicator.visible && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 border border-blue-200 px-2.5 py-1 text-xs font-medium text-blue-700">
               <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden="true" />
               <span className="truncate max-w-[120px] sm:max-w-[200px]">{activeBranchIndicator.branchName}</span>

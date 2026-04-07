@@ -200,6 +200,7 @@ def create_app() -> FastAPI:
     from app.modules.stock import models as _stock_models  # noqa: F401
     from app.modules.quotes import models as _quote_models  # noqa: F401
     from app.modules.payments import models as _payment_models  # noqa: F401
+    from app.modules.platform_settings import models as _platform_settings_models  # noqa: F401
 
     # Force SQLAlchemy to resolve all relationship references now,
     # while all models are loaded. This prevents lazy mapper configuration
@@ -484,6 +485,10 @@ def create_app() -> FastAPI:
     from app.modules.admin.migration_router import router as migration_router
     app.include_router(migration_router, prefix="/api/v2/admin/migrations", tags=["v2-admin-migrations"])
 
+    # --- Platform settings (global admin Xero credentials, etc.) ---
+    from app.modules.platform_settings.router import router as platform_settings_router
+    app.include_router(platform_settings_router, prefix="/api/v1/admin/platform-settings", tags=["admin-platform-settings"])
+
     # --- Live database migration router ---
     from app.modules.admin.live_migration_router import router as live_migration_router
     app.include_router(live_migration_router, prefix="/api/v1/admin/migration", tags=["admin-live-migration"])
@@ -519,6 +524,11 @@ def create_app() -> FastAPI:
     from app.modules.sms_chat.router_admin import router as sms_chat_admin_router
 
     app.include_router(sms_webhooks_router, tags=["v2-sms-webhooks"])
+
+    # --- Xero Webhooks (public, no auth — same pattern as Connexus) ---
+    from app.modules.accounting.router_webhooks import router as xero_webhooks_router
+    app.include_router(xero_webhooks_router, tags=["xero-webhooks"])
+
     app.include_router(sms_chat_router, prefix="/api/v2", tags=["v2-sms-chat"])
     app.include_router(sms_chat_admin_router, prefix="/api/v2", tags=["v2-admin-connexus"])
 

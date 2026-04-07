@@ -39,6 +39,16 @@ class BranchContextMiddleware:
             return
 
         request = Request(scope)
+
+        # --- Early module gating check ---
+        # If branch_management module is disabled for this org, skip all
+        # header validation, DB lookups, and branch_admin scoping.
+        org_id = getattr(request.state, "org_id", None)
+        if org_id and not await self._is_branch_module_enabled(org_id):
+            request.state.branch_id = None
+            await self.app(scope, receive, send)
+            return
+
         branch_header = request.headers.get("x-branch-id")
 
         # --- Parse header UUID early (needed by branch_admin check) ---
@@ -100,39 +110,42 @@ class BranchContextMiddleware:
             return
 
         # --- Validate branch belongs to user's org ---
-        org_id = getattr(request.state, "org_id", None)
+        user_id = getattr(request.state, "user_id", None)
+
+        if not user_id:
+            # Unauthenticated request (e.g. /auth/login) — skip branch validation,
+            # just set branch_id from header and let auth middleware handle access.
+            request.state.branch_id = branch_id
+            await self.app(scope, receive, send)
+            return
+
         if org_id is None:
-            # No org context (e.g. unauthenticated or global admin without
-            # org context) — cannot validate ownership, reject.
-            response = JSONResponse(
-                status_code=403,
-                content={"detail": "Invalid branch context"},
-            )
-            await response(scope, receive, send)
+            # Authenticated but no org context (e.g. global_admin) —
+            # ignore the branch header, set branch_id to None.
+            request.state.branch_id = None
+            await self.app(scope, receive, send)
             return
 
         try:
             belongs = await self._branch_belongs_to_org(branch_id, org_id)
         except Exception:
             logger.warning(
-                "Failed to validate branch %s for org %s",
+                "Failed to validate branch %s for org %s — falling back to all-branches",
                 branch_id,
                 org_id,
                 exc_info=True,
             )
-            response = JSONResponse(
-                status_code=403,
-                content={"detail": "Invalid branch context"},
-            )
-            await response(scope, receive, send)
+            # Fall back to all-branches instead of blocking the request
+            request.state.branch_id = None
+            await self.app(scope, receive, send)
             return
 
         if not belongs:
-            response = JSONResponse(
-                status_code=403,
-                content={"detail": "Invalid branch context"},
-            )
-            await response(scope, receive, send)
+            # Branch doesn't belong to org (stale header from localStorage) —
+            # fall back to all-branches instead of returning 403.
+            # The frontend will re-validate and clear the stale selection.
+            request.state.branch_id = None
+            await self.app(scope, receive, send)
             return
 
         request.state.branch_id = branch_id
@@ -141,6 +154,21 @@ class BranchContextMiddleware:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _is_branch_module_enabled(org_id: str | uuid.UUID) -> bool:
+        """Check whether the branch_management module is enabled for *org_id*.
+
+        Uses ModuleService.is_enabled which reads from Redis cache (60s TTL)
+        first, falling back to DB. This keeps the hot path fast for
+        single-location orgs.
+        """
+        from app.core.database import async_session_factory
+        from app.core.modules import ModuleService
+
+        async with async_session_factory() as session:
+            svc = ModuleService(session)
+            return await svc.is_enabled(str(org_id), "branch_management")
 
     @staticmethod
     async def _branch_belongs_to_org(

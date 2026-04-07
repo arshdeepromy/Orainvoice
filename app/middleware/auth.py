@@ -76,6 +76,7 @@ PUBLIC_PATHS: set[str] = {
     "/api/v2/payments/stripe/webhook",
     "/api/webhooks/connexus/incoming",
     "/api/webhooks/connexus/status",
+    "/api/webhooks/xero",
     "/api/v1/ha/heartbeat",
     "/api/v1/ha/status",
     "/api/v2/trade-families",
@@ -86,6 +87,7 @@ PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/v1/portal/",
     "/api/v1/public/",
     "/api/v1/coupons/",
+    "/api/v1/org/accounting/callback/",
     "/api/v2/portal/",
     "/api/v2/public/",
 )

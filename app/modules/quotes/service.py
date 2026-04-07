@@ -361,9 +361,9 @@ async def list_quotes(
     """Search and filter quotes with pagination."""
     base_filter = [Quote.org_id == org_id]
 
-    # Branch filter
+    # Branch filter — include NULL branch_id records (legacy/org-wide)
     if branch_id is not None:
-        base_filter.append(Quote.branch_id == branch_id)
+        base_filter.append(or_(Quote.branch_id == branch_id, Quote.branch_id.is_(None)))
 
     if status:
         base_filter.append(Quote.status == status)

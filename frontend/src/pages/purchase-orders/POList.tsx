@@ -126,12 +126,12 @@ export default function POList() {
       const params: Record<string, string> = { page: String(page), page_size: String(pageSize) }
       if (statusFilter) params.status = statusFilter
       const res = await apiClient.get('/api/v2/purchase-orders', { params })
-      const data = res.data
-      setOrders(data.purchase_orders || [])
-      setTotal(data.total || 0)
+      const data = res.data as any
+      setOrders(data?.purchase_orders ?? [])
+      setTotal(data?.total ?? 0)
     } catch { setOrders([]) }
     finally { setLoading(false) }
-  }, [page, statusFilter])
+  }, [page, statusFilter, selectedBranchId])
 
   const fetchMeta = useCallback(async () => {
     try {

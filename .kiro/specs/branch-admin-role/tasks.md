@@ -177,14 +177,14 @@ Introduce the `branch_admin` role across four layers: database migration, backen
     - Run `docker compose exec app python scripts/seed_demo_org_admin.py`
     - Verify all modules and flags are synced
 
-- [ ] 16. Git commit and push all changes
-  - [-] 16.1 Stage, commit, and push to remote
+- [x] 16. Git commit and push all changes
+  - [x] 16.1 Stage, commit, and push to remote
     - Stage all new and modified files
     - Commit with descriptive message: "feat: add branch_admin role with single-branch scoping and RBAC"
     - Push to remote
     - _Requirements: all_
 
-- [~] 17. Final E2E checkpoint
+- [x] 17. Final E2E checkpoint
   - Verify all Playwright E2E tests pass against the running containers
   - Ensure all tests pass, ask the user if questions arise.
 

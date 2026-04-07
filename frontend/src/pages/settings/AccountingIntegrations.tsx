@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
@@ -208,6 +208,25 @@ export function AccountingIntegrations() {
   const [connecting, setConnecting] = useState<Provider | null>(null)
   const [retrying, setRetrying] = useState<string | null>(null)
   const { toasts, addToast, dismissToast } = useToast()
+  const oauthCheckedRef = useRef(false)
+
+  // Show success/error toast if redirected from OAuth callback (run once)
+  useEffect(() => {
+    if (oauthCheckedRef.current) return
+    const params = new URLSearchParams(window.location.search)
+    const connected = params.get('connected')
+    const error = params.get('error')
+    if (connected) {
+      oauthCheckedRef.current = true
+      addToast('success', `${providerLabel(connected as Provider)} connected successfully`)
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+    if (error) {
+      oauthCheckedRef.current = true
+      addToast('error', `Connection failed: ${error}`)
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [addToast])
 
   const fetchData = async () => {
     setLoading(true)
@@ -279,6 +298,26 @@ export function AccountingIntegrations() {
 
   const hasFailedSyncs = data.sync_log.some((e) => e.status === 'failed')
 
+  const handleRetryAll = async (provider: Provider) => {
+    setRetrying('all')
+    try {
+      const res = await apiClient.post<{ synced: number; failed: number; message: string }>(
+        `/org/accounting/sync/${provider}`,
+      )
+      const result = res.data
+      if ((result?.synced ?? 0) > 0) {
+        addToast('success', result?.message ?? 'Retry complete')
+      } else {
+        addToast('info', result?.message ?? 'No failed syncs to retry')
+      }
+      fetchData()
+    } catch {
+      addToast('error', `Failed to retry syncs for ${providerLabel(provider)}`)
+    } finally {
+      setRetrying(null)
+    }
+  }
+
   return (
     <div>
       <h1 className="text-2xl font-semibold text-gray-900 mb-6">Accounting integrations</h1>
@@ -307,6 +346,31 @@ export function AccountingIntegrations() {
         </div>
 
         <SyncLog entries={data.sync_log} onRetry={handleRetry} retrying={retrying} />
+
+        {hasFailedSyncs && (
+          <div className="flex gap-3">
+            {data.xero.connected && (
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={retrying === 'all'}
+                onClick={() => handleRetryAll('xero')}
+              >
+                Retry all failed (Xero)
+              </Button>
+            )}
+            {data.myob.connected && (
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={retrying === 'all'}
+                onClick={() => handleRetryAll('myob')}
+              >
+                Retry all failed (MYOB)
+              </Button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

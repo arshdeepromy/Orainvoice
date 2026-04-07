@@ -5,6 +5,8 @@
  * Validates: Requirements 17.1, 17.2, 17.3, 17.4, 17.5, 17.6
  */
 import { useState, useEffect, useCallback } from 'react'
+import { Navigate } from 'react-router-dom'
+import { useModules } from '@/contexts/ModuleContext'
 import apiClient from '@/api/client'
 import { useBranch } from '@/contexts/BranchContext'
 import { Button } from '@/components/ui/Button'
@@ -37,6 +39,9 @@ const STATUS_VARIANT: Record<string, 'neutral' | 'info' | 'warning' | 'success' 
 }
 
 export default function StockTransfers() {
+  const { isEnabled } = useModules()
+  if (!isEnabled('branch_management')) return <Navigate to="/dashboard" replace />
+
   const { branches } = useBranch()
   const { toasts, addToast, dismissToast } = useToast()
   const [transfers, setTransfers] = useState<TransferRow[]>([])

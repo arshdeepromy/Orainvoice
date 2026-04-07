@@ -3180,8 +3180,9 @@ async def reset_demo_account(
 ):
     """Delete and re-seed the demo organisation (Demo Workshop).
 
-    Only available in development environments. Removes all data
-    belonging to the demo org and re-runs the seed script.
+    Only available in development environments. Removes ALL org-scoped
+    data belonging to the demo org, resets the demo user credentials,
+    and re-syncs modules and feature flags.
     """
     from app.config import settings as app_settings
 
@@ -3195,93 +3196,121 @@ async def reset_demo_account(
     demo_org_name = "Demo Workshop"
 
     try:
-        # Find the demo user and org
-        result = await db.execute(
-            text("SELECT id, org_id FROM users WHERE email = :email"),
-            {"email": demo_email},
-        )
-        row = result.first()
-        if not row:
-            return JSONResponse(
-                status_code=404,
-                content={"detail": "Demo account not found"},
-            )
+        # Use a raw asyncpg connection for the reset — avoids SQLAlchemy
+        # session/transaction management issues (ISSUE-044, ISSUE-102).
+        import asyncpg
+        from app.config import settings as app_settings_db
 
-        user_id = str(row[0])
-        org_id = str(row[1])
+        # Parse the async DB URL to get connection params
+        db_url = app_settings_db.database_url.replace("postgresql+asyncpg://", "postgresql://")
+        conn = await asyncpg.connect(db_url)
 
-        # Delete org data in dependency order
-        # Sessions, audit logs, tokens
-        await db.execute(text("DELETE FROM sessions WHERE user_id = CAST(:uid AS uuid)"), {"uid": user_id})
-        # audit_log may have DB-level DELETE restrictions — skip if so
         try:
-            await db.execute(text("DELETE FROM audit_log WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
-        except Exception:
-            pass  # audit_log is append-only, DELETE may be revoked
-
-        # SMS data
-        await db.execute(text("""
-            DELETE FROM sms_messages WHERE conversation_id IN (
-                SELECT id FROM sms_conversations WHERE org_id = CAST(:oid AS uuid)
+            # Find the demo user and org
+            row = await conn.fetchrow(
+                "SELECT id, org_id FROM users WHERE email = $1", demo_email
             )
-        """), {"oid": org_id})
-        await db.execute(text("DELETE FROM sms_conversations WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
+            if not row:
+                await conn.close()
+                return JSONResponse(status_code=404, content={"detail": "Demo account not found"})
 
-        # Invoices and related
-        await db.execute(text("""
-            DELETE FROM line_items WHERE invoice_id IN (
-                SELECT id FROM invoices WHERE org_id = CAST(:oid AS uuid)
+            user_id = row["id"]
+            org_id = row["org_id"]
+
+            # Get all user IDs in this org
+            user_rows = await conn.fetch("SELECT id FROM users WHERE org_id = $1", org_id)
+            all_user_ids = [r["id"] for r in user_rows]
+
+            # 1. Delete sessions for ALL org users first
+            for uid in all_user_ids:
+                await conn.execute("DELETE FROM sessions WHERE user_id = $1", uid)
+
+            # 2. Delete MFA data for ALL org users
+            for mfa_table in ["user_mfa_methods", "user_backup_codes", "user_passkey_credentials"]:
+                for uid in all_user_ids:
+                    try:
+                        await conn.execute(f'DELETE FROM "{mfa_table}" WHERE user_id = $1', uid)
+                    except Exception:
+                        pass
+
+            # 3. Find all tables with org_id column and delete from them
+            org_tables = await conn.fetch("""
+                SELECT table_name FROM information_schema.columns
+                WHERE table_schema = 'public' AND column_name = 'org_id'
+                AND table_name NOT IN ('users', 'organisations', 'org_modules', 'org_payment_methods')
+                ORDER BY table_name
+            """)
+            table_names = [r["table_name"] for r in org_tables]
+
+            deleted = []
+            skipped = []
+            remaining = list(table_names)
+
+            # Multi-pass: retry failed tables up to 5 times (FK deps resolve as parents clear)
+            for _pass in range(5):
+                still_remaining = []
+                for table in remaining:
+                    try:
+                        await conn.execute(f'DELETE FROM "{table}" WHERE org_id = $1', org_id)
+                        deleted.append(table)
+                    except Exception:
+                        still_remaining.append(table)
+                remaining = still_remaining
+                if not remaining:
+                    break
+
+            skipped = remaining
+
+            # 4. Delete extra users (not the demo org_admin)
+            await conn.execute(
+                "DELETE FROM users WHERE org_id = $1 AND id != $2", org_id, user_id
             )
-        """), {"oid": org_id})
-        await db.execute(text("DELETE FROM invoices WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
 
-        # Payments
-        await db.execute(text("DELETE FROM payments WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
-
-        # Quotes
-        await db.execute(text("""
-            DELETE FROM quote_line_items WHERE quote_id IN (
-                SELECT id FROM quotes WHERE org_id = CAST(:oid AS uuid)
+            # 5. Reset demo user password and clear lockout
+            from app.modules.auth.password import hash_password
+            pw_hash = hash_password("Demo123!")
+            await conn.execute(
+                """UPDATE users SET password_hash = $1, last_login_at = NULL,
+                   failed_login_count = 0, locked_until = NULL, branch_ids = '[]'::jsonb
+                   WHERE id = $2""",
+                pw_hash, user_id,
             )
-        """), {"oid": org_id})
-        await db.execute(text("DELETE FROM quotes WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
 
-        # Vehicles and customer-vehicle links (before customers)
-        await db.execute(text("""
-            DELETE FROM customer_vehicles WHERE vehicle_id IN (
-                SELECT id FROM org_vehicles WHERE org_id = CAST(:oid AS uuid)
+            # 6. Ensure at least one branch exists
+            branch_row = await conn.fetchrow(
+                "SELECT id FROM branches WHERE org_id = $1 AND is_active = true LIMIT 1", org_id
             )
-        """), {"oid": org_id})
-        await db.execute(text("DELETE FROM org_vehicles WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
+            if not branch_row:
+                import uuid as _uuid
+                await conn.execute(
+                    """INSERT INTO branches (id, org_id, name, is_active, is_default)
+                       VALUES ($1, $2, 'Main', true, true)""",
+                    _uuid.uuid4(), org_id,
+                )
 
-        # Customers (after invoices, quotes, customer_vehicles)
-        await db.execute(text("DELETE FROM customers WHERE org_id = CAST(:oid AS uuid)"), {"oid": org_id})
+        finally:
+            await conn.close()
 
-        # Org modules and feature flag overrides stay (they get re-synced)
-        # Reset user password and clear login timestamps
-        from app.modules.auth.password import hash_password
-        pw_hash = hash_password("demo123")
-        await db.execute(
-            text("""
-                UPDATE users SET password_hash = :pw, last_login_at = NULL,
-                    failed_login_attempts = 0, locked_until = NULL
-                WHERE id = CAST(:uid AS uuid)
-            """),
-            {"pw": pw_hash, "uid": user_id},
-        )
-
-        await db.commit()
-
-        # Re-sync modules and flags
+        # 7. Re-sync modules and feature flags (uses its own session)
         from app.core.demo_org_sync import sync_demo_org_modules
         await sync_demo_org_modules()
 
-        logger.info("Demo account reset by admin %s", getattr(request.state, "user_id", "unknown"))
+        logger.info(
+            "Demo account reset by admin %s — cleared %d tables, skipped %d",
+            getattr(request.state, "user_id", "unknown"),
+            len(deleted),
+            len(skipped),
+        )
 
-        return {"detail": "Demo account reset successfully", "org_name": demo_org_name, "email": demo_email}
+        return {
+            "detail": "Demo account reset successfully",
+            "org_name": demo_org_name,
+            "email": demo_email,
+            "tables_cleared": len(deleted),
+            "tables_skipped": skipped,
+        }
 
     except Exception as exc:
-        await db.rollback()
         logger.error("Demo reset failed: %s", exc)
         return JSONResponse(status_code=500, content={"detail": f"Reset failed: {exc}"})
 
@@ -3995,21 +4024,30 @@ async def regenerate_portal_token(
 async def list_all_branches(
     search: str | None = None,
     status: str | None = None,
+    module_status: str | None = None,
     page: int = 1,
     page_size: int = 25,
     db: AsyncSession = Depends(get_db_session),
 ):
     """Return a paginated list of all branches across all organisations.
 
-    Supports filtering by organisation name (search) and branch status
-    (active/inactive).
+    Supports filtering by organisation name (search), branch status
+    (active/inactive), and module_status (enabled/disabled) for the
+    branch_management module.
 
     Only Global_Admin users can access this endpoint.
-    Requirements: 21.1, 21.2
+    Requirements: 21.1, 21.2, 13.1
     """
     from app.modules.organisations.models import Branch
     from app.modules.admin.models import Organisation
-    from sqlalchemy import func
+    from app.modules.module_management.models import OrgModule
+    from sqlalchemy import func, case, and_, literal
+
+    # LEFT JOIN org_modules to get branch_management enablement per org
+    branch_module_enabled_col = case(
+        (and_(OrgModule.is_enabled == True, OrgModule.module_slug == "branch_management"), literal(True)),  # noqa: E712
+        else_=literal(False),
+    ).label("branch_module_enabled")
 
     base_query = (
         select(
@@ -4024,13 +4062,28 @@ async def list_all_branches(
             Branch.created_at,
             Organisation.name.label("org_name"),
             Organisation.id.label("org_id"),
+            branch_module_enabled_col,
         )
         .join(Organisation, Branch.org_id == Organisation.id)
+        .outerjoin(
+            OrgModule,
+            and_(
+                OrgModule.org_id == Organisation.id,
+                OrgModule.module_slug == "branch_management",
+            ),
+        )
     )
 
     count_query = (
         select(func.count(Branch.id))
         .join(Organisation, Branch.org_id == Organisation.id)
+        .outerjoin(
+            OrgModule,
+            and_(
+                OrgModule.org_id == Organisation.id,
+                OrgModule.module_slug == "branch_management",
+            ),
+        )
     )
 
     if search:
@@ -4048,6 +4101,15 @@ async def list_all_branches(
     elif status == "inactive":
         base_query = base_query.where(Branch.is_active == False)  # noqa: E712
         count_query = count_query.where(Branch.is_active == False)  # noqa: E712
+
+    if module_status == "enabled":
+        module_filter = and_(OrgModule.is_enabled == True, OrgModule.module_slug == "branch_management")  # noqa: E712
+        base_query = base_query.where(module_filter)
+        count_query = count_query.where(module_filter)
+    elif module_status == "disabled":
+        module_filter = (OrgModule.id == None) | (OrgModule.is_enabled == False)  # noqa: E711, E712
+        base_query = base_query.where(module_filter)
+        count_query = count_query.where(module_filter)
 
     total = (await db.execute(count_query)).scalar() or 0
 
@@ -4071,6 +4133,7 @@ async def list_all_branches(
             "email": r.email,
             "timezone": r.timezone,
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "branch_module_enabled": r.branch_module_enabled,
         })
 
     return {

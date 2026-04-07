@@ -20,7 +20,7 @@ import { test, expect, type Page, type Route } from '@playwright/test';
 // Helpers & constants
 // ---------------------------------------------------------------------------
 
-const BASE_URL = 'http://localhost:5173';
+const BASE_URL = process.env.BASE_URL || 'http://localhost:80';
 
 const BRANCH_HQ = {
   id: 'aaaaaaaa-1111-2222-3333-444444444444',

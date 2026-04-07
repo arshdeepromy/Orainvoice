@@ -1,8 +1,8 @@
 /**
  * Global admin branch overview — paginated table of all branches across all orgs.
- * Filter by org name and branch status.
+ * Filter by org name, branch status, and module status.
  *
- * Validates: Requirements 21.1, 21.2, 21.3, 21.4
+ * Validates: Requirements 13.1, 13.2, 21.1, 21.2, 21.3, 21.4
  */
 import { useState, useEffect } from 'react'
 import apiClient from '@/api/client'
@@ -23,6 +23,7 @@ interface BranchRow {
   phone: string | null
   email: string | null
   user_count: number
+  branch_module_enabled: boolean
 }
 
 interface BranchSummary {
@@ -45,6 +46,7 @@ export default function GlobalBranchOverview() {
   const [page, setPage] = useState(1)
   const [orgFilter, setOrgFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('')
+  const [moduleStatusFilter, setModuleStatusFilter] = useState<string>('')
   const [selectedBranch, setSelectedBranch] = useState<BranchRow | null>(null)
   const pageSize = 20
 
@@ -56,6 +58,7 @@ export default function GlobalBranchOverview() {
         const params: Record<string, string | number> = { page, page_size: pageSize }
         if (orgFilter.trim()) params.org_name = orgFilter.trim()
         if (statusFilter) params.status = statusFilter
+        if (moduleStatusFilter) params.module_status = moduleStatusFilter
         const res = await apiClient.get<BranchListResponse>('/admin/branches', {
           params,
           signal: controller.signal,
@@ -73,9 +76,9 @@ export default function GlobalBranchOverview() {
     }
     fetchBranches()
     return () => controller.abort()
-  }, [page, orgFilter, statusFilter])
+  }, [page, orgFilter, statusFilter, moduleStatusFilter])
 
-  useEffect(() => { setPage(1) }, [orgFilter, statusFilter])
+  useEffect(() => { setPage(1) }, [orgFilter, statusFilter, moduleStatusFilter])
 
   return (
     <div className="space-y-6">
@@ -123,6 +126,19 @@ export default function GlobalBranchOverview() {
             <option value="inactive">Inactive</option>
           </select>
         </div>
+        <div className="w-44">
+          <label className="block text-sm font-medium text-gray-700 mb-1">Module Status</label>
+          <select
+            value={moduleStatusFilter}
+            onChange={(e) => setModuleStatusFilter(e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+            aria-label="Filter by module status"
+          >
+            <option value="">All</option>
+            <option value="enabled">Enabled</option>
+            <option value="disabled">Disabled</option>
+          </select>
+        </div>
       </div>
 
       {loading && branches.length === 0 && (
@@ -139,6 +155,7 @@ export default function GlobalBranchOverview() {
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Organisation</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Branch</th>
                   <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
+                  <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Module Status</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Created</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Timezone</th>
                   <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Users</th>
@@ -146,7 +163,7 @@ export default function GlobalBranchOverview() {
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
                 {branches.length === 0 ? (
-                  <tr><td colSpan={6} className="px-4 py-12 text-center text-sm text-gray-500">No branches found.</td></tr>
+                  <tr><td colSpan={7} className="px-4 py-12 text-center text-sm text-gray-500">No branches found.</td></tr>
                 ) : (
                   branches.map((b) => (
                     <tr
@@ -162,6 +179,11 @@ export default function GlobalBranchOverview() {
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
                         <Badge variant={b.is_active ? 'success' : 'neutral'}>
                           {b.is_active ? 'Active' : 'Inactive'}
+                        </Badge>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
+                        <Badge variant={b.branch_module_enabled ? 'success' : 'neutral'}>
+                          {b.branch_module_enabled ? 'Enabled' : 'Disabled'}
                         </Badge>
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">

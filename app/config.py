@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     twilio_sender_number: str = ""
 
     # --- Xero ---
+    # Precedence: env var > DB (platform_settings) > empty string default.
+    # When env vars are empty, the Xero OAuth flow should look up
+    # XERO_CLIENT_ID / XERO_CLIENT_SECRET from the platform_settings table
+    # via platform_settings.service.get_setting().
     xero_client_id: str = ""
     xero_client_secret: str = ""
 

@@ -8,6 +8,8 @@ import { useNavigate } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Modal } from '../../components/ui'
 import WorkSchedule, { type WeekSchedule } from '../../components/WorkSchedule'
+import { useBranch } from '../../contexts/BranchContext'
+import { useModules } from '../../contexts/ModuleContext'
 
 interface StaffMember {
   id: string
@@ -85,7 +87,12 @@ export default function StaffList() {
 
   // "Also create as user" state
   const [createAsUser, setCreateAsUser] = useState(false)
-  const [userRole, setUserRole] = useState<'org_admin' | 'salesperson'>('salesperson')
+  const [userRole, setUserRole] = useState<'org_admin' | 'salesperson' | 'branch_admin' | 'location_manager' | 'staff_member'>('salesperson')
+  const [assignBranchId, setAssignBranchId] = useState<string>('')
+
+  const { branches } = useBranch()
+  const { isEnabled } = useModules()
+  const isBranchModuleEnabled = isEnabled('branch_management')
 
   // Inline duplicate warnings
   const [dupWarnings, setDupWarnings] = useState<Record<string, string | undefined>>({})
@@ -144,6 +151,7 @@ export default function StaffList() {
     setDupWarnings({})
     setCreateAsUser(false)
     setUserRole('salesperson')
+    setAssignBranchId('')
     setShowModal(true)
   }
 
@@ -196,7 +204,18 @@ export default function StaffList() {
         // If "Also create as user" is checked, send invite via existing user invite flow
         if (createAsUser && form.email.trim()) {
           try {
-            await apiClient.post('/org/users/invite', { email: form.email.trim(), role: userRole })
+            const inviteRes = await apiClient.post('/org/users/invite', { email: form.email.trim(), role: userRole })
+            // If a branch is selected, assign the user to that branch
+            if (assignBranchId) {
+              const userId = (inviteRes.data as any)?.user_id
+              if (userId) {
+                try {
+                  await apiClient.put(`/org/users/${userId}`, { branch_ids: [assignBranchId] })
+                } catch {
+                  // Branch assignment is best-effort — don't fail the whole operation
+                }
+              }
+            }
           } catch (inviteErr: any) {
             const detail = inviteErr?.response?.data?.detail || ''
             // Don't fail the whole operation if invite fails — staff was already created
@@ -503,20 +522,38 @@ export default function StaffList() {
                     Also create as a user (sends invite email)
                   </label>
                   {createAsUser && (
+                    <>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">User Role</label>
                       <select
                         value={userRole}
-                        onChange={(e) => setUserRole(e.target.value as 'org_admin' | 'salesperson')}
+                        onChange={(e) => setUserRole(e.target.value as typeof userRole)}
                         className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                       >
                         <option value="salesperson">Salesperson</option>
                         <option value="org_admin">Org Admin</option>
+                        {isBranchModuleEnabled && <option value="branch_admin">Branch Admin</option>}
+                        <option value="location_manager">Location Manager</option>
+                        <option value="staff_member">Staff Member</option>
                       </select>
                       {!form.email.trim() && (
                         <p className="mt-1 text-xs text-amber-600">Email is required to send an invite</p>
                       )}
                     </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Assign to Branch</label>
+                      <select
+                        value={assignBranchId}
+                        onChange={(e) => setAssignBranchId(e.target.value)}
+                        className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">— No Branch —</option>
+                        {(branches ?? []).filter(b => b.is_active).map(b => (
+                          <option key={b.id} value={b.id}>{b.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    </>
                   )}
                 </div>
               )}

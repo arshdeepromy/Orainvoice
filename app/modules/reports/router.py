@@ -48,6 +48,20 @@ from app.modules.reports.service import (
 router = APIRouter()
 
 
+def _resolve_branch_id(request: Request, branch_id_param: str | None) -> uuid.UUID | None:
+    """Resolve branch UUID from query param or X-Branch-Id header (via middleware).
+
+    Query param takes precedence. Falls back to request.state.branch_id
+    set by BranchContextMiddleware from the X-Branch-Id header.
+    """
+    if branch_id_param:
+        return uuid.UUID(branch_id_param)
+    middleware_branch = getattr(request, "state", None) and getattr(request.state, "branch_id", None)
+    if middleware_branch is not None:
+        return middleware_branch if isinstance(middleware_branch, uuid.UUID) else uuid.UUID(str(middleware_branch))
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -106,6 +120,8 @@ async def revenue_report(
             branch_uuid = uuid.UUID(branch_id)
         except ValueError:
             return JSONResponse(status_code=400, content={"detail": "Invalid branch_id format"})
+    else:
+        branch_uuid = _resolve_branch_id(request, None)
 
     period_start, period_end = resolve_date_range(
         preset.value if preset else None,
@@ -180,6 +196,8 @@ async def outstanding_invoices_report(
             branch_uuid = uuid.UUID(branch_id)
         except ValueError:
             return JSONResponse(status_code=400, content={"detail": "Invalid branch_id format"})
+    else:
+        branch_uuid = _resolve_branch_id(request, None)
 
     data = await get_outstanding_invoices(db, org_id, branch_id=branch_uuid)
     return OutstandingInvoicesResponse(**data)

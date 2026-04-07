@@ -2064,11 +2064,12 @@ async def create_credit_note(
         ip_address=ip_address,
     )
 
-    await db.commit()
+    await db.flush()
 
-    # Refresh to get server-generated values
-    await db.refresh(credit_note)
-    await db.refresh(invoice)
+    # Don't commit here — let the session dependency handle it.
+    # Use flush + expire to get server-generated values.
+    db.expire(credit_note)
+    db.expire(invoice)
 
     # Fetch line items for invoice response
     li_result = await db.execute(
@@ -2161,9 +2162,10 @@ async def search_invoices(
     # Base query: join invoices with customers to enable customer field search
     base_filter = [Invoice.org_id == org_id]
 
-    # Branch filter
+    # Branch filter — include NULL branch_id records (legacy/org-wide)
     if branch_id is not None:
-        base_filter.append(Invoice.branch_id == branch_id)
+        from sqlalchemy import or_
+        base_filter.append(or_(Invoice.branch_id == branch_id, Invoice.branch_id.is_(None)))
 
     # Status filter
     if status:

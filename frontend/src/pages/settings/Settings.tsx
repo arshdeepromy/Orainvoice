@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
+import { useModules } from '@/contexts/ModuleContext'
 import { OrgSettings } from './OrgSettings'
 import { BranchManagement } from './BranchManagement'
 import { UserManagement } from './UserManagement'
@@ -28,10 +29,10 @@ type SettingsSection =
   | 'modules'
   | 'notifications'
 
-const NAV_ITEMS: { id: SettingsSection; label: string; icon: string; adminOnly?: boolean }[] = [
+const NAV_ITEMS: { id: SettingsSection; label: string; icon: string; adminOnly?: boolean; module?: string }[] = [
   { id: 'profile', label: 'Profile', icon: '👤' },
   { id: 'organisation', label: 'Organisation', icon: '⚙', adminOnly: true },
-  { id: 'branches', label: 'Branches', icon: '🏢', adminOnly: true },
+  { id: 'branches', label: 'Branches', icon: '🏢', adminOnly: true, module: 'branch_management' },
   { id: 'users', label: 'Users', icon: '👥', adminOnly: true },
   { id: 'billing', label: 'Billing', icon: '💳', adminOnly: true },
   { id: 'accounting', label: 'Accounting', icon: '📒', adminOnly: true },
@@ -60,10 +61,14 @@ const SECTION_COMPONENTS: Record<SettingsSection, React.FC> = {
 
 export function Settings() {
   const { user } = useAuth()
+  const { isEnabled } = useModules()
   const isAdmin = user?.role === 'org_admin' || user?.role === 'global_admin'
   const visibleNavItems = useMemo(
-    () => NAV_ITEMS.filter(item => !item.adminOnly || isAdmin),
-    [isAdmin],
+    () => NAV_ITEMS.filter(item =>
+      (!item.adminOnly || isAdmin) &&
+      (!item.module || isEnabled(item.module))
+    ),
+    [isAdmin, isEnabled],
   )
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get('tab')

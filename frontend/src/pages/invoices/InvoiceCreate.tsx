@@ -406,7 +406,7 @@ function ItemTableRow({
   const [inlineUnit, setInlineUnit] = useState('')
   const [inlinePrice, setInlinePrice] = useState('')
   const [inlineDescription, setInlineDescription] = useState('')
-  const [inlineGstExempt, setInlineGstExempt] = useState(false)
+  const [inlineGstMode, setInlineGstMode] = useState<'inclusive' | 'exclusive' | 'exempt' | ''>('')
   const [inlineSaving, setInlineSaving] = useState(false)
   const [inlineError, setInlineError] = useState('')
   const [descUpdating, setDescUpdating] = useState(false)
@@ -478,14 +478,16 @@ function ItemTableRow({
 
   const handleInlineItemSubmit = async () => {
     if (!inlineName.trim()) { setInlineError('Name is required.'); return }
+    if (!inlineGstMode) { setInlineError('Please select a GST type.'); return }
     if (!inlinePrice.trim() || isNaN(Number(inlinePrice))) { setInlineError('Valid selling price is required.'); return }
     setInlineSaving(true)
     setInlineError('')
     try {
-      const res = await apiClient.post<{ item: { id: string; name: string; default_price: string; is_gst_exempt: boolean; category: string | null; description: string | null } }>('/catalogue/items', {
+      const res = await apiClient.post<{ item: { id: string; name: string; default_price: string; is_gst_exempt: boolean; gst_inclusive: boolean; category: string | null; description: string | null } }>('/catalogue/items', {
         name: inlineName.trim(),
         default_price: inlinePrice.trim(),
-        is_gst_exempt: inlineGstExempt,
+        is_gst_exempt: inlineGstMode === 'exempt',
+        gst_inclusive: inlineGstMode === 'inclusive',
         description: inlineDescription.trim() || null,
         category: inlineUnit.trim() || null,
       })
@@ -495,12 +497,13 @@ function ItemTableRow({
         name: created.name,
         default_price: Number(created.default_price),
         gst_applicable: !created.is_gst_exempt,
+        gst_inclusive: created.gst_inclusive ?? false,
         category: created.category || undefined,
       }
       onItemCreated(mapped)
       handleItemSelect(mapped)
       setShowInlineForm(false)
-      setInlineName(''); setInlinePrice(''); setInlineDescription(''); setInlineUnit('')
+      setInlineName(''); setInlinePrice(''); setInlineDescription(''); setInlineUnit(''); setInlineGstMode('')
     } catch (err: any) {
       setInlineError(err?.response?.data?.detail || 'Failed to create item.')
     } finally {
@@ -607,11 +610,40 @@ function ItemTableRow({
                 <textarea value={inlineDescription} onChange={(e) => setInlineDescription(e.target.value)} rows={3} placeholder="Optional item description"
                   className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">GST *</label>
+                <div className="flex rounded-md border border-gray-300 overflow-hidden">
+                  {(['inclusive', 'exclusive', 'exempt'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setInlineGstMode(mode)}
+                      className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+                        inlineGstMode === mode
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-white text-gray-700 hover:bg-gray-50'
+                      } ${mode !== 'inclusive' ? 'border-l border-gray-300' : ''}`}
+                    >
+                      GST {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">Default price (ex-GST) *</label>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    {!inlineGstMode ? (
+                      <span className="flex items-center gap-1 text-amber-600">
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                        Select a GST type above to unlock
+                      </span>
+                    ) : inlineGstMode === 'inclusive' ? 'Default price (incl. GST) *'
+                      : inlineGstMode === 'exempt' ? 'Default price *'
+                      : 'Default price (ex-GST) *'}
+                  </label>
                   <input type="number" min="0" step="0.01" value={inlinePrice} onChange={(e) => setInlinePrice(e.target.value)} placeholder="e.g. 85.00"
-                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                    disabled={!inlineGstMode}
+                    className={`w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${!inlineGstMode ? 'bg-gray-100 cursor-not-allowed border-dashed border-amber-300' : ''}`} />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-700 mb-1">Category</label>
@@ -619,10 +651,6 @@ function ItemTableRow({
                     className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
               </div>
-              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                <input type="checkbox" checked={inlineGstExempt} onChange={(e) => setInlineGstExempt(e.target.checked)} className="rounded border-gray-300" />
-                GST exempt
-              </label>
               {inlineError && <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{inlineError}</div>}
               <div className="flex justify-end gap-2">
                 <button type="button" disabled={inlineSaving} onClick={() => setShowInlineForm(false)}

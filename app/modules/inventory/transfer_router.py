@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
 from app.modules.auth.rbac import require_role
+from app.modules.organisations.router import require_branch_module
 from app.modules.inventory.transfer_service import (
     approve_transfer,
     cancel_transfer,
@@ -118,6 +119,7 @@ async def create_transfer_endpoint(
     payload: CreateTransferRequest,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """Create a new inter-branch stock transfer with status 'pending'.
 
@@ -166,6 +168,7 @@ async def list_transfers_endpoint(
     to_branch_id: uuid.UUID | None = Query(None, description="Filter by destination branch"),
     status: str | None = Query(None, description="Filter by status"),
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """List stock transfers with optional branch/status filtering.
 
@@ -207,6 +210,7 @@ async def approve_transfer_endpoint(
     transfer_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """Approve a pending stock transfer.
 
@@ -258,6 +262,7 @@ async def ship_transfer_endpoint(
     transfer_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """Mark an approved transfer as shipped. Deducts stock from source branch.
 
@@ -308,6 +313,7 @@ async def receive_transfer_endpoint(
     transfer_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """Mark a shipped transfer as received. Adds stock to destination branch.
 
@@ -358,6 +364,7 @@ async def cancel_transfer_endpoint(
     transfer_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """Cancel a transfer. Restores stock if it was already shipped.
 

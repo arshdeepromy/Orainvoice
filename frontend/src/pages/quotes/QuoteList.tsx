@@ -82,7 +82,7 @@ function expiresInColor(validUntil: string | null | undefined, status: string): 
 
 export default function QuoteList() {
   const navigate = useNavigate()
-  const { branches: branchList } = useBranch()
+  const { branches: branchList, selectedBranchId } = useBranch()
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [page, setPage] = useState(1)
@@ -114,8 +114,8 @@ export default function QuoteList() {
 
       const res = await apiClient.get('/quotes', { params, signal: controller.signal })
       const data = res.data as any
-      setQuotes(data.quotes ?? data.items ?? [])
-      setTotal(data.total ?? 0)
+      setQuotes(data?.quotes ?? data?.items ?? [])
+      setTotal(data?.total ?? 0)
     } catch (err: unknown) {
       if ((err as { name?: string })?.name === 'CanceledError') return
       setError('Failed to load quotes. Please try again.')
@@ -123,7 +123,7 @@ export default function QuoteList() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [selectedBranchId])
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current)
@@ -137,7 +137,7 @@ export default function QuoteList() {
   useEffect(() => {
     fetchQuotes(searchQuery, statusFilter, page)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, pageSize])
+  }, [page, pageSize, selectedBranchId])
 
   const handleDelete = async (quoteId: string) => {
     setDeleting(true)

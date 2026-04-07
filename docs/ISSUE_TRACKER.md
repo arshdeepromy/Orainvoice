@@ -3293,3 +3293,208 @@ The signup page fix (TASK 1) removed the global CSS rule entirely rather than fi
 - `frontend/src/App.tsx` — Wrapped GuestOnly `<Outlet />` with scrollable div
 
 **Related Issues**: ISSUE-051 (original double scroll fix), ISSUE-039 (original broken scrolling fix)
+
+
+---
+
+### ISSUE-097: BranchContextMiddleware blocks login — X-Branch-Id header on unauthenticated requests
+
+- **Date**: 2026-04-06
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A (introduced by branch-admin-role spec implementation)
+
+**Symptoms**: All login attempts return 403 Forbidden. Users cannot log in to any account. The error occurs because the axios interceptor sends `X-Branch-Id` from localStorage on every request, including `/auth/login`.
+
+**Root Cause**: The `BranchContextMiddleware` in `app/core/branch_context.py` validates the `X-Branch-Id` header against the user's org. For unauthenticated requests (like login), there's no `user_id` or `org_id` in `request.state`, so the middleware hit the `org_id is None` check and returned 403. The middleware was added as part of the branch management feature but didn't account for public endpoints.
+
+**Fix Applied**: Added a check for `user_id` before org validation — if no `user_id` in request.state (unauthenticated), skip branch validation and pass through.
+
+**Files Changed**:
+- `app/core/branch_context.py`
+
+**Similar Bugs Found & Fixed**: ISSUE-098 (same root cause for global_admin)
+
+**Related Issues**: ISSUE-098
+
+---
+
+### ISSUE-098: BranchContextMiddleware blocks global_admin — X-Branch-Id header with no org_id
+
+- **Date**: 2026-04-06
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: ISSUE-097 (partial fix didn't cover authenticated users without org_id)
+
+**Symptoms**: After logging in as global_admin, every admin endpoint returns 403. The browser still has a stale `X-Branch-Id` in localStorage from a previous org_admin session.
+
+**Root Cause**: The fix for ISSUE-097 only handled unauthenticated requests. Global_admin users are authenticated but have `org_id = None` (they're platform-level, not org-level). The middleware still rejected them because `org_id is None` with a branch header present.
+
+**Fix Applied**: Changed the `org_id is None` branch to set `branch_id = None` and pass through instead of returning 403. This allows global_admin (and any authenticated user without org context) to proceed without branch scoping.
+
+**Files Changed**:
+- `app/core/branch_context.py`
+
+**Similar Bugs Found & Fixed**: Would also affect `franchise_admin` users who have no org_id.
+
+**Related Issues**: ISSUE-097
+
+---
+
+### ISSUE-099: Dashboard not scoped by branch — shows all-org data regardless of branch selector
+
+- **Date**: 2026-04-06
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Selecting "Clendon Shop" branch in the branch switcher shows the same dashboard metrics as "All Branches". Revenue, outstanding total, and overdue invoices don't change when switching branches.
+
+**Root Cause**: Two issues: (1) The `OrgAdminDashboard` fetched `/reports/revenue` and `/reports/outstanding` without passing `branch_id` as a query parameter, and the backend endpoints read `branch_id` from query params, not from `request.state.branch_id`. (2) The dashboard fetch effect had `[]` as dependency (ran once on mount), so it never re-fetched when the branch changed.
+
+**Fix Applied**: (1) Added `branch_id` query param to dashboard API calls when `selectedBranchId` is set. (2) Changed the fetch effect dependency to `[selectedBranchId]` so it re-fetches on branch change. (3) Added fallback in backend report endpoints to read from `request.state.branch_id` when no query param is provided.
+
+**Files Changed**:
+- `frontend/src/pages/dashboard/OrgAdminDashboard.tsx`
+- `app/modules/organisations/router.py`
+- `app/modules/reports/router.py`
+
+**Similar Bugs Found & Fixed**: Same pattern in InvoiceList, QuoteList, BookingListPanel, POList — all fixed to include `selectedBranchId` in fetch dependencies.
+
+**Related Issues**: ISSUE-100
+
+---
+
+### ISSUE-100: Branch selection resets to "All Branches" on page refresh
+
+- **Date**: 2026-04-06
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Selecting a branch, then refreshing the page, resets the branch selector to "All Branches" (null). The selection doesn't persist.
+
+**Root Cause**: Two issues: (1) `selectedBranchId` state initialized as `null` instead of reading from localStorage on mount. (2) The `validateBranchSelection` function validated the stored branch ID against `user.branch_ids` from `/auth/me`, but for org_admin users, `branch_ids` only contains explicitly assigned branches (like Main), not all accessible branches. So Clendon Shop's ID failed validation and was cleared.
+
+**Fix Applied**: (1) Initialize `selectedBranchId` from localStorage in the `useState` initializer. (2) Validate against the full org branches list (from `/org/branches`) instead of `user.branch_ids`. (3) Removed the response interceptor that was re-validating against `branch_ids` and clearing the selection.
+
+**Files Changed**:
+- `frontend/src/contexts/BranchContext.tsx`
+
+**Similar Bugs Found & Fixed**: N/A
+
+**Related Issues**: ISSUE-099
+
+---
+
+### ISSUE-101: Invoices show empty on Main branch — NULL branch_id records excluded by filter
+
+- **Date**: 2026-04-06
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Selecting "Main" branch shows "No invoices yet" even though invoices exist. Selecting "All Branches" shows all invoices.
+
+**Root Cause**: The `search_invoices` function in `app/modules/invoices/service.py` filters with `Invoice.branch_id == branch_id`. Invoices created before branch management was added have `branch_id = NULL`, so they don't match any specific branch filter.
+
+**Fix Applied**: Changed the branch filter to include NULL records: `or_(Invoice.branch_id == branch_id, Invoice.branch_id.is_(None))`. Same fix applied to quotes service.
+
+**Files Changed**:
+- `app/modules/invoices/service.py`
+- `app/modules/quotes/service.py`
+
+**Similar Bugs Found & Fixed**: Same pattern in quotes service.
+
+**Related Issues**: ISSUE-099
+
+
+---
+
+### ISSUE-102: Demo reset endpoint returns 500 — SQLAlchemy closed transaction + FK violations + missing org_id columns
+
+- **Date**: 2026-04-06
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A (new code added for comprehensive demo reset)
+
+**Symptoms**: POST `/api/v1/admin/demo/reset` returns 500 Internal Server Error. Three distinct failures: (1) SAVEPOINT/ROLLBACK TO SAVEPOINT not working correctly with SQLAlchemy's async session, (2) many tables (webhook_deliveries, tip_allocations, job_attachments, etc.) don't have an `org_id` column — they reference parent tables via FK, (3) FK violation when deleting users because sessions for other org users weren't cleared first.
+
+**Root Cause**: The hardcoded table list approach was fundamentally flawed — it assumed every table has an `org_id` column, which is wrong for child tables that reference parents via FK. Also, sessions for ALL org users needed to be deleted before deleting the users themselves, not just the demo user's sessions.
+
+**Fix Applied**: Rewrote the reset to use a dynamic approach:
+1. Find ALL user IDs in the org and delete their sessions/MFA data first
+2. Query `information_schema.columns` to dynamically find all tables with an `org_id` column
+3. Use multi-pass deletion with SAVEPOINTs — retry failed tables up to 5 times (FK deps resolve as parent tables get cleared in earlier passes)
+4. Delete extra users after all org data is cleared
+5. Reset password, ensure Main branch exists, re-sync modules/flags
+
+**Files Changed**:
+- `app/modules/admin/router.py`
+
+**Similar Bugs Found & Fixed**: ISSUE-044 (same SQLAlchemy closed transaction pattern). The pattern of `await db.rollback()` inside a try/except within a session context manager is always wrong — use SAVEPOINTs instead.
+
+**Related Issues**: ISSUE-044
+
+
+---
+
+### ISSUE-103: Stale X-Branch-Id header causes 403 on all requests after demo reset
+
+- **Date**: 2026-04-06
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A (BranchContextMiddleware was too strict)
+
+**Symptoms**: After demo reset or switching between accounts, all API requests return 403 "Invalid branch context" even in a fresh private browser. Login succeeds (200) but every subsequent request fails.
+
+**Root Cause**: The `BranchContextMiddleware` validated the `X-Branch-Id` header against the org's branches. If the branch was deleted (by demo reset) but the browser still had the old branch UUID in localStorage, the middleware returned 403. This blocked the entire app because the axios interceptor sends `X-Branch-Id` on every request from localStorage.
+
+**Fix Applied**: Changed the middleware to fall back to `branch_id = None` (All Branches scope) instead of returning 403 when a branch doesn't belong to the org. The frontend's BranchContext will re-validate and clear the stale selection on next fetch. A stale branch header should never block the entire application.
+
+**Files Changed**:
+- `app/core/branch_context.py`
+
+**Similar Bugs Found & Fixed**: ISSUE-097 (unauthenticated), ISSUE-098 (global_admin) — same middleware, same pattern of being too strict.
+
+**Related Issues**: ISSUE-097, ISSUE-098, ISSUE-102
+
+
+---
+
+### ISSUE-104: Xero auto-sync causes "closed transaction" error — DB queries after commit
+
+- **Date**: 2026-04-07
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Creating an invoice or recording a payment returns 503 "Can't operate on closed transaction inside context manager". The invoice/payment is saved successfully but the API response fails. Frontend shows the error, but data appears on refresh.
+
+**Root Cause**: The Xero auto-sync hooks added to the invoice and payment routers performed DB queries (customer name lookup, invoice number lookup) after `await db.commit()` was called. Once committed, the SQLAlchemy async session's transaction is closed and further queries fail.
+
+Pattern: `db.commit()` → `await db.execute(select(...))` → CRASH
+
+**Fix Applied**: Moved all DB queries needed for Xero sync data preparation to BEFORE `db.commit()`. The Xero-compatible payload dict is built while the session is still open, then the fire-and-forget `asyncio.create_task()` only uses the pre-built dict (no DB access).
+
+Applied to all three sync hooks:
+1. Invoice router: customer name lookup moved before commit
+2. Payment router: invoice number lookup moved before commit  
+3. Credit note router: already didn't commit manually, but fixed data shape to include proper fields
+
+**Files Changed**:
+- `app/modules/invoices/router.py`
+- `app/modules/payments/router.py`
+
+**Similar Bugs Found & Fixed**: Same pattern in all three Xero sync hooks (invoice, payment, credit note). All fixed.
+
+**Related Issues**: ISSUE-044 (same "closed transaction" class of bug in staff router)
+

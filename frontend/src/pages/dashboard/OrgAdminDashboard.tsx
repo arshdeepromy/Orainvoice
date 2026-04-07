@@ -69,13 +69,16 @@ export function OrgAdminDashboard() {
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
     async function fetchDashboard() {
       try {
+        const params: Record<string, string> = {}
+        if (selectedBranchId) params.branch_id = selectedBranchId
         const [revenueRes, outstandingRes, storageRes] =
           await Promise.all([
-            apiClient.get<OrgAdminData['revenue_summary']>('/reports/revenue'),
-            apiClient.get<OrgAdminData['outstanding']>('/reports/outstanding'),
-            apiClient.get<OrgAdminData['storage']>('/reports/storage'),
+            apiClient.get<OrgAdminData['revenue_summary']>('/reports/revenue', { params, signal: controller.signal }),
+            apiClient.get<OrgAdminData['outstanding']>('/reports/outstanding', { params, signal: controller.signal }),
+            apiClient.get<OrgAdminData['storage']>('/reports/storage', { signal: controller.signal }),
           ])
         if (!cancelled) {
           setData({
@@ -85,7 +88,7 @@ export function OrgAdminDashboard() {
           })
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && !(err as { name?: string })?.name?.includes('Cancel')) {
           console.error('Dashboard error:', err)
           setError('Failed to load dashboard data')
         }
@@ -96,17 +99,20 @@ export function OrgAdminDashboard() {
     fetchDashboard()
     return () => {
       cancelled = true
+      controller.abort()
     }
-  }, [])
+  }, [selectedBranchId])
 
   // Fetch branch metrics
   useEffect(() => {
     const controller = new AbortController()
     const fetchBranchMetrics = async () => {
       try {
+        const params: Record<string, string> = {}
+        if (selectedBranchId) params.branch_id = selectedBranchId
         const res = await apiClient.get<BranchMetricsData>(
           '/dashboard/branch-metrics',
-          { signal: controller.signal },
+          { params, signal: controller.signal },
         )
         setBranchMetrics(res.data ?? null)
       } catch (err: unknown) {

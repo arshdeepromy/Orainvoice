@@ -11,6 +11,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -97,6 +98,22 @@ async def record_cash_payment_endpoint(
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    # Prepare Xero sync data BEFORE committing (session is still open)
+    from app.modules.invoices.models import Invoice as _Invoice
+    payment_info = result.get("payment", {})
+    _inv_result = await db.execute(
+        select(_Invoice.invoice_number).where(_Invoice.id == payload.invoice_id)
+    )
+    _inv_number = _inv_result.scalar_one_or_none() or ""
+    _xero_payment_data = {
+        "id": str(payment_info.get("id", "")),
+        "invoice_number": _inv_number,
+        "amount": float(payment_info.get("amount", 0)),
+        "date": payment_info.get("created_at"),
+        "account_code": "800",
+        "reference": f"Payment {payment_info.get('id', '')}",
+    }
+
     # Commit the payment so the fresh email session sees updated balances
     await db.commit()
 
@@ -114,6 +131,10 @@ async def record_cash_payment_endpoint(
         except Exception as email_exc:
             logger.warning("Payment email failed for invoice %s: %s", payload.invoice_id, email_exc)
     _asyncio.create_task(_send_payment_email())
+
+    # Fire-and-forget: sync payment to Xero if connected
+    from app.modules.accounting.auto_sync import sync_payment_bg
+    _asyncio.create_task(sync_payment_bg(org_uuid, _xero_payment_data))
 
     return result
 

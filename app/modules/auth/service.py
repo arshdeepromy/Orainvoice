@@ -2030,8 +2030,8 @@ async def create_invitation(
     from app.core.redis import redis_pool
 
     # Validate role
-    if role not in ("org_admin", "salesperson", "kiosk"):
-        raise ValueError("Role must be 'org_admin', 'salesperson', or 'kiosk'")
+    if role not in ("org_admin", "salesperson", "kiosk", "branch_admin", "location_manager", "staff_member"):
+        raise ValueError("Role must be 'org_admin', 'salesperson', 'kiosk', 'branch_admin', 'location_manager', or 'staff_member'")
 
     # Check if email already exists
     result = await db.execute(select(User).where(User.email == email))

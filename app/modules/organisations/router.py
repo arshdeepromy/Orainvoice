@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.core.modules import ModuleService
 from app.modules.auth.rbac import require_role
 from app.modules.admin.schemas import SmsPackagePurchaseRequest
 from app.modules.organisations.schemas import (
@@ -68,6 +69,27 @@ from app.modules.organisations.service import (
 )
 
 router = APIRouter()
+
+
+async def require_branch_module(
+    request: Request, db: AsyncSession = Depends(get_db_session)
+):
+    """FastAPI dependency that gates endpoints behind branch_management module.
+
+    Extracts org_id from request.state, checks ModuleService.is_enabled,
+    and raises HTTP 403 when the module is disabled.
+
+    Requirements: 9.1, 9.2, 9.3, 11.1, 12.1
+    """
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return  # No org context — let other middleware handle
+    svc = ModuleService(db)
+    if not await svc.is_enabled(org_id, "branch_management"):
+        raise HTTPException(
+            status_code=403,
+            detail="Branch management module is not enabled for this organisation",
+        )
 
 
 @router.post(
@@ -336,6 +358,7 @@ async def create_new_branch(
     payload: BranchCreateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """Create a new branch location for the current organisation.
 
@@ -472,6 +495,7 @@ async def update_branch_endpoint(
     payload: BranchUpdateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """Update branch fields for the current organisation.
 
@@ -547,6 +571,7 @@ async def deactivate_branch_endpoint(
     branch_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """Soft-delete a branch by setting is_active = False.
 
@@ -617,6 +642,7 @@ async def reactivate_branch_endpoint(
     branch_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """Reactivate a previously deactivated branch.
 
@@ -888,7 +914,7 @@ async def invite_user(
     Enforces user seat limits per the subscription plan.
     When the seat limit is reached, returns 409 with upgrade message.
 
-    Requirements: 10.1, 10.4, 10.5
+    Requirements: 10.1, 10.2, 10.3, 10.4, 10.5
     """
     user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
@@ -902,6 +928,15 @@ async def invite_user(
         user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
     except (ValueError, TypeError):
         return JSONResponse(status_code=400, content={"detail": "Invalid UUID format"})
+
+    # Gate branch_admin role behind branch_management module (Req 10.1, 10.2)
+    if payload.role == "branch_admin":
+        svc = ModuleService(db)
+        if not await svc.is_enabled(str(org_uuid), "branch_management"):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "branch_admin role requires the Branch Management module to be enabled"},
+            )
 
     try:
         user_data = await invite_org_user(
@@ -952,7 +987,7 @@ async def update_user(
 ):
     """Update a user's role or active status. Deactivating invalidates sessions.
 
-    Requirements: 10.1, 10.2
+    Requirements: 10.1, 10.2, 10.3
     """
     acting_user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
@@ -967,6 +1002,15 @@ async def update_user(
         target_uuid = uuid.UUID(target_user_id)
     except (ValueError, TypeError):
         return JSONResponse(status_code=400, content={"detail": "Invalid UUID format"})
+
+    # Gate branch_admin role behind branch_management module (Req 10.2, 10.3)
+    if payload.role == "branch_admin":
+        svc = ModuleService(db)
+        if not await svc.is_enabled(str(org_uuid), "branch_management"):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "branch_admin role requires the Branch Management module to be enabled"},
+            )
 
     try:
         result = await update_org_user(
@@ -1649,6 +1693,11 @@ async def branch_metrics(
                 status_code=400,
                 content={"detail": "Invalid branch_id format"},
             )
+    else:
+        # Fallback: use branch_id from BranchContextMiddleware (X-Branch-Id header)
+        middleware_branch = getattr(request.state, "branch_id", None)
+        if middleware_branch is not None:
+            branch_uuid = middleware_branch if isinstance(middleware_branch, uuid.UUID) else uuid.UUID(str(middleware_branch))
 
     data = await get_branch_metrics(db, org_uuid, branch_id=branch_uuid)
 

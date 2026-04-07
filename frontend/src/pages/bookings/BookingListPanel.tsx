@@ -10,6 +10,7 @@ import apiClient from '../../api/client'
 import { Badge, Button, Spinner, useToast, ConfirmDialog } from '../../components/ui'
 import { useModules } from '../../contexts/ModuleContext'
 import { useTenant } from '../../contexts/TenantContext'
+import { useBranch } from '../../contexts/BranchContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -137,6 +138,7 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
   const { isEnabled } = useModules()
   const jobCardsEnabled = isEnabled('jobs')
   const { tradeFamily } = useTenant()
+  const { selectedBranchId } = useBranch()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const [bookings, setBookings] = useState<BookingListItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -188,7 +190,7 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
     } finally {
       setLoading(false)
     }
-  }, [view, apiDate])
+  }, [view, apiDate, selectedBranchId])
 
   useEffect(() => {
     fetchBookings()

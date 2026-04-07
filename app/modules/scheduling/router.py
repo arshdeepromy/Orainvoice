@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
 from app.modules.auth.rbac import require_role
+from app.modules.organisations.router import require_branch_module
 from app.modules.scheduling.service import (
     OverlapError,
     create_schedule_entry,
@@ -118,6 +119,7 @@ async def create_schedule_endpoint(
     payload: CreateScheduleRequest,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """Create a new staff schedule entry with overlap and assignment validation.
 
@@ -168,6 +170,7 @@ async def list_schedule_endpoint(
     start_date: date | None = Query(None, description="Start of date range"),
     end_date: date | None = Query(None, description="End of date range"),
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """List schedule entries with optional branch and date range filtering.
 
@@ -214,6 +217,7 @@ async def update_schedule_endpoint(
     payload: UpdateScheduleRequest,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """Update an existing schedule entry with re-validation.
 
@@ -269,6 +273,7 @@ async def delete_schedule_endpoint(
     entry_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    _branch_gate=Depends(require_branch_module),
 ):
     """Delete a schedule entry.
 

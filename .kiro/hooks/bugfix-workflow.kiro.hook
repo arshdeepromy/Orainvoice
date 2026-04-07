@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Bug Fix Workflow",
+  "description": "When triggered manually, instructs the agent to follow the full issue tracking workflow: read the issue tracker, log the bug, check for regressions, scan for similar patterns, and use spec mode for non-trivial fixes. Trigger this when reporting a bug or error to Kiro.",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "The user has triggered the Bug Fix Workflow. You MUST follow the issue tracking process from .kiro/steering/issue-tracking-workflow.md BEFORE making any code changes. Steps: (1) Read docs/ISSUE_TRACKER.md to find the last issue number and check for previous fixes in the same files. (2) Log a new ISSUE-XXX entry with date, severity, status=investigating, symptoms, and affected files. (3) Investigate the root cause. (4) Scan the ENTIRE codebase for similar patterns of the same bug using grep. (5) For non-trivial bugs, consider using the bugfix spec workflow. (6) Fix ALL instances of the pattern, not just the one reported. (7) Update the issue entry with root cause, fix applied, files changed, and similar bugs found. (8) Clean up any debug code before marking resolved. Do NOT skip any of these steps."
+  }
+}

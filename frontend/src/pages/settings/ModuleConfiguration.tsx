@@ -345,6 +345,55 @@ function CascadeDisableDialog({
 
 
 /* ------------------------------------------------------------------ */
+/*  Branch Management Disable Confirmation Dialog                      */
+/* ------------------------------------------------------------------ */
+
+function BranchDisableDialog({
+  open,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <Modal open={open} onClose={onClose} title="Disable Branch Management?">
+      <div className="space-y-4" data-testid="branch-disable-dialog">
+        <p className="text-gray-700">
+          Disabling Branch Management will hide all branch features. Your existing
+          branch data will be preserved but branch scoping will be suspended. Users
+          with the branch_admin role will lose branch-specific access.
+        </p>
+        <p className="text-sm text-amber-600">
+          You will need to manually reassign any users currently holding the
+          branch_admin role.
+        </p>
+        <div className="flex justify-end gap-3 pt-2">
+          <Button
+            variant="secondary"
+            onClick={onClose}
+            style={{ minHeight: 44, minWidth: 44 }}
+            data-testid="branch-disable-cancel-btn"
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            onClick={onConfirm}
+            style={{ minHeight: 44, minWidth: 44 }}
+            data-testid="branch-disable-confirm-btn"
+          >
+            Disable Branch Management
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+
+/* ------------------------------------------------------------------ */
 /*  Main Component                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -368,6 +417,12 @@ export function ModuleConfiguration() {
     mod: ModuleDefinition | null
     affected: string[]
   }>({ open: false, mod: null, affected: [] })
+
+  // Branch management disable confirmation dialog state
+  const [branchDisableDialog, setBranchDisableDialog] = useState<{
+    open: boolean
+    mod: ModuleDefinition | null
+  }>({ open: false, mod: null })
 
   const fetchModules = useCallback(async () => {
     try {
@@ -429,13 +484,29 @@ export function ModuleConfiguration() {
   /* ---- Toggle logic ---- */
 
   const handleToggle = useCallback(
-    (mod: ModuleDefinition) => {
+    async (mod: ModuleDefinition) => {
       if (isComingSoon(mod)) return
       if (!mod.in_plan) return
 
       const newEnabled = !mod.is_enabled
 
       if (!newEnabled) {
+        // Special case: branch_management disable — check active branch count
+        if (mod.slug === 'branch_management') {
+          try {
+            const res = await apiClient.get<{ branches: Array<{ is_active: boolean }> }>('/org/branches')
+            const activeBranches = (res.data?.branches ?? []).filter((b) => b.is_active)
+            if (activeBranches.length > 1) {
+              setBranchDisableDialog({ open: true, mod })
+              return
+            }
+          } catch {
+            // If we can't fetch branches, still show the dialog as a safeguard
+            setBranchDisableDialog({ open: true, mod })
+            return
+          }
+        }
+
         // Disabling: check for cascade
         const affected = cascadeDisable(mod.slug, modules)
         const enabledAffected = affected.filter((slug) =>
@@ -516,6 +587,13 @@ export function ModuleConfiguration() {
     }
     setCascadeDialog({ open: false, mod: null, affected: [] })
   }, [cascadeDialog.mod, performToggle])
+
+  const handleBranchDisableConfirm = useCallback(() => {
+    if (branchDisableDialog.mod) {
+      performToggle(branchDisableDialog.mod, false, true)
+    }
+    setBranchDisableDialog({ open: false, mod: null })
+  }, [branchDisableDialog.mod, performToggle])
 
   /* ---- Render ---- */
 
@@ -634,6 +712,13 @@ export function ModuleConfiguration() {
         onConfirm={handleCascadeConfirm}
         moduleName={cascadeDialog.mod?.name ?? ''}
         affectedModules={cascadeDialog.affected}
+      />
+
+      {/* Branch management disable confirmation dialog */}
+      <BranchDisableDialog
+        open={branchDisableDialog.open}
+        onClose={() => setBranchDisableDialog({ open: false, mod: null })}
+        onConfirm={handleBranchDisableConfirm}
       />
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />

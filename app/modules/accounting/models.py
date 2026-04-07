@@ -54,6 +54,12 @@ class AccountingIntegration(Base):
     is_connected: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
+    xero_tenant_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, comment="Xero tenant ID stored at connect time"
+    )
+    account_name: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, comment="Connected account name from provider"
+    )
     last_sync_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

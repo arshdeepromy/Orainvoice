@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Navigate } from 'react-router-dom'
+import { useModules } from '@/contexts/ModuleContext'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
@@ -69,6 +70,9 @@ const EMPTY_HOURS: Record<string, OperatingHoursEntry> = {}
  * Requirements: 3.1, 3.2, 3.3, 3.4, 3.5
  */
 export default function BranchSettings() {
+  const { isEnabled } = useModules()
+  if (!isEnabled('branch_management')) return <Navigate to="/dashboard" replace />
+
   const { id: branchId } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { toasts, addToast, dismissToast } = useToast()

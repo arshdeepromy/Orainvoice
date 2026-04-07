@@ -10,6 +10,7 @@ import apiClient from '@/api/client'
 import { SmsProviders } from './SmsProviders'
 import { EmailProviders } from './EmailProviders'
 import CalendarSync from './CalendarSync'
+import { XeroCredentialsSettings } from './XeroCredentialsSettings'
 import { StripeSetupGuide, type StripeSetupProgress } from '@/components/admin/StripeSetupGuide'
 import { StripeTestSuite } from '@/components/admin/StripeTestSuite'
 
@@ -754,6 +755,11 @@ export function Integrations() {
       id: 'calendar-sync',
       label: 'Calendar Sync',
       content: <CalendarSync />,
+    },
+    {
+      id: 'xero-credentials',
+      label: 'Xero Credentials',
+      content: <XeroCredentialsSettings />,
     },
   ]
 

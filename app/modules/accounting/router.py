@@ -20,7 +20,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.requests import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
@@ -43,6 +43,10 @@ from app.modules.accounting.service import (
     list_connections,
     retry_failed_syncs,
 )
+
+import logging
+
+_logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -79,6 +83,30 @@ def _require_org_admin(request: Request) -> tuple[uuid.UUID, str] | JSONResponse
             content={"detail": "Only Org_Admin can manage accounting integrations"},
         )
     return org_uuid, role
+
+
+def _request_base_url(request: Request) -> str:
+    """Derive the public-facing base URL from the incoming request.
+
+    Checks multiple sources in order:
+    1. ``Origin`` header (present on POST/CORS requests)
+    2. ``X-Forwarded-Proto`` + ``Host`` headers (set by reverse proxy)
+    3. The request URL's scheme + host as final fallback
+    """
+    origin = request.headers.get("origin")
+    if origin:
+        return origin.rstrip("/")
+
+    # nginx sets Host and X-Forwarded-Proto
+    host = request.headers.get("host")
+    proto = request.headers.get("x-forwarded-proto", "https")
+    if host:
+        return f"{proto}://{host}".rstrip("/")
+
+    # Final fallback
+    from urllib.parse import urlparse
+    parsed = urlparse(str(request.url))
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +226,7 @@ async def connect_provider_endpoint(
             content={"detail": f"Invalid provider. Must be one of: {', '.join(VALID_PROVIDERS)}"},
         )
 
-    url = await initiate_oauth(db, org_id=org_uuid, provider=provider)
+    url = await initiate_oauth(db, org_id=org_uuid, provider=provider, base_url=_request_base_url(request))
     if url is None:
         return JSONResponse(
             status_code=400,
@@ -245,14 +273,32 @@ async def oauth_callback_endpoint(
             content={"detail": f"Invalid provider: {provider}"},
         )
 
-    result = await handle_oauth_callback(
-        db, org_id=org_uuid, provider=provider, code=code,
+    base = _request_base_url(request)
+    _logger.info(
+        "OAuth callback: host=%s proto=%s base_url=%s",
+        request.headers.get("host"),
+        request.headers.get("x-forwarded-proto"),
+        base,
     )
 
-    if isinstance(result, str):
-        return JSONResponse(status_code=400, content={"detail": result})
+    result = await handle_oauth_callback(
+        db, org_id=org_uuid, provider=provider, code=code, base_url=base,
+    )
 
-    return AccountingConnectionResponse(**result)
+    # Redirect the browser back to the frontend accounting settings page
+    # instead of returning raw JSON (this is a browser redirect from Xero).
+    if isinstance(result, str):
+        # Error — redirect with error query param
+        from urllib.parse import quote
+        return RedirectResponse(
+            url=f"{base}/settings/accounting?error={quote(result)}",
+            status_code=302,
+        )
+
+    return RedirectResponse(
+        url=f"{base}/settings/accounting?connected={provider}",
+        status_code=302,
+    )
 
 
 @router.post("/disconnect/{provider}")
@@ -336,9 +382,42 @@ async def retry_sync_entry_endpoint(
             content={"detail": "Invalid entry ID format"},
         )
 
-    # For now, just return success - actual retry logic would queue a Celery task
-    # In a real implementation, this would trigger the sync worker
-    return JSONResponse(content={"message": f"Retry queued for entry {entry_id}"})
+    # Look up the failed sync entry and retry it
+    from app.modules.accounting.service import _reconstruct_entity_data, sync_entity
+    from app.modules.accounting.models import AccountingSyncLog
+    from sqlalchemy import select
+
+    stmt = select(AccountingSyncLog).where(
+        AccountingSyncLog.id == entry_uuid,
+        AccountingSyncLog.org_id == org_uuid,
+        AccountingSyncLog.status == "failed",
+    )
+    result = await db.execute(stmt)
+    entry = result.scalar_one_or_none()
+    if entry is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Failed sync entry not found"},
+        )
+
+    entity_data = await _reconstruct_entity_data(
+        db, org_id=org_uuid, entity_type=entry.entity_type, entity_id=entry.entity_id,
+    )
+    if entity_data is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": f"Could not find {entry.entity_type} {entry.entity_id} in database"},
+        )
+
+    sync_result = await sync_entity(
+        db,
+        org_id=org_uuid,
+        provider=entry.provider,
+        entity_type=entry.entity_type,
+        entity_id=entry.entity_id,
+        entity_data=entity_data,
+    )
+    return JSONResponse(content=sync_result)
 
 
 @router.get("/sync-log", response_model=SyncLogListResponse)

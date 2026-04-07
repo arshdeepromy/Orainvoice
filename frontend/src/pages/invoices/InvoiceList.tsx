@@ -349,7 +349,7 @@ export default function InvoiceList() {
   const { id: routeId } = useParams<{ id: string }>()
   const isCreating = location.pathname === '/invoices/new'
   const { tradeFamily } = useTenant()
-  const { branches: branchList } = useBranch()
+  const { branches: branchList, selectedBranchId } = useBranch()
   // Null tradeFamily treated as automotive for backward compat
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
@@ -433,13 +433,13 @@ export default function InvoiceList() {
       if (search.trim()) params.search = search.trim()
       if (status) params.status = status
       const res = await apiClient.get<InvoiceListResponse>('/invoices', { params, signal: controller.signal })
-      const invoices = (res.data as any)?.items || (res.data as any)?.invoices || []
+      const invoices = res.data?.items ?? (res.data as any)?.invoices ?? []
       setData({
         items: invoices,
-        total: (res.data as any)?.total || 0,
-        page: (res.data as any)?.page || pg,
-        page_size: (res.data as any)?.page_size || PAGE_SIZE,
-        total_pages: (res.data as any)?.total_pages || Math.ceil(((res.data as any)?.total || 0) / PAGE_SIZE),
+        total: res.data?.total ?? 0,
+        page: res.data?.page ?? pg,
+        page_size: res.data?.page_size ?? PAGE_SIZE,
+        total_pages: res.data?.total_pages ?? Math.ceil((res.data?.total ?? 0) / PAGE_SIZE),
       })
       // Auto-select first invoice if none selected
       if (!selectedId && invoices.length > 0) {
@@ -452,7 +452,7 @@ export default function InvoiceList() {
     } finally {
       setListLoading(false)
     }
-  }, [selectedId])
+  }, [selectedId, selectedBranchId])
 
   /* --- Fetch invoice detail --- */
   const fetchDetail = useCallback(async (invoiceId: string) => {
@@ -483,7 +483,7 @@ export default function InvoiceList() {
   useEffect(() => {
     fetchInvoices(searchQuery, statusFilter, page)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page])
+  }, [page, selectedBranchId, location.key])
 
   /* --- Load detail when selection changes --- */
   useEffect(() => {

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,6 +75,67 @@ def _extract_org_context(request: Request) -> tuple[uuid.UUID | None, uuid.UUID 
     return org_uuid, user_uuid, ip_address
 
 
+# ---------------------------------------------------------------------------
+# Background task — Xero contact sync on customer creation
+# ---------------------------------------------------------------------------
+
+
+async def _sync_customer_to_xero(org_id: uuid.UUID, customer_data: dict) -> None:
+    """Fire-and-forget: sync a newly created customer as a Xero contact.
+
+    Creates its own DB session since BackgroundTasks run after the
+    response is sent and the request session is closed.
+    """
+    import logging
+
+    from sqlalchemy import select
+
+    from app.core.database import async_session_factory
+    from app.modules.accounting.models import AccountingIntegration
+    from app.modules.accounting.service import sync_entity
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        async with async_session_factory() as session:
+            async with session.begin():
+                # Check for active Xero connection
+                stmt = select(AccountingIntegration).where(
+                    AccountingIntegration.org_id == org_id,
+                    AccountingIntegration.provider == "xero",
+                    AccountingIntegration.is_connected == True,  # noqa: E712
+                )
+                result = await session.execute(stmt)
+                conn = result.scalar_one_or_none()
+                if conn is None:
+                    return
+
+                # Map customer fields to contact sync format
+                contact_data = {
+                    "first_name": customer_data.get("first_name", ""),
+                    "last_name": customer_data.get("last_name", ""),
+                    "display_name": customer_data.get("display_name", ""),
+                    "email": customer_data.get("email"),
+                    "phone": customer_data.get("phone"),
+                    "mobile_phone": customer_data.get("mobile_phone"),
+                    "company_name": customer_data.get("company_name"),
+                    "billing_address": customer_data.get("billing_address"),
+                }
+
+                entity_id = uuid.UUID(customer_data["id"]) if isinstance(customer_data.get("id"), str) else customer_data.get("id", uuid.uuid4())
+
+                await sync_entity(
+                    session,
+                    org_id=org_id,
+                    provider="xero",
+                    entity_type="contact",
+                    entity_id=entity_id,
+                    entity_data=contact_data,
+                )
+    except Exception:
+        logger.exception("Background Xero contact sync failed for org %s", org_id)
+
+
 @router.get(
     "",
     response_model=CustomerListResponse,
@@ -140,6 +201,7 @@ async def list_customers(
 async def create_new_customer(
     payload: CustomerCreateRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db_session),
 ):
     """Create a new customer record inline from the search dropdown.
@@ -205,6 +267,10 @@ async def create_new_customer(
         remarks=payload.remarks,
         ip_address=ip_address,
     )
+
+    # Fire-and-forget: sync new customer to Xero if connected
+    if org_uuid:
+        background_tasks.add_task(_sync_customer_to_xero, org_uuid, customer_data)
 
     return CustomerCreateResponse(
         message="Customer created",

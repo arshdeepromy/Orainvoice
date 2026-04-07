@@ -170,6 +170,38 @@ async def create_invoice_endpoint(
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    # Prepare Xero sync data BEFORE committing (session is still open)
+    _xero_data = None
+    if payload.status.value != "draft" and org_uuid:
+        from app.modules.customers.models import Customer as _Customer
+        _cust_result = await db.execute(
+            select(_Customer.display_name, _Customer.first_name, _Customer.last_name).where(
+                _Customer.id == result.get("customer_id")
+            )
+        )
+        _cust_row = _cust_result.first()
+        _cust_name = "Unknown"
+        if _cust_row:
+            _cust_name = _cust_row.display_name or f"{_cust_row.first_name or ''} {_cust_row.last_name or ''}".strip() or "Unknown"
+        _xero_data = {
+            "id": str(result.get("id", "")),
+            "invoice_number": result.get("invoice_number", ""),
+            "customer_name": _cust_name,
+            "date": result.get("issue_date"),
+            "due_date": result.get("due_date"),
+            "currency": result.get("currency", "NZD"),
+            "gst_inclusive": True,
+            "line_items": [
+                {
+                    "description": li.get("description", ""),
+                    "quantity": float(li.get("quantity", 1)),
+                    "unit_price": float(li.get("unit_price", 0)),
+                    "account_code": "200",
+                }
+                for li in (result.get("line_items") or [])
+            ],
+        }
+
     # Commit so the invoice exists before emailing
     await db.commit()
 
@@ -207,6 +239,13 @@ async def create_invoice_endpoint(
         status_label = "Draft saved"
     else:
         status_label = "Invoice issued"
+
+    # Fire-and-forget: sync invoice to Xero if connected (non-draft only)
+    if _xero_data and org_uuid:
+        import asyncio as _asyncio_sync
+        from app.modules.accounting.auto_sync import sync_invoice_bg
+        _asyncio_sync.create_task(sync_invoice_bg(org_uuid, _xero_data))
+
     return InvoiceCreateResponse(
         invoice=invoice_resp,
         message=f"{status_label} successfully",
@@ -596,6 +635,39 @@ async def issue_invoice_endpoint(
         line_items=[LineItemResponse(**li) for li in result["line_items"]],
     )
 
+    # Fire-and-forget: sync issued invoice to Xero
+    if org_uuid:
+        try:
+            import asyncio as _asyncio_issue
+            from app.modules.accounting.auto_sync import sync_invoice_bg
+            from app.modules.customers.models import Customer as _Cust
+            _cr = await db.execute(
+                select(_Cust.display_name, _Cust.first_name, _Cust.last_name).where(
+                    _Cust.id == result.get("customer_id")
+                )
+            )
+            _row = _cr.first()
+            _name = "Unknown"
+            if _row:
+                _name = _row.display_name or f"{_row.first_name or ''} {_row.last_name or ''}".strip() or "Unknown"
+            _xd = {
+                "id": str(result.get("id", "")),
+                "invoice_number": result.get("invoice_number", ""),
+                "customer_name": _name,
+                "date": result.get("issue_date"),
+                "due_date": result.get("due_date"),
+                "currency": result.get("currency", "NZD"),
+                "gst_inclusive": True,
+                "line_items": [
+                    {"description": li.get("description", ""), "quantity": float(li.get("quantity", 1)),
+                     "unit_price": float(li.get("unit_price", 0)), "account_code": "200"}
+                    for li in (result.get("line_items") or [])
+                ],
+            }
+            _asyncio_issue.create_task(sync_invoice_bg(org_uuid, _xd))
+        except Exception:
+            pass
+
     return IssueInvoiceResponse(
         invoice=invoice_resp,
         message="Invoice issued successfully",
@@ -833,6 +905,32 @@ async def create_credit_note_endpoint(
     message = "Credit note created successfully"
     if result["stripe_refund_prompted"]:
         message += ". Stripe refund available — process via payment module."
+
+    # Fire-and-forget: sync credit note to Xero if connected
+    if org_uuid:
+        try:
+            import asyncio as _asyncio_cn
+            from app.modules.accounting.auto_sync import sync_credit_note_bg
+            cn_data = result["credit_note"]
+            _xero_cn = {
+                "id": str(cn_data.get("id", "")),
+                "credit_note_number": cn_data.get("credit_note_number", ""),
+                "customer_name": "Unknown",
+                "date": cn_data.get("created_at"),
+                "currency": "NZD",
+                "gst_inclusive": True,
+                "line_items": [
+                    {
+                        "description": cn_data.get("reason", "Credit note"),
+                        "quantity": 1,
+                        "unit_price": float(cn_data.get("amount", 0)),
+                        "account_code": "200",
+                    }
+                ],
+            }
+            _asyncio_cn.create_task(sync_credit_note_bg(org_uuid, _xero_cn))
+        except Exception:
+            pass  # Non-blocking — credit note was already created
 
     return CreditNoteCreateResponse(
         credit_note=cn_resp,
