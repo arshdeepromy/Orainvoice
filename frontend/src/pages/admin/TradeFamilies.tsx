@@ -40,6 +40,13 @@ const FAMILY_ICONS: Record<string, string> = {
   'freelancing-contracting': '📋',
 }
 
+interface FeatureFlag {
+  key: string
+  display_name: string
+  category: string
+  is_active: boolean
+}
+
 export default function TradeFamilies() {
   const [families, setFamilies] = useState<TradeFamily[]>([])
   const [loading, setLoading] = useState(true)
@@ -47,7 +54,9 @@ export default function TradeFamilies() {
   const [saving, setSaving] = useState<string | null>(null)
   const [editingFamily, setEditingFamily] = useState<TradeFamily | null>(null)
   const [editCountries, setEditCountries] = useState<string[]>([])
-  const [editFeatures, setEditFeatures] = useState<string>('')
+  const [editFeatures, setEditFeatures] = useState<string[]>([])
+  const [availableFeatures, setAvailableFeatures] = useState<FeatureFlag[]>([])
+  const [featuresLoading, setFeaturesLoading] = useState(false)
 
   useEffect(() => {
     fetchFamilies()
@@ -84,13 +93,27 @@ export default function TradeFamilies() {
   function openEditModal(family: TradeFamily) {
     setEditingFamily(family)
     setEditCountries(family.country_codes ?? [])
-    setEditFeatures((family.gated_features ?? []).join('\n'))
+    setEditFeatures(family.gated_features ?? [])
+    fetchAvailableFeatures()
+  }
+
+  async function fetchAvailableFeatures() {
+    setFeaturesLoading(true)
+    try {
+      const res = await apiClient.get<{ flags: FeatureFlag[]; total: number }>('/api/v2/admin/flags')
+      setAvailableFeatures(res.data?.flags ?? [])
+    } catch {
+      setAvailableFeatures([])
+    } finally {
+      setFeaturesLoading(false)
+    }
   }
 
   function closeEditModal() {
     setEditingFamily(null)
     setEditCountries([])
-    setEditFeatures('')
+    setEditFeatures([])
+    setAvailableFeatures([])
   }
 
   function toggleCountry(code: string) {
@@ -103,13 +126,9 @@ export default function TradeFamilies() {
     if (!editingFamily) return
     setSaving(editingFamily.slug)
     try {
-      const features = editFeatures
-        .split('\n')
-        .map(f => f.trim())
-        .filter(f => f.length > 0)
       await apiClient.put(`/api/v2/admin/trade-families/${editingFamily.slug}`, {
         country_codes: editCountries,
-        gated_features: features,
+        gated_features: editFeatures,
       })
       closeEditModal()
       await fetchFamilies()
@@ -301,16 +320,77 @@ export default function TradeFamilies() {
                   Gated Features
                 </label>
                 <p className="text-xs text-gray-500 mb-2">
-                  List feature slugs that are gated behind this trade family (one per line).
-                  These are shown for reference only.
+                  Select which features are gated behind this trade family.
+                  Only orgs in this trade family will have access to these features.
                 </p>
-                <textarea
-                  value={editFeatures}
-                  onChange={e => setEditFeatures(e.target.value)}
-                  rows={4}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="vehicle-lookup&#10;parts-catalogue&#10;job-cards"
-                />
+                {featuresLoading ? (
+                  <div className="flex items-center gap-2 py-4 text-sm text-gray-500">
+                    <Spinner /> Loading features...
+                  </div>
+                ) : availableFeatures.length === 0 ? (
+                  <p className="text-sm text-gray-400 py-2">No feature flags registered yet.</p>
+                ) : (
+                  <div className="max-h-56 overflow-y-auto border rounded-md p-2 space-y-1">
+                    {/* Group by category */}
+                    {Object.entries(
+                      availableFeatures.reduce<Record<string, FeatureFlag[]>>((acc, f) => {
+                        const cat = f.category || 'Uncategorised'
+                        ;(acc[cat] ??= []).push(f)
+                        return acc
+                      }, {})
+                    )
+                      .sort(([a], [b]) => a.localeCompare(b))
+                      .map(([category, flags]) => (
+                        <div key={category}>
+                          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider px-1 pt-2 pb-1">
+                            {category}
+                          </div>
+                          {flags.map(flag => {
+                            const isSelected = editFeatures.includes(flag.key)
+                            return (
+                              <label
+                                key={flag.key}
+                                className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
+                                  isSelected
+                                    ? 'bg-blue-50 text-blue-800'
+                                    : 'hover:bg-gray-50 text-gray-700'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() =>
+                                    setEditFeatures(prev =>
+                                      isSelected
+                                        ? prev.filter(k => k !== flag.key)
+                                        : [...prev, flag.key]
+                                    )
+                                  }
+                                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                />
+                                <span className="text-sm">{flag.display_name}</span>
+                                <span className="text-xs text-gray-400 ml-auto">{flag.key}</span>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      ))}
+                  </div>
+                )}
+                {editFeatures.length > 0 && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-xs text-gray-500">
+                      {editFeatures.length} feature{editFeatures.length !== 1 ? 's' : ''} selected
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setEditFeatures([])}
+                      className="text-xs text-red-600 hover:underline"
+                    >
+                      Clear all
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Actions */}
