@@ -194,7 +194,7 @@ function DisplayNameSelector({
 
   return (
     <div ref={containerRef} className="relative flex flex-col gap-1">
-      <label className="text-sm font-medium text-gray-700">Display Name *</label>
+      <label className="text-sm font-medium text-gray-700">Display Name</label>
       <div className="relative">
         <input
           type="text"
@@ -327,10 +327,7 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated, kioskMod
     const errs: Record<string, string> = {}
     
     if (!firstName.trim()) errs.first_name = 'First name is required'
-    if (!lastName.trim()) errs.last_name = 'Last name is required'
-    if (!email.trim()) errs.email = 'Email is required'
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errs.email = 'Invalid email format'
-    if (!mobilePhone.trim()) errs.mobile_phone = 'Mobile phone is required'
     
     setErrors(errs)
     return Object.keys(errs).length === 0
@@ -418,8 +415,6 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated, kioskMod
   const kioskValidate = (): boolean => {
     const errs: Record<string, string> = {}
     if (!firstName.trim()) errs.first_name = 'First name is required'
-    if (!lastName.trim()) errs.last_name = 'Last name is required'
-    if (!mobilePhone.trim()) errs.mobile_phone = 'Mobile phone is required'
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errs.email = 'Invalid email format'
     setErrors(errs)
     return Object.keys(errs).length === 0
@@ -534,7 +529,7 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated, kioskMod
               error={errors.first_name}
             />
             <Input
-              label="Last Name *"
+              label="Last Name"
               value={lastName}
               onChange={(e) => setLastName(e.target.value)}
               error={errors.last_name}
@@ -560,7 +555,7 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated, kioskMod
           </div>
           <div className="sm:col-span-5">
             <Input
-              label="Last Name *"
+              label="Last Name"
               value={lastName}
               onChange={(e) => setLastName(e.target.value)}
               error={errors.last_name}
@@ -603,7 +598,7 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated, kioskMod
 
         {/* Email — optional in kiosk mode */}
         <Input
-          label={kioskMode ? 'Email Address' : 'Email Address *'}
+          label="Email Address"
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -628,7 +623,6 @@ export function CustomerCreateModal({ open, onClose, onCustomerCreated, kioskMod
             onChange={setMobilePhone}
             countryCode="NZ"
             placeholder="Mobile"
-            required
             error={errors.mobile_phone}
           />
         </div>

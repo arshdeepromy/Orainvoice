@@ -55,14 +55,14 @@ class CustomerCreateRequest(BaseModel):
     first_name: str = Field(
         ..., min_length=1, max_length=100, description="Customer first name"
     )
-    last_name: str = Field(
-        ..., min_length=1, max_length=100, description="Customer last name"
+    last_name: Optional[str] = Field(
+        None, max_length=100, description="Customer last name"
     )
-    email: str = Field(
-        ..., max_length=255, description="Customer email address (required)"
+    email: Optional[str] = Field(
+        None, max_length=255, description="Customer email address"
     )
-    mobile_phone: str = Field(
-        ..., max_length=50, description="Mobile phone number (required)"
+    mobile_phone: Optional[str] = Field(
+        None, max_length=50, description="Mobile phone number"
     )
     
     # Customer type and identity

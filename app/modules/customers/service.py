@@ -272,7 +272,7 @@ async def create_customer(
     org_id: uuid.UUID,
     user_id: uuid.UUID,
     first_name: str,
-    last_name: str,
+    last_name: str | None = None,
     email: str | None = None,
     phone: str | None = None,
     mobile_phone: str | None = None,
@@ -313,7 +313,7 @@ async def create_customer(
         if customer_type == "business" and company_name:
             display_name = company_name
         else:
-            display_name = f"{first_name} {last_name}"
+            display_name = f"{first_name} {last_name}".strip() if last_name else first_name
     
     customer = Customer(
         org_id=org_id,
