@@ -3528,3 +3528,29 @@ ALTER TABLE platform_settings ADD COLUMN value_encrypted BYTEA;
 
 **Related Issues**: N/A
 
+
+---
+
+### ISSUE-106: Trade family disable returns 504 — MissingGreenlet on response serialization
+
+- **Date**: 2026-04-08
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Clicking "Disable" on a trade family (e.g. Electrical & Mechanical) in the Global Admin Trade Families page causes the button to spin indefinitely and the browser console shows `504 Gateway Timeout`. The GET list endpoint works fine.
+
+**Root Cause**: The `update_family` method in `TradeCategoryService` called `await self.db.flush()` but did not `await self.db.refresh(family)` before returning the ORM object. When the router then called `TradeFamilyResponse.model_validate(family)`, Pydantic's `from_attributes` mode tried to access JSONB columns (`country_codes`, `gated_features`) which triggered a lazy load outside the async greenlet context, raising `MissingGreenlet: greenlet_spawn has not been called`. This is the same class of bug as ISSUE-044 and ISSUE-058.
+
+The rate limiter middleware caught the validation error and logged it, but the response was never sent, causing gunicorn to hit its 120s timeout and nginx to return 504.
+
+**Fix Applied**: Added `await self.db.refresh(family)` after `flush()` in both `create_family` and `update_family` methods. This eagerly loads all attributes within the async session context so Pydantic can serialize them synchronously.
+
+**Files Changed**:
+- `app/modules/trade_categories/service.py`
+
+**Similar Bugs Found & Fixed**: Same pattern in `create_family` — fixed proactively.
+
+**Related Issues**: ISSUE-044, ISSUE-058
+
