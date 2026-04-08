@@ -88,6 +88,7 @@ class TradeCategoryService:
         )
         self.db.add(family)
         await self.db.flush()
+        await self.db.refresh(family)
         return family
 
     async def update_family(
@@ -103,6 +104,7 @@ class TradeCategoryService:
             setattr(family, field, value)
 
         await self.db.flush()
+        await self.db.refresh(family)
         return family
 
     async def get_family(self, slug: str) -> TradeFamily | None:
