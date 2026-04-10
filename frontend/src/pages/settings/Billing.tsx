@@ -1420,10 +1420,7 @@ export function Billing() {
   const fetchBilling = async () => {
     setLoading(true)
     try {
-      const [billingRes, invoicesRes] = await Promise.all([
-        apiClient.get('/billing'),
-        apiClient.get('/billing/invoices'),
-      ])
+      const billingRes = await apiClient.get('/billing')
       // Transform flat backend response to the nested BillingData shape
       const raw = billingRes.data
       const transformed: BillingData = {
@@ -1483,17 +1480,22 @@ export function Billing() {
         },
       }
       setBilling(transformed)
-      // Handle both array and wrapped response formats
-      const rawInvoices = Array.isArray(invoicesRes.data) ? invoicesRes.data : (invoicesRes.data?.invoices || [])
-      // Transform backend SubscriptionInvoiceResponse to frontend PastInvoice shape
-      const transformedInvoices: PastInvoice[] = rawInvoices.map((inv: Record<string, unknown>) => ({
-        id: inv.id as string,
-        date: inv.created ? new Date((inv.created as number) * 1000).toISOString() : '',
-        amount: ((inv.amount_paid as number) ?? (inv.amount_due as number) ?? 0) / 100,
-        status: (inv.status as string) ?? 'unknown',
-        pdf_url: (inv.invoice_pdf as string) ?? '',
-      }))
-      setInvoices(transformedInvoices)
+      // Fetch invoices separately — Stripe may not be configured
+      try {
+        const invoicesRes = await apiClient.get('/billing/invoices')
+        const rawInvoices = Array.isArray(invoicesRes.data) ? invoicesRes.data : (invoicesRes.data?.invoices ?? [])
+        const transformedInvoices: PastInvoice[] = rawInvoices.map((inv: Record<string, unknown>) => ({
+          id: inv.id as string,
+          date: inv.created ? new Date((inv.created as number) * 1000).toISOString() : '',
+          amount: ((inv.amount_paid as number) ?? (inv.amount_due as number) ?? 0) / 100,
+          status: (inv.status as string) ?? 'unknown',
+          pdf_url: (inv.invoice_pdf as string) ?? '',
+        }))
+        setInvoices(transformedInvoices)
+      } catch {
+        // Stripe not configured or no invoices — show empty list
+        setInvoices([])
+      }
     } catch {
       addToast('error', 'Failed to load billing information')
       setInvoices([])

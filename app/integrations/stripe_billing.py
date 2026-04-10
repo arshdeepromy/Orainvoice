@@ -514,26 +514,36 @@ async def get_subscription_invoices(
     )
 
     result = []
-    for inv in invoices.get("data", []):
+    inv_data = invoices.data if hasattr(invoices, 'data') else invoices.get("data", [])
+    for inv in inv_data:
+        # Stripe SDK objects support both dict-style and attribute access
+        def _get(obj: object, key: str, default: object = None) -> object:
+            if hasattr(obj, 'get'):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        lines_obj = _get(inv, "lines", None)
+        lines_data = getattr(lines_obj, 'data', []) if lines_obj else []
+
         result.append({
-            "id": inv["id"],
-            "number": inv.get("number"),
-            "amount_due": inv.get("amount_due", 0),
-            "amount_paid": inv.get("amount_paid", 0),
-            "currency": inv.get("currency", "nzd"),
-            "status": inv.get("status"),
-            "created": inv.get("created"),
-            "period_start": inv.get("period_start"),
-            "period_end": inv.get("period_end"),
-            "invoice_pdf": inv.get("invoice_pdf"),
-            "hosted_invoice_url": inv.get("hosted_invoice_url"),
-            "description": inv.get("description"),
+            "id": _get(inv, "id"),
+            "number": _get(inv, "number"),
+            "amount_due": _get(inv, "amount_due", 0),
+            "amount_paid": _get(inv, "amount_paid", 0),
+            "currency": _get(inv, "currency", "nzd"),
+            "status": _get(inv, "status"),
+            "created": _get(inv, "created"),
+            "period_start": _get(inv, "period_start"),
+            "period_end": _get(inv, "period_end"),
+            "invoice_pdf": _get(inv, "invoice_pdf"),
+            "hosted_invoice_url": _get(inv, "hosted_invoice_url"),
+            "description": _get(inv, "description"),
             "lines_summary": [
                 {
-                    "description": line.get("description", ""),
-                    "amount": line.get("amount", 0),
+                    "description": _get(line, "description", ""),
+                    "amount": _get(line, "amount", 0),
                 }
-                for line in inv.get("lines", {}).get("data", [])
+                for line in lines_data
             ],
         })
     return result
