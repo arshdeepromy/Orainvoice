@@ -19,8 +19,11 @@ function validForm(overrides: Partial<SignupFormData> = {}): SignupFormData {
     password: VALID_PASSWORD,
     confirm_password: VALID_PASSWORD,
     plan_id: 'plan-123',
+    billing_interval: 'monthly',
     captcha_code: 'AB12CD',
     coupon_code: '',
+    country_code: 'NZ',
+    trade_family_slug: '',
     ...overrides,
   }
 }

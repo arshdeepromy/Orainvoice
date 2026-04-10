@@ -13,11 +13,6 @@ import {
 /*  Generators                                                         */
 /* ------------------------------------------------------------------ */
 
-/** Currency value (positive or negative, bounded to avoid overflow) */
-const currencyArb = fc
-  .float({ min: -1e9, max: 1e9, noNaN: true, noDefaultInfinity: true })
-  .map((v) => Math.round(v * 100) / 100)
-
 /** Positive contract value */
 const positiveContractArb = fc
   .float({ min: 0, max: 1e9, noNaN: true, noDefaultInfinity: true })

@@ -911,11 +911,25 @@ async def create_credit_note_endpoint(
         try:
             import asyncio as _asyncio_cn
             from app.modules.accounting.auto_sync import sync_credit_note_bg
+            from app.modules.customers.models import Customer as _CustCN
             cn_data = result["credit_note"]
+            # Resolve customer name from invoice's customer_id (same pattern as issue_invoice_endpoint)
+            _cn_cust_name = "Unknown"
+            try:
+                _cn_cust_result = await db.execute(
+                    select(_CustCN.display_name, _CustCN.first_name, _CustCN.last_name).where(
+                        _CustCN.id == invoice_data.get("customer_id")
+                    )
+                )
+                _cn_cust_row = _cn_cust_result.first()
+                if _cn_cust_row:
+                    _cn_cust_name = _cn_cust_row.display_name or f"{_cn_cust_row.first_name or ''} {_cn_cust_row.last_name or ''}".strip() or "Unknown"
+            except Exception:
+                pass  # Fall back to "Unknown"
             _xero_cn = {
                 "id": str(cn_data.get("id", "")),
                 "credit_note_number": cn_data.get("credit_note_number", ""),
-                "customer_name": "Unknown",
+                "customer_name": _cn_cust_name,
                 "date": cn_data.get("created_at"),
                 "currency": "NZD",
                 "gst_inclusive": True,

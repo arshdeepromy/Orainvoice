@@ -349,7 +349,7 @@ describe('SignupWizard', () => {
   })
 
   it('shows retry button when confirm-payment backend call fails', async () => {
-    mockPost.mockImplementation((url: string, body?: unknown) => {
+    mockPost.mockImplementation((url: string, _body?: unknown) => {
       if (url === '/auth/signup') return Promise.resolve(paidSignupResponse())
       if (url === '/auth/verify-captcha') return Promise.resolve({ data: {} })
       if (url === '/auth/signup/confirm-payment') {

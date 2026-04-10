@@ -3554,3 +3554,83 @@ The rate limiter middleware caught the validation error and logged it, but the r
 
 **Related Issues**: ISSUE-044, ISSUE-058
 
+
+---
+
+### ISSUE-107: Claims form customer search returns no results — wrong query param and response key
+
+- **Date**: 2026-04-10
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Typing in the Customer search field on the New Claim form (`/claims/new`) returned no results. The dropdown never appeared, making it impossible to select a customer and create a claim.
+
+**Root Cause**: Two frontend/backend mismatches in `ClaimCreateForm.tsx`:
+
+1. Frontend sent `search` query parameter but backend `list_customers` expects `q`
+2. Frontend read `res.data.items` but backend returns `{ customers: [...] }` not `{ items: [...] }`
+3. Frontend sent `page_size` but backend expects `limit`
+
+**Fix Applied**:
+
+1. Changed `params: { search: query, page_size: 10 }` → `params: { q: query, limit: 10 }`
+2. Changed `res.data?.items ?? []` → `res.data?.customers ?? []`
+3. Fixed invoice fetch: changed `customer_id` param → `search` by customer name, changed `res.data?.items` → `res.data?.invoices`, changed `page_size` → `limit`
+4. Fixed job card fetch: changed `customer_id` param → `search` by customer name, changed `page_size` → `limit`
+
+**Files Changed**:
+- `frontend/src/pages/claims/ClaimCreateForm.tsx` — fixed API call params and response key
+
+**Related Issues**: N/A
+
+---
+
+### ISSUE-108: Claims form crashes when selecting invoice — line_total.toFixed is not a function
+
+- **Date**: 2026-04-10
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Selecting an invoice in the New Claim form caused a crash with error `(e.line_total ?? 0).toFixed is not a function`. The page showed the error boundary.
+
+**Root Cause**: The backend returns `line_total` as a Decimal string (e.g. `"150.00"`), not a number. The frontend called `.toFixed(2)` on it directly, which fails because strings don't have `.toFixed()`. The `?? 0` fallback only handles null/undefined, not string values.
+
+**Fix Applied**:
+
+1. Changed `(li.line_total ?? 0).toFixed(2)` → `Number(li.line_total ?? 0).toFixed(2)` to coerce the string to a number first
+2. Updated `LineItemOption` interface to reflect that `line_total` and `quantity` can be strings
+
+**Files Changed**:
+- `frontend/src/pages/claims/ClaimCreateForm.tsx` — safe number coercion on line_total
+
+**Related Issues**: ISSUE-006 (same class of safe-api-consumption bug)
+
+---
+
+### ISSUE-109: Credit note creation fails — db.expire() causes MissingGreenlet in async context
+
+- **Date**: 2026-04-10
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Creating a credit note on an invoice threw a server error. The credit note modal on the invoice detail page failed silently. Claims resolution with "Credit Note" type also failed.
+
+**Root Cause**: `create_credit_note()` in `app/modules/invoices/service.py` used `db.expire(credit_note)` and `db.expire(invoice)` which are synchronous SQLAlchemy methods. In an async context with `asyncpg`, this causes a `MissingGreenlet` error because synchronous attribute access triggers lazy loading outside the greenlet.
+
+**Fix Applied**:
+
+1. Replaced `db.expire(credit_note)` → `await db.refresh(credit_note)`
+2. Replaced `db.expire(invoice)` → `await db.refresh(invoice)`
+
+This follows the established pattern used everywhere else in the codebase (per project overview: "After `db.flush()`, always `await db.refresh(obj)` before returning ORM objects for Pydantic serialization").
+
+**Files Changed**:
+- `app/modules/invoices/service.py` — fixed async/sync mismatch in create_credit_note()
+
+**Related Issues**: ISSUE-106 (same class of MissingGreenlet bug)

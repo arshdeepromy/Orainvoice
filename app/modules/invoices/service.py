@@ -2067,9 +2067,9 @@ async def create_credit_note(
     await db.flush()
 
     # Don't commit here — let the session dependency handle it.
-    # Use flush + expire to get server-generated values.
-    db.expire(credit_note)
-    db.expire(invoice)
+    # Refresh to get server-generated values (expire is sync-only, causes MissingGreenlet).
+    await db.refresh(credit_note)
+    await db.refresh(invoice)
 
     # Fetch line items for invoice response
     li_result = await db.execute(

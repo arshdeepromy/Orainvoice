@@ -17,7 +17,7 @@ interface DataTableProps<T> {
   className?: string
 }
 
-export function DataTable<T extends Record<string, unknown>>({
+export function DataTable<T extends object>({
   columns,
   data,
   keyField,
@@ -43,8 +43,8 @@ export function DataTable<T extends Record<string, unknown>>({
   const sortedData = (() => {
     if (!sortKey || !sortDir) return data
     return [...data].sort((a, b) => {
-      const aVal = a[sortKey]
-      const bVal = b[sortKey]
+      const aVal = (a as Record<string, unknown>)[sortKey]
+      const bVal = (b as Record<string, unknown>)[sortKey]
       if (aVal == null && bVal == null) return 0
       if (aVal == null) return 1
       if (bVal == null) return -1
@@ -109,10 +109,10 @@ export function DataTable<T extends Record<string, unknown>>({
             </tr>
           ) : (
             sortedData.map((row) => (
-              <tr key={String(row[keyField])} className="hover:bg-gray-50">
+              <tr key={String((row as Record<string, unknown>)[keyField as string])} className="hover:bg-gray-50">
                 {columns.map((col) => (
                   <td key={col.key} className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">
-                    {col.render ? col.render(row) : String(row[col.key] ?? '')}
+                    {col.render ? col.render(row) : String((row as Record<string, unknown>)[col.key] ?? '')}
                   </td>
                 ))}
               </tr>

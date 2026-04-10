@@ -2015,6 +2015,7 @@ async def create_invitation(
     email: str,
     role: str,
     ip_address: str | None = None,
+    base_url: str | None = None,
 ) -> dict:
     """Create a new user account via invitation and send a signup email.
 
@@ -2074,7 +2075,7 @@ async def create_invitation(
     from app.modules.admin.models import Organisation as _Org
     _org_r = await db.execute(select(_Org.name).where(_Org.id == org_id))
     _org_name = _org_r.scalar_one_or_none() or "your organisation"
-    _base_url = getattr(settings, "frontend_base_url", "") or "http://localhost"
+    _base_url = base_url or getattr(settings, "frontend_base_url", "") or "http://localhost"
     await _send_invitation_email(
         email, invite_token, db=db, org_name=_org_name, base_url=_base_url,
     )
@@ -2219,6 +2220,7 @@ async def resend_invitation(
     org_id: uuid.UUID,
     email: str,
     ip_address: str | None = None,
+    base_url: str | None = None,
 ) -> dict:
     """Resend an invitation for a user whose previous invite has expired.
 
@@ -2269,7 +2271,7 @@ async def resend_invitation(
     from app.modules.admin.models import Organisation as _Org2
     _org_r2 = await db.execute(select(_Org2.name).where(_Org2.id == org_id))
     _org_name2 = _org_r2.scalar_one_or_none() or "your organisation"
-    _base_url2 = getattr(settings, "frontend_base_url", "") or "http://localhost"
+    _base_url2 = base_url or getattr(settings, "frontend_base_url", "") or "http://localhost"
     await _send_invitation_email(
         email, invite_token, db=db, org_name=_org_name2, base_url=_base_url2,
     )

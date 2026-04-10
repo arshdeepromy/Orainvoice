@@ -28,6 +28,7 @@ function jobCardArb(statusArb: fc.Arbitrary<string>): fc.Arbitrary<JobCard> {
     description: fc.option(fc.string({ minLength: 1, maxLength: 40 }), { nil: null }),
     assigned_to: fc.option(fc.uuid(), { nil: null }),
     assigned_to_name: fc.option(fc.string({ minLength: 1, maxLength: 20 }), { nil: null }),
+    assigned_to_user_id: fc.option(fc.uuid(), { nil: null }),
     created_at: fc
       .integer({ min: new Date('2024-01-01').getTime(), max: new Date('2026-12-31').getTime() })
       .map((ts) => new Date(ts).toISOString()),

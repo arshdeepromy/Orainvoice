@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react'
 import apiClient from '../../api/client'
-import { Button, Spinner } from '../../components/ui'
+import { Button } from '../../components/ui'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */

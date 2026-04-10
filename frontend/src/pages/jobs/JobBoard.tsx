@@ -8,10 +8,9 @@
  * Validates: Requirements 8.1, 8.2, 8.3, 8.4
  */
 
-import React, { useEffect, useState, useCallback, DragEvent, useMemo } from 'react'
+import { useEffect, useState, useCallback, DragEvent, useMemo } from 'react'
 import apiClient from '@/api/client'
 import { useModuleGuard } from '@/hooks/useModuleGuard'
-import { useFlag } from '@/contexts/FeatureFlagContext'
 import { useTerm } from '@/contexts/TerminologyContext'
 import { ToastContainer } from '@/components/ui/Toast'
 import { isValidStatusTransition } from '@/utils/jobCalcs'
@@ -62,7 +61,6 @@ type ViewMode = 'kanban' | 'hierarchy' | 'timeline'
 
 export default function JobBoard() {
   const { isAllowed, isLoading: guardLoading, toasts, dismissToast } = useModuleGuard('jobs')
-  const jobsV2Enabled = useFlag('jobs_v2')
   const jobLabel = useTerm('job', 'Job')
   const projectLabel = useTerm('project', 'Project')
 

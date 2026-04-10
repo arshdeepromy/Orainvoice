@@ -186,7 +186,7 @@ export default function ClaimsList() {
           <table className="w-full text-sm" role="table">
             <thead>
               <tr className="border-b border-gray-200 bg-gray-50 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                <th className="px-4 py-3">ID</th>
+                <th className="px-4 py-3">Ref</th>
                 <th className="px-4 py-3">Customer</th>
                 <th className="px-4 py-3">Type</th>
                 <th className="px-4 py-3">Status</th>
@@ -207,7 +207,7 @@ export default function ClaimsList() {
                     onKeyDown={e => { if (e.key === 'Enter') navigate(`/claims/${claim.id}`) }}
                   >
                     <td className="px-4 py-3 font-mono text-xs text-gray-500">
-                      {claim.id.slice(0, 8)}…
+                      {claim.claim_number ?? `CLM-${claim.id.slice(0, 6).toUpperCase()}`}
                     </td>
                     <td className="px-4 py-3 font-medium text-gray-900">
                       {claim.customer_name ?? '—'}

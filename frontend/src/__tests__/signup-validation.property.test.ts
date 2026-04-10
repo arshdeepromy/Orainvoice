@@ -13,7 +13,14 @@ function validFormWith(overrides: Partial<SignupFormData>): SignupFormData {
     admin_email: 'test@example.com',
     admin_first_name: 'Jane',
     admin_last_name: 'Doe',
+    password: 'SecurePass10',
+    confirm_password: 'SecurePass10',
     plan_id: 'plan-1',
+    billing_interval: 'monthly',
+    captcha_code: '',
+    coupon_code: '',
+    country_code: 'NZ',
+    trade_family_slug: '',
     ...overrides,
   }
 }
@@ -124,7 +131,14 @@ describe('Property 2: Email format validation rejects invalid emails', () => {
       admin_email: 'test@example.com',
       admin_first_name: 'Jane',
       admin_last_name: 'Doe',
+      password: 'SecurePass10',
+      confirm_password: 'SecurePass10',
       plan_id: 'plan-1',
+      billing_interval: 'monthly',
+      captcha_code: '',
+      coupon_code: '',
+      country_code: 'NZ',
+      trade_family_slug: '',
       ...overrides,
     }
   }

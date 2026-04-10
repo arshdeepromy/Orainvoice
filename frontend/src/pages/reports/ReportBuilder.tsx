@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import apiClient from '../../api/client'
 import { Button, Select, Spinner } from '../../components/ui'
 import DateRangeFilter, { type DateRange } from './DateRangeFilter'
@@ -197,7 +197,7 @@ export default function ReportBuilder() {
 
       {loading && <div className="py-16"><Spinner label="Generating report" /></div>}
 
-      {!loading && data && (
+      {!loading && !!data && (
         <div className="rounded-lg border border-gray-200 bg-white p-4">
           <pre className="text-sm text-gray-700 whitespace-pre-wrap overflow-x-auto">
             {JSON.stringify(data, null, 2)}

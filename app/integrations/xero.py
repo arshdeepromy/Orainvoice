@@ -1,4 +1,4 @@
-"""Xero OAuth 2.0 client — invoice, payment, credit note, and contact sync.
+"""Xero OAuth 2.0 client — invoice, payment, credit note, refund, and contact sync.
 
 Handles OAuth authorization flow, token management, and entity
 synchronisation with the Xero Accounting API.
@@ -464,6 +464,189 @@ async def sync_credit_note(
     )
     resp.raise_for_status()
     return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# Refund sync (Credit Note + Allocation)
+# ---------------------------------------------------------------------------
+
+
+def _build_refund_credit_note_payload(refund_data: dict[str, Any]) -> dict[str, Any]:
+    """Build the Xero Credit Note payload for a refund.
+
+    Extracted as a pure function for testability (Property 1).
+    Requirements: 1.1, 1.3, 1.4
+    """
+    raw_date = refund_data.get("date", "")
+    ref_date = raw_date.strftime("%Y-%m-%d") if hasattr(raw_date, "strftime") else str(raw_date or "")
+
+    return {
+        "CreditNotes": [
+            {
+                "Type": "ACCRECCREDIT",
+                "Contact": {"Name": refund_data.get("customer_name", "Unknown")},
+                "Date": ref_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "Reference": f"Refund for {refund_data.get('invoice_number', '')}",
+                "Status": "AUTHORISED",
+                "LineAmountTypes": "Inclusive",
+                "LineItems": [
+                    {
+                        "Description": f"Refund: {refund_data.get('reason', '')}",
+                        "Quantity": 1,
+                        "UnitAmount": str(float(refund_data.get("amount", 0))),
+                        "AccountCode": "200",
+                        "TaxType": "OUTPUT2",
+                    }
+                ],
+                "CurrencyCode": "NZD",
+            }
+        ]
+    }
+
+
+def _build_refund_allocation_payload(
+    refund_data: dict[str, Any],
+    xero_invoice_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the Xero Allocation payload to link a credit note to an invoice.
+
+    Per Xero API docs, the PUT /CreditNotes/{id}/Allocations endpoint expects
+    a flat object: {"Invoice": {"InvoiceID": "..."}, "Amount": ..., "Date": "..."}
+
+    Uses InvoiceID (Xero UUID) when available, falls back to InvoiceNumber.
+
+    Extracted as a pure function for testability (Property 2).
+    Requirements: 1.2
+    """
+    raw_date = refund_data.get("date", "")
+    ref_date = raw_date.strftime("%Y-%m-%d") if hasattr(raw_date, "strftime") else str(raw_date or "")
+
+    invoice_ref: dict[str, str] = {}
+    if xero_invoice_id:
+        invoice_ref["InvoiceID"] = xero_invoice_id
+    else:
+        invoice_ref["InvoiceNumber"] = refund_data.get("invoice_number", "")
+
+    return {
+        "Invoice": invoice_ref,
+        "Amount": float(refund_data.get("amount", 0)),
+        "Date": ref_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+    }
+
+
+async def _lookup_xero_invoice_id(
+    access_token: str,
+    tenant_id: str,
+    invoice_number: str,
+) -> str | None:
+    """Look up a Xero InvoiceID by InvoiceNumber.
+
+    Returns the Xero UUID string, or None if not found.
+    """
+    try:
+        resp = await _xero_api_call(
+            "GET",
+            f"{XERO_API_BASE}/Invoices?where=InvoiceNumber%3D%22{invoice_number}%22",
+            access_token=access_token,
+            tenant_id=tenant_id,
+        )
+        resp.raise_for_status()
+        invoices = resp.json().get("Invoices", [])
+        if invoices:
+            return invoices[0].get("InvoiceID")
+    except Exception:
+        logger.warning("Failed to look up Xero InvoiceID for %s", invoice_number)
+    return None
+
+
+async def sync_refund(
+    access_token: str,
+    tenant_id: str,
+    refund_data: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a Credit Note in Xero and refund it via the Payments endpoint.
+
+    Two-step process (per Xero docs — "To refund credit notes use the payments endpoint"):
+    1. POST /CreditNotes — create the ACCRECCREDIT credit note (AUTHORISED)
+    2. PUT /Payments — refund the credit note to the bank account
+
+    This correctly handles refunds on paid invoices. The credit note records
+    the accounting entry, and the refund payment records the money going back
+    to the customer.
+
+    If step 2 fails after step 1 succeeds, logs partial failure with CreditNoteID
+    and re-raises so the caller can record the failure.
+
+    Returns the full Xero Credit Note response dict.
+    Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 7.1, 7.3, 7.4
+    """
+    # Step 1: Create the Credit Note
+    cn_payload = _build_refund_credit_note_payload(refund_data)
+
+    resp = await _xero_api_call(
+        "POST", f"{XERO_API_BASE}/CreditNotes",
+        access_token=access_token, tenant_id=tenant_id, json=cn_payload,
+    )
+    resp.raise_for_status()
+    cn_response = resp.json()
+
+    # Extract CreditNoteID
+    credit_note_id = cn_response.get("CreditNotes", [{}])[0].get("CreditNoteID")
+
+    # Step 2: Discover the Xero bank account (same pattern as sync_payment)
+    account_ref: dict[str, str] = {}
+    acct_resp = await _xero_api_call(
+        "GET", f"{XERO_API_BASE}/Accounts",
+        access_token=access_token, tenant_id=tenant_id,
+    )
+    if acct_resp.status_code == 200:
+        all_accounts = acct_resp.json().get("Accounts", [])
+        bank_accounts = [
+            a for a in all_accounts
+            if a.get("Type") == "BANK" and a.get("Status") == "ACTIVE"
+        ]
+        if bank_accounts:
+            ba = bank_accounts[0]
+            code = ba.get("Code")
+            account_ref = {"Code": code} if code else {"AccountID": ba.get("AccountID", "")}
+
+    if not account_ref:
+        logger.error(
+            "Xero refund: Credit Note %s created but no BANK account found for refund payment",
+            credit_note_id,
+        )
+        raise ValueError("No active BANK account found in Xero for refund payment")
+
+    # Step 3: Refund the Credit Note via the Payments endpoint
+    raw_date = refund_data.get("date", "")
+    ref_date = raw_date.strftime("%Y-%m-%d") if hasattr(raw_date, "strftime") else str(raw_date or "")
+
+    refund_payment_payload = {
+        "CreditNote": {"CreditNoteID": credit_note_id},
+        "Account": account_ref,
+        "Date": ref_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "Amount": float(refund_data.get("amount", 0)),
+        "Reference": f"Refund for {refund_data.get('invoice_number', '')}",
+    }
+
+    try:
+        pay_resp = await _xero_api_call(
+            "PUT", f"{XERO_API_BASE}/Payments",
+            access_token=access_token, tenant_id=tenant_id, json=refund_payment_payload,
+        )
+        if pay_resp.status_code >= 400:
+            logger.error(
+                "Xero refund payment full response: %s", pay_resp.text[:2000],
+            )
+        pay_resp.raise_for_status()
+    except Exception:
+        logger.error(
+            "Xero refund: Credit Note %s created but refund payment failed for invoice %s",
+            credit_note_id, refund_data.get("invoice_number"),
+        )
+        raise
+
+    return cn_response
 
 
 # ---------------------------------------------------------------------------

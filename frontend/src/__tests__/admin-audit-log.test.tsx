@@ -42,7 +42,7 @@ function makeEntry(overrides: Partial<AuditEntry> = {}): AuditEntry {
 }
 
 function makeAuditList(items: AuditEntry[] = [makeEntry()]): AuditLogResponse {
-  return { items, total: items.length }
+  return { entries: items, total: items.length }
 }
 
 function setupMocks(
@@ -54,7 +54,7 @@ function setupMocks(
       return Promise.resolve({ data: auditList })
     }
     if (url.startsWith('/admin/audit-log/')) {
-      return Promise.resolve({ data: detail ?? auditList.items[0] })
+      return Promise.resolve({ data: detail ?? auditList.entries[0] })
     }
     return Promise.reject(new Error('Unknown URL'))
   })

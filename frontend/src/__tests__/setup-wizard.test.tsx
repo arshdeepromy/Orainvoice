@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -20,7 +20,7 @@ import { StepIndicator, type StepInfo } from '../pages/setup/components/StepIndi
 import { CountryStep } from '../pages/setup/steps/CountryStep'
 import { BusinessStep } from '../pages/setup/steps/BusinessStep'
 import { ReadyStep } from '../pages/setup/steps/ReadyStep'
-import { INITIAL_WIZARD_DATA, type WizardData } from '../pages/setup/types'
+import { INITIAL_WIZARD_DATA } from '../pages/setup/types'
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */

@@ -18,16 +18,16 @@ export interface PrinterConnection {
 // ---------------------------------------------------------------------------
 
 /** Common USB printer class/subclass/protocol for ESC/POS printers. */
-const USB_PRINTER_FILTERS: USBDeviceFilter[] = [
+const USB_PRINTER_FILTERS: Array<{ classCode: number }> = [
   { classCode: 7 }, // Printer class
 ];
 
 export async function connectUSBPrinter(): Promise<PrinterConnection> {
-  if (!navigator.usb) {
+  if (!(navigator as any).usb) {
     throw new Error('WebUSB is not supported in this browser');
   }
 
-  const device = await navigator.usb.requestDevice({ filters: USB_PRINTER_FILTERS });
+  const device = await (navigator as any).usb.requestDevice({ filters: USB_PRINTER_FILTERS });
   await device.open();
 
   // Select the first configuration if not already selected
@@ -36,21 +36,21 @@ export async function connectUSBPrinter(): Promise<PrinterConnection> {
   }
 
   // Find the printer interface and claim it
-  const iface = device.configuration?.interfaces.find((i) =>
-    i.alternates.some((a) => a.interfaceClass === 7),
+  const iface = device.configuration?.interfaces.find((i: any) =>
+    i.alternates.some((a: any) => a.interfaceClass === 7),
   );
   if (!iface) throw new Error('No printer interface found on USB device');
 
   await device.claimInterface(iface.interfaceNumber);
 
   // Find the OUT endpoint for sending data
-  const alt = iface.alternates.find((a) => a.interfaceClass === 7);
-  const outEndpoint = alt?.endpoints.find((e) => e.direction === 'out');
+  const alt = iface.alternates.find((a: any) => a.interfaceClass === 7);
+  const outEndpoint = alt?.endpoints.find((e: any) => e.direction === 'out');
   if (!outEndpoint) throw new Error('No OUT endpoint found on printer interface');
 
   const endpointNumber = outEndpoint.endpointNumber;
 
-  return {
+  const conn: PrinterConnection = {
     type: 'usb',
     connected: true,
     async send(data: Uint8Array) {
@@ -64,9 +64,10 @@ export async function connectUSBPrinter(): Promise<PrinterConnection> {
     async disconnect() {
       await device.releaseInterface(iface.interfaceNumber);
       await device.close();
-      this.connected = false;
+      conn.connected = false;
     },
   };
+  return conn;
 }
 
 // ---------------------------------------------------------------------------
@@ -78,11 +79,11 @@ const BT_PRINTER_SERVICE = '000018f0-0000-1000-8000-00805f9b34fb';
 const BT_PRINTER_CHARACTERISTIC = '00002af1-0000-1000-8000-00805f9b34fb';
 
 export async function connectBluetoothPrinter(): Promise<PrinterConnection> {
-  if (!navigator.bluetooth) {
+  if (!(navigator as any).bluetooth) {
     throw new Error('Web Bluetooth is not supported in this browser');
   }
 
-  const device = await navigator.bluetooth.requestDevice({
+  const device = await (navigator as any).bluetooth.requestDevice({
     filters: [{ services: [BT_PRINTER_SERVICE] }],
     optionalServices: [BT_PRINTER_SERVICE],
   });
@@ -91,7 +92,7 @@ export async function connectBluetoothPrinter(): Promise<PrinterConnection> {
   const service = await server.getPrimaryService(BT_PRINTER_SERVICE);
   const characteristic = await service.getCharacteristic(BT_PRINTER_CHARACTERISTIC);
 
-  return {
+  const conn: PrinterConnection = {
     type: 'bluetooth',
     connected: true,
     async send(data: Uint8Array) {
@@ -104,9 +105,10 @@ export async function connectBluetoothPrinter(): Promise<PrinterConnection> {
     },
     async disconnect() {
       server.disconnect();
-      this.connected = false;
+      conn.connected = false;
     },
   };
+  return conn;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,23 +119,24 @@ export async function connectNetworkPrinter(address: string): Promise<PrinterCon
   // Normalise address to include protocol
   const url = address.startsWith('http') ? address : `http://${address}`;
 
-  return {
+  const conn: PrinterConnection = {
     type: 'network',
     connected: true,
     async send(data: Uint8Array) {
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
-        body: data,
+        body: data as unknown as BodyInit,
       });
       if (!response.ok) {
         throw new Error(`Network printer error: ${response.status} ${response.statusText}`);
       }
     },
     async disconnect() {
-      this.connected = false;
+      conn.connected = false;
     },
   };
+  return conn;
 }
 
 // ---------------------------------------------------------------------------

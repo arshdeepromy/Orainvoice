@@ -21,6 +21,7 @@ export interface ClaimListItem {
   cost_to_business: number | string
   branch_id: string | null
   created_at: string
+  claim_number?: string
 }
 
 export interface ClaimListResponse {
@@ -51,6 +52,7 @@ export interface ClaimDetail {
   org_id: string
   branch_id: string | null
   customer_id: string
+  claim_number?: string
   customer: {
     id: string
     first_name: string

@@ -3,6 +3,7 @@ import apiClient from '../../api/client'
 import { Modal, Button, FormField, Badge, Spinner } from '../ui'
 import { useToast, ToastContainer } from '../ui/Toast'
 import { useTenant } from '../../contexts/TenantContext'
+import { InlineCreateForm } from './InlineCreateForm'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -146,6 +147,22 @@ const CATEGORIES: { key: Category; label: string; icon: () => React.JSX.Element;
   { key: 'fluid', label: 'Fluids / Oils', icon: FluidsIcon, automotiveOnly: true },
 ]
 
+/**
+ * Determines whether a category is visible for a given trade family.
+ * Tyres and fluids are only visible for 'automotive-transport'.
+ * Parts are always visible.
+ * When tradeFamily is null/undefined, defaults to 'automotive-transport' (all categories visible).
+ */
+export function isCategoryVisibleForTradeFamily(
+  category: string,
+  tradeFamily: string | null | undefined,
+): boolean {
+  const cat = CATEGORIES.find(c => c.key === category)
+  if (!cat) return true // unknown categories are not gated
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+  return !cat.automotiveOnly || isAutomotive
+}
+
 /* ------------------------------------------------------------------ */
 /*  Step 1 — CategorySelector                                         */
 /* ------------------------------------------------------------------ */
@@ -181,16 +198,24 @@ function CategorySelector({ onSelect }: { onSelect: (cat: Category) => void }) {
 /*  Step 2 — CataloguePicker                                           */
 /* ------------------------------------------------------------------ */
 
+const CATEGORY_SINGULAR_LABELS: Record<Category, string> = {
+  part: 'Part',
+  tyre: 'Tyre',
+  fluid: 'Fluid/Oil',
+}
+
 function CataloguePicker({
   category,
   onSelect,
   onBack,
   existingStockItemIds,
+  onCreateNew,
 }: {
   category: Category
   onSelect: (item: CatalogueItem) => void
   onBack: () => void
   existingStockItemIds: Set<string>
+  onCreateNew?: () => void
 }) {
   const [items, setItems] = useState<CatalogueItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -295,6 +320,7 @@ function CataloguePicker({
   }, [items, search])
 
   const categoryLabel = CATEGORIES.find((c) => c.key === category)?.label ?? category
+  const singularLabel = CATEGORY_SINGULAR_LABELS[category] ?? category
 
   return (
     <div>
@@ -326,13 +352,31 @@ function CataloguePicker({
 
       {!loading && items.length === 0 && !error && (
         <div className="rounded-md border border-gray-200 bg-gray-50 px-4 py-8 text-center text-sm text-gray-500">
-          No active {categoryLabel.toLowerCase()} items found. Add items to the catalogue first.
+          {onCreateNew ? (
+            <>
+              <p className="mb-3">No active {categoryLabel.toLowerCase()} items found.</p>
+              <Button variant="secondary" size="sm" onClick={onCreateNew} type="button">
+                + Create New {singularLabel}
+              </Button>
+            </>
+          ) : (
+            <>No active {categoryLabel.toLowerCase()} items found. Add items to the catalogue first.</>
+          )}
         </div>
       )}
 
       {!loading && items.length > 0 && filtered.length === 0 && (
         <div className="rounded-md border border-gray-200 bg-gray-50 px-4 py-8 text-center text-sm text-gray-500">
-          No items match your search.
+          {onCreateNew ? (
+            <>
+              <p className="mb-3">No items match your search.</p>
+              <Button variant="secondary" size="sm" onClick={onCreateNew} type="button">
+                + Create New {singularLabel}
+              </Button>
+            </>
+          ) : (
+            <>No items match your search.</>
+          )}
         </div>
       )}
 
@@ -365,6 +409,14 @@ function CataloguePicker({
               </button>
             )
           })}
+        </div>
+      )}
+
+      {!loading && filtered.length > 0 && onCreateNew && (
+        <div className="mt-3 text-center">
+          <Button variant="secondary" size="sm" onClick={onCreateNew} type="button">
+            + Create New {singularLabel}
+          </Button>
         </div>
       )}
     </div>
@@ -954,6 +1006,7 @@ function StockDetailsForm({
 
 export function AddToStockModal({ isOpen, onClose, onSuccess }: AddToStockModalProps) {
   const { toasts, addToast, dismissToast } = useToast()
+  const { tradeFamily } = useTenant()
 
   const [step, setStep] = useState<Step>('category')
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null)
@@ -961,6 +1014,7 @@ export function AddToStockModal({ isOpen, onClose, onSuccess }: AddToStockModalP
   const [submitting, setSubmitting] = useState(false)
   const [apiError, setApiError] = useState('')
   const [existingStockItemIds, setExistingStockItemIds] = useState<Set<string>>(new Set())
+  const [showInlineCreate, setShowInlineCreate] = useState(false)
 
   // Reset state when modal opens/closes
   useEffect(() => {
@@ -970,6 +1024,7 @@ export function AddToStockModal({ isOpen, onClose, onSuccess }: AddToStockModalP
       setSelectedItem(null)
       setSubmitting(false)
       setApiError('')
+      setShowInlineCreate(false)
       // Fetch existing stock items to mark "already in stock"
       apiClient
         .get<{ stock_items: StockItemRecord[] }>('/inventory/stock-items', { params: { limit: 500 } })
@@ -999,6 +1054,7 @@ export function AddToStockModal({ isOpen, onClose, onSuccess }: AddToStockModalP
     setStep('catalogue')
     setSelectedItem(null)
     setApiError('')
+    setShowInlineCreate(false)
   }, [])
 
   const handleBackToCategory = useCallback(() => {
@@ -1006,6 +1062,7 @@ export function AddToStockModal({ isOpen, onClose, onSuccess }: AddToStockModalP
     setSelectedCategory(null)
     setSelectedItem(null)
     setApiError('')
+    setShowInlineCreate(false)
   }, [])
 
   const handleSubmit = useCallback(
@@ -1066,12 +1123,30 @@ export function AddToStockModal({ isOpen, onClose, onSuccess }: AddToStockModalP
             <CategorySelector onSelect={handleCategorySelect} />
           )}
 
-          {step === 'catalogue' && selectedCategory && (
+          {step === 'catalogue' && selectedCategory && !showInlineCreate && (
             <CataloguePicker
               category={selectedCategory}
               onSelect={handleItemSelect}
               onBack={handleBackToCategory}
               existingStockItemIds={existingStockItemIds}
+              onCreateNew={
+                isCategoryVisibleForTradeFamily(selectedCategory, tradeFamily)
+                  ? () => setShowInlineCreate(true)
+                  : undefined
+              }
+            />
+          )}
+
+          {step === 'catalogue' && selectedCategory && showInlineCreate && (
+            <InlineCreateForm
+              category={selectedCategory}
+              onCancel={() => setShowInlineCreate(false)}
+              onSuccess={(item) => {
+                setShowInlineCreate(false)
+                setSelectedItem(item)
+                setStep('details')
+                setApiError('')
+              }}
             />
           )}
 

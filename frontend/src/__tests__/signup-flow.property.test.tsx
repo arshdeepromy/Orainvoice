@@ -152,9 +152,9 @@ describe('Property 7: Plan display completeness', () => {
               seen.add(p.id)
               return true
             })
-            return unique.length > 0 ? fc.constant(unique) : fc.constant([plans[0]])
+            return unique.length > 0 ? fc.constant(unique) : fc.constant([plans[0]] as typeof plans)
           }),
-          async (plans) => {
+          async (plans: Array<{ id: string; name: string; monthly_price_nzd: number }>) => {
             vi.clearAllMocks()
             ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
               data: { plans },

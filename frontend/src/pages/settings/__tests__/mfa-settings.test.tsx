@@ -81,7 +81,7 @@ beforeEach(() => {
     mfaSessionToken: 'test-mfa-token',
     mfaMethods: ['totp', 'sms', 'email'],
     completeMfa: mockCompleteMfa,
-  } as ReturnType<typeof useAuth>)
+  } as unknown as ReturnType<typeof useAuth>)
 })
 
 // ============================================================
@@ -683,7 +683,7 @@ describe('MfaVerify', () => {
       mfaSessionToken: null,
       mfaMethods: [],
       completeMfa: mockCompleteMfa,
-    } as ReturnType<typeof useAuth>)
+    } as unknown as ReturnType<typeof useAuth>)
 
     renderMfaVerify()
 

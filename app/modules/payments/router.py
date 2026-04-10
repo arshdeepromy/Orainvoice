@@ -334,6 +334,61 @@ async def process_refund_endpoint(
             notes=payload.notes,
             ip_address=ip_address,
         )
-        return result
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    # Prepare Xero refund sync data while session is still open
+    import asyncio as _asyncio
+    from app.modules.invoices.models import Invoice as _Invoice
+    from app.modules.customers.models import Customer as _Customer
+
+    refund_record = result.get("refund")
+    # Query invoice number and customer_id
+    _inv_result = await db.execute(
+        select(_Invoice.invoice_number, _Invoice.customer_id).where(
+            _Invoice.id == payload.invoice_id
+        )
+    )
+    _inv_row = _inv_result.one_or_none()
+    _inv_number = _inv_row.invoice_number if _inv_row else ""
+    _customer_id = _inv_row.customer_id if _inv_row else None
+
+    # Resolve customer name (same pattern as create_invoice_endpoint)
+    _customer_name = "Unknown"
+    if _customer_id:
+        try:
+            _cust_result = await db.execute(
+                select(
+                    _Customer.display_name,
+                    _Customer.first_name,
+                    _Customer.last_name,
+                ).where(_Customer.id == _customer_id)
+            )
+            _cust_row = _cust_result.one_or_none()
+            if _cust_row:
+                _customer_name = (
+                    _cust_row.display_name
+                    or f"{_cust_row.first_name} {_cust_row.last_name}".strip()
+                    or "Unknown"
+                )
+        except Exception:
+            logger.warning(
+                "Failed to resolve customer name for refund sync, invoice %s",
+                payload.invoice_id,
+            )
+
+    # Build Xero sync payload
+    _refund_sync_data = {
+        "id": str(refund_record.id),
+        "invoice_number": _inv_number or "",
+        "customer_name": _customer_name,
+        "amount": float(refund_record.amount),
+        "date": refund_record.created_at.strftime("%Y-%m-%d") if refund_record.created_at else "",
+        "reason": refund_record.refund_note or "Refund",
+    }
+
+    # Fire-and-forget: sync refund to Xero if connected
+    from app.modules.accounting.auto_sync import sync_refund_bg
+    _asyncio.create_task(sync_refund_bg(org_uuid, _refund_sync_data))
+
+    return result

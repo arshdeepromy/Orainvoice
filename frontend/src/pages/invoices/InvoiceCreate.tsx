@@ -34,17 +34,6 @@ interface LinkedVehicle {
   colour: string | null
 }
 
-interface LinkedCustomer {
-  id: string
-  first_name: string
-  last_name: string
-  email: string | null
-  phone: string | null
-  mobile_phone?: string | null
-  display_name?: string | null
-  company_name?: string | null
-}
-
 interface Vehicle {
   id: string
   rego: string
@@ -401,7 +390,6 @@ function ItemTableRow({
   const [showItemDropdown, setShowItemDropdown] = useState(false)
   const [itemSearch, setItemSearch] = useState('')
   const [showInlineForm, setShowInlineForm] = useState(false)
-  const [inlineType, setInlineType] = useState<'goods' | 'service'>('goods')
   const [inlineName, setInlineName] = useState('')
   const [inlineUnit, setInlineUnit] = useState('')
   const [inlinePrice, setInlinePrice] = useState('')

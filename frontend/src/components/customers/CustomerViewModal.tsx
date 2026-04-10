@@ -73,7 +73,7 @@ export function CustomerViewModal({ open, customerId, onClose }: CustomerViewMod
               <Field label="Salutation" value={d.salutation as string} />
               <Field label="First Name" value={d.first_name as string} />
               <Field label="Last Name" value={d.last_name as string} />
-              {d.company_name && <Field label="Company Name" value={d.company_name as string} />}
+              {!!d.company_name && <Field label="Company Name" value={d.company_name as string} />}
               <Field label="Email" value={d.email as string} />
               <Field label="Mobile" value={d.mobile_phone as string || d.phone as string} />
               <Field label="Work Phone" value={d.work_phone as string} />
@@ -101,7 +101,7 @@ export function CustomerViewModal({ open, customerId, onClose }: CustomerViewMod
               <Field label="Billing Address" value={formatAddress(d.billing_address as Record<string, string>)} />
               <Field label="Shipping Address" value={formatAddress(d.shipping_address as Record<string, string>)} />
             </div>
-            {d.address && <div className="mt-2"><Field label="Address" value={d.address as string} /></div>}
+            {!!d.address && <div className="mt-2"><Field label="Address" value={d.address as string} /></div>}
           </div>
 
           {/* Contact Persons */}
@@ -125,16 +125,16 @@ export function CustomerViewModal({ open, customerId, onClose }: CustomerViewMod
           )}
 
           {/* Notes & Remarks */}
-          {(d.notes || d.remarks) && (
+          {(!!d.notes || !!d.remarks) && (
             <div className="rounded-lg border border-gray-200 p-4">
               <h4 className="text-sm font-medium text-gray-700 mb-3">Notes & Remarks</h4>
-              {d.notes && <Field label="Notes" value={d.notes as string} />}
-              {d.remarks && <div className="mt-2"><Field label="Remarks" value={d.remarks as string} /></div>}
+              {!!d.notes && <Field label="Notes" value={d.notes as string} />}
+              {!!d.remarks && <div className="mt-2"><Field label="Remarks" value={d.remarks as string} /></div>}
             </div>
           )}
 
           {/* Financial Summary */}
-          {(d.total_spend || d.outstanding_balance) && (
+          {(!!d.total_spend || !!d.outstanding_balance) && (
             <div className="rounded-lg border border-gray-200 p-4">
               <h4 className="text-sm font-medium text-gray-700 mb-3">Financial Summary</h4>
               <div className="grid grid-cols-2 gap-4">

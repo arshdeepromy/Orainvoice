@@ -5,7 +5,15 @@ import { CustomerCreateModal } from '@/components/customers/CustomerCreateModal'
 
 /* ── Types ── */
 
-export type KioskScreen = 'welcome' | 'form' | 'success'
+export type KioskScreen = 'welcome' | 'form' | 'success' | 'error'
+
+export interface KioskFormData {
+  first_name: string
+  last_name: string
+  phone: string
+  email: string
+  vehicle_rego: string
+}
 
 export interface KioskSuccessData {
   customer_first_name: string

@@ -4,7 +4,7 @@
  * Validates: Requirement 14.1 (Project Module)
  */
 
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import apiClient from '@/api/client'
 import RetentionSummary from '../construction/RetentionSummary'
 

@@ -1,9 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import apiClient from '../../api/client'
-import { Button, Spinner, PrintButton } from '../../components/ui'
+import { Spinner, PrintButton } from '../../components/ui'
 import DateRangeFilter, { type DateRange } from './DateRangeFilter'
 import ExportButtons from './ExportButtons'
-import { useBranch } from '@/contexts/BranchContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */

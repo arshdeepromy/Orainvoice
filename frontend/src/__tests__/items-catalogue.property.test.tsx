@@ -1,5 +1,5 @@
 import { render, screen, cleanup } from '@testing-library/react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fc from 'fast-check'
 
 // Feature: universal-items-catalogue, Property 8: Items page displays all table columns
@@ -143,7 +143,7 @@ vi.mock('@/contexts/ModuleContext', () => ({
 }))
 
 vi.mock('@/components/common/ModuleGate', () => ({
-  ModuleGate: ({ children }: { children: React.ReactNode }) => null,
+  ModuleGate: ({ children: _children }: { children: React.ReactNode }) => null,
 }))
 
 vi.mock('@/components/vehicles/VehicleLiveSearch', () => ({

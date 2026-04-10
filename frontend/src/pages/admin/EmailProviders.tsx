@@ -199,7 +199,7 @@ function ProviderCard({
             <span>Credentials: {provider.credentials_set ? '✓ Set' : '✗ Not set'}</span>
             {provider.smtp_host && <span>Host: {provider.smtp_host}:{provider.smtp_port}</span>}
             {provider.smtp_encryption && <span>Encryption: {provider.smtp_encryption.toUpperCase()}</span>}
-            {provider.config?.from_email && <span>From: {String(provider.config.from_email)}</span>}
+            {!!provider.config?.from_email && <span>From: {String(provider.config.from_email)}</span>}
             {provider.is_active && <span>Priority: {provider.priority || 1}</span>}
           </div>
 

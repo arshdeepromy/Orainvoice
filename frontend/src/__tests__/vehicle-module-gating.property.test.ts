@@ -31,14 +31,8 @@ const VEHICLE_PAYLOAD_KEYS = [
 // ---------------------------------------------------------------------------
 
 /** Generate a random rego string */
-const regoArb = fc.stringOf(fc.constantFrom('A', 'B', 'C', 'X', 'Y', 'Z'), {
-  minLength: 3,
-  maxLength: 3,
-}).chain((letters: string) =>
-  fc.stringOf(fc.constantFrom('0', '1', '2', '3', '4', '5', '6', '7', '8', '9'), {
-    minLength: 3,
-    maxLength: 3,
-  }).map((digits: string) => letters + digits)
+const regoArb = fc.stringMatching(/^[A-Z]{3}$/).chain((letters: string) =>
+  fc.stringMatching(/^[0-9]{3}$/).map((digits: string) => letters + digits)
 )
 
 /** Generate a vehicle-like object */

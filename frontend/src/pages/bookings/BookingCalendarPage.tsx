@@ -1,4 +1,5 @@
-import { useState, useCallback, useMemo, useRef } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { useToast } from '../../components/ui'
 import BookingCalendar from './BookingCalendar'
@@ -40,6 +41,18 @@ export default function BookingCalendarPage() {
   const [jobModalBooking, setJobModalBooking] = useState<BookingListItem | null>(null)
   const { addToast } = useToast()
   const listPanelRef = useRef<BookingListPanelHandle>(null)
+  const location = useLocation()
+
+  // Auto-open new booking form when navigated with openNew state (e.g. from "+ New" menu)
+  useEffect(() => {
+    if ((location.state as { openNew?: boolean })?.openNew) {
+      setEditBooking(null)
+      setInitialDate(undefined)
+      setFormOpen(true)
+      // Clear the state so refreshing doesn't re-open
+      window.history.replaceState({}, '')
+    }
+  }, [location.state])
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), [])
 

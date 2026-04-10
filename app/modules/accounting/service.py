@@ -463,6 +463,10 @@ async def _dispatch_sync(
             resp = await xero_client.sync_credit_note(access_token, tenant_id, entity_data)
             notes = resp.get("CreditNotes", [])
             return notes[0].get("CreditNoteID") if notes else None
+        elif entity_type == "refund":
+            resp = await xero_client.sync_refund(access_token, tenant_id, entity_data)
+            notes = resp.get("CreditNotes", [])
+            return notes[0].get("CreditNoteID") if notes else None
         elif entity_type == "contact":
             resp = await xero_client.sync_contact(access_token, tenant_id, entity_data)
             contacts = resp.get("Contacts", [])
@@ -583,6 +587,49 @@ async def _reconstruct_entity_data(
                     "account_code": "200",
                 }
             ],
+        }
+
+    elif entity_type == "refund":
+        from app.modules.payments.models import Payment
+        from app.modules.invoices.models import Invoice
+        from app.modules.customers.models import Customer
+
+        stmt = select(Payment).where(
+            Payment.id == entity_id,
+            Payment.org_id == org_id,
+            Payment.is_refund == True,  # noqa: E712
+        )
+        result = await db.execute(stmt)
+        payment = result.scalar_one_or_none()
+        if payment is None:
+            return None
+
+        # Get invoice number and customer_id
+        inv_stmt = select(Invoice).where(Invoice.id == payment.invoice_id)
+        inv_result = await db.execute(inv_stmt)
+        invoice = inv_result.scalar_one_or_none()
+        invoice_number = invoice.invoice_number or "" if invoice else ""
+
+        # Resolve customer name with fallback
+        customer_name = "Unknown"
+        if invoice and invoice.customer_id:
+            cust_stmt = select(Customer).where(Customer.id == invoice.customer_id)
+            cust_result = await db.execute(cust_stmt)
+            customer = cust_result.scalar_one_or_none()
+            if customer:
+                customer_name = (
+                    customer.display_name
+                    or f"{customer.first_name} {customer.last_name}".strip()
+                    or "Unknown"
+                )
+
+        return {
+            "id": str(payment.id),
+            "invoice_number": invoice_number,
+            "customer_name": customer_name,
+            "amount": float(payment.amount),
+            "date": payment.created_at.strftime("%Y-%m-%d") if payment.created_at else "",
+            "reason": payment.refund_note or "Refund",
         }
 
     elif entity_type == "contact":

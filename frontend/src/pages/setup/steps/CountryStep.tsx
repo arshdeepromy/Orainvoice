@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import type { WizardData, CountryOption } from '../types'
 import { COUNTRIES } from '../types'

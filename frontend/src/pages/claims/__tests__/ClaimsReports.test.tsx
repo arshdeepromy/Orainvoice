@@ -7,7 +7,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import React from 'react'
 
 vi.mock('react-router-dom', () => ({
   useSearchParams: () => [new URLSearchParams(), vi.fn()],

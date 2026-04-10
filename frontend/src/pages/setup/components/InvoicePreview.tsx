@@ -1,5 +1,3 @@
-import React from 'react'
-
 export interface InvoicePreviewData {
   businessName: string
   tradingName?: string

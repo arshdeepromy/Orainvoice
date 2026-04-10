@@ -1994,6 +1994,12 @@ async def invite_user(
     ip_address = request.client.host if request.client else None
 
     try:
+        # Use the request Origin header to build invite URLs with the correct domain
+        origin = request.headers.get("origin") or request.headers.get("referer", "").rstrip("/")
+        # Strip any path from referer (e.g. "https://example.com/settings/users" → "https://example.com")
+        if origin and "/" in origin.split("//", 1)[-1]:
+            origin = origin.split("//", 1)[0] + "//" + origin.split("//", 1)[-1].split("/")[0]
+
         result = await create_invitation(
             db=db,
             inviter_user_id=user.id,
@@ -2001,6 +2007,7 @@ async def invite_user(
             email=payload.email,
             role=payload.role,
             ip_address=ip_address,
+            base_url=origin or None,
         )
     except ValueError as exc:
         return JSONResponse(
@@ -2116,12 +2123,17 @@ async def resend_invite(
     ip_address = request.client.host if request.client else None
 
     try:
+        origin = request.headers.get("origin") or request.headers.get("referer", "").rstrip("/")
+        if origin and "/" in origin.split("//", 1)[-1]:
+            origin = origin.split("//", 1)[0] + "//" + origin.split("//", 1)[-1].split("/")[0]
+
         result = await resend_invitation(
             db=db,
             resender_user_id=user.id,
             org_id=user.org_id,
             email=payload.email,
             ip_address=ip_address,
+            base_url=origin or None,
         )
     except ValueError as exc:
         return JSONResponse(

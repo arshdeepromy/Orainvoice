@@ -34,11 +34,6 @@ const STATUS_CONFIG: Record<string, { label: string; variant: BadgeVariant }> = 
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-function formatDate(dateStr: string | null | undefined): string {
-  if (!dateStr) return '—'
-  return new Intl.DateTimeFormat('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(dateStr))
-}
-
 function formatDateTime(dateStr: string | null | undefined): string {
   if (!dateStr) return '—'
   return new Intl.DateTimeFormat('en-NZ', {
@@ -160,7 +155,7 @@ export default function ClaimDetail() {
             <h1 className="text-xl font-bold text-gray-900">Claim</h1>
             <Badge variant={statusCfg.variant}>{statusCfg.label}</Badge>
           </div>
-          <p className="text-sm text-gray-500 font-mono">{claim.id}</p>
+          <p className="text-sm text-gray-500 font-mono">{claim.claim_number ?? ''}</p>
           <div className="mt-2 space-y-1 text-sm text-gray-700">
             <p><span className="font-medium">Customer:</span> {customerName}</p>
             <p><span className="font-medium">Type:</span> {formatClaimType(claim.claim_type)}</p>

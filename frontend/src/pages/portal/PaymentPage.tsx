@@ -1,8 +1,4 @@
-import { useState } from 'react'
-import apiClient from '@/api/client'
 import { Button } from '@/components/ui/Button'
-import { AlertBanner } from '@/components/ui/AlertBanner'
-import { Spinner } from '@/components/ui/Spinner'
 import type { PortalInvoice } from './InvoiceHistory'
 
 interface PaymentPageProps {
@@ -12,39 +8,7 @@ interface PaymentPageProps {
   onBack: () => void
 }
 
-interface StripePaymentResponse {
-  checkout_url: string
-}
-
-export function PaymentPage({ token, invoice, primaryColor, onBack }: PaymentPageProps) {
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [redirecting, setRedirecting] = useState(false)
-
-  const handlePay = async () => {
-    setLoading(true)
-    setError('')
-    try {
-      const res = await apiClient.post<StripePaymentResponse>(
-        `/portal/${token}/pay/${invoice.id}`,
-      )
-      setRedirecting(true)
-      window.location.href = res.data.checkout_url
-    } catch {
-      setError('Unable to start payment. Please try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  if (redirecting) {
-    return (
-      <div className="py-16 text-center">
-        <Spinner label="Redirecting to payment" />
-        <p className="mt-4 text-sm text-gray-500">Redirecting to secure payment…</p>
-      </div>
-    )
-  }
+export function PaymentPage({ invoice, onBack }: PaymentPageProps) {
 
   return (
     <div>

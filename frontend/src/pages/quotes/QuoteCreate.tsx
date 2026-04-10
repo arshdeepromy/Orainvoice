@@ -256,7 +256,6 @@ function ItemTableRow({
   const [showItemDropdown, setShowItemDropdown] = useState(false)
   const [itemSearch, setItemSearch] = useState('')
   const [showInlineForm, setShowInlineForm] = useState(false)
-  const [inlineType, setInlineType] = useState<'goods' | 'service'>('goods')
   const [inlineName, setInlineName] = useState('')
   const [inlineUnit, setInlineUnit] = useState('')
   const [inlinePrice, setInlinePrice] = useState('')

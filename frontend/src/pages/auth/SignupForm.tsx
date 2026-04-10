@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, FormEvent } from 'react'
+import { useState, useEffect, useMemo, type FormEvent } from 'react'
 import apiClient from '@/api/client'
 import { Button, Input, AlertBanner, Spinner } from '@/components/ui'
 import { CountrySelect } from '@/components/ui/CountrySelect'
@@ -50,7 +50,7 @@ export function SignupForm({ onComplete }: SignupFormProps) {
   const [plans, setPlans] = useState<PublicPlan[]>([])
   const [plansLoading, setPlansLoading] = useState(true)
   const [plansError, setPlansError] = useState<string | null>(null)
-  const [billingConfig, setBillingConfig] = useState<SignupBillingConfig | null>(null)
+  const [, setBillingConfig] = useState<SignupBillingConfig | null>(null)
 
   // Trade families state
   const [tradeFamilies, setTradeFamilies] = useState<TradeFamily[]>([])

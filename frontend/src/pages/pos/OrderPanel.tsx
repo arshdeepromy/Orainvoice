@@ -46,7 +46,6 @@ export default function OrderPanel({
   orderDiscountAmount,
   onUpdateQuantity,
   onRemoveItem,
-  onSetItemDiscount,
   onSetOrderDiscount,
   onCheckout,
 }: OrderPanelProps) {

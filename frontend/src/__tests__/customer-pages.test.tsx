@@ -266,7 +266,7 @@ describe('CustomerProfile', () => {
 
   it('calls GET export endpoint when export is confirmed (Req 13.3)', async () => {
     const mockBlob = new Blob(['{}'], { type: 'application/json' })
-    ;(apiClient.get as ReturnType<typeof vi.fn>).mockImplementation((url: string, config?: Record<string, unknown>) => {
+    ;(apiClient.get as ReturnType<typeof vi.fn>).mockImplementation((_url: string, config?: Record<string, unknown>) => {
       if (config?.responseType === 'blob') return Promise.resolve({ data: mockBlob })
       return Promise.resolve({ data: mockProfileFull })
     })

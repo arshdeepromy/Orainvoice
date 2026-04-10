@@ -78,11 +78,6 @@ function formatTime(dateStr: string): string {
   return new Intl.DateTimeFormat('en-NZ', { hour: '2-digit', minute: '2-digit', hour12: true }).format(new Date(dateStr))
 }
 
-function formatHour12(hour: number): string {
-  return formatSlotLabel(hour, 0)
-}
-
-
 function formatDayHeader(date: Date): string {
   return new Intl.DateTimeFormat('en-NZ', { weekday: 'short', day: 'numeric', month: 'short' }).format(date)
 }
@@ -172,8 +167,6 @@ function isPastDay(date: Date): boolean {
  * Requirements: 64.1
  */
 export default function BookingCalendar({ onCreateBooking, onEditBooking, onConvertBooking, onSlotClick, refreshKey, onViewChange, onDateChange }: BookingCalendarProps) {
-  const { tradeFamily } = useTenant()
-  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const [view, setView] = useState<CalendarView>('week')
   const [currentDate, setCurrentDate] = useState(new Date())
   const [statusFilter, setStatusFilter] = useState('')
@@ -308,6 +301,8 @@ interface BookingCardProps {
 }
 
 function BookingCard({ booking, compact = false, onEdit, onConvert }: BookingCardProps) {
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const cfg = STATUS_CONFIG[booking.status as BookingStatus] ?? STATUS_CONFIG.scheduled
   const canConvert = booking.status === 'completed' || booking.status === 'confirmed'
 

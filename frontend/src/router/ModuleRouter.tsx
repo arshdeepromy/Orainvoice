@@ -1,9 +1,8 @@
-import { Routes, Route, useNavigate } from 'react-router-dom'
-import { Suspense, lazy, useEffect, useState } from 'react'
+import { Routes, Route } from 'react-router-dom'
+import { Suspense, lazy, useEffect } from 'react'
 import type { ComponentType } from 'react'
 import { useModules } from '@/contexts/ModuleContext'
-import { useFlag, useFeatureFlags } from '@/contexts/FeatureFlagContext'
-import { ToastContainer, useToast } from '@/components/ui/Toast'
+import { useFeatureFlags } from '@/contexts/FeatureFlagContext'
 import { ErrorBoundaryWithRetry } from '@/components/common/ErrorBoundaryWithRetry'
 import { Spinner } from '@/components/ui'
 
@@ -124,57 +123,6 @@ export const FLAG_ROUTE_MAP: Record<string, string> = {
   '/ecommerce': 'ecommerce',
   '/assets': 'assets',
   '/recurring': 'recurring',
-}
-
-/**
- * Resolves a route path to its feature flag key using FLAG_ROUTE_MAP.
- * Strips trailing wildcards and matches the path prefix.
- */
-function getFlagKeyForPath(routePath: string): string | undefined {
-  const cleanPath = routePath.replace(/\/?\*$/, '')
-  return FLAG_ROUTE_MAP[cleanPath]
-}
-
-/* ------------------------------------------------------------------ */
-/*  FlagGatedRoute                                                     */
-/* ------------------------------------------------------------------ */
-
-/**
- * Wrapper component that gates a route behind a feature flag.
- * If the flag is disabled, redirects to /dashboard with a toast notification.
- */
-function FlagGatedRoute({
-  flagKey,
-  component: Component,
-}: {
-  flagKey: string
-  component: ComponentType
-}) {
-  const flagEnabled = useFlag(flagKey)
-  const navigate = useNavigate()
-  const { toasts, addToast, dismissToast } = useToast()
-  const [redirected, setRedirected] = useState(false)
-
-  useEffect(() => {
-    if (!flagEnabled && !redirected) {
-      addToast('warning', `This feature is currently disabled.`)
-      setRedirected(true)
-      navigate('/dashboard', { replace: true })
-    }
-  }, [flagEnabled, redirected, navigate, addToast])
-
-  if (!flagEnabled) {
-    return <ToastContainer toasts={toasts} onDismiss={dismissToast} />
-  }
-
-  return (
-    <>
-      <SuspenseWithBoundary>
-        <Component />
-      </SuspenseWithBoundary>
-      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
-    </>
-  )
 }
 
 /* ------------------------------------------------------------------ */

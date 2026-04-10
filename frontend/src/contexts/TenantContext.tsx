@@ -94,6 +94,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     try {
       const res = await apiClient.get<{
         name: string
+        org_name?: string
         logo_url: string | null
         primary_colour: string | null
         secondary_colour: string | null
@@ -109,6 +110,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         terms_and_conditions: string | null
         trade_family: string | null
         trade_category: string | null
+        sidebar_display_mode?: string
       }>('/org/settings', { signal })
 
       const data = res.data
@@ -121,7 +123,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
           address: data.address,
           phone: data.phone,
           email: data.email,
-          sidebar_display_mode: data.sidebar_display_mode || 'icon_and_name',
+          sidebar_display_mode: (data.sidebar_display_mode as 'icon_and_name' | 'icon_only' | 'name_only') || 'icon_and_name',
         },
         gst: {
           gst_number: data.gst_number,

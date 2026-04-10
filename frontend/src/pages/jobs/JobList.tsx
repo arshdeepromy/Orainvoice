@@ -8,10 +8,9 @@
  * Validates: Requirements 8.1, 8.2, 8.7
  */
 
-import React, { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import apiClient from '@/api/client'
 import { useModuleGuard } from '@/hooks/useModuleGuard'
-import { useFlag } from '@/contexts/FeatureFlagContext'
 import { useTerm } from '@/contexts/TerminologyContext'
 import { ToastContainer } from '@/components/ui/Toast'
 
@@ -48,7 +47,6 @@ const STATUS_OPTIONS = [
 
 export default function JobList() {
   const { isAllowed, isLoading: guardLoading, toasts, dismissToast } = useModuleGuard('jobs')
-  const jobsV2Enabled = useFlag('jobs_v2')
   const jobLabel = useTerm('job', 'Job')
   const projectLabel = useTerm('project', 'Project')
 

@@ -8,15 +8,15 @@ export default function CustomerCreate() {
     navigate('/customers')
   }
 
-  const handleSuccess = (customerId: string) => {
-    navigate(`/customers/${customerId}`)
+  const handleSuccess = (customer: { id: string }) => {
+    navigate(`/customers/${customer.id}`)
   }
 
   return (
     <CustomerCreateModal
       open={true}
       onClose={handleClose}
-      onSuccess={handleSuccess}
+      onCustomerCreated={handleSuccess}
     />
   )
 }

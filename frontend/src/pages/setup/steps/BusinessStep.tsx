@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react'
+import { useMemo } from 'react'
 import { Input } from '@/components/ui/Input'
 import type { WizardData } from '../types'
 

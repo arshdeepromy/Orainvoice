@@ -856,7 +856,7 @@ describe('Property 4: Branch-gated page redirect', () => {
           }
 
           // The redirect decision must be the same for all pages given the same module state
-          for (const otherPage of BRANCH_GATED_PAGES) {
+          for (const _otherPage of BRANCH_GATED_PAGES) {
             const otherShouldRedirect = shouldRedirectGatedPage(moduleEnabled)
             expect(otherShouldRedirect).toBe(shouldRedirect)
           }
@@ -916,7 +916,7 @@ describe('Property 4: Branch-gated page redirect', () => {
       fc.property(
         fc.constantFrom('branch_admin', 'location_manager', 'salesperson', 'staff_member'),
         fc.boolean(),
-        (role, moduleEnabled) => {
+        (_role, moduleEnabled) => {
           const isAdmin = false // non-admin roles
           const isEnabled = (slug: string) => moduleEnabled && slug === 'branch_management'
           const visible = filterSettingsNavItems(SETTINGS_NAV_ITEMS, isAdmin, isEnabled)

@@ -17,14 +17,6 @@ const locationItemArb = (locationIds: string[]): fc.Arbitrary<{ location_id: str
     name: fc.string({ minLength: 1, maxLength: 30 }),
   })
 
-const roleArb = fc.constantFrom(
-  'org_admin',
-  'location_manager',
-  'staff_member',
-  'salesperson',
-  'global_admin',
-)
-
 /* ------------------------------------------------------------------ */
 /*  Property 4: Location data is RBAC-scoped for Location_Manager      */
 /* ------------------------------------------------------------------ */

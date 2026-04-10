@@ -16,6 +16,12 @@ vi.mock('@/api/client', () => {
   }
 })
 
+vi.mock('react-router-dom', () => ({
+  useParams: () => ({ id: 'po-1' }),
+  useNavigate: () => vi.fn(),
+  Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={to}>{children}</a>,
+}))
+
 import apiClient from '@/api/client'
 import POList from '../pages/purchase-orders/POList'
 import PODetail from '../pages/purchase-orders/PODetail'
@@ -151,13 +157,13 @@ describe('PODetail', () => {
 
   it('shows loading spinner initially', () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
-    render(<PODetail poId="po-1" />)
+    render(<PODetail />)
     expect(screen.getByRole('status', { name: 'Loading purchase order' })).toBeInTheDocument()
   })
 
   it('displays PO details and line items', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: mockPODetail })
-    render(<PODetail poId="po-1" />)
+    render(<PODetail />)
 
     expect(await screen.findByText('PO-00001')).toBeInTheDocument()
     expect(screen.getByTestId('po-status')).toHaveTextContent('sent')
@@ -171,26 +177,26 @@ describe('PODetail', () => {
 
   it('shows receive goods button for sent PO', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: mockPODetail })
-    render(<PODetail poId="po-1" />)
+    render(<PODetail />)
     expect(await screen.findByRole('button', { name: 'Receive goods' })).toBeInTheDocument()
   })
 
   it('shows send button for draft PO', async () => {
     const draftPO = { ...mockPODetail, status: 'draft' }
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: draftPO })
-    render(<PODetail poId="po-1" />)
+    render(<PODetail />)
     expect(await screen.findByRole('button', { name: 'Send to supplier' })).toBeInTheDocument()
   })
 
   it('shows download PDF button', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: mockPODetail })
-    render(<PODetail poId="po-1" />)
+    render(<PODetail />)
     expect(await screen.findByRole('button', { name: 'Download PDF' })).toBeInTheDocument()
   })
 
   it('opens receive goods form with quantity inputs', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: mockPODetail })
-    render(<PODetail poId="po-1" />)
+    render(<PODetail />)
 
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Receive goods' }))
@@ -208,7 +214,7 @@ describe('PODetail', () => {
     }
     ;(apiClient.post as ReturnType<typeof vi.fn>).mockResolvedValue({ data: receivedPO })
 
-    render(<PODetail poId="po-1" />)
+    render(<PODetail />)
 
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Receive goods' }))
@@ -231,7 +237,7 @@ describe('PODetail', () => {
 
   it('displays outstanding quantities in line items', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: mockPODetail })
-    render(<PODetail poId="po-1" />)
+    render(<PODetail />)
 
     await screen.findByText('PO-00001')
     // Outstanding = 20 - 5 = 15
@@ -244,7 +250,7 @@ describe('PODetail', () => {
     const sentPO = { ...mockPODetail, status: 'sent' }
     ;(apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({ data: sentPO })
 
-    render(<PODetail poId="po-1" />)
+    render(<PODetail />)
 
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Send to supplier' }))

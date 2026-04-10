@@ -39,7 +39,7 @@ import { TerminologyProvider, useTerm } from '@/contexts/TerminologyContext'
 import { TermLabel } from '@/components/common/TermLabel'
 import { ModuleProvider } from '@/contexts/ModuleContext'
 import { ModuleGate } from '@/components/common/ModuleGate'
-import { FeatureFlagProvider, useFlag } from '@/contexts/FeatureFlagContext'
+import { FeatureFlagProvider } from '@/contexts/FeatureFlagContext'
 import { FeatureGate } from '@/components/common/FeatureGate'
 
 /* ------------------------------------------------------------------ */
@@ -175,7 +175,7 @@ describe('ModuleGate', () => {
     )
 
     // Wait for the API call to resolve
-    await screen.findByText((_content, element) => element === document.body, { timeout: 100 }).catch(() => {})
+    await screen.findByText((_content, element) => element === document.body, {}, { timeout: 100 }).catch(() => {})
 
     expect(screen.queryByTestId('inventory-content')).not.toBeInTheDocument()
   })
@@ -195,7 +195,7 @@ describe('ModuleGate', () => {
       </ModuleProvider>,
     )
 
-    await screen.findByText((_content, element) => element === document.body, { timeout: 100 }).catch(() => {})
+    await screen.findByText((_content, element) => element === document.body, {}, { timeout: 100 }).catch(() => {})
 
     expect(screen.queryByTestId('pos-content')).not.toBeInTheDocument()
   })
@@ -258,7 +258,7 @@ describe('FeatureGate', () => {
       </FeatureFlagProvider>,
     )
 
-    await screen.findByText((_content, element) => element === document.body, { timeout: 100 }).catch(() => {})
+    await screen.findByText((_content, element) => element === document.body, {}, { timeout: 100 }).catch(() => {})
 
     expect(screen.queryByTestId('new-dashboard')).not.toBeInTheDocument()
   })

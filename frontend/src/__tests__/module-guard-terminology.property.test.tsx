@@ -125,7 +125,7 @@ describe('Property 33: Module guard prevents rendering of disabled modules', () 
           // Generate a set of all module slugs (1-6 modules)
           fc.array(moduleSlugArb, { minLength: 1, maxLength: 6 }).chain((allSlugs) => {
             const uniqueSlugs = [...new Set(allSlugs)]
-            if (uniqueSlugs.length === 0) return fc.constant({ allSlugs: ['default_mod'], enabledSlugs: [] as string[], targetSlug: 'default_mod' })
+            if (uniqueSlugs.length === 0) return fc.constant({ allSlugs: ['default_mod'] as string[], enabledSlugs: [] as string[], targetSlug: 'default_mod' as string })
             return fc
               // Pick a random subset to be enabled
               .subarray(uniqueSlugs, { minLength: 0 })
@@ -141,7 +141,7 @@ describe('Property 33: Module guard prevents rendering of disabled modules', () 
                 })),
               )
           }),
-          async ({ allSlugs, enabledSlugs, targetSlug }) => {
+          async ({ allSlugs, enabledSlugs, targetSlug }: { allSlugs: string[]; enabledSlugs: string[]; targetSlug: string }) => {
             cleanup()
             vi.clearAllMocks()
 

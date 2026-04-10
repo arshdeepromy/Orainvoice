@@ -120,7 +120,7 @@ function UploadForm({
 }) {
   const [documentType, setDocumentType] = useState('')
   const [fileName, setFileName] = useState('')
-  const [fileKey, setFileKey] = useState('')
+  const [fileKey] = useState('')
   const [expiryDate, setExpiryDate] = useState('')
   const [description, setDescription] = useState('')
   const [submitError, setSubmitError] = useState('')

@@ -39,13 +39,6 @@ const flagWithCategoryArb = fc.record({
 /** Generate a list of feature flags */
 const flagListArb = fc.array(flagWithCategoryArb, { minLength: 0, maxLength: 30 })
 
-/** Generate a flag for validation with optional description */
-const flagForValidationArb = fc.record({
-  category: fc.string({ minLength: 0, maxLength: 50 }),
-  key: fc.string({ minLength: 0, maxLength: 50 }),
-  description: fc.option(fc.string({ maxLength: 100 }), { nil: undefined }),
-})
-
 /** Generate a valid flag for validation (non-empty category and key) */
 const validFlagForValidationArb = fc.record({
   category: nonEmptyStringArb,

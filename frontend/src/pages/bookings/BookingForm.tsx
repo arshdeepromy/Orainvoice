@@ -35,6 +35,8 @@ interface BookingDetail {
   created_by: string
   created_at: string
   updated_at: string
+  parts?: unknown[]
+  fluid_usage?: unknown[]
 }
 
 interface ServiceCatalogueOption {
@@ -226,13 +228,13 @@ export default function BookingForm({ open, onClose, onSaved, editBooking, initi
                 })
               } else {
                 setSelectedVehicle({
-                  id: '', rego: b.vehicle_rego, make: '', model: '', year: null, colour: '',
+                  id: '', rego: b.vehicle_rego ?? '', make: '', model: '', year: null, colour: '',
                   body_type: '', fuel_type: '', engine_size: '', wof_expiry: null, registration_expiry: null,
                 })
               }
             }).catch(() => {
               setSelectedVehicle({
-                id: '', rego: b.vehicle_rego!, make: '', model: '', year: null, colour: '',
+                id: '', rego: b.vehicle_rego ?? '', make: '', model: '', year: null, colour: '',
                 body_type: '', fuel_type: '', engine_size: '', wof_expiry: null, registration_expiry: null,
               })
             })

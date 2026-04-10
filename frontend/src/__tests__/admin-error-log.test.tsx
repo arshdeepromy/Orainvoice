@@ -23,7 +23,6 @@ vi.mock('@/api/client', () => {
 
 import apiClient from '@/api/client'
 import { ErrorLog } from '../pages/admin/ErrorLog'
-import type { Severity, ErrorCategory, ErrorStatus } from '../pages/admin/ErrorLog'
 
 /* ── Backend-shaped types (what the API actually returns) ── */
 

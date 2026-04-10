@@ -68,17 +68,15 @@ export interface ReceiptData {
  */
 export class ESCPOSBuilder {
   private buffer: number[] = [];
-  private paperWidth: PaperWidth;
   private lineWidth: number;
 
   constructor(paperWidth: PaperWidth = 80) {
-    this.paperWidth = paperWidth;
     this.lineWidth = CHARS_PER_LINE[paperWidth];
     this.buffer.push(...CMD.INIT);
   }
 
   /** Add raw bytes to the buffer. */
-  raw(bytes: number[]): this {
+  raw(bytes: readonly number[]): this {
     this.buffer.push(...bytes);
     return this;
   }

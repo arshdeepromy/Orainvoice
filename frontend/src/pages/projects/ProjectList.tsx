@@ -4,7 +4,7 @@
  * Validates: Requirement 14.1 (Project Module)
  */
 
-import React, { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import apiClient from '@/api/client'
 import { useBranch } from '@/contexts/BranchContext'
 

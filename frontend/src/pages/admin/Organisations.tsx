@@ -1,5 +1,4 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
@@ -414,7 +413,6 @@ function MovePlanModal({
 /* ── Main Page ── */
 
 export function Organisations() {
-  const navigate = useNavigate()
   const [orgs, setOrgs] = useState<Organisation[]>([])
   const [plans, setPlans] = useState<Plan[]>([])
   const [loading, setLoading] = useState(true)

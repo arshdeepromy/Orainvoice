@@ -15,6 +15,7 @@ interface Customer {
   email: string
   phone: string
   address?: string
+  display_name?: string
 }
 
 interface Vehicle {

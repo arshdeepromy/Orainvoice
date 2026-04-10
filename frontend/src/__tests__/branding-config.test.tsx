@@ -31,6 +31,7 @@ function makeBranding(overrides: Partial<PlatformBranding> = {}): PlatformBrandi
     support_email: 'support@orainvoice.com',
     terms_url: 'https://orainvoice.com/terms',
     auto_detect_domain: true,
+    platform_theme: 'default',
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-06-01T00:00:00Z',
     ...overrides,

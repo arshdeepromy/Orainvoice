@@ -4,7 +4,6 @@ import { useTenant } from '@/contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
-import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 
 interface OrgAdminData {

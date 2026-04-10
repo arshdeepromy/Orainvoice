@@ -24,6 +24,7 @@ interface CustomerOption {
 interface InvoiceOption {
   id: string
   invoice_number: string | null
+  customer_name?: string | null
   total: number | string
   status: string
 }
@@ -39,8 +40,8 @@ interface LineItemOption {
   id: string
   description: string
   item_type: string
-  quantity: number
-  line_total: number
+  quantity: number | string
+  line_total: number | string
 }
 
 const CLAIM_TYPES = [
@@ -108,11 +109,11 @@ export default function ClaimCreateForm() {
     customerSearchRef.current = controller
     setCustomersLoading(true)
     try {
-      const res = await apiClient.get<{ items: CustomerOption[] }>('/customers', {
-        params: { search: query, page_size: 10 },
+      const res = await apiClient.get<{ customers: CustomerOption[] }>('/customers', {
+        params: { q: query, limit: 10 },
         signal: controller.signal,
       })
-      setCustomers(res.data?.items ?? [])
+      setCustomers(res.data?.customers ?? [])
       setShowCustomerDropdown(true)
     } catch (err: unknown) {
       if ((err as { name?: string })?.name !== 'CanceledError') setCustomers([])
@@ -127,20 +128,31 @@ export default function ClaimCreateForm() {
   }, [customerSearch, searchCustomers])
 
   /* Fetch invoices when customer selected */
+  /* Fetch invoices when customer selected */
   useEffect(() => {
     if (!customerId) { setInvoices([]); return }
     const controller = new AbortController()
     setInvoicesLoading(true)
-    apiClient.get<{ items: InvoiceOption[] }>('/invoices', {
-      params: { customer_id: customerId, page_size: 50 },
+    apiClient.get<{ invoices: InvoiceOption[] }>('/invoices', {
+      params: { limit: 100 },
       signal: controller.signal,
     }).then(res => {
-      setInvoices(res.data?.items ?? [])
+      // Filter client-side to only show invoices matching the selected customer name
+      const all = res.data?.invoices ?? []
+      if (selectedCustomerName) {
+        const name = selectedCustomerName.toLowerCase()
+        const filtered = all.filter((inv: InvoiceOption & { customer_name?: string | null }) =>
+          inv.customer_name?.toLowerCase()?.includes(name)
+        )
+        setInvoices(filtered.length > 0 ? filtered : all)
+      } else {
+        setInvoices(all)
+      }
     }).catch(() => {
       setInvoices([])
     }).finally(() => setInvoicesLoading(false))
     return () => controller.abort()
-  }, [customerId])
+  }, [customerId, selectedCustomerName])
 
   /* Fetch job cards when customer selected */
   useEffect(() => {
@@ -148,7 +160,7 @@ export default function ClaimCreateForm() {
     const controller = new AbortController()
     setJobCardsLoading(true)
     apiClient.get<{ job_cards: JobCardOption[] }>('/job-cards', {
-      params: { customer_id: customerId, page_size: 50 },
+      params: { limit: 100 },
       signal: controller.signal,
     }).then(res => {
       setJobCards(res.data?.job_cards ?? [])
@@ -350,7 +362,7 @@ export default function ClaimCreateForm() {
                     className="rounded border-gray-300"
                   />
                   <span className="flex-1 truncate">{li.description}</span>
-                  <span className="text-gray-400 text-xs">${(li.line_total ?? 0).toFixed(2)}</span>
+                  <span className="text-gray-400 text-xs">${Number(li.line_total ?? 0).toFixed(2)}</span>
                 </label>
               ))}
             </div>

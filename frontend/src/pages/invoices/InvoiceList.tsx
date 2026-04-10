@@ -55,6 +55,8 @@ interface Customer {
   email: string
   phone: string
   address?: string
+  display_name?: string
+  company_name?: string
 }
 
 interface Vehicle {

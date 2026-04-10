@@ -1,5 +1,4 @@
 import { Tabs } from '../../components/ui'
-import { useModules } from '../../contexts/ModuleContext'
 import NotificationPreferences from './NotificationPreferences'
 import TemplateEditor from './TemplateEditor'
 import NotificationLog from './NotificationLog'

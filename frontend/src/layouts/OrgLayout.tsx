@@ -15,6 +15,7 @@ interface QuickAction {
   icon: string
   module?: string
   flagKey?: string
+  state?: Record<string, unknown>
 }
 
 interface NavItem {
@@ -73,7 +74,7 @@ const navItems: NavItem[] = [
 
 // Quick actions for the header dropdown
 const quickActions: QuickAction[] = [
-  { label: 'New Booking', path: '/bookings/new', icon: '📅', module: 'bookings', flagKey: 'bookings' },
+  { label: 'New Booking', path: '/bookings', icon: '📅', module: 'bookings', flagKey: 'bookings', state: { openNew: true } },
   { label: 'New Job Card', path: '/job-cards/new', icon: '🔧', module: 'jobs', flagKey: 'jobs' },
   { label: 'New Quote', path: '/quotes/new', icon: '📝', module: 'quotes', flagKey: 'quotes' },
   { label: 'New Invoice', path: '/invoices/new', icon: '🧾' },
@@ -146,9 +147,9 @@ export function OrgLayout() {
     [isEnabled, flags],
   )
 
-  const handleQuickAction = (path: string) => {
+  const handleQuickAction = (path: string, state?: Record<string, unknown>) => {
     setQuickActionsOpen(false)
-    navigate(path)
+    navigate(path, state ? { state } : undefined)
   }
 
   const handleLogout = async () => {
@@ -348,7 +349,7 @@ export function OrgLayout() {
                       {visibleQuickActions.map((action) => (
                         <button
                           key={action.path}
-                          onClick={() => handleQuickAction(action.path)}
+                          onClick={() => handleQuickAction(action.path, action.state)}
                           className="flex w-full items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors min-h-[44px]"
                         >
                           <span className="text-lg" aria-hidden="true">{action.icon}</span>

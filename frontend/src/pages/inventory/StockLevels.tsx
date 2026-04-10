@@ -77,11 +77,13 @@ export default function StockLevels() {
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  /* Apply search filter across name, part_number, brand, and barcode */
+  /* Apply search filter across name, part_number, brand, and barcode.
+     Also exclude items with zero stock (they still exist in the DB for history). */
   const filtered = useMemo(() => {
-    if (!filter.trim()) return stockItems
+    let items = stockItems.filter((s) => s.current_quantity > 0)
+    if (!filter.trim()) return items
     const q = filter.toLowerCase()
-    return stockItems.filter(
+    return items.filter(
       (s) =>
         s.item_name.toLowerCase().includes(q) ||
         (s.part_number && s.part_number.toLowerCase().includes(q)) ||
@@ -220,7 +222,7 @@ export default function StockLevels() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
           <div className="rounded-lg border border-gray-200 bg-white p-4">
             <p className="text-sm text-gray-500">Total Items Tracked</p>
-            <p className="text-2xl font-semibold text-gray-900">{total}</p>
+            <p className="text-2xl font-semibold text-gray-900">{stockItems.filter((s) => s.current_quantity > 0).length}</p>
           </div>
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
             <p className="text-sm text-amber-700">Below Threshold</p>
