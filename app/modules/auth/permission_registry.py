@@ -66,18 +66,38 @@ async def get_available_permissions(
     except Exception:
         logger.warning("Redis read failed for permission cache, falling back to DB")
 
-    # Query enabled modules for the org (core modules are always enabled)
+    # Query modules that are both in the org's plan AND enabled (or core).
+    # Exclude admin-category modules (Branding, Analytics, etc.) — those are
+    # platform-level and should not appear in org custom role permissions.
     rows = await db.execute(
         text(
             """
+            WITH plan_modules AS (
+                SELECT COALESCE(
+                    (SELECT sp.enabled_modules
+                     FROM subscription_plans sp
+                     JOIN organisations o ON o.plan_id = sp.id
+                     WHERE o.id = :org_id),
+                    '[]'::jsonb
+                ) AS modules
+            )
             SELECT mr.slug, mr.display_name
-            FROM module_registry mr
-            WHERE mr.is_core = true
-               OR mr.slug IN (
-                   SELECT om.module_slug
-                   FROM org_modules om
-                   WHERE om.org_id = :org_id AND om.is_enabled = true
-               )
+            FROM module_registry mr, plan_modules pm
+            WHERE mr.category != 'admin'
+              AND (
+                  mr.is_core = true
+                  OR (
+                      mr.slug IN (
+                          SELECT om.module_slug
+                          FROM org_modules om
+                          WHERE om.org_id = :org_id AND om.is_enabled = true
+                      )
+                      AND (
+                          pm.modules @> '"all"'::jsonb
+                          OR pm.modules @> to_jsonb(mr.slug)
+                      )
+                  )
+              )
             ORDER BY mr.display_name
             """
         ),
