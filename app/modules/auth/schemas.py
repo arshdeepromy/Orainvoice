@@ -418,3 +418,23 @@ class ChangePasswordRequest(BaseModel):
 class ChangePasswordResponse(BaseModel):
     """POST /api/v1/auth/change-password response."""
     message: str
+
+
+# ---------------------------------------------------------------------------
+# Email change schemas
+# ---------------------------------------------------------------------------
+
+class EmailChangeRequest(BaseModel):
+    """POST /api/v1/auth/email/change/request request body."""
+    new_email: EmailStr
+
+
+class EmailChangeResponse(BaseModel):
+    """POST /api/v1/auth/email/change/request response."""
+    message: str
+    expires_in: int = 600
+
+
+class EmailChangeVerifyRequest(BaseModel):
+    """POST /api/v1/auth/email/change/verify request body."""
+    code: str = Field(..., min_length=6, max_length=6)

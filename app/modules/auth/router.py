@@ -61,6 +61,9 @@ from app.modules.auth.schemas import (
     VerifyEmailResponse,
     ChangePasswordRequest,
     ChangePasswordResponse,
+    EmailChangeRequest,
+    EmailChangeResponse,
+    EmailChangeVerifyRequest,
     UpdateProfileRequest,
     UserProfileResponse,
 )
@@ -3005,3 +3008,171 @@ async def change_password(
         await record_password_in_history(db, user.id, new_hash)
 
     return ChangePasswordResponse(message="Password changed successfully.")
+
+
+# ---------------------------------------------------------------------------
+# Email change endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/email/change/request", response_model=EmailChangeResponse)
+async def email_change_request(
+    payload: EmailChangeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Request an email change. Sends a 6-digit OTP to the new email address.
+
+    The change is not applied until the OTP is verified via
+    ``POST /auth/email/change/verify``.
+    """
+    import json
+    import secrets
+
+    from sqlalchemy import select
+
+    from app.core.redis import redis_pool
+    from app.modules.auth.models import User
+    from app.modules.auth.mfa_service import _generate_otp_code, _send_email_otp
+
+    try:
+        user = await _get_current_user(request, db)
+    except (ValueError, Exception):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"},
+        )
+
+    new_email = payload.new_email.lower().strip()
+
+    # Validate: new email must differ from current
+    if new_email == user.email.lower():
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "New email must be different from your current email."},
+        )
+
+    # Validate: new email must not already be taken
+    existing = await db.execute(
+        select(User.id).where(User.email == new_email)
+    )
+    if existing.scalar_one_or_none() is not None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "This email address is already in use."},
+        )
+
+    # Generate OTP and store in Redis
+    code = _generate_otp_code()
+    ttl = 600  # 10 minutes
+    key = f"email_change:{user.id}"
+    await redis_pool.setex(key, ttl, json.dumps({"email": new_email, "code": code}))
+
+    # Send OTP to the NEW email
+    await _send_email_otp(db, new_email, code)
+
+    return EmailChangeResponse(
+        message="Verification code sent to new email",
+        expires_in=ttl,
+    )
+
+
+@router.post("/email/change/verify", response_model=UserProfileResponse)
+async def email_change_verify(
+    payload: EmailChangeVerifyRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Verify the OTP and apply the email change.
+
+    On success the user's email is updated immediately and the pending
+    change is removed from Redis.
+    """
+    import json
+    import secrets
+
+    from sqlalchemy import select
+
+    from app.core.audit import write_audit_log
+    from app.core.redis import redis_pool
+    from app.modules.auth.models import User, UserMfaMethod
+
+    try:
+        user = await _get_current_user(request, db)
+    except (ValueError, Exception):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"},
+        )
+
+    # Retrieve pending email change from Redis
+    key = f"email_change:{user.id}"
+    raw = await redis_pool.get(key)
+    if raw is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid or expired verification code"},
+        )
+
+    data = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+    stored_code = data.get("code", "")
+    new_email = data.get("email", "")
+
+    # Timing-safe comparison
+    if not secrets.compare_digest(payload.code, stored_code):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid or expired verification code"},
+        )
+
+    # Race-condition check: ensure new email is still available
+    existing = await db.execute(
+        select(User.id).where(User.email == new_email, User.id != user.id)
+    )
+    if existing.scalar_one_or_none() is not None:
+        await redis_pool.delete(key)
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "This email address is already in use."},
+        )
+
+    old_email = user.email
+
+    # Apply the email change
+    user.email = new_email
+    await db.flush()
+    await db.refresh(user)
+
+    # Delete the pending change from Redis
+    await redis_pool.delete(key)
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        org_id=user.org_id,
+        user_id=user.id,
+        action="auth.email_changed",
+        entity_type="user",
+        entity_id=user.id,
+        before_value={"email": old_email},
+        after_value={"email": new_email},
+        ip_address=getattr(request.state, "client_ip", None),
+        device_info=request.headers.get("user-agent"),
+    )
+
+    # Return updated profile
+    result = await db.execute(
+        select(UserMfaMethod.method).where(
+            UserMfaMethod.user_id == user.id,
+            UserMfaMethod.verified.is_(True),
+        )
+    )
+    verified_methods = [row[0] for row in result.all()]
+    return UserProfileResponse(
+        id=str(user.id),
+        email=user.email,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        role=user.role,
+        mfa_methods=verified_methods,
+        has_password=user.password_hash is not None,
+    )

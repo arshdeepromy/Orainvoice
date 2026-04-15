@@ -14,6 +14,11 @@ interface UserProfile {
   has_password: boolean
 }
 
+interface EmailChangeResponseData {
+  message: string
+  expires_in: number
+}
+
 export function Profile() {
   const { refreshProfile } = useAuth()
   const [profile, setProfile] = useState<UserProfile | null>(null)
@@ -34,12 +39,21 @@ export function Profile() {
   const [pwMsg, setPwMsg] = useState('')
   const [pwError, setPwError] = useState('')
 
+  // Email change form
+  const [newEmail, setNewEmail] = useState('')
+  const [emailStep, setEmailStep] = useState<'idle' | 'code_sent' | 'success'>('idle')
+  const [emailCode, setEmailCode] = useState('')
+  const [emailSaving, setEmailSaving] = useState(false)
+  const [emailMsg, setEmailMsg] = useState('')
+  const [emailError, setEmailError] = useState('')
+  const [pendingEmail, setPendingEmail] = useState('')
+
   const fetchProfile = useCallback(async () => {
     try {
-      const res = await apiClient.get('/auth/me')
+      const res = await apiClient.get<UserProfile>('/auth/me')
       setProfile(res.data)
-      setFirstName(res.data.first_name ?? '')
-      setLastName(res.data.last_name ?? '')
+      setFirstName(res.data?.first_name ?? '')
+      setLastName(res.data?.last_name ?? '')
     } catch {
       setError('Failed to load profile')
     } finally {
@@ -54,7 +68,7 @@ export function Profile() {
     setNameSaving(true)
     setNameMsg('')
     try {
-      const res = await apiClient.put('/auth/me', {
+      const res = await apiClient.put<UserProfile>('/auth/me', {
         first_name: firstName || null,
         last_name: lastName || null,
       })
@@ -102,6 +116,61 @@ export function Profile() {
     }
   }
 
+  const handleEmailChangeRequest = async () => {
+    setEmailError('')
+    setEmailMsg('')
+    setEmailSaving(true)
+    try {
+      const res = await apiClient.post<EmailChangeResponseData>('/auth/email/change/request', {
+        new_email: newEmail,
+      })
+      setPendingEmail(newEmail)
+      setEmailStep('code_sent')
+      setEmailMsg(res.data?.message ?? 'Verification code sent to new email')
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setEmailError(detail ?? 'Failed to request email change')
+    } finally {
+      setEmailSaving(false)
+    }
+  }
+
+  const handleEmailChangeVerify = async () => {
+    setEmailError('')
+    setEmailMsg('')
+    setEmailSaving(true)
+    try {
+      const res = await apiClient.post<UserProfile>('/auth/email/change/verify', {
+        code: emailCode,
+      })
+      setProfile(res.data)
+      setEmailStep('success')
+      setEmailMsg('Email updated successfully')
+      setNewEmail('')
+      setEmailCode('')
+      setPendingEmail('')
+      await refreshProfile()
+      setTimeout(() => {
+        setEmailMsg('')
+        setEmailStep('idle')
+      }, 3000)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setEmailError(detail ?? 'Failed to verify email change')
+    } finally {
+      setEmailSaving(false)
+    }
+  }
+
+  const handleEmailChangeCancel = () => {
+    setEmailStep('idle')
+    setEmailCode('')
+    setEmailError('')
+    setEmailMsg('')
+    setPendingEmail('')
+    setNewEmail('')
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -114,6 +183,8 @@ export function Profile() {
     return <div className="text-red-600 py-4" role="alert">{error || 'Profile not found'}</div>
   }
 
+  const emailUnchanged = !newEmail || newEmail === profile.email
+
   return (
     <div className="max-w-2xl space-y-8">
       <div>
@@ -125,11 +196,77 @@ export function Profile() {
       <form onSubmit={handleNameSave} className="bg-white rounded-lg border border-gray-200 p-6 space-y-4">
         <h3 className="text-sm font-medium text-gray-900">Personal Information</h3>
 
+        {/* Email change */}
         <div>
-          <label className="block text-sm text-gray-600 mb-1">Email</label>
-          <p className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-            {profile.email}
-          </p>
+          <label htmlFor="emailChange" className="block text-sm text-gray-600 mb-1">Email</label>
+          {emailStep === 'idle' && (
+            <div className="space-y-2">
+              <input
+                id="emailChange"
+                type="email"
+                value={newEmail || profile.email}
+                onChange={e => setNewEmail(e.target.value)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              />
+              {!emailUnchanged && (
+                <p className="text-xs text-gray-500">
+                  Email change will take effect when you verify the new email
+                </p>
+              )}
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  disabled={emailUnchanged || emailSaving}
+                  onClick={handleEmailChangeRequest}
+                  className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[44px]"
+                >
+                  {emailSaving ? 'Sending…' : 'Change Email'}
+                </button>
+              </div>
+            </div>
+          )}
+          {emailStep === 'code_sent' && (
+            <div className="space-y-2">
+              <div className="rounded-md bg-blue-50 border border-blue-200 p-3">
+                <p className="text-sm text-blue-800">
+                  A verification code has been sent to <strong>{pendingEmail}</strong>
+                </p>
+              </div>
+              <div>
+                <label htmlFor="emailOtp" className="block text-sm text-gray-600 mb-1">Verification code</label>
+                <input
+                  id="emailOtp"
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={emailCode}
+                  onChange={e => setEmailCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="Enter 6-digit code"
+                  className="w-full max-w-xs rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 tracking-widest"
+                  autoComplete="one-time-code"
+                />
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  disabled={emailCode.length !== 6 || emailSaving}
+                  onClick={handleEmailChangeVerify}
+                  className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[44px]"
+                >
+                  {emailSaving ? 'Verifying…' : 'Verify'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleEmailChangeCancel}
+                  className="text-sm text-gray-500 hover:text-gray-700"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {emailError && <p className="text-sm text-red-600" role="alert">{emailError}</p>}
+          {emailMsg && emailStep !== 'code_sent' && <p className="text-sm text-green-600">{emailMsg}</p>}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
