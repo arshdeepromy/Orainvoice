@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.modules.auth.rbac import require_role
 from app.modules.reports.schemas import (
+    AgedReceivablesResponse,
+    BalanceSheetResponse,
     CarjamUsageResponse,
     CustomerStatementResponse,
     DatePreset,
@@ -26,21 +28,29 @@ from app.modules.reports.schemas import (
     GSTReturnResponse,
     InvoiceStatusReportResponse,
     OutstandingInvoicesResponse,
+    ProfitLossResponse,
     RevenueSummaryResponse,
     SmsUsageResponse,
     StorageUsageResponse,
+    TaxEstimateResponse,
+    TaxPositionResponse,
     TopServicesResponse,
 )
 from app.modules.reports.service import (
+    get_aged_receivables,
+    get_balance_sheet,
     get_carjam_usage,
     get_customer_statement,
     get_fleet_report,
     get_gst_return,
     get_invoice_status_report,
     get_outstanding_invoices,
+    get_profit_loss,
     get_revenue_summary,
     get_sms_usage,
     get_storage_usage,
+    get_tax_estimate,
+    get_tax_position,
     get_top_services,
     resolve_date_range,
 )
@@ -456,3 +466,144 @@ async def fleet_report(
     if data is None:
         return JSONResponse(status_code=404, content={"detail": "Fleet account not found"})
     return FleetReportResponse(**data)
+
+
+# ---------------------------------------------------------------------------
+# GET /reports/profit-loss — Profit & Loss Report
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/profit-loss",
+    response_model=ProfitLossResponse,
+    summary="Profit & Loss report",
+    dependencies=[require_role("org_admin")],
+)
+async def profit_loss_report(
+    request: Request,
+    period_start: date = Query(..., description="Period start date (YYYY-MM-DD)"),
+    period_end: date = Query(..., description="Period end date (YYYY-MM-DD)"),
+    basis: str = Query("accrual", description="Accounting basis: accrual or cash"),
+    branch_id: uuid.UUID | None = Query(None, description="Optional branch UUID filter"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Profit & Loss report for a date range with optional basis and branch filter.
+
+    Requirements: 6.1–6.7
+    """
+    org_id = _extract_org_id(request)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    resolved_branch = branch_id or _resolve_branch_id(request, None)
+    data = await get_profit_loss(db, org_id, period_start, period_end, basis=basis, branch_id=resolved_branch)
+    return ProfitLossResponse(**data)
+
+
+# ---------------------------------------------------------------------------
+# GET /reports/balance-sheet — Balance Sheet Report
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/balance-sheet",
+    response_model=BalanceSheetResponse,
+    summary="Balance Sheet report",
+    dependencies=[require_role("org_admin")],
+)
+async def balance_sheet_report(
+    request: Request,
+    as_at_date: date = Query(..., description="Balance sheet as-at date (YYYY-MM-DD)"),
+    branch_id: uuid.UUID | None = Query(None, description="Optional branch UUID filter"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Balance Sheet as at a specific date with optional branch filter.
+
+    Requirements: 7.1–7.5
+    """
+    org_id = _extract_org_id(request)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    resolved_branch = branch_id or _resolve_branch_id(request, None)
+    data = await get_balance_sheet(db, org_id, as_at_date, branch_id=resolved_branch)
+    return BalanceSheetResponse(**data)
+
+
+# ---------------------------------------------------------------------------
+# GET /reports/aged-receivables — Aged Receivables Report
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/aged-receivables",
+    response_model=AgedReceivablesResponse,
+    summary="Aged receivables report",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def aged_receivables_report(
+    request: Request,
+    report_date: date | None = Query(None, description="Report date (defaults to today)"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Aged receivables grouped by customer into ageing buckets.
+
+    Requirements: 8.1–8.3
+    """
+    org_id = _extract_org_id(request)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    data = await get_aged_receivables(db, org_id, report_date=report_date)
+    return AgedReceivablesResponse(**data)
+
+
+# ---------------------------------------------------------------------------
+# GET /reports/tax-estimate — Income Tax Estimate
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/tax-estimate",
+    response_model=TaxEstimateResponse,
+    summary="Income tax estimate",
+    dependencies=[require_role("org_admin")],
+)
+async def tax_estimate_report(
+    request: Request,
+    tax_year_start: date = Query(..., description="Tax year start date (YYYY-MM-DD)"),
+    tax_year_end: date = Query(..., description="Tax year end date (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Income tax estimate for a tax year using NZ brackets.
+
+    Requirements: 9.1–9.6
+    """
+    org_id = _extract_org_id(request)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    data = await get_tax_estimate(db, org_id, tax_year_start, tax_year_end)
+    return TaxEstimateResponse(**data)
+
+
+# ---------------------------------------------------------------------------
+# GET /reports/tax-position — Tax Position Dashboard
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/tax-position",
+    response_model=TaxPositionResponse,
+    summary="Combined tax position dashboard",
+    dependencies=[require_role("org_admin")],
+)
+async def tax_position_report(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Combined GST + income tax position with next due dates.
+
+    Requirements: 10.1, 10.2
+    """
+    org_id = _extract_org_id(request)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    data = await get_tax_position(db, org_id)
+    return TaxPositionResponse(**data)

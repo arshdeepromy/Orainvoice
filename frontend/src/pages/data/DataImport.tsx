@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import apiClient from '../../api/client'
 import { Button, Select, Spinner, AlertBanner } from '../../components/ui'
+import { useModules } from '../../contexts/ModuleContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -116,6 +117,9 @@ function autoMapFields(headers: string[], targetFields: { value: string; label: 
  * Requirements: 69.1, 69.2, 69.3, 69.5, 78.2, 78.3
  */
 export default function DataImport() {
+  const { isEnabled } = useModules()
+  const showVehicles = isEnabled('vehicles')
+
   const [importType, setImportType] = useState<ImportType>('customers')
   const [step, setStep] = useState<ImportStep>('upload')
   const [csvHeaders, setCsvHeaders] = useState<string[]>([])
@@ -279,7 +283,7 @@ export default function DataImport() {
   return (
     <div>
       <p className="text-sm text-gray-500 mb-6">
-        Import customer or vehicle records from a CSV file. Map fields, preview data, and review validation before committing.
+        Import customer{showVehicles ? ' or vehicle' : ''} records from a CSV file. Map fields, preview data, and review validation before committing.
       </p>
 
       {error && (
@@ -296,7 +300,7 @@ export default function DataImport() {
               label="Import Type"
               options={[
                 { value: 'customers', label: 'Customers' },
-                { value: 'vehicles', label: 'Vehicles' },
+                ...(showVehicles ? [{ value: 'vehicles', label: 'Vehicles' }] : []),
               ]}
               value={importType}
               onChange={(e) => {

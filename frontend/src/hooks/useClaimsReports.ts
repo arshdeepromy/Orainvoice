@@ -65,7 +65,7 @@ export function useClaimsByPeriodReport(filters: ReportFilters = {}) {
   const [data, setData] = useState<ClaimsByPeriodResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const abortRef = useRef<AbortController>()
+  const abortRef = useRef<AbortController>(undefined)
 
   const fetch = useCallback(async () => {
     if (abortRef.current) abortRef.current.abort()
@@ -109,7 +109,7 @@ export function useCostOverheadReport(filters: ReportFilters = {}) {
   const [data, setData] = useState<CostOverheadResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const abortRef = useRef<AbortController>()
+  const abortRef = useRef<AbortController>(undefined)
 
   const fetch = useCallback(async () => {
     if (abortRef.current) abortRef.current.abort()
@@ -158,7 +158,7 @@ export function useSupplierQualityReport(filters: ReportFilters = {}) {
   const [data, setData] = useState<SupplierQualityResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const abortRef = useRef<AbortController>()
+  const abortRef = useRef<AbortController>(undefined)
 
   const fetch = useCallback(async () => {
     if (abortRef.current) abortRef.current.abort()
@@ -202,7 +202,7 @@ export function useServiceQualityReport(filters: ReportFilters = {}) {
   const [data, setData] = useState<ServiceQualityResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const abortRef = useRef<AbortController>()
+  const abortRef = useRef<AbortController>(undefined)
 
   const fetch = useCallback(async () => {
     if (abortRef.current) abortRef.current.abort()

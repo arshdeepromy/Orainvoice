@@ -64,7 +64,7 @@ function CustomerSearch({
   const [showDropdown, setShowDropdown] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   const [newFirst, setNewFirst] = useState('')
   const [newLast, setNewLast] = useState('')

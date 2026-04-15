@@ -5,6 +5,7 @@ Requirements: 17.1, 17.3, 17.4, 17.5, 17.6, 23.1, 23.2, 23.3
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -26,6 +27,7 @@ from app.modules.invoices.models import (
 from app.modules.payments.models import Payment
 from app.modules.catalogue.models import LabourRate, ServiceCatalogue
 
+logger = logging.getLogger(__name__)
 
 TWO_PLACES = Decimal("0.01")
 SIX_PLACES = Decimal("0.000001")
@@ -1406,6 +1408,16 @@ async def issue_invoice(
     result = _invoice_to_dict(invoice, line_items)
     result["tax_compliance"] = compliance
     result["line_item_tax_details"] = tax_details
+
+    # Auto-post journal entry for the issued invoice (Req 4.1, 4.6, 4.7, 4.8)
+    try:
+        from app.modules.ledger.auto_poster import auto_post_invoice
+        await auto_post_invoice(db, invoice, user_id)
+    except Exception as exc:
+        logger.warning(
+            "Auto-post failed for invoice %s: %s", invoice.id, exc
+        )
+
     return result
 
 
@@ -1572,6 +1584,18 @@ async def update_invoice(
     invoice = inv_result.scalar_one_or_none()
     if invoice is None:
         raise ValueError("Invoice not found in this organisation")
+
+    # GST lock check — reject edits on locked invoices (Req 14.2)
+    try:
+        if getattr(invoice, "is_gst_locked", False):
+            raise ValueError(
+                "GST_LOCKED: This invoice is locked because its GST filing period has been filed. "
+                "Edits are not permitted on GST-locked invoices."
+            )
+    except Exception as exc:
+        if "GST_LOCKED" in str(exc):
+            raise
+        pass  # Column may not exist yet — ignore
 
     # Req 23.2 — invoice_number is immutable once assigned
     if "invoice_number" in updates:
@@ -2078,6 +2102,15 @@ async def create_credit_note(
         .order_by(LineItem.sort_order)
     )
     line_items = list(li_result.scalars().all())
+
+    # Auto-post journal entry for the credit note (Req 4.4, 4.6, 4.7)
+    try:
+        from app.modules.ledger.auto_poster import auto_post_credit_note
+        await auto_post_credit_note(db, credit_note, invoice, user_id)
+    except Exception as exc:
+        logger.warning(
+            "Auto-post failed for credit note %s: %s", credit_note.id, exc
+        )
 
     return {
         "credit_note": _credit_note_to_dict(credit_note),

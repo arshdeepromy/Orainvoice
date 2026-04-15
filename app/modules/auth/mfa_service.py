@@ -1230,20 +1230,83 @@ async def generate_backup_codes(
 # MFA policy helpers
 # ---------------------------------------------------------------------------
 
+def evaluate_mfa_requirement(
+    user_role: str,
+    user_id: uuid.UUID,
+    mfa_policy: "MfaPolicy",
+) -> bool:
+    """Pure evaluation of whether a user requires MFA based on org policy.
+
+    Logic:
+    - mode == "optional" → False
+    - user_id in excluded_user_ids → False
+    - mode == "mandatory_all" → True
+    - mode == "mandatory_admins_only" → True only if role is org_admin or branch_admin
+    """
+    if mfa_policy.mode == "optional":
+        return False
+
+    if user_id in mfa_policy.excluded_user_ids:
+        return False
+
+    if mfa_policy.mode == "mandatory_all":
+        return True
+
+    if mfa_policy.mode == "mandatory_admins_only":
+        return user_role in ("org_admin", "branch_admin")
+
+    return False
+
+
+def validate_mfa_exclusion(
+    user_id: uuid.UUID,
+    user_role: str,
+    mfa_policy: "MfaPolicy",
+) -> None:
+    """Raise ValueError if org_admin tries to self-exclude under mandatory modes."""
+    if user_role != "org_admin":
+        return
+    if mfa_policy.mode == "optional":
+        return
+    if user_id in mfa_policy.excluded_user_ids:
+        raise ValueError("Cannot exclude yourself from MFA enforcement")
+
+
 async def user_requires_mfa_setup(user: User, db: AsyncSession, org_settings: dict | None = None) -> bool:
     """Check if a user needs to set up MFA before accessing the platform.
 
     Returns True if:
     - User is a Global_Admin (MFA always required)
-    - Org has MFA set to mandatory and user has no verified MFA methods
+    - Org MFA policy requires it based on mode, role, and exclusion list
 
     Queries the normalised ``user_mfa_methods`` table.
     """
+    from app.modules.auth.security_settings_schemas import MfaPolicy
+
     if user.role == "global_admin":
         verified = await _get_verified_mfa_methods(user, db)
-        return len(verified) == 0
+        # Only enforce MFA if the admin has already set up at least one method.
+        # If no methods are enrolled, allow login without MFA so the admin
+        # can access the platform and set up MFA from their profile.
+        if len(verified) > 0:
+            return False  # Has verified MFA — will go through normal challenge flow
+        return False  # No MFA set up yet — allow login, prompt to set up later
 
-    if org_settings and org_settings.get("mfa_policy") == "mandatory":
+    # Build MfaPolicy from org_settings dict
+    if org_settings:
+        mfa_raw = org_settings.get("mfa_policy")
+        if isinstance(mfa_raw, str):
+            # Legacy format: plain string mode ("optional" / "mandatory")
+            mode = "mandatory_all" if mfa_raw == "mandatory" else mfa_raw
+            mfa_policy = MfaPolicy(mode=mode)
+        elif isinstance(mfa_raw, dict):
+            mfa_policy = MfaPolicy(**mfa_raw)
+        else:
+            mfa_policy = MfaPolicy()
+    else:
+        mfa_policy = MfaPolicy()
+
+    if evaluate_mfa_requirement(user.role, user.id, mfa_policy):
         verified = await _get_verified_mfa_methods(user, db)
         return len(verified) == 0
 

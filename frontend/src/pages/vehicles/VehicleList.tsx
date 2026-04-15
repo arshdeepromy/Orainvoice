@@ -106,7 +106,7 @@ export default function VehicleList() {
   const [onboardLoading, setOnboardLoading] = useState(false)
   const [onboardError, setOnboardError] = useState('')
 
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   /* --- Fetch vehicle list --- */
   const fetchVehicles = useCallback(async (p: number, q: string) => {

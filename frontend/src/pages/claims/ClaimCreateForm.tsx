@@ -87,7 +87,7 @@ export default function ClaimCreateForm() {
   const [lineItems, setLineItems] = useState<LineItemOption[]>([])
   const [selectedLineItemIds, setSelectedLineItemIds] = useState<string[]>([])
 
-  const customerSearchRef = useRef<AbortController>()
+  const customerSearchRef = useRef<AbortController>(undefined)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   /* Close dropdown on outside click */

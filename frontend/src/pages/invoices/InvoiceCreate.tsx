@@ -202,7 +202,7 @@ function CustomerSearch({
   const [showDropdown, setShowDropdown] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -805,7 +805,13 @@ export default function InvoiceCreate() {
   
   // Notes and terms
   const [customerNotes, setCustomerNotes] = useState('')
-  const [termsAndConditions, setTermsAndConditions] = useState(settings?.invoice?.terms_and_conditions || '')
+  const [termsAndConditions, setTermsAndConditions] = useState(() => {
+    const raw = settings?.invoice?.terms_and_conditions || ''
+    if (!raw || !raw.includes('<')) return raw
+    const tmp = document.createElement('div')
+    tmp.innerHTML = raw
+    return tmp.textContent || tmp.innerText || ''
+  })
   
   // Attachments
   const [attachments, setAttachments] = useState<File[]>([])
@@ -963,7 +969,11 @@ export default function InvoiceCreate() {
   // Update terms and conditions from settings
   useEffect(() => {
     if (settings?.invoice?.terms_and_conditions) {
-      setTermsAndConditions(settings.invoice.terms_and_conditions)
+      // Strip HTML tags — settings stores rich text but the invoice form uses plain text
+      const html = settings.invoice.terms_and_conditions
+      const tmp = document.createElement('div')
+      tmp.innerHTML = html
+      setTermsAndConditions(tmp.textContent || tmp.innerText || '')
     }
   }, [settings])
 

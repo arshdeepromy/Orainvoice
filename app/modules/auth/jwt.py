@@ -117,3 +117,56 @@ def decode_access_token(token: str) -> dict:
 
     # All keys exhausted — re-raise the last error.
     raise last_error  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Session Policy Engine
+# ---------------------------------------------------------------------------
+
+from uuid import UUID
+
+from app.modules.auth.security_settings_schemas import SessionPolicy
+
+
+def get_session_policy(
+    org_settings: dict | None,
+    user_id: UUID | None = None,
+    user_role: str | None = None,
+) -> SessionPolicy:
+    """Extract session policy from org settings, falling back to global config.
+
+    If *org_settings* is ``None``, empty, or missing the ``session_policy``
+    key, returns a :class:`SessionPolicy` populated from global config values.
+
+    If the user is in the exclusion list (by ID or role), global defaults
+    are returned instead of the org-level policy.
+    """
+    global_defaults = SessionPolicy(
+        access_token_expire_minutes=settings.access_token_expire_minutes,
+        refresh_token_expire_days=settings.refresh_token_expire_days,
+        max_sessions_per_user=settings.max_sessions_per_user,
+        excluded_user_ids=[],
+        excluded_roles=[],
+    )
+
+    if not org_settings:
+        return global_defaults
+
+    session_data = org_settings.get("session_policy")
+    if not session_data or not isinstance(session_data, dict):
+        return global_defaults
+
+    try:
+        policy = SessionPolicy(**session_data)
+    except Exception:
+        # Malformed data — fall back to defaults silently
+        return global_defaults
+
+    # Check exclusion list: if user is excluded, return global defaults
+    if user_id is not None and user_id in policy.excluded_user_ids:
+        return global_defaults
+
+    if user_role is not None and user_role in policy.excluded_roles:
+        return global_defaults
+
+    return policy

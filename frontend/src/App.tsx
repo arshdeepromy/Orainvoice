@@ -10,6 +10,7 @@ import { PlatformBrandingProvider } from '@/contexts/PlatformBrandingContext'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import { Spinner } from '@/components/ui'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { ModuleRoute } from '@/components/common/ModuleRoute'
 import { Login, MfaVerify, PasswordResetRequest, PasswordResetComplete, VerifyEmail } from '@/pages/auth'
 
 /* Signup is lazy-loaded because it imports @stripe/stripe-js and
@@ -42,6 +43,7 @@ import { SubscriptionPlans } from '@/pages/admin/SubscriptionPlans'
 import { FeatureFlags } from '@/pages/admin/FeatureFlags'
 import { GlobalAdminProfile } from '@/pages/admin/GlobalAdminProfile'
 import TradeFamilies from '@/pages/admin/TradeFamilies'
+import { AdminSecurityPage } from '@/pages/admin/AdminSecurityPage'
 
 /* ── Org pages (lazy loaded) ── */
 const CustomerList = lazy(() => import('@/pages/customers/CustomerList'))
@@ -123,6 +125,28 @@ const LocationDetail = lazy(() => import('@/pages/franchise/LocationDetail'))
 
 /* Kiosk (standalone, outside OrgLayout) */
 const KioskPage = lazy(() => import('@/pages/kiosk/KioskPage'))
+
+/* Accounting pages */
+const ChartOfAccounts = lazy(() => import('@/pages/accounting/ChartOfAccounts'))
+const JournalEntries = lazy(() => import('@/pages/accounting/JournalEntries'))
+const JournalEntryDetail = lazy(() => import('@/pages/accounting/JournalEntryDetail'))
+const AccountingPeriods = lazy(() => import('@/pages/accounting/AccountingPeriods'))
+
+/* Financial report pages */
+const ProfitAndLoss = lazy(() => import('@/pages/reports/ProfitAndLoss'))
+const BalanceSheet = lazy(() => import('@/pages/reports/BalanceSheet'))
+const AgedReceivables = lazy(() => import('@/pages/reports/AgedReceivables'))
+
+/* Banking pages */
+const BankAccounts = lazy(() => import('@/pages/banking/BankAccounts'))
+const BankTransactions = lazy(() => import('@/pages/banking/BankTransactions'))
+const ReconciliationDashboard = lazy(() => import('@/pages/banking/ReconciliationDashboard'))
+
+/* GST / Tax pages */
+const GstPeriods = lazy(() => import('@/pages/tax/GstPeriods'))
+const GstFilingDetail = lazy(() => import('@/pages/tax/GstFilingDetail'))
+const TaxWallets = lazy(() => import('@/pages/tax/TaxWallets'))
+const TaxPosition = lazy(() => import('@/pages/tax/TaxPosition'))
 
 /* Branch management pages */
 const BranchStockTransfers = lazy(() => import('@/pages/inventory/StockTransfers'))
@@ -271,6 +295,7 @@ function AppRoutes() {
             <Route path="feature-flags" element={<SafePage name="admin-feature-flags"><FeatureFlags /></SafePage>} />
             <Route path="analytics" element={<SafePage name="admin-analytics"><AnalyticsDashboard /></SafePage>} />
             <Route path="settings" element={<SafePage name="admin-settings"><AdminSettings /></SafePage>} />
+            <Route path="security" element={<SafePage name="admin-security"><AdminSecurityPage /></SafePage>} />
             <Route path="errors" element={<SafePage name="admin-errors"><ErrorLog /></SafePage>} />
             <Route path="notifications" element={<SafePage name="admin-notifications"><NotificationManager /></SafePage>} />
             <Route path="branding" element={<SafePage name="admin-branding"><BrandingConfig /></SafePage>} />
@@ -301,8 +326,8 @@ function AppRoutes() {
 
           {/* Vehicles */}
           <Route element={<RequireAutomotive />}>
-            <Route path="/vehicles" element={<SafePage name="vehicles"><VehicleList /></SafePage>} />
-            <Route path="/vehicles/:id" element={<SafePage name="vehicle-profile"><VehicleProfile /></SafePage>} />
+            <Route path="/vehicles" element={<SafePage name="vehicles"><ModuleRoute moduleSlug="vehicles"><VehicleList /></ModuleRoute></SafePage>} />
+            <Route path="/vehicles/:id" element={<SafePage name="vehicle-profile"><ModuleRoute moduleSlug="vehicles"><VehicleProfile /></ModuleRoute></SafePage>} />
           </Route>
 
           {/* Invoices */}
@@ -312,21 +337,21 @@ function AppRoutes() {
           <Route path="/invoices/:id" element={<SafePage name="invoice-detail"><InvoiceList /></SafePage>} />
 
           {/* Quotes */}
-          <Route path="/quotes" element={<SafePage name="quotes"><QuoteList /></SafePage>} />
-          <Route path="/quotes/new" element={<SafePage name="quote-create"><QuoteCreate /></SafePage>} />
-          <Route path="/quotes/:id/edit" element={<SafePage name="quote-edit"><QuoteCreate /></SafePage>} />
-          <Route path="/quotes/:id" element={<SafePage name="quote-detail"><QuoteDetailRoute /></SafePage>} />
+          <Route path="/quotes" element={<SafePage name="quotes"><ModuleRoute moduleSlug="quotes"><QuoteList /></ModuleRoute></SafePage>} />
+          <Route path="/quotes/new" element={<SafePage name="quote-create"><ModuleRoute moduleSlug="quotes"><QuoteCreate /></ModuleRoute></SafePage>} />
+          <Route path="/quotes/:id/edit" element={<SafePage name="quote-edit"><ModuleRoute moduleSlug="quotes"><QuoteCreate /></ModuleRoute></SafePage>} />
+          <Route path="/quotes/:id" element={<SafePage name="quote-detail"><ModuleRoute moduleSlug="quotes"><QuoteDetailRoute /></ModuleRoute></SafePage>} />
 
           {/* Job Cards */}
-          <Route path="/job-cards" element={<SafePage name="job-cards"><JobCardList /></SafePage>} />
-          <Route path="/job-cards/new" element={<SafePage name="job-card-create"><JobCardCreate /></SafePage>} />
-          <Route path="/job-cards/:id" element={<SafePage name="job-card-detail"><JobCardDetail /></SafePage>} />
+          <Route path="/job-cards" element={<SafePage name="job-cards"><ModuleRoute moduleSlug="jobs"><JobCardList /></ModuleRoute></SafePage>} />
+          <Route path="/job-cards/new" element={<SafePage name="job-card-create"><ModuleRoute moduleSlug="jobs"><JobCardCreate /></ModuleRoute></SafePage>} />
+          <Route path="/job-cards/:id" element={<SafePage name="job-card-detail"><ModuleRoute moduleSlug="jobs"><JobCardDetail /></ModuleRoute></SafePage>} />
 
           {/* Bookings */}
-          <Route path="/bookings" element={<SafePage name="bookings"><BookingCalendarPage /></SafePage>} />
+          <Route path="/bookings" element={<SafePage name="bookings"><ModuleRoute moduleSlug="bookings"><BookingCalendarPage /></ModuleRoute></SafePage>} />
 
           {/* Inventory */}
-          <Route path="/inventory" element={<SafePage name="inventory"><InventoryPage /></SafePage>} />
+          <Route path="/inventory" element={<SafePage name="inventory"><ModuleRoute moduleSlug="inventory"><InventoryPage /></ModuleRoute></SafePage>} />
 
           {/* Reports */}
           <Route path="/reports" element={<SafePage name="reports"><ReportsPage /></SafePage>} />
@@ -340,97 +365,119 @@ function AppRoutes() {
           <Route path="/notifications" element={<SafePage name="notifications"><NotificationsPage /></SafePage>} />
 
           {/* Staff */}
-          <Route path="/staff" element={<SafePage name="staff"><StaffList /></SafePage>} />
+          <Route path="/staff" element={<SafePage name="staff"><ModuleRoute moduleSlug="staff"><StaffList /></ModuleRoute></SafePage>} />
 
           {/* Projects */}
-          <Route path="/projects" element={<SafePage name="projects"><ProjectList /></SafePage>} />
-          <Route path="/projects/:id" element={<SafePage name="project-detail"><ProjectDashboardRoute /></SafePage>} />
+          <Route path="/projects" element={<SafePage name="projects"><ModuleRoute moduleSlug="projects"><ProjectList /></ModuleRoute></SafePage>} />
+          <Route path="/projects/:id" element={<SafePage name="project-detail"><ModuleRoute moduleSlug="projects"><ProjectDashboardRoute /></ModuleRoute></SafePage>} />
 
           {/* Expenses */}
-          <Route path="/expenses" element={<SafePage name="expenses"><ExpenseList /></SafePage>} />
+          <Route path="/expenses" element={<SafePage name="expenses"><ModuleRoute moduleSlug="expenses"><ExpenseList /></ModuleRoute></SafePage>} />
+
+          {/* Accounting */}
+          <Route path="/accounting" element={<SafePage name="chart-of-accounts"><ModuleRoute moduleSlug="accounting"><ChartOfAccounts /></ModuleRoute></SafePage>} />
+          <Route path="/accounting/journal-entries" element={<SafePage name="journal-entries"><ModuleRoute moduleSlug="accounting"><JournalEntries /></ModuleRoute></SafePage>} />
+          <Route path="/accounting/journal-entries/:id" element={<SafePage name="journal-entry-detail"><ModuleRoute moduleSlug="accounting"><JournalEntryDetail /></ModuleRoute></SafePage>} />
+          <Route path="/accounting/periods" element={<SafePage name="accounting-periods"><ModuleRoute moduleSlug="accounting"><AccountingPeriods /></ModuleRoute></SafePage>} />
+
+          {/* Financial Reports (accounting module) */}
+          <Route path="/reports/profit-loss" element={<SafePage name="profit-and-loss"><ModuleRoute moduleSlug="accounting"><ProfitAndLoss /></ModuleRoute></SafePage>} />
+          <Route path="/reports/balance-sheet" element={<SafePage name="balance-sheet"><ModuleRoute moduleSlug="accounting"><BalanceSheet /></ModuleRoute></SafePage>} />
+          <Route path="/reports/aged-receivables" element={<SafePage name="aged-receivables"><ModuleRoute moduleSlug="accounting"><AgedReceivables /></ModuleRoute></SafePage>} />
+
+          {/* GST / Tax */}
+          <Route path="/tax/gst-periods" element={<SafePage name="gst-periods"><ModuleRoute moduleSlug="accounting"><GstPeriods /></ModuleRoute></SafePage>} />
+          <Route path="/tax/gst-periods/:id" element={<SafePage name="gst-filing-detail"><ModuleRoute moduleSlug="accounting"><GstFilingDetail /></ModuleRoute></SafePage>} />
+          <Route path="/tax/wallets" element={<SafePage name="tax-wallets"><ModuleRoute moduleSlug="accounting"><TaxWallets /></ModuleRoute></SafePage>} />
+          <Route path="/tax/position" element={<SafePage name="tax-position"><ModuleRoute moduleSlug="accounting"><TaxPosition /></ModuleRoute></SafePage>} />
+
+          {/* Banking */}
+          <Route path="/banking/accounts" element={<SafePage name="bank-accounts"><ModuleRoute moduleSlug="accounting"><BankAccounts /></ModuleRoute></SafePage>} />
+          <Route path="/banking/transactions" element={<SafePage name="bank-transactions"><ModuleRoute moduleSlug="accounting"><BankTransactions /></ModuleRoute></SafePage>} />
+          <Route path="/banking/reconciliation" element={<SafePage name="reconciliation-dashboard"><ModuleRoute moduleSlug="accounting"><ReconciliationDashboard /></ModuleRoute></SafePage>} />
 
           {/* Time Tracking */}
-          <Route path="/time-tracking" element={<SafePage name="time-tracking"><TimeSheet /></SafePage>} />
+          <Route path="/time-tracking" element={<SafePage name="time-tracking"><ModuleRoute moduleSlug="time_tracking"><TimeSheet /></ModuleRoute></SafePage>} />
 
           {/* POS */}
-          <Route path="/pos" element={<SafePage name="pos"><POSScreen /></SafePage>} />
+          <Route path="/pos" element={<SafePage name="pos"><ModuleRoute moduleSlug="pos"><POSScreen /></ModuleRoute></SafePage>} />
 
           {/* Schedule */}
-          <Route path="/schedule" element={<SafePage name="schedule"><ScheduleCalendar /></SafePage>} />
+          <Route path="/schedule" element={<SafePage name="schedule"><ModuleRoute moduleSlug="scheduling"><ScheduleCalendar /></ModuleRoute></SafePage>} />
 
           {/* Recurring Invoices */}
-          <Route path="/recurring" element={<SafePage name="recurring"><RecurringList /></SafePage>} />
+          <Route path="/recurring" element={<SafePage name="recurring"><ModuleRoute moduleSlug="recurring_invoices"><RecurringList /></ModuleRoute></SafePage>} />
 
           {/* Purchase Orders */}
-          <Route path="/purchase-orders" element={<SafePage name="purchase-orders"><POList /></SafePage>} />
-          <Route path="/purchase-orders/:id" element={<SafePage name="po-detail"><PODetail /></SafePage>} />
+          <Route path="/purchase-orders" element={<SafePage name="purchase-orders"><ModuleRoute moduleSlug="purchase_orders"><POList /></ModuleRoute></SafePage>} />
+          <Route path="/purchase-orders/:id" element={<SafePage name="po-detail"><ModuleRoute moduleSlug="purchase_orders"><PODetail /></ModuleRoute></SafePage>} />
 
           {/* Data Import/Export */}
           <Route path="/data" element={<SafePage name="data"><DataPage /></SafePage>} />
 
           {/* Construction */}
-          <Route path="/progress-claims" element={<SafePage name="progress-claims"><ProgressClaimList /></SafePage>} />
-          <Route path="/variations" element={<SafePage name="variations"><VariationList /></SafePage>} />
-          <Route path="/retentions" element={<SafePage name="retentions"><RetentionSummary /></SafePage>} />
+          <Route path="/progress-claims" element={<SafePage name="progress-claims"><ModuleRoute moduleSlug="progress_claims"><ProgressClaimList /></ModuleRoute></SafePage>} />
+          <Route path="/variations" element={<SafePage name="variations"><ModuleRoute moduleSlug="variations"><VariationList /></ModuleRoute></SafePage>} />
+          <Route path="/retentions" element={<SafePage name="retentions"><ModuleRoute moduleSlug="retentions"><RetentionSummary /></ModuleRoute></SafePage>} />
 
           {/* Floor Plan / Tables */}
-          <Route path="/floor-plan" element={<SafePage name="floor-plan"><FloorPlan /></SafePage>} />
+          <Route path="/floor-plan" element={<SafePage name="floor-plan"><ModuleRoute moduleSlug="tables"><FloorPlan /></ModuleRoute></SafePage>} />
 
           {/* Kitchen Display */}
-          <Route path="/kitchen" element={<SafePage name="kitchen"><KitchenDisplay /></SafePage>} />
+          <Route path="/kitchen" element={<SafePage name="kitchen"><ModuleRoute moduleSlug="kitchen_display"><KitchenDisplay /></ModuleRoute></SafePage>} />
 
           {/* Franchise */}
-          <Route path="/franchise" element={<SafePage name="franchise"><FranchiseDashboard /></SafePage>} />
-          <Route path="/locations" element={<SafePage name="locations"><LocationList /></SafePage>} />
-          <Route path="/stock-transfers" element={<SafePage name="stock-transfers"><StockTransfers /></SafePage>} />
+          <Route path="/franchise" element={<SafePage name="franchise"><ModuleRoute moduleSlug="franchise"><FranchiseDashboard /></ModuleRoute></SafePage>} />
+          <Route path="/locations" element={<SafePage name="locations"><ModuleRoute moduleSlug="franchise"><LocationList /></ModuleRoute></SafePage>} />
+          <Route path="/stock-transfers" element={<SafePage name="stock-transfers"><ModuleRoute moduleSlug="franchise"><StockTransfers /></ModuleRoute></SafePage>} />
 
           {/* Branch Stock Transfers */}
-          <Route path="/branch-transfers" element={<SafePage name="branch-transfers"><BranchStockTransfers /></SafePage>} />
+          <Route path="/branch-transfers" element={<SafePage name="branch-transfers"><ModuleRoute moduleSlug="branch_management"><BranchStockTransfers /></ModuleRoute></SafePage>} />
 
           {/* Claims */}
-          <Route path="/claims" element={<SafePage name="claims"><ClaimsList /></SafePage>} />
-          <Route path="/claims/new" element={<SafePage name="claim-create"><ClaimCreateForm /></SafePage>} />
-          <Route path="/claims/reports" element={<SafePage name="claims-reports"><ClaimsReports /></SafePage>} />
-          <Route path="/claims/:id" element={<SafePage name="claim-detail"><ClaimDetail /></SafePage>} />
+          <Route path="/claims" element={<SafePage name="claims"><ModuleRoute moduleSlug="customer_claims"><ClaimsList /></ModuleRoute></SafePage>} />
+          <Route path="/claims/new" element={<SafePage name="claim-create"><ModuleRoute moduleSlug="customer_claims"><ClaimCreateForm /></ModuleRoute></SafePage>} />
+          <Route path="/claims/reports" element={<SafePage name="claims-reports"><ModuleRoute moduleSlug="customer_claims"><ClaimsReports /></ModuleRoute></SafePage>} />
+          <Route path="/claims/:id" element={<SafePage name="claim-detail"><ModuleRoute moduleSlug="customer_claims"><ClaimDetail /></ModuleRoute></SafePage>} />
 
           {/* Staff Schedule (branch-scoped) */}
-          <Route path="/staff-schedule" element={<SafePage name="staff-schedule"><StaffSchedule /></SafePage>} />
+          <Route path="/staff-schedule" element={<SafePage name="staff-schedule"><ModuleRoute moduleSlug="branch_management"><StaffSchedule /></ModuleRoute></SafePage>} />
 
           {/* Assets */}
-          <Route path="/assets" element={<SafePage name="assets"><AssetList /></SafePage>} />
-          <Route path="/assets/:id" element={<SafePage name="asset-detail"><AssetDetailRoute /></SafePage>} />
+          <Route path="/assets" element={<SafePage name="assets"><ModuleRoute moduleSlug="assets"><AssetList /></ModuleRoute></SafePage>} />
+          <Route path="/assets/:id" element={<SafePage name="asset-detail"><ModuleRoute moduleSlug="assets"><AssetDetailRoute /></ModuleRoute></SafePage>} />
 
           {/* Compliance */}
-          <Route path="/compliance" element={<SafePage name="compliance"><ComplianceDashboard /></SafePage>} />
+          <Route path="/compliance" element={<SafePage name="compliance"><ModuleRoute moduleSlug="compliance_docs"><ComplianceDashboard /></ModuleRoute></SafePage>} />
 
           {/* Loyalty */}
-          <Route path="/loyalty" element={<SafePage name="loyalty"><LoyaltyConfig /></SafePage>} />
+          <Route path="/loyalty" element={<SafePage name="loyalty"><ModuleRoute moduleSlug="loyalty"><LoyaltyConfig /></ModuleRoute></SafePage>} />
 
           {/* Ecommerce */}
-          <Route path="/ecommerce" element={<SafePage name="ecommerce"><WooCommerceSetup /></SafePage>} />
+          <Route path="/ecommerce" element={<SafePage name="ecommerce"><ModuleRoute moduleSlug="ecommerce"><WooCommerceSetup /></ModuleRoute></SafePage>} />
 
           {/* Setup Wizard */}
           <Route path="/setup" element={<SafePage name="setup"><SetupWizard /></SafePage>} />
 
           {/* Jobs v2 */}
-          <Route path="/jobs" element={<SafePage name="jobs"><JobsPage /></SafePage>} />
-          <Route path="/jobs/board" element={<SafePage name="job-board"><JobBoard /></SafePage>} />
-          <Route path="/jobs/:id" element={<SafePage name="job-detail"><JobDetailRoute /></SafePage>} />
+          <Route path="/jobs" element={<SafePage name="jobs"><ModuleRoute moduleSlug="jobs"><JobsPage /></ModuleRoute></SafePage>} />
+          <Route path="/jobs/board" element={<SafePage name="job-board"><ModuleRoute moduleSlug="jobs"><JobBoard /></ModuleRoute></SafePage>} />
+          <Route path="/jobs/:id" element={<SafePage name="job-detail"><ModuleRoute moduleSlug="jobs"><JobDetailRoute /></ModuleRoute></SafePage>} />
 
           {/* Items */}
-          <Route path="/items" element={<SafePage name="items"><ItemsPage /></SafePage>} />
+          <Route path="/items" element={<SafePage name="items"><ModuleRoute moduleSlug="inventory"><ItemsPage /></ModuleRoute></SafePage>} />
 
           {/* Catalogue */}
-          <Route path="/catalogue" element={<SafePage name="catalogue"><CataloguePage /></SafePage>} />
+          <Route path="/catalogue" element={<SafePage name="catalogue"><ModuleRoute moduleSlug="inventory"><CataloguePage /></ModuleRoute></SafePage>} />
 
           {/* Onboarding */}
           <Route path="/onboarding" element={<SafePage name="onboarding"><OnboardingWizard /></SafePage>} />
 
           {/* Staff detail */}
-          <Route path="/staff/:id" element={<SafePage name="staff-detail"><StaffDetailRoute /></SafePage>} />
+          <Route path="/staff/:id" element={<SafePage name="staff-detail"><ModuleRoute moduleSlug="staff"><StaffDetailRoute /></ModuleRoute></SafePage>} />
 
           {/* Franchise location detail */}
-          <Route path="/locations/:id" element={<SafePage name="location-detail"><LocationDetailRoute /></SafePage>} />
+          <Route path="/locations/:id" element={<SafePage name="location-detail"><ModuleRoute moduleSlug="franchise"><LocationDetailRoute /></ModuleRoute></SafePage>} />
 
           {/* Catch-all */}
           <Route

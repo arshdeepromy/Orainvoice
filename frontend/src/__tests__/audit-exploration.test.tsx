@@ -1,3 +1,4 @@
+/// <reference types="node" />
 /**
  * Bug condition exploration tests for frontend contract mismatches.
  *

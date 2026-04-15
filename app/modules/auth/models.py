@@ -82,6 +82,14 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    password_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    custom_role_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("custom_roles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -112,6 +120,89 @@ class User(Base):
     )
     backup_codes: Mapped[list[UserBackupCode]] = relationship(
         back_populates="user", cascade="all, delete-orphan", lazy="raise",
+    )
+    custom_role: Mapped[CustomRole | None] = relationship(
+        back_populates="users", lazy="raise",
+        foreign_keys="[User.custom_role_id]",
+    )
+
+
+class CustomRole(Base):
+    """Org-defined role with a custom set of permissions."""
+
+    __tablename__ = "custom_roles"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organisations.id"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    permissions: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default="'[]'"
+    )
+    is_system: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False,
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "slug", name="uq_custom_roles_org_slug"),
+        Index("idx_custom_roles_org", "org_id"),
+    )
+
+    # Relationships
+    users: Mapped[list[User]] = relationship(
+        back_populates="custom_role", lazy="raise",
+        foreign_keys="[User.custom_role_id]",
+    )
+
+
+class PasswordHistory(Base):
+    """Stores password hashes for history-based reuse prevention."""
+
+    __tablename__ = "password_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_password_history_user", "user_id"),
+        Index("idx_password_history_created", "user_id", "created_at"),
     )
 
 

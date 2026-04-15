@@ -114,7 +114,7 @@ export function useClaimsList(filters: ClaimFilters = {}, limit = 25, offset = 0
   const [data, setData] = useState<ClaimListResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const abortRef = useRef<AbortController>()
+  const abortRef = useRef<AbortController>(undefined)
 
   const fetch = useCallback(async () => {
     if (abortRef.current) abortRef.current.abort()

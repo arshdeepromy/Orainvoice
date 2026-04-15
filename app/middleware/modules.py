@@ -60,6 +60,11 @@ MODULE_ENDPOINT_MAP: dict[str, str] = {
     "/api/v2/franchise": "franchise",
     "/api/v2/ecommerce": "ecommerce",
     "/api/v1/vehicles": "vehicles",
+    "/api/v1/ledger": "accounting",
+    "/api/v1/gst": "accounting",
+    "/api/v1/banking": "accounting",
+    "/api/v1/tax-wallets": "accounting",
+    "/api/v1/ird": "accounting",
 }
 
 

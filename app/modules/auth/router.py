@@ -119,6 +119,26 @@ def _cookie_secure() -> bool:
     return os.getenv("ENVIRONMENT", "production") != "development"
 
 
+def _get_client_ip(request: Request) -> str | None:
+    """Extract the real client IP, respecting reverse proxy headers.
+
+    Checks X-Forwarded-For and X-Real-IP before falling back to
+    request.client.host (which returns the Docker/proxy IP when
+    running behind Nginx).
+    """
+    # X-Forwarded-For may contain multiple IPs: "client, proxy1, proxy2"
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        # First IP is the original client
+        return forwarded_for.split(",")[0].strip()
+
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+
+    return request.client.host if request.client else None
+
+
 def _parse_user_agent(ua: str | None) -> tuple[str | None, str | None]:
     """Extract a rough device type and browser name from User-Agent."""
     if not ua:
@@ -246,7 +266,7 @@ async def login(
     Returns a JWT access/refresh token pair on success, or an MFA
     challenge if the user has MFA configured.
     """
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
     device_type, browser = _parse_user_agent(user_agent)
 
@@ -257,6 +277,7 @@ async def login(
             ip_address=ip_address,
             device_type=device_type,
             browser=browser,
+            user_agent=user_agent,
         )
         # authenticate_user is async
         result = await result
@@ -275,13 +296,17 @@ async def login(
         )
 
     # If MFA is required, return the MFA challenge without setting a cookie
+    # MFAChallengeResponse has .methods and .default_method (user has MFA configured)
+    # MFARequiredResponse has .mfa_methods (user must set up MFA)
     if hasattr(result, 'mfa_required') and result.mfa_required:
+        methods = getattr(result, 'methods', None) or getattr(result, 'mfa_methods', [])
+        default_method = getattr(result, 'default_method', None)
         return JSONResponse(
             content={
                 "mfa_required": True,
                 "mfa_token": result.mfa_token,
-                "methods": result.methods,
-                "default_method": result.default_method,
+                "methods": methods,
+                "default_method": default_method,
             }
         )
 
@@ -329,7 +354,7 @@ async def refresh_token(
             content={"detail": "Missing refresh token"},
         )
 
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
     device_type, browser = _parse_user_agent(user_agent)
 
@@ -414,7 +439,7 @@ async def login_google(
     """
     from app.integrations.google_oauth import GoogleOAuthError, exchange_code_for_user_info
 
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
     device_type, browser = _parse_user_agent(user_agent)
 
@@ -438,6 +463,7 @@ async def login_google(
             ip_address=ip_address,
             device_type=device_type,
             browser=browser,
+            user_agent=user_agent,
         )
     except ValueError as exc:
         return JSONResponse(
@@ -447,12 +473,14 @@ async def login_google(
 
     # If MFA is required, return the MFA challenge without setting a cookie
     if hasattr(result, 'mfa_required') and result.mfa_required:
+        methods = getattr(result, 'methods', None) or getattr(result, 'mfa_methods', [])
+        default_method = getattr(result, 'default_method', None)
         return JSONResponse(
             content={
                 "mfa_required": True,
                 "mfa_token": result.mfa_token,
-                "methods": result.methods,
-                "default_method": result.default_method,
+                "methods": methods,
+                "default_method": default_method,
             }
         )
 
@@ -654,7 +682,7 @@ async def passkey_login_verify(
     Passkey login satisfies MFA requirements — no additional MFA prompt
     is needed (Requirement 2.9).
     """
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
     device_type, browser = _parse_user_agent(user_agent)
 
@@ -683,6 +711,7 @@ async def passkey_login_verify(
             ip_address=ip_address,
             device_type=device_type,
             browser=browser,
+            user_agent=user_agent,
         )
     except ValueError as exc:
         return JSONResponse(
@@ -1292,7 +1321,7 @@ async def mfa_firebase_verify(
 
     # Token is valid — complete the MFA flow
     # Reuse verify_mfa with firebase_verified=True to skip code check
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
     device_type, browser = _parse_user_agent(user_agent)
 
@@ -1467,7 +1496,7 @@ async def mfa_verify(
     Supports TOTP, SMS, email, and backup code methods.
     Locks after 5 consecutive failures.
     """
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
     device_type, browser = _parse_user_agent(user_agent)
 
@@ -1601,7 +1630,7 @@ async def password_reset_request(
     or not, to prevent account enumeration (Requirement 4.4).
     The reset link expires after 1 hour (Requirement 4.2).
     """
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
 
     await request_password_reset(
         db=db,
@@ -1631,7 +1660,7 @@ async def password_reset_complete(
     updates the password, and invalidates all active sessions
     (Requirement 4.3).
     """
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
 
     try:
         await complete_password_reset(
@@ -1670,7 +1699,7 @@ async def password_reset_backup(
     Allows account recovery when all MFA methods are unavailable
     (Requirement 4.5). The backup code is consumed on use.
     """
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
 
     try:
         await reset_via_backup_code(
@@ -1777,7 +1806,7 @@ async def delete_session(
             content={"detail": "Session not found"},
         )
 
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
 
     try:
         await terminate_session(
@@ -1822,7 +1851,7 @@ async def sessions_invalidate_all(
             content={"detail": "Authentication required"},
         )
 
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
     count = await invalidate_all_sessions(
         db=db,
         user_id=user.id,
@@ -1881,7 +1910,7 @@ async def update_ip_allowlist(
             content={"detail": "No organisation context"},
         )
 
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
     new_allowlist = payload.ip_allowlist
 
     # If setting a non-empty allowlist, validate entries
@@ -1991,7 +2020,7 @@ async def invite_user(
             content={"detail": "No organisation context"},
         )
 
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
 
     try:
         # Use the request Origin header to build invite URLs with the correct domain
@@ -2041,7 +2070,7 @@ async def verify_email(
     a JWT pair so the user is logged in immediately.
     (Requirements 7.1, 7.2)
     """
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
     device_type, browser = _parse_user_agent(user_agent)
 
@@ -2120,7 +2149,7 @@ async def resend_invite(
             content={"detail": "No organisation context"},
         )
 
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
 
     try:
         origin = request.headers.get("origin") or request.headers.get("referer", "").rstrip("/")
@@ -2296,7 +2325,7 @@ async def signup(
     import uuid as _uuid
     from app.core.captcha import verify_captcha
 
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
 
     # Verify CAPTCHA first
     captcha_id = request.cookies.get("captcha_id")
@@ -2612,7 +2641,7 @@ async def confirm_signup_payment(
     # 6. Delete Pending_Signup from Redis (prevent replay)
     await delete_pending_signup(pending_signup_id)
 
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
 
     # Audit log
     await write_audit_log(
@@ -2741,7 +2770,7 @@ async def verify_signup_email_endpoint(
             content={"detail": "Verification token is required"},
         )
 
-    ip_address = request.client.host if request.client else None
+    ip_address = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
     device_type, browser = _parse_user_agent(user_agent)
 
@@ -2894,8 +2923,18 @@ async def change_password(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Change the current user's password."""
+    """Change the current user's password.
+
+    Validates against the org's password policy, checks password history,
+    records the new hash in history, and updates password_changed_at.
+    """
     from app.modules.auth.password import hash_password, verify_password
+    from app.modules.auth.password_policy import (
+        check_password_history,
+        record_password_in_history,
+        validate_password_against_policy,
+    )
+    from app.modules.auth.security_settings_service import get_security_settings
 
     user = await _get_current_user(request, db)
 
@@ -2918,20 +2957,51 @@ async def change_password(
             content={"detail": "New password must be different from current password."},
         )
 
-    # Basic strength check (same rules as frontend)
-    pw = payload.new_password
-    if (
-        len(pw) < 8
-        or not any(c.isupper() for c in pw)
-        or not any(c.islower() for c in pw)
-        or not any(c.isdigit() for c in pw)
-        or all(c.isalnum() for c in pw)
-    ):
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Password does not meet strength requirements."},
-        )
+    # Validate against org password policy
+    org_settings = await get_security_settings(db, user.org_id) if user.org_id else None
+    if org_settings:
+        policy = org_settings.password_policy
+        errors = validate_password_against_policy(payload.new_password, policy)
+        if errors:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "; ".join(errors)},
+            )
 
-    user.password_hash = hash_password(payload.new_password)
+        # Check password history
+        if policy.history_count > 0:
+            history_match = await check_password_history(
+                db, user.id, payload.new_password, policy.history_count,
+            )
+            if history_match:
+                return JSONResponse(
+                    status_code=400,
+                    content={"detail": f"Password was used recently. Choose a password you haven't used in the last {policy.history_count} changes."},
+                )
+    else:
+        # Fallback: basic strength check (same rules as frontend)
+        pw = payload.new_password
+        if (
+            len(pw) < 8
+            or not any(c.isupper() for c in pw)
+            or not any(c.islower() for c in pw)
+            or not any(c.isdigit() for c in pw)
+            or all(c.isalnum() for c in pw)
+        ):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Password does not meet strength requirements."},
+            )
+
+    new_hash = hash_password(payload.new_password)
+    user.password_hash = new_hash
+
+    # Update password_changed_at timestamp
+    from datetime import datetime, timezone
+    user.password_changed_at = datetime.now(timezone.utc)
+
+    # Record in password history
+    if org_settings and org_settings.password_policy.history_count > 0:
+        await record_password_in_history(db, user.id, new_hash)
 
     return ChangePasswordResponse(message="Password changed successfully.")

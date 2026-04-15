@@ -26,6 +26,8 @@ export interface Organisation {
   storage_used_gb: number
   storage_quota_gb: number
   last_login: string | null
+  next_billing_date: string | null
+  billing_interval: string
   [key: string]: unknown
 }
 
@@ -410,6 +412,66 @@ function MovePlanModal({
   )
 }
 
+/* ── Billing Date Modal ── */
+
+function BillingDateModal({
+  open,
+  onClose,
+  onConfirm,
+  saving,
+  orgName,
+  currentDate,
+}: {
+  open: boolean
+  onClose: () => void
+  onConfirm: (date: string) => void
+  saving: boolean
+  orgName: string
+  currentDate: string | null
+}) {
+  const [date, setDate] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (open) {
+      setDate(currentDate ? currentDate.split('T')[0] : '')
+      setError('')
+    }
+  }, [open, currentDate])
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!date) { setError('Please select a billing date'); return }
+    onConfirm(date)
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Set next billing date">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <p className="text-sm text-gray-600">
+          Set or change the next billing date for <span className="font-semibold">{orgName}</span>.
+          {currentDate && (
+            <span className="block mt-1 text-gray-500">
+              Current: {new Date(currentDate).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })}
+            </span>
+          )}
+        </p>
+        <Input
+          label="Next billing date"
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          error={error}
+        />
+        <div className="flex justify-end gap-3 pt-2">
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" loading={saving}>Save date</Button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
 /* ── Main Page ── */
 
 export function Organisations() {
@@ -426,6 +488,7 @@ export function Organisations() {
   const [deleteOrg, setDeleteOrg] = useState<Organisation | null>(null)
   const [hardDeleteOrg, setHardDeleteOrg] = useState<Organisation | null>(null)
   const [movePlanOrg, setMovePlanOrg] = useState<Organisation | null>(null)
+  const [billingDateOrg, setBillingDateOrg] = useState<Organisation | null>(null)
   const [saving, setSaving] = useState(false)
 
   const { toasts, addToast, dismissToast } = useToast()
@@ -449,6 +512,8 @@ export function Organisations() {
         storage_used_gb: Math.round((o.storage_used_bytes ?? 0) / (1024 * 1024 * 1024) * 10) / 10,
         storage_quota_gb: o.storage_quota_gb,
         last_login: o.last_login_at || null,
+        next_billing_date: o.next_billing_date ?? null,
+        billing_interval: o.billing_interval ?? 'monthly',
       })))
       setPlans(plansRes.data.plans)
     } catch {
@@ -590,6 +655,24 @@ export function Organisations() {
     }
   }
 
+  const handleSetBillingDate = async (date: string) => {
+    if (!billingDateOrg) return
+    setSaving(true)
+    try {
+      await apiClient.put(`/admin/organisations/${billingDateOrg.id}`, {
+        action: 'set_billing_date',
+        next_billing_date: date,
+      })
+      addToast('success', `Billing date updated for "${billingDateOrg.name}"`)
+      setBillingDateOrg(null)
+      fetchData()
+    } catch {
+      addToast('error', 'Failed to update billing date')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   /* ── Table columns ── */
 
   const columns: Column<Organisation>[] = [
@@ -609,6 +692,12 @@ export function Organisations() {
       header: 'Signup date',
       sortable: true,
       render: (row) => formatDate(row.signup_date),
+    },
+    {
+      key: 'next_billing_date',
+      header: 'Next billing',
+      sortable: true,
+      render: (row) => row.next_billing_date ? formatDate(row.next_billing_date) : '—',
     },
     {
       key: 'billing_status',
@@ -649,6 +738,11 @@ export function Organisations() {
           {row.status !== 'deleted' && (
             <Button size="sm" variant="secondary" onClick={() => setMovePlanOrg(row)}>
               Move plan
+            </Button>
+          )}
+          {row.status !== 'deleted' && (
+            <Button size="sm" variant="secondary" onClick={() => setBillingDateOrg(row)}>
+              Billing date
             </Button>
           )}
           {row.status !== 'deleted' && (
@@ -773,6 +867,14 @@ export function Organisations() {
         orgName={movePlanOrg?.name ?? ''}
         currentPlanId={movePlanOrg?.plan_id ?? ''}
         plans={plans}
+      />
+      <BillingDateModal
+        open={!!billingDateOrg}
+        onClose={() => setBillingDateOrg(null)}
+        onConfirm={handleSetBillingDate}
+        saving={saving}
+        orgName={billingDateOrg?.name ?? ''}
+        currentDate={billingDateOrg?.next_billing_date ?? null}
       />
     </div>
   )

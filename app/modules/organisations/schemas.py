@@ -697,3 +697,50 @@ class SalespersonListResponse(BaseModel):
     """GET /api/v1/org/salespeople response."""
 
     salespeople: list[SalespersonItem] = Field(default_factory=list, description="List of salespeople")
+
+
+# ---------------------------------------------------------------------------
+# Sprint 7 — Business Entity Type (Req 29.1, 29.2, 30.1, 30.2)
+# ---------------------------------------------------------------------------
+
+import re
+from datetime import date as _date
+from pydantic import field_validator
+
+
+class BusinessTypeUpdateRequest(BaseModel):
+    """PUT /api/v1/organisations/{id}/business-type request body."""
+
+    business_type: Literal[
+        "sole_trader", "partnership", "company", "trust", "other"
+    ] = Field(..., description="Legal entity classification")
+    nzbn: str | None = Field(None, description="NZ Business Number (exactly 13 digits)")
+    nz_company_number: str | None = Field(None, description="NZ Companies Office number")
+    gst_registered: bool | None = Field(None, description="Whether GST registered")
+    gst_registration_date: _date | None = Field(None, description="GST registration date")
+    income_tax_year_end: _date | None = Field(None, description="Income tax year end date")
+    provisional_tax_method: Literal["standard", "estimation", "ratio"] | None = Field(
+        None, description="Provisional tax method"
+    )
+
+    @field_validator("nzbn")
+    @classmethod
+    def validate_nzbn(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not re.fullmatch(r"\d{13}", v):
+            raise ValueError("NZBN must be exactly 13 digits")
+        return v
+
+
+class BusinessTypeResponse(BaseModel):
+    """Response after updating business type."""
+
+    business_type: str
+    nzbn: str | None = None
+    nz_company_number: str | None = None
+    gst_registered: bool = False
+    gst_registration_date: _date | None = None
+    income_tax_year_end: _date | None = None
+    provisional_tax_method: str | None = None
+    message: str = "Business type updated"

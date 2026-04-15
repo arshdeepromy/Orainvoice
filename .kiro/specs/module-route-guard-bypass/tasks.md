@@ -1,0 +1,127 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Bug Condition** — Disabled Module Routes Render Page Content
+  - **CRITICAL**: This test MUST FAIL on unfixed code — failure confirms the bug exists
+  - **DO NOT attempt to fix the test or the code when it fails**
+  - **NOTE**: This test encodes the expected behavior — it will validate the fix when it passes after implementation
+  - **GOAL**: Surface counterexamples that demonstrate disabled module routes are not blocked
+  - **Scoped PBT Approach**: For each module-gated route, scope the property to concrete cases where `isEnabled(moduleSlug)` returns `false` and the route still renders module page content instead of `FeatureNotAvailable`
+  - Create test file at `frontend/src/__tests__/module-route-guard.exploration.test.tsx`
+  - Mock `ModuleContext` to return `isEnabled: () => false` and `isLoading: false` for target modules
+  - Mock all lazy-loaded page components to render identifiable text (e.g., `<div>VehicleList</div>`)
+  - Test cases to include:
+    - Navigate to `/vehicles` with `vehicles` module disabled → assert `FeatureNotAvailable` renders (not VehicleList)
+    - Navigate to `/pos` with `pos` module disabled → assert `FeatureNotAvailable` renders (not POSScreen)
+    - Navigate to `/franchise` with `franchise` module disabled → assert `FeatureNotAvailable` renders (not FranchiseDashboard)
+    - Navigate to `/kitchen` with `kitchen_display` module disabled → assert `FeatureNotAvailable` renders (not KitchenDisplay)
+    - Navigate to `/jobs` with `jobs` module disabled → assert `FeatureNotAvailable` renders (not JobsPage)
+    - Navigate to `/accounting` with `accounting` module disabled → assert `FeatureNotAvailable` renders (not ChartOfAccounts)
+  - Property: `FOR ALL input WHERE isBugCondition(input): renderRoute(input.route) contains "Feature not available" AND NOT contains modulePageContent`
+  - Run test on UNFIXED code
+  - **EXPECTED OUTCOME**: Test FAILS (this is correct — it proves the bug exists: module pages render instead of FeatureNotAvailable)
+  - Document counterexamples found (e.g., "navigating to /vehicles with vehicles disabled renders VehicleList instead of FeatureNotAvailable")
+  - Mark task complete when test is written, run, and failure is documented
+  - _Requirements: 1.1, 1.2, 1.3, 2.1, 2.2, 2.3_
+
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** — Enabled Modules and Core Routes Render Normally
+  - **IMPORTANT**: Follow observation-first methodology
+  - Create test file at `frontend/src/__tests__/module-route-guard.preservation.test.tsx`
+  - Mock `ModuleContext` and lazy-loaded page components similarly to exploration test
+  - **Observe on UNFIXED code first, then write assertions:**
+  - Observe: Navigate to `/dashboard` with any module enablement state → Dashboard renders
+  - Observe: Navigate to `/invoices` with any module enablement state → InvoiceList renders
+  - Observe: Navigate to `/customers` with any module enablement state → CustomerList renders
+  - Observe: Navigate to `/settings` with any module enablement state → OrgSettingsPage renders
+  - Observe: Navigate to `/reports` with any module enablement state → ReportsPage renders
+  - Observe: Navigate to `/notifications` with any module enablement state → NotificationsPage renders
+  - Observe: Navigate to `/data` with any module enablement state → DataPage renders
+  - Observe: Navigate to `/vehicles` with `vehicles` module enabled → VehicleList renders
+  - Observe: Navigate to `/pos` with `pos` module enabled → POSScreen renders
+  - Observe: Navigate to `/franchise` with `franchise` module enabled → FranchiseDashboard renders
+  - Write property-based tests:
+    - **Core route preservation**: For all core routes (`/dashboard`, `/invoices`, `/customers`, `/settings`, `/reports`, `/notifications`, `/data`), page renders regardless of module enablement state
+    - **Enabled module preservation**: For all module-gated routes where `isEnabled(moduleSlug)` returns `true`, page component renders normally
+  - Verify tests pass on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests PASS (this confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5_
+
+- [x] 3. Fix for module route guard bypass — disabled modules accessible via direct URL navigation
+
+  - [x] 3.1 Create `ModuleRoute` wrapper component
+    - Create new file at `frontend/src/components/common/ModuleRoute.tsx`
+    - Accept `moduleSlug: string` and `children: ReactNode` props
+    - Use `useModules()` from `@/contexts/ModuleContext` to read `isEnabled`, `isLoading`, and `modules`
+    - When `isLoading` is true: render `<Spinner size="lg" label="Checking module access" />` (prevents content flash per requirement 2.4)
+    - When `isLoading` is false AND `isEnabled(moduleSlug)` is true: render `<>{children}</>`
+    - When `isLoading` is false AND `isEnabled(moduleSlug)` is false: render `<FeatureNotAvailable />`
+    - Import `FeatureNotAvailable` from `@/pages/common/FeatureNotAvailable`
+    - Import `Spinner` from `@/components/ui`
+    - Handle edge case: when `ModuleContext` is used outside `ModuleProvider`, `useModules()` returns `isEnabled: () => true` — component will render children (safe default for global admins)
+    - _Bug_Condition: isBugCondition(input) where input.moduleSlug IS NOT NULL AND input.isModuleEnabled = false AND input.route belongs to input.moduleSlug_
+    - _Expected_Behavior: render FeatureNotAvailable when isEnabled(moduleSlug) = false; render children when isEnabled(moduleSlug) = true; render Spinner when isLoading = true_
+    - _Preservation: Core routes are NOT wrapped; enabled module routes render children normally; global admin default (isEnabled → true) preserved_
+    - _Requirements: 1.1, 1.2, 1.3, 2.1, 2.2, 2.3, 2.4, 3.1, 3.5_
+
+  - [x] 3.2 Wrap module-gated routes in `App.tsx` with `ModuleRoute`
+    - Import `ModuleRoute` from `@/components/common/ModuleRoute`
+    - Wrap each module-gated route's element with `<ModuleRoute moduleSlug="...">` using the following mapping:
+      - `vehicles` → `/vehicles`, `/vehicles/:id` (inside existing `RequireAutomotive` wrapper — preserve that wrapper)
+      - `quotes` → `/quotes`, `/quotes/new`, `/quotes/:id/edit`, `/quotes/:id`
+      - `jobs` → `/job-cards`, `/job-cards/new`, `/job-cards/:id`, `/jobs`, `/jobs/board`, `/jobs/:id`
+      - `bookings` → `/bookings`
+      - `inventory` → `/inventory`
+      - `staff` → `/staff`, `/staff/:id`
+      - `projects` → `/projects`, `/projects/:id`
+      - `expenses` → `/expenses`
+      - `time_tracking` → `/time-tracking`
+      - `pos` → `/pos`
+      - `scheduling` → `/schedule`
+      - `recurring_invoices` → `/recurring`
+      - `purchase_orders` → `/purchase-orders`, `/purchase-orders/:id`
+      - `progress_claims` → `/progress-claims`
+      - `variations` → `/variations`
+      - `retentions` → `/retentions`
+      - `tables` → `/floor-plan`
+      - `kitchen_display` → `/kitchen`
+      - `franchise` → `/franchise`, `/locations`, `/locations/:id`, `/stock-transfers`
+      - `assets` → `/assets`, `/assets/:id`
+      - `compliance_docs` → `/compliance`
+      - `loyalty` → `/loyalty`
+      - `ecommerce` → `/ecommerce`
+      - `catalogue` → `/catalogue`
+      - `customer_claims` → `/claims`, `/claims/new`, `/claims/reports`, `/claims/:id`
+      - `accounting` → `/accounting`, `/accounting/journal-entries`, `/accounting/journal-entries/:id`, `/accounting/periods`, `/reports/profit-loss`, `/reports/balance-sheet`, `/reports/aged-receivables`, `/tax/gst-periods`, `/tax/gst-periods/:id`, `/tax/wallets`, `/tax/position`, `/banking/accounts`, `/banking/transactions`, `/banking/reconciliation`
+      - `branch_management` → `/branch-transfers`, `/staff-schedule`
+    - Do NOT wrap core routes: `/dashboard`, `/customers/*`, `/invoices/*`, `/reports` (main), `/settings`, `/notifications`, `/data`, `/items`, `/setup`, `/onboarding`, catch-all
+    - Preserve existing `RequireAutomotive` wrapper for vehicle routes — nest `ModuleRoute` inside it
+    - Example pattern: `<Route path="/pos" element={<SafePage name="pos"><ModuleRoute moduleSlug="pos"><POSScreen /></ModuleRoute></SafePage>} />`
+    - _Bug_Condition: All module-gated routes currently render unconditionally without isEnabled() check_
+    - _Expected_Behavior: Each module-gated route checks isEnabled(moduleSlug) before rendering page component_
+    - _Preservation: Core routes remain unwrapped; RequireAutomotive preserved for vehicles; sidebar filtering unchanged_
+    - _Requirements: 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 3.1, 3.2, 3.3, 3.4, 3.5_
+
+  - [x] 3.3 Verify bug condition exploration test now passes
+    - **Property 1: Expected Behavior** — Disabled Module Routes Are Blocked
+    - **IMPORTANT**: Re-run the SAME test from task 1 — do NOT write a new test
+    - The test from task 1 encodes the expected behavior (disabled modules show FeatureNotAvailable)
+    - When this test passes, it confirms the expected behavior is satisfied
+    - Run bug condition exploration test from step 1: `frontend/src/__tests__/module-route-guard.exploration.test.tsx`
+    - **EXPECTED OUTCOME**: Test PASSES (confirms bug is fixed — disabled module routes now show FeatureNotAvailable)
+    - _Requirements: 2.1, 2.2, 2.3_
+
+  - [x] 3.4 Verify preservation tests still pass
+    - **Property 2: Preservation** — Enabled Modules and Core Routes Still Render Normally
+    - **IMPORTANT**: Re-run the SAME tests from task 2 — do NOT write new tests
+    - Run preservation property tests from step 2: `frontend/src/__tests__/module-route-guard.preservation.test.tsx`
+    - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions — core routes and enabled module routes unaffected)
+    - Confirm all tests still pass after fix (no regressions)
+
+- [x] 4. Checkpoint — Ensure all tests pass
+  - Run full test suite to confirm no regressions
+  - Verify exploration test (task 1) passes — disabled module routes blocked
+  - Verify preservation tests (task 2) pass — enabled modules and core routes unaffected
+  - Ensure no TypeScript compilation errors in modified files
+  - Ensure all tests pass, ask the user if questions arise

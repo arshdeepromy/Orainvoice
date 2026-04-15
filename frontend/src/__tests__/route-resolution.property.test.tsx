@@ -272,7 +272,7 @@ describe('Property 32: Disabled module routes redirect to dashboard', () => {
         { numRuns: 100 },
       )
     },
-    { timeout: 120_000 },
+    120_000,
   )
 
   it(
@@ -318,7 +318,7 @@ describe('Property 32: Disabled module routes redirect to dashboard', () => {
         { numRuns: 100 },
       )
     },
-    { timeout: 120_000 },
+    120_000,
   )
 
   it(
@@ -371,6 +371,6 @@ describe('Property 32: Disabled module routes redirect to dashboard', () => {
         { numRuns: 100 },
       )
     },
-    { timeout: 120_000 },
+    120_000,
   )
 })

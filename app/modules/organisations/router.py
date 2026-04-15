@@ -27,6 +27,8 @@ from app.modules.organisations.schemas import (
     BranchSettingsUpdateResponse,
     BranchUpdateRequest,
     BranchUpdateResponse,
+    BusinessTypeUpdateRequest,
+    BusinessTypeResponse,
     MFAPolicyUpdateRequest,
     MFAPolicyUpdateResponse,
     OrgCarjamUsageResponse,
@@ -61,6 +63,7 @@ from app.modules.organisations.service import (
     reactivate_branch,
     revoke_user_sessions,
     save_onboarding_step,
+    set_business_type,
     update_branch,
     update_branch_settings,
     update_mfa_policy,
@@ -1787,3 +1790,66 @@ async def branch_comparison(
         "branches": serialized_branches,
         "highlights": highlights,
     }
+
+
+# ---------------------------------------------------------------------------
+# Sprint 7 — Business Entity Type (Req 29.1, 30.1)
+# ---------------------------------------------------------------------------
+
+
+@router.put(
+    "/organisations/{org_id}/business-type",
+    response_model=BusinessTypeResponse,
+    summary="Set business entity type and NZBN",
+    dependencies=[require_role("org_admin")],
+)
+async def update_business_type(
+    org_id: uuid.UUID,
+    payload: BusinessTypeUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Set business type, NZBN, and related entity fields.
+
+    Requirements: 29.1, 30.1
+    """
+    request_org_id = getattr(request.state, "org_id", None)
+    if not request_org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # Ensure user can only update their own org
+    try:
+        request_org_uuid = uuid.UUID(request_org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id format"},
+        )
+
+    if request_org_uuid != org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Cannot update another organisation's business type"},
+        )
+
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = request.client.host if request.client else None
+
+    result = await set_business_type(
+        db,
+        org_id=org_id,
+        user_id=uuid.UUID(user_id) if user_id else None,
+        business_type=payload.business_type,
+        nzbn=payload.nzbn,
+        nz_company_number=payload.nz_company_number,
+        gst_registered=payload.gst_registered,
+        gst_registration_date=payload.gst_registration_date,
+        income_tax_year_end=payload.income_tax_year_end,
+        provisional_tax_method=payload.provisional_tax_method,
+        ip_address=ip_address,
+    )
+
+    return BusinessTypeResponse(**result, message="Business type updated")

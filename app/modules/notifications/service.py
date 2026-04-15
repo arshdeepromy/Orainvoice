@@ -1504,7 +1504,7 @@ def _reminder_rule_to_dict(rule: ReminderRule) -> dict[str, Any]:
     }
 
 
-async def list_reminder_rules(
+async def list_automated_reminder_rules(
     db: AsyncSession, *, org_id: uuid.UUID
 ) -> dict[str, Any]:
     """Return all reminder rules for an org, grouped for the UI."""
@@ -1525,7 +1525,7 @@ async def list_reminder_rules(
     }
 
 
-async def create_reminder_rule(
+async def create_automated_reminder_rule(
     db: AsyncSession,
     *,
     org_id: uuid.UUID,
@@ -1588,7 +1588,7 @@ async def create_reminder_rule(
     return _reminder_rule_to_dict(rule)
 
 
-async def update_reminder_rule(
+async def update_automated_reminder_rule(
     db: AsyncSession,
     *,
     org_id: uuid.UUID,
@@ -1646,7 +1646,7 @@ async def update_reminder_rule(
     return _reminder_rule_to_dict(rule)
 
 
-async def delete_reminder_rule(
+async def delete_automated_reminder_rule(
     db: AsyncSession, *, org_id: uuid.UUID, rule_id: uuid.UUID
 ) -> bool:
     """Delete a reminder rule. Returns True if deleted, False if not found."""

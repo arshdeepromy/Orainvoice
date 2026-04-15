@@ -119,7 +119,7 @@ describe('Property 3: Signup page error message passthrough', () => {
         { numRuns: 10 },
       )
     },
-    { timeout: 60_000 },
+    60_000,
   )
 })
 
@@ -183,7 +183,7 @@ describe('Property 7: Plan display completeness', () => {
         { numRuns: 15 },
       )
     },
-    { timeout: 60_000 },
+    60_000,
   )
 })
 
@@ -229,6 +229,6 @@ describe('Property 4: Verify page error message passthrough', () => {
         { numRuns: 10 },
       )
     },
-    { timeout: 60_000 },
+    60_000,
   )
 })

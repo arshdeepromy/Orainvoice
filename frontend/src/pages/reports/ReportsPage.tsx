@@ -1,4 +1,5 @@
 import { Tabs } from '../../components/ui'
+import { useModules } from '../../contexts/ModuleContext'
 import RevenueSummary from './RevenueSummary'
 import InvoiceStatus from './InvoiceStatus'
 import OutstandingInvoices from './OutstandingInvoices'
@@ -17,6 +18,9 @@ import FleetReport from './FleetReport'
  * Requirements: 45.1-45.7, 66.4
  */
 export default function ReportsPage() {
+  const { isEnabled } = useModules()
+  const showVehicles = isEnabled('vehicles')
+
   const tabs = [
     { id: 'revenue', label: 'Revenue', content: <RevenueSummary /> },
     { id: 'invoice-status', label: 'Invoice Status', content: <InvoiceStatus /> },
@@ -24,10 +28,10 @@ export default function ReportsPage() {
     { id: 'top-services', label: 'Top Services', content: <TopServices /> },
     { id: 'gst-return', label: 'GST Return', content: <GstReturnSummary /> },
     { id: 'customer-statement', label: 'Customer Statement', content: <CustomerStatement /> },
-    { id: 'carjam-usage', label: 'Carjam Usage', content: <CarjamUsage /> },
+    ...(showVehicles ? [{ id: 'carjam-usage', label: 'Carjam Usage', content: <CarjamUsage /> }] : []),
     { id: 'sms-usage', label: 'SMS Usage', content: <SmsUsage /> },
     { id: 'storage', label: 'Storage', content: <StorageUsage /> },
-    { id: 'fleet', label: 'Fleet', content: <FleetReport /> },
+    ...(showVehicles ? [{ id: 'fleet', label: 'Fleet', content: <FleetReport /> }] : []),
   ]
 
   return (

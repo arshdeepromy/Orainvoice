@@ -1,7 +1,7 @@
 """Password hashing and verification using bcrypt directly.
 
-Uses the ``bcrypt`` library (already a dependency of passlib[bcrypt])
-to avoid passlib compatibility issues with newer bcrypt releases.
+Uses the ``bcrypt`` library for password hashing without the passlib
+wrapper, avoiding compatibility issues with newer bcrypt releases.
 """
 
 import bcrypt

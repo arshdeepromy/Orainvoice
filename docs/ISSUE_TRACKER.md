@@ -3634,3 +3634,31 @@ This follows the established pattern used everywhere else in the codebase (per p
 - `app/modules/invoices/service.py` — fixed async/sync mismatch in create_credit_note()
 
 **Related Issues**: ISSUE-106 (same class of MissingGreenlet bug)
+
+
+---
+
+### ISSUE-110: Login returns 403 "Missing CSRF token" after org-security-settings deployment
+
+- **Date**: 2026-04-12
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: After deploying the org-security-settings feature, login via the UI returned 403 Forbidden with "Missing CSRF token". The app container also initially crashed with `AmbiguousForeignKeysError` on the User ↔ CustomRole relationship.
+
+**Root Cause**: Two issues:
+
+1. **AmbiguousForeignKeysError**: The new `CustomRole` model has a `created_by` FK to `users.id`, and `User` has `custom_role_id` FK to `custom_roles.id`. SQLAlchemy couldn't determine which FK to use for the `User.custom_role` / `CustomRole.users` relationship. Both sides needed explicit `foreign_keys` arguments.
+
+2. **CSRF 403 on login**: The `SecurityHeadersMiddleware` CSRF check blocks POST requests when a `session` cookie is present but no `X-CSRF-Token` header is sent. The login endpoint (`/api/v1/auth/login`) and token refresh (`/api/v1/auth/token/refresh`) were not in the `_CSRF_EXEMPT_PATHS` set. When a user had a stale session cookie from a previous login, the CSRF check rejected the login POST before it could authenticate.
+
+**Fix Applied**:
+
+1. Added `foreign_keys="[User.custom_role_id]"` to both `User.custom_role` and `CustomRole.users` relationships in `app/modules/auth/models.py`.
+2. Added all pre-authentication auth endpoints to `_CSRF_EXEMPT_PATHS` in `app/middleware/security_headers.py`: login, token refresh, signup, password reset, MFA verify/challenge, passkey login, Google OAuth, email verification, and captcha verification.
+
+**Files Changed**:
+- `app/modules/auth/models.py` — added `foreign_keys` to User ↔ CustomRole relationships
+- `app/middleware/security_headers.py` — expanded `_CSRF_EXEMPT_PATHS` with all pre-auth endpoints

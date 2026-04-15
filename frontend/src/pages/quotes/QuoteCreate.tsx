@@ -137,7 +137,7 @@ function CustomerSearch({
   const [loading, setLoading] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {

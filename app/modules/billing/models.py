@@ -2,6 +2,7 @@
 
 Tables:
 - org_payment_methods: saved payment method metadata per organisation (RLS enabled)
+- billing_receipts: record of each recurring billing charge
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     SmallInteger,
     String,
     func,
@@ -72,3 +74,78 @@ class OrgPaymentMethod(Base):
 
     # Relationships
     organisation = relationship("Organisation", backref="payment_methods")
+
+
+class BillingReceipt(Base):
+    """Record of each recurring billing charge."""
+
+    __tablename__ = "billing_receipts"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stripe_payment_intent_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    billing_date: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    billing_interval: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )
+
+    # Breakdown (all in cents)
+    plan_amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    sms_overage_cents: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    carjam_overage_cents: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    storage_addon_cents: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    subtotal_excl_gst_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    gst_amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    processing_fee_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Descriptive
+    plan_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    sms_overage_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    carjam_overage_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    storage_addon_gb: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+
+    # Metadata
+    currency: Mapped[str] = mapped_column(
+        String(3), nullable=False, server_default="'nzd'"
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="'paid'"
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_billing_receipts_org_id", "org_id"),
+        Index("ix_billing_receipts_billing_date", "billing_date"),
+    )
+
+    # Relationships
+    organisation = relationship("Organisation", backref="billing_receipts")

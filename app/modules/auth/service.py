@@ -23,13 +23,35 @@ from app.modules.auth.models import Session, User, UserMfaMethod, UserPasskeyCre
 from app.modules.auth.password import verify_password
 from app.integrations.google_oauth import GoogleUserInfo
 from app.modules.auth.schemas import LoginRequest, MFAChallengeResponse, MFARequiredResponse, TokenResponse
+from app.modules.auth.security_settings_schemas import LockoutPolicy
 
 logger = logging.getLogger(__name__)
 
-# Lockout thresholds
+# Lockout thresholds (kept as fallback defaults)
 TEMP_LOCK_THRESHOLD = 5
 TEMP_LOCK_MINUTES = 15
 PERMANENT_LOCK_THRESHOLD = 10
+
+
+def get_lockout_policy(org_settings: dict | None) -> LockoutPolicy:
+    """Extract lockout policy from org settings, falling back to hardcoded defaults.
+
+    If *org_settings* is ``None``, empty, or missing the ``lockout_policy``
+    key, a :class:`LockoutPolicy` with the default values (5, 15, 10) is
+    returned.
+    """
+    if not org_settings:
+        return LockoutPolicy()
+
+    lockout_data = org_settings.get("lockout_policy")
+    if not lockout_data or not isinstance(lockout_data, dict):
+        return LockoutPolicy()
+
+    try:
+        return LockoutPolicy(**lockout_data)
+    except Exception:
+        # Malformed data — fall back to defaults silently
+        return LockoutPolicy()
 
 
 def _hash_refresh_token(token: str) -> str:
@@ -43,15 +65,15 @@ async def authenticate_user(
     ip_address: str | None,
     device_type: str | None,
     browser: str | None,
+    user_agent: str | None = None,
 ) -> TokenResponse | MFAChallengeResponse:
     """Validate credentials and return tokens or MFA challenge.
 
     Raises ``ValueError`` with a generic message on any failure so the
     caller can return a uniform 401 without leaking whether the email exists.
 
-    Implements account lockout:
-    - 5 consecutive failures → 15-minute temporary lock
-    - 10 consecutive failures → permanent lock + email alert
+    Implements account lockout using org-configured thresholds via
+    ``get_lockout_policy()``, falling back to hardcoded defaults.
     """
     # 1. Look up user by email
     result = await db.execute(select(User).where(User.email == payload.email))
@@ -99,7 +121,19 @@ async def authenticate_user(
         if ip_blocked:
             raise ValueError("IP address not authorised")
 
-    # 2. Check account lockout
+    # 2. Load org settings for policy engines
+    org_settings: dict = {}
+    if user.org_id:
+        from sqlalchemy import text as _text
+        _org_result = await db.execute(
+            _text("SELECT settings FROM organisations WHERE id = :org_id"),
+            {"org_id": str(user.org_id)},
+        )
+        _org_row = _org_result.first()
+        org_settings = (_org_row[0] if _org_row and _org_row[0] else {})
+
+    # 2a. Check account lockout (using org-configured thresholds)
+    lockout_policy = get_lockout_policy(org_settings)
     now = datetime.now(timezone.utc)
     if user.locked_until is not None:
         if user.locked_until > now:
@@ -121,7 +155,7 @@ async def authenticate_user(
     if not verify_password(payload.password, user.password_hash):
         user.failed_login_count = (user.failed_login_count or 0) + 1
 
-        if user.failed_login_count >= PERMANENT_LOCK_THRESHOLD:
+        if user.failed_login_count >= lockout_policy.permanent_lock_threshold:
             # Permanent lock — deactivate account and send email
             user.locked_until = None
             user.is_active = False
@@ -134,9 +168,9 @@ async def authenticate_user(
                 user_id=user.id,
                 org_id=user.org_id,
             )
-        elif user.failed_login_count >= TEMP_LOCK_THRESHOLD:
-            # Temporary lock — 15 minutes
-            user.locked_until = now + timedelta(minutes=TEMP_LOCK_MINUTES)
+        elif user.failed_login_count >= lockout_policy.temp_lock_threshold:
+            # Temporary lock — org-configured duration
+            user.locked_until = now + timedelta(minutes=lockout_policy.temp_lock_minutes)
             await _audit_failed_login(
                 db,
                 ip_address=ip_address,
@@ -184,6 +218,21 @@ async def authenticate_user(
             default_method=default,
         )
 
+    # 4a. Check if org MFA policy requires MFA setup (no verified methods)
+    from app.modules.auth.mfa_service import user_requires_mfa_setup
+    mfa_setup_required = await user_requires_mfa_setup(user, db, org_settings=org_settings)
+    if mfa_setup_required:
+        # User must set up MFA before accessing the platform
+        user.failed_login_count = 0
+        user.locked_until = None
+        mfa_token = secrets.token_urlsafe(32)
+        await _store_challenge_session(mfa_token, user.id, [], phone_number=None)
+        return MFARequiredResponse(
+            mfa_required=True,
+            mfa_token=mfa_token,
+            mfa_methods=[],
+        )
+
     # 5. Issue JWT pair
     # Global admins should not have org_id in their JWT (they access all orgs)
     token_org_id = None if user.role == "global_admin" else user.org_id
@@ -196,19 +245,25 @@ async def authenticate_user(
     )
     refresh_token = create_refresh_token()
 
-    # 6. Determine refresh token expiry
+    # 6. Determine refresh token expiry (using org session policy)
+    from app.modules.auth.jwt import get_session_policy
+    session_policy = get_session_policy(org_settings, user_id=user.id, user_role=user.role)
+
     if user.role == "kiosk":
         expires_delta = timedelta(days=30)
     elif payload.remember_me:
         expires_delta = timedelta(days=settings.refresh_token_remember_days)
     else:
-        expires_delta = timedelta(days=settings.refresh_token_expire_days)
+        expires_delta = timedelta(days=session_policy.refresh_token_expire_days)
 
     expires_at = datetime.now(timezone.utc) + expires_delta
 
     # 7. Create session record
-    # Enforce session limit before creating new session
-    await enforce_session_limit(db=db, user_id=user.id)
+    # Enforce session limit before creating new session (using org session policy)
+    await enforce_session_limit(
+        db=db, user_id=user.id,
+        max_sessions=session_policy.max_sessions_per_user,
+    )
 
     family_id = uuid.uuid4()
     session = Session(
@@ -243,7 +298,7 @@ async def authenticate_user(
             "remember_me": payload.remember_me,
         },
         ip_address=ip_address,
-        device_info=f"{device_type}; {browser}" if device_type or browser else None,
+        device_info=user_agent,
     )
 
     # 10. Anomalous login detection (async, non-blocking)
@@ -824,6 +879,7 @@ async def authenticate_google(
     ip_address: str | None,
     device_type: str | None,
     browser: str | None,
+    user_agent: str | None = None,
 ) -> TokenResponse | MFAChallengeResponse:
     """Authenticate a user via Google OAuth.
 
@@ -940,7 +996,7 @@ async def authenticate_google(
             "google_id": google_user_info.google_id,
         },
         ip_address=ip_address,
-        device_info=f"{device_type}; {browser}" if device_type or browser else None,
+        device_info=user_agent,
     )
 
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
@@ -1205,6 +1261,7 @@ async def verify_passkey_login(
     ip_address: str | None = None,
     device_type: str | None = None,
     browser: str | None = None,
+    user_agent: str | None = None,
 ) -> TokenResponse:
     """Verify a WebAuthn assertion response and issue JWT tokens.
 
@@ -1408,7 +1465,7 @@ async def verify_passkey_login(
             "mfa_satisfied": True,
         },
         ip_address=ip_address,
-        device_info=f"{device_type}; {browser}" if device_type or browser else None,
+        device_info=user_agent,
     )
 
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
@@ -1837,14 +1894,21 @@ async def complete_password_reset(
 ) -> None:
     """Complete a password reset using a valid reset token.
 
-    Validates the token, checks the new password against HIBP,
-    updates the password hash, and invalidates all active sessions.
+    Validates the token, checks the new password against HIBP and org
+    password policy, updates the password hash, records in history,
+    updates password_changed_at, and invalidates all active sessions.
 
     Raises ``ValueError`` on invalid/expired token or compromised password.
     """
     from app.core.redis import redis_pool
     from app.integrations.hibp import is_password_compromised
     from app.modules.auth.password import hash_password
+    from app.modules.auth.password_policy import (
+        check_password_history,
+        record_password_in_history,
+        validate_password_against_policy,
+    )
+    from app.modules.auth.security_settings_service import get_security_settings
 
     token_hash = _hash_reset_token(token)
     redis_key = f"password_reset:{token_hash}"
@@ -1870,8 +1934,33 @@ async def complete_password_reset(
             "This password has appeared in a known data breach. Please choose a different password."
         )
 
+    # 3a. Validate against org password policy
+    _org_sec_settings = None
+    if user.org_id:
+        _org_sec_settings = await get_security_settings(db, user.org_id)
+        policy = _org_sec_settings.password_policy
+        errors = validate_password_against_policy(new_password, policy)
+        if errors:
+            raise ValueError("; ".join(errors))
+
+        # Check password history
+        if policy.history_count > 0:
+            history_match = await check_password_history(
+                db, user.id, new_password, policy.history_count,
+            )
+            if history_match:
+                raise ValueError(
+                    f"Password was used recently. Choose a password you haven't used in the last {policy.history_count} changes."
+                )
+
     # 4. Update password
-    user.password_hash = hash_password(new_password)
+    new_hash = hash_password(new_password)
+    user.password_hash = new_hash
+    user.password_changed_at = datetime.now(timezone.utc)
+
+    # 4a. Record in password history
+    if _org_sec_settings and _org_sec_settings.password_policy.history_count > 0:
+        await record_password_in_history(db, user.id, new_hash)
 
     # 5. Invalidate the reset token (delete from Redis)
     await redis_pool.delete(redis_key)
@@ -1969,8 +2058,39 @@ async def reset_via_backup_code(
             "This password has appeared in a known data breach. Please choose a different password."
         )
 
+    # 3a. Validate against org password policy
+    _org_sec_settings = None
+    if user.org_id:
+        from app.modules.auth.password_policy import (
+            check_password_history,
+            record_password_in_history,
+            validate_password_against_policy,
+        )
+        from app.modules.auth.security_settings_service import get_security_settings
+
+        _org_sec_settings = await get_security_settings(db, user.org_id)
+        policy = _org_sec_settings.password_policy
+        errors = validate_password_against_policy(new_password, policy)
+        if errors:
+            raise ValueError("; ".join(errors))
+
+        if policy.history_count > 0:
+            history_match = await check_password_history(
+                db, user.id, new_password, policy.history_count,
+            )
+            if history_match:
+                raise ValueError(
+                    f"Password was used recently. Choose a password you haven't used in the last {policy.history_count} changes."
+                )
+
     # 4. Update password
-    user.password_hash = hash_password(new_password)
+    new_hash = hash_password(new_password)
+    user.password_hash = new_hash
+    user.password_changed_at = datetime.now(timezone.utc)
+
+    # 4a. Record in password history
+    if _org_sec_settings and _org_sec_settings.password_policy.history_count > 0:
+        await record_password_in_history(db, user.id, new_hash)
 
     # 5. Invalidate ALL active sessions
     sessions_revoked = await invalidate_all_sessions(
@@ -2153,9 +2273,30 @@ async def verify_email_and_set_password(
             "Please choose a different password."
         )
 
+    # 3a. Validate against org password policy
+    _org_sec_settings = None
+    if user.org_id:
+        from app.modules.auth.password_policy import (
+            record_password_in_history,
+            validate_password_against_policy,
+        )
+        from app.modules.auth.security_settings_service import get_security_settings
+
+        _org_sec_settings = await get_security_settings(db, user.org_id)
+        policy = _org_sec_settings.password_policy
+        errors = validate_password_against_policy(new_password, policy)
+        if errors:
+            raise ValueError("; ".join(errors))
+
     # 4. Mark email as verified and set password
     user.is_email_verified = True
-    user.password_hash = hash_password(new_password)
+    new_hash = hash_password(new_password)
+    user.password_hash = new_hash
+    user.password_changed_at = datetime.now(timezone.utc)
+
+    # 4a. Record in password history
+    if _org_sec_settings and _org_sec_settings.password_policy.history_count > 0:
+        await record_password_in_history(db, user.id, new_hash)
 
     # 5. Consume the invitation token
     await redis_pool.delete(redis_key)

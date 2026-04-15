@@ -16,7 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
-CONNECTION_TYPES = ("usb", "bluetooth", "network")
+CONNECTION_TYPES = ("usb", "bluetooth", "network", "star_webprnt", "epson_epos", "generic_http", "browser_print")
 JOB_TYPES = ("receipt", "kitchen", "report")
 JOB_STATUSES = ("pending", "printing", "completed", "failed")
 

@@ -8,6 +8,9 @@ import { GlobalSearchBar } from '@/components/search'
 import { BranchSelector } from '@/components/branch/BranchSelector'
 import { useBranch } from '@/contexts/BranchContext'
 import { getActiveBranchIndicatorState } from '@/pages/settings/branch-staff-helpers'
+import { usePaymentMethodEnforcement } from '@/hooks/usePaymentMethodEnforcement'
+import { BlockingPaymentModal } from '@/components/billing/BlockingPaymentModal'
+import { ExpiringPaymentWarningModal } from '@/components/billing/ExpiringPaymentWarningModal'
 
 interface QuickAction {
   label: string
@@ -42,8 +45,8 @@ const navItems: NavItem[] = [
   { to: '/jobs', label: 'Jobs', icon: JobCardsIcon, module: 'jobs', flagKey: 'jobs' },
   { to: '/bookings', label: 'Bookings', icon: BookingsIcon, module: 'bookings', flagKey: 'bookings' },
   { to: '/inventory', label: 'Inventory', icon: InventoryIcon, module: 'inventory', flagKey: 'inventory' },
-  { to: '/items', label: 'Items', icon: CatalogueIcon },
-  { to: '/catalogue', label: 'Catalogue', icon: CatalogueIcon },
+  { to: '/items', label: 'Items', icon: CatalogueIcon, module: 'inventory' },
+  { to: '/catalogue', label: 'Catalogue', icon: CatalogueIcon, module: 'inventory' },
   { to: '/staff', label: 'Staff', icon: StaffIcon, module: 'staff', flagKey: 'staff' },
   { to: '/projects', label: 'Projects', icon: ProjectsIcon, module: 'projects', flagKey: 'projects' },
   { to: '/expenses', label: 'Expenses', icon: ExpensesIcon, module: 'expenses', flagKey: 'expenses' },
@@ -66,6 +69,9 @@ const navItems: NavItem[] = [
   { to: '/ecommerce', label: 'Ecommerce', icon: EcommerceIcon, module: 'ecommerce', flagKey: 'ecommerce' },
   { to: '/sms', label: 'SMS', icon: SmsIcon, module: 'sms', flagKey: 'sms' },
   { to: '/claims', label: 'Claims', icon: ClaimsIcon, module: 'customer_claims' },
+  { to: '/accounting', label: 'Accounting', icon: AccountingIcon, module: 'accounting' },
+  { to: '/banking/accounts', label: 'Banking', icon: BankingIcon, module: 'accounting' },
+  { to: '/tax/gst-periods', label: 'Tax', icon: TaxIcon, module: 'accounting' },
   { to: '/notifications', label: 'Notifications', icon: NotificationsIcon },
   { to: '/data', label: 'Data', icon: DataIcon },
   { to: '/reports', label: 'Reports', icon: ReportsIcon },
@@ -93,6 +99,12 @@ export function OrgLayout() {
   const { flags } = useFeatureFlags()
   const navigate = useNavigate()
   const branding = settings?.branding
+
+  // Payment method enforcement — blocking/warning modals for org_admin
+  const {
+    showBlockingModal, showWarningModal, expiringMethod,
+    dismissWarning, refetchStatus,
+  } = usePaymentMethodEnforcement()
 
   // Active branch indicator state
   const { selectedBranchId: activeBranchId, branches: branchList, isBranchLocked } = useBranch()
@@ -171,7 +183,14 @@ export function OrgLayout() {
   }, [userMenuOpen])
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ backgroundColor: 'var(--content-bg)' }}>
+    <>
+      <BlockingPaymentModal open={showBlockingModal} onSuccess={refetchStatus} />
+      <ExpiringPaymentWarningModal
+        open={showWarningModal && !showBlockingModal}
+        expiringMethod={expiringMethod}
+        onDismiss={dismissWarning}
+      />
+      <div className="flex h-screen overflow-hidden" style={{ backgroundColor: 'var(--content-bg)' }}>
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div
@@ -449,6 +468,7 @@ export function OrgLayout() {
       {/* Global search overlay */}
       <GlobalSearchBar />
     </div>
+    </>
   )
 }
 
@@ -726,6 +746,31 @@ function ClaimsIcon() {
   return (
     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  )
+}
+
+function AccountingIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4h16v16H4z" />
+    </svg>
+  )
+}
+
+function BankingIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+    </svg>
+  )
+}
+
+function TaxIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z" />
     </svg>
   )
 }

@@ -20,7 +20,9 @@
       "Bash(find \"C:\\Users\\Romy\\Desktop\\Invoicing\" -name \"*.py\" -exec grep -l -i \"refund\\|credit.*note\\|credit_note\" {} ;)",
       "Bash(find \"C:\\Users\\Romy\\Desktop\\Invoicing\\alembic\\versions\" -name \"*.py\" -exec grep -l \"credit_note\" {} ;)",
       "Bash(find \"C:\\Users\\Romy\\Desktop\\Invoicing\\frontend\\src\" -name \"*.tsx\" -exec grep -l -i \"refund\\|credit.*note\\|credit_note\" {} ;)",
-      "Bash(find \"C:\\Users\\Romy\\Desktop\\Invoicing\\frontend\\src\" -name \"*refund*\" -o -name \"*credit*\")"
+      "Bash(find \"C:\\Users\\Romy\\Desktop\\Invoicing\\frontend\\src\" -name \"*refund*\" -o -name \"*credit*\")",
+      "Bash(docker ps --format \"table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}\")",
+      "Bash(docker-compose ps)"
     ],
     "deny": []
   }

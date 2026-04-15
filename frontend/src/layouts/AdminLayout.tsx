@@ -38,6 +38,7 @@ const adminNavItems: AdminNavItem[] = [
   { to: '/admin/branding', label: 'Branding' },
   { to: '/admin/integrations', label: 'Integrations' },
   { to: '/admin/settings', label: 'Settings' },
+  { to: '/admin/security', label: 'Security' },
   { type: 'section', label: 'Monitoring' },
   { to: '/admin/analytics', label: 'Analytics', flagKey: 'analytics' },
   { to: '/admin/reports', label: 'Reports', flagKey: 'reports' },
@@ -231,7 +232,7 @@ export function AdminLayout() {
             
             {userMenuOpen && (
               <div 
-                className="absolute right-0 mt-2 w-48 rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 z-50"
+                className="absolute right-0 mt-2 w-48 rounded-md bg-white shadow-lg ring-1 ring-black/5 z-50"
                 role="menu"
                 aria-orientation="vertical"
               >

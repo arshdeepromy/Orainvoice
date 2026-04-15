@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     xero_client_id: str = ""
     xero_client_secret: str = ""
 
+    # --- Akahu ---
+    akahu_client_id: str = ""
+    akahu_client_secret: str = ""
+    akahu_app_token: str = ""
+
     # --- MYOB ---
     myob_client_id: str = ""
     myob_client_secret: str = ""

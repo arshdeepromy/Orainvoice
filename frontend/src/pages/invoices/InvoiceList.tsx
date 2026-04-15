@@ -16,6 +16,8 @@ import {
   shouldShowRefundNote,
   formatNZD as formatNZDUtil,
 } from '../../components/invoices/refund-credit-note.utils'
+import POSReceiptPreview from '../../components/pos/POSReceiptPreview'
+import { invoiceToReceiptData } from '../../utils/invoiceReceiptMapper'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -338,6 +340,17 @@ const PRINT_STYLES = `
     margin: 10mm;
     size: A4;
   }
+
+  /* Hide POS receipt column in normal invoice print */
+  [data-preview="receipt"] {
+    display: none !important;
+  }
+
+  /* Remove selection ring in print */
+  [data-preview] {
+    box-shadow: none !important;
+    outline: none !important;
+  }
 }
 `
 
@@ -384,6 +397,7 @@ export default function InvoiceList() {
   const [pdfMenuOpen, setPdfMenuOpen] = useState(false)
   const [moreMenuOpen, setMoreMenuOpen] = useState(false)
   const [reminderMenuOpen, setReminderMenuOpen] = useState(false)
+  const [selectedPreview, setSelectedPreview] = useState<'invoice' | 'receipt'>('invoice')
   const [shareModalOpen, setShareModalOpen] = useState(false)
   const [shareUrl, setShareUrl] = useState('')
   const [shareCopied, setShareCopied] = useState(false)
@@ -395,8 +409,8 @@ export default function InvoiceList() {
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
   const [deleteTargetNumber, setDeleteTargetNumber] = useState('')
 
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
-  const abortRef = useRef<AbortController>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const abortRef = useRef<AbortController>(undefined)
   const sendMenuRef = useRef<HTMLDivElement>(null)
   const pdfMenuRef = useRef<HTMLDivElement>(null)
   const moreMenuRef = useRef<HTMLDivElement>(null)
@@ -589,6 +603,65 @@ export default function InvoiceList() {
   const handlePrint = () => {
     setPdfMenuOpen(false)
     window.print()
+  }
+
+  const handlePrintReceipt = () => {
+    setPdfMenuOpen(false)
+    if (!invoice) return
+    const d = invoiceToReceiptData(invoice)
+    const fmt = (n: number | string | null | undefined) => '$' + Number(n ?? 0).toFixed(2)
+
+    let html = `<!DOCTYPE html><html><head><title>POS Receipt</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: white; font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.6; color: #111; width: 72mm; margin: 0 auto; padding: 4mm 0; }
+  .center { text-align: center; }
+  .bold { font-weight: bold; }
+  .text-sm { font-size: 14px; }
+  .row { display: flex; justify-content: space-between; }
+  .sep { border-top: 1px dashed #9ca3af; margin: 4px 0; }
+  .sep-double { border-top: 2px double #9ca3af; margin: 4px 0; }
+  .mt { margin-top: 12px; }
+  @page { margin: 3mm; size: 80mm auto; }
+</style></head><body>`
+
+    html += `<div class="center"><div class="text-sm bold">${d.orgName}</div>`
+    if (d.orgAddress) html += `<div>${d.orgAddress}</div>`
+    if (d.orgPhone) html += `<div>${d.orgPhone}</div>`
+    if (d.gstNumber) html += `<div>GST: ${d.gstNumber}</div>`
+    html += `</div><div class="sep"></div>`
+    if (d.receiptNumber) html += `<div class="row"><span>Receipt #:</span><span>${d.receiptNumber}</span></div>`
+    html += `<div class="row"><span>Date:</span><span>${d.date}</span></div>`
+    if (d.customerName) html += `<div class="row"><span>Customer:</span><span>${d.customerName}</span></div>`
+    html += `<div class="sep"></div>`
+    for (const item of d.items ?? []) {
+      html += `<div>${item.name}</div><div class="row"><span>&nbsp;&nbsp;${item.quantity} x ${fmt(item.unitPrice)}</span><span>${fmt(item.total)}</span></div>`
+    }
+    html += `<div class="sep"></div>`
+    html += `<div class="row"><span>Subtotal:</span><span>${fmt(d.subtotal)}</span></div>`
+    if (d.discountAmount && d.discountAmount > 0) html += `<div class="row"><span>Discount:</span><span>-${fmt(d.discountAmount)}</span></div>`
+    html += `<div class="row"><span>${d.taxLabel ?? 'Tax:'}</span><span>${fmt(d.taxAmount)}</span></div>`
+    html += `<div class="sep-double"></div><div class="row bold"><span>TOTAL:</span><span>${fmt(d.total)}</span></div><div class="sep-double"></div>`
+    html += `<div class="row"><span>Payment:</span><span>${(d.paymentMethod ?? '').toUpperCase()}</span></div>`
+    if (d.amountPaid != null) html += `<div class="row"><span>Amount Paid:</span><span>${fmt(d.amountPaid)}</span></div>`
+    if (d.totalRefunded && d.totalRefunded > 0) html += `<div class="row"><span>Refunded:</span><span>${fmt(d.totalRefunded)}</span></div>`
+    if (d.balanceDue && d.balanceDue > 0) html += `<div class="row bold"><span>BALANCE DUE:</span><span>${fmt(d.balanceDue)}</span></div>`
+    html += `<div class="center mt">${d.footer ?? 'Thank you for your business!'}</div>`
+    html += `</body></html>`
+
+    // Use a hidden iframe — no popup window
+    const iframe = document.createElement('iframe')
+    iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:0;height:0;border:none;'
+    document.body.appendChild(iframe)
+    const doc = iframe.contentDocument || iframe.contentWindow?.document
+    if (!doc) { document.body.removeChild(iframe); return }
+    doc.open()
+    doc.write(html)
+    doc.close()
+    setTimeout(() => {
+      iframe.contentWindow?.print()
+      setTimeout(() => document.body.removeChild(iframe), 1000)
+    }, 200)
   }
 
   const handleSendReminder = async (channel: 'email' | 'sms') => {
@@ -1038,7 +1111,13 @@ export default function InvoiceList() {
                         onClick={handlePrint}
                         className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
                       >
-                        Print
+                        Print Invoice
+                      </button>
+                      <button
+                        onClick={handlePrintReceipt}
+                        className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                      >
+                        Print POS Receipt
                       </button>
                     </div>
                   )}
@@ -1162,23 +1241,17 @@ export default function InvoiceList() {
               </div>
             )}
 
-            {/* Refund banner */}
-            {(invoice.status === 'refunded' || invoice.status === 'partially_refunded') && (
-              <div className="mx-6 mt-3 rounded-lg bg-orange-50 border border-orange-200 px-4 py-2.5 text-sm text-orange-800">
-                <div className="font-medium">
-                  {invoice.status === 'refunded' ? 'This invoice has been fully refunded.' : 'This invoice has been partially refunded.'}
-                </div>
-                {(invoice.payments || []).filter(p => p.is_refund).map((p, i) => (
-                  <div key={i} className="text-orange-700 mt-0.5">
-                    {formatNZDUtil(p.amount)} refunded via {p.method}{p.refund_note ? ` — ${p.refund_note}` : ''}
-                  </div>
-                ))}
-              </div>
-            )}
 
-            {/* ---- Invoice Preview Card ---- */}
+
+            {/* ---- Invoice Preview + POS Receipt Side by Side ---- */}
             <div className="flex-1 overflow-y-auto px-6 py-4">
-              <div className="max-w-3xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+              <div className="flex gap-4 max-w-6xl mx-auto items-start">
+              {/* Left: Invoice Preview Card */}
+              <div className="flex-1 min-w-0" data-preview="invoice">
+              <div
+                onClick={() => setSelectedPreview('invoice')}
+                className={`max-w-3xl bg-white rounded-xl shadow-sm overflow-hidden cursor-pointer transition-all ${selectedPreview === 'invoice' ? 'ring-2 ring-blue-500 border border-blue-300' : 'border border-gray-200 hover:border-gray-300'}`}
+              >
                 {/* Watermark for draft */}
                 <div className="relative">
                   {isDraft && (
@@ -1513,7 +1586,7 @@ export default function InvoiceList() {
 
               {/* ---- Payment History ---- */}
               {(invoice.payments || []).length > 0 && (
-                <div className="max-w-3xl mx-auto mt-4 bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                <div className="mt-4 bg-white rounded-xl shadow-sm border border-gray-200 p-5">
                   <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Payment History</h3>
                   <table className="w-full text-sm">
                     <thead>
@@ -1572,7 +1645,7 @@ export default function InvoiceList() {
 
               {/* ---- Credit Notes ---- */}
               {(invoice.credit_notes || []).length > 0 && (
-                <div className="max-w-3xl mx-auto mt-4 bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                <div className="mt-4 bg-white rounded-xl shadow-sm border border-gray-200 p-5">
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Credit Notes</h3>
                     {isCreditNoteButtonVisible(invoice.status) && (
@@ -1618,11 +1691,23 @@ export default function InvoiceList() {
 
               {/* Internal notes */}
               {invoice.notes_internal && (
-                <div className="max-w-3xl mx-auto mt-4 bg-amber-50 rounded-xl border border-amber-200 p-5">
+                <div className="mt-4 bg-amber-50 rounded-xl border border-amber-200 p-5">
                   <h3 className="text-xs font-semibold text-amber-600 uppercase tracking-wider mb-2">Internal Note</h3>
                   <p className="text-sm text-gray-700 whitespace-pre-wrap">{invoice.notes_internal}</p>
                 </div>
               )}
+              </div>{/* end left column */}
+
+              {/* Right: POS Receipt Preview */}
+              <div
+                data-preview="receipt"
+                onClick={() => setSelectedPreview('receipt')}
+                className={`w-[280px] shrink-0 sticky top-0 cursor-pointer rounded-xl p-3 transition-all ${selectedPreview === 'receipt' ? 'ring-2 ring-blue-500 bg-blue-50/30' : 'hover:bg-gray-50'}`}
+              >
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">POS Receipt</h3>
+                <POSReceiptPreview receiptData={invoiceToReceiptData(invoice)} paperWidth={80} />
+              </div>
+              </div>{/* end flex row */}
 
               {/* Bottom spacer */}
               <div className="h-8" />

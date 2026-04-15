@@ -173,7 +173,7 @@ describe('Property 33: Module guard prevents rendering of disabled modules', () 
         { numRuns: 100 },
       )
     },
-    { timeout: 120_000 },
+    120_000,
   )
 })
 
@@ -227,7 +227,7 @@ describe('Property 34: Terminology substitution with fallback', () => {
         { numRuns: 100 },
       )
     },
-    { timeout: 120_000 },
+    120_000,
   )
 
   it(
@@ -270,6 +270,6 @@ describe('Property 34: Terminology substitution with fallback', () => {
         { numRuns: 100 },
       )
     },
-    { timeout: 120_000 },
+    120_000,
   )
 })

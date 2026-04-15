@@ -1013,10 +1013,10 @@ from app.modules.notifications.schemas import (
     ReminderRuleUpdateRequest,
 )
 from app.modules.notifications.service import (
-    list_reminder_rules,
-    create_reminder_rule as svc_create_reminder_rule,
-    update_reminder_rule as svc_update_reminder_rule,
-    delete_reminder_rule as svc_delete_reminder_rule,
+    list_automated_reminder_rules,
+    create_automated_reminder_rule as svc_create_reminder_rule,
+    update_automated_reminder_rule as svc_update_reminder_rule,
+    delete_automated_reminder_rule as svc_delete_reminder_rule,
     toggle_reminder_rule as svc_toggle_reminder_rule,
 )
 
@@ -1033,7 +1033,7 @@ async def list_reminders(
             status_code=403,
             content={"detail": "Organisation context required"},
         )
-    data = await list_reminder_rules(db, org_id=org_uuid)
+    data = await list_automated_reminder_rules(db, org_id=org_uuid)
     return ReminderRulesListResponse(**data)
 
 

@@ -105,8 +105,8 @@ export function GlobalSearchBar() {
 
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
-  const abortRef = useRef<AbortController>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const abortRef = useRef<AbortController>(undefined)
   const navigate = useNavigate()
 
   const flatItems = useMemo(

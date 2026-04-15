@@ -1,3 +1,4 @@
+import type { ElementType } from 'react'
 import { useTerm } from '@/contexts/TerminologyContext'
 
 interface TermLabelProps {
@@ -6,7 +7,7 @@ interface TermLabelProps {
   /** Fallback text if the term is not found */
   fallback: string
   /** Optional HTML element to render as (defaults to span) */
-  as?: keyof JSX.IntrinsicElements
+  as?: ElementType
   /** Optional className */
   className?: string
 }

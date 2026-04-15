@@ -15,6 +15,10 @@ import {
   shouldShowRefundNote,
   formatNZD as formatNZDUtil,
 } from '../../components/invoices/refund-credit-note.utils'
+import { printInvoiceReceipt, browserPrintReceipt, NoPrinterError, setFallbackMode } from '../../utils/posReceiptPrinter'
+import { invoiceToReceiptData } from '../../utils/invoiceReceiptMapper'
+import POSReceiptPreview from '../../components/pos/POSReceiptPreview'
+import PrinterErrorModal from '../../components/pos/PrinterErrorModal'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -251,6 +255,12 @@ export default function InvoiceDetail() {
   const [voiding, setVoiding] = useState(false)
   const [voidError, setVoidError] = useState('')
 
+  /* POS Print states */
+  const [posPrinting, setPosPrinting] = useState(false)
+  const [showReceiptPreview, setShowReceiptPreview] = useState(false)
+  const [printerError, setPrinterError] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
+  const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'neutral' }>({ show: false, message: '', type: 'success' })
+
   /* Credit Note & Refund modals */
   const [creditNoteModalOpen, setCreditNoteModalOpen] = useState(false)
   const [refundModalOpen, setRefundModalOpen] = useState(false)
@@ -391,6 +401,52 @@ export default function InvoiceDetail() {
     }
   }
 
+  /* ---- POS Print ---- */
+  const handlePosPrint = async () => {
+    if (!invoice) return
+    setPosPrinting(true)
+    setToast({ show: false, message: '', type: 'success' })
+    try {
+      const result = await printInvoiceReceipt(invoice)
+      if (result.method === 'browser') {
+        setToast({ show: true, message: 'Receipt sent to browser print dialog', type: 'neutral' })
+      } else {
+        setToast({ show: true, message: 'Receipt printed successfully', type: 'success' })
+      }
+    } catch (err: unknown) {
+      const message = err instanceof NoPrinterError
+        ? 'No default printer configured. Please set up a printer in Printer Settings.'
+        : err instanceof Error ? err.message : 'An unknown printer error occurred'
+      setPrinterError({ open: true, message })
+    } finally {
+      setPosPrinting(false)
+    }
+  }
+
+  const handlePrinterErrorBrowserPrint = async (enableFallback: boolean) => {
+    if (!invoice) return
+    setPrinterError({ open: false, message: '' })
+    if (enableFallback) {
+      setFallbackMode(true)
+    }
+    try {
+      const receiptData = invoiceToReceiptData(invoice)
+      await browserPrintReceipt(receiptData)
+      setToast({ show: true, message: 'Receipt sent to browser print dialog', type: 'neutral' })
+    } catch {
+      setActionMessage('Browser print fallback failed.')
+    }
+  }
+
+  /* Auto-dismiss toast after 3 seconds */
+  useEffect(() => {
+    if (!toast.show) return
+    const timer = setTimeout(() => {
+      setToast((prev) => ({ ...prev, show: false }))
+    }, 3000)
+    return () => clearTimeout(timer)
+  }, [toast.show])
+
   /* ---- Loading / Error states ---- */
   if (loading) {
     return (
@@ -506,6 +562,20 @@ export default function InvoiceDetail() {
           <Button size="sm" variant="secondary" onClick={handlePrint}>
             Print
           </Button>
+          {!isDraft && (
+            <Button size="sm" variant="secondary" onClick={handlePosPrint} loading={posPrinting}>
+              {posPrinting ? 'Printing…' : 'POS Print'}
+            </Button>
+          )}
+          {!isDraft && (
+            <Button
+              size="sm"
+              variant={showReceiptPreview ? 'primary' : 'secondary'}
+              onClick={() => setShowReceiptPreview((prev) => !prev)}
+            >
+              {showReceiptPreview ? 'Invoice View' : 'Receipt Preview'}
+            </Button>
+          )}
           <Button size="sm" variant="primary" onClick={handleDownloadPDF} loading={downloading}>
             Download PDF
           </Button>
@@ -533,6 +603,20 @@ export default function InvoiceDetail() {
         </div>
       )}
 
+      {/* POS Print toast */}
+      {toast.show && (
+        <div
+          className={`mb-4 rounded-md px-4 py-2 text-sm no-print ${
+            toast.type === 'success'
+              ? 'border border-green-200 bg-green-50 text-green-700'
+              : 'border border-gray-200 bg-gray-50 text-gray-700'
+          }`}
+          role="status"
+        >
+          {toast.message}
+        </div>
+      )}
+
       {/* Voided banner */}
       {isVoided && (
         <div className="mb-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="status">
@@ -540,17 +624,13 @@ export default function InvoiceDetail() {
         </div>
       )}
 
-      {/* Refund banner */}
-      {(invoice.status === 'refunded' || invoice.status === 'partially_refunded') && (
-        <div className="mb-6 rounded-md border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-800" role="status">
-          <div className="font-medium mb-1">
-            {invoice.status === 'refunded' ? 'This invoice has been fully refunded.' : 'This invoice has been partially refunded.'}
-          </div>
-          {(invoice.payments || []).filter(p => p.is_refund).map((p, i) => (
-            <div key={i} className="text-orange-700">
-              {formatNZDUtil(p.amount)} refunded via {p.method}{p.refund_note ? ` — ${p.refund_note}` : ''}
-            </div>
-          ))}
+
+
+      {/* ---- POS Receipt Preview ---- */}
+      {showReceiptPreview && invoice && (
+        <div className="mb-6 no-print">
+          <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">POS Receipt Preview</h2>
+          <POSReceiptPreview receiptData={invoiceToReceiptData(invoice)} paperWidth={80} />
         </div>
       )}
 
@@ -1018,6 +1098,13 @@ export default function InvoiceDetail() {
         onSuccess={fetchInvoice}
         invoiceId={invoice.id}
         refundableAmount={refundableAmount}
+      />
+
+      <PrinterErrorModal
+        open={printerError.open}
+        onClose={() => setPrinterError({ open: false, message: '' })}
+        errorMessage={printerError.message}
+        onBrowserPrint={handlePrinterErrorBrowserPrint}
       />
     </div>
   )

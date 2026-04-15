@@ -124,7 +124,7 @@ describe('Property 8: Items page displays all table columns', () => {
         { numRuns: 5 },
       )
     },
-    { timeout: 60_000 },
+    60_000,
   )
 })
 
@@ -241,7 +241,7 @@ describe('Property 9: BookingForm uses Items API', () => {
         { numRuns: 5 },
       )
     },
-    { timeout: 60_000 },
+    60_000,
   )
 
   it(
@@ -317,6 +317,6 @@ describe('Property 9: BookingForm uses Items API', () => {
         { numRuns: 5 },
       )
     },
-    { timeout: 60_000 },
+    60_000,
   )
 })

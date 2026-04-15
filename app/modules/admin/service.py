@@ -192,6 +192,15 @@ async def provision_organisation(
     # 10. Seed org_modules from the plan's enabled_modules
     await _sync_org_modules_from_plan(db, org.id, plan.enabled_modules or [])
 
+    # 11. Seed Chart of Accounts for the new organisation (Req 1.1)
+    try:
+        from app.modules.ledger.service import seed_coa_for_org
+        await seed_coa_for_org(db, org.id)
+    except Exception as exc:
+        logger.warning(
+            "COA seeding failed for org %s: %s", org.id, exc
+        )
+
     return {
         "organisation_id": str(org.id),
         "organisation_name": name,
@@ -2683,6 +2692,8 @@ async def list_organisations(
             "storage_quota_gb": org.storage_quota_gb,
             "storage_used_bytes": org.storage_used_bytes,
             "carjam_lookups_this_month": org.carjam_lookups_this_month,
+            "next_billing_date": org.next_billing_date,
+            "billing_interval": getattr(org, "billing_interval", "monthly") or "monthly",
             "last_login_at": last_login_at.isoformat() if last_login_at else None,
             "created_at": org.created_at,
             "updated_at": org.updated_at,
@@ -2698,6 +2709,7 @@ async def update_organisation(
     action: str,
     reason: str | None = None,
     new_plan_id: uuid.UUID | None = None,
+    next_billing_date: str | None = None,
     notify_org_admin: bool = False,
     updated_by: uuid.UUID,
     ip_address: str | None = None,
@@ -2717,7 +2729,7 @@ async def update_organisation(
     if org is None:
         raise ValueError("Organisation not found")
 
-    valid_actions = ("suspend", "reinstate", "activate", "deactivate", "delete_request", "hard_delete_request", "move_plan")
+    valid_actions = ("suspend", "reinstate", "activate", "deactivate", "delete_request", "hard_delete_request", "move_plan", "set_billing_date")
     if action not in valid_actions:
         raise ValueError(f"Invalid action. Must be one of: {', '.join(valid_actions)}")
 
@@ -2952,6 +2964,43 @@ async def update_organisation(
             "status": org.status,
             "previous_plan_id": previous_plan_id,
             "new_plan_id": str(new_plan_id),
+        }
+
+    elif action == "set_billing_date":
+        if not next_billing_date:
+            raise ValueError("next_billing_date is required for set_billing_date action")
+
+        from datetime import datetime as _dt, timezone as _tz
+
+        try:
+            # Accept ISO format or date-only (YYYY-MM-DD)
+            if "T" in next_billing_date:
+                new_date = _dt.fromisoformat(next_billing_date.replace("Z", "+00:00"))
+            else:
+                new_date = _dt.strptime(next_billing_date, "%Y-%m-%d").replace(tzinfo=_tz.utc)
+        except (ValueError, TypeError):
+            raise ValueError("Invalid date format. Use YYYY-MM-DD or ISO 8601.")
+
+        previous_date = org.next_billing_date.isoformat() if org.next_billing_date else None
+        org.next_billing_date = new_date
+        await db.flush()
+
+        await write_audit_log(
+            session=db,
+            user_id=updated_by,
+            action="org.billing_date_changed",
+            entity_type="organisation",
+            entity_id=org.id,
+            before_value={"next_billing_date": previous_date},
+            after_value={"next_billing_date": new_date.isoformat()},
+            ip_address=ip_address,
+        )
+
+        return {
+            "message": f"Next billing date set to {new_date.strftime('%d %b %Y')}",
+            "organisation_id": str(org.id),
+            "organisation_name": org.name,
+            "status": org.status,
         }
 
     raise ValueError(f"Unhandled action: {action}")

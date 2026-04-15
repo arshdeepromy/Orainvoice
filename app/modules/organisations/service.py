@@ -2058,3 +2058,117 @@ async def list_salespeople(
         }
         for u in users
     ]
+
+
+# ---------------------------------------------------------------------------
+# Sprint 7 — Business Entity Type + NZBN Validation (Req 29.1–29.6, 30.1, 30.2)
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+
+def validate_nzbn(nzbn: str) -> bool:
+    """Validate NZBN — must be exactly 13 digits.
+
+    Returns True if valid, False otherwise.
+    Requirements: 30.1, 30.2
+    """
+    return bool(_re.fullmatch(r"\d{13}", nzbn))
+
+
+async def set_business_type(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID | None = None,
+    business_type: str,
+    nzbn: str | None = None,
+    nz_company_number: str | None = None,
+    gst_registered: bool | None = None,
+    gst_registration_date=None,
+    income_tax_year_end=None,
+    provisional_tax_method: str | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Set business entity type and related fields on an organisation.
+
+    Requirements: 29.1–29.6, 30.1, 30.2
+    """
+    # Validate NZBN if provided
+    if nzbn is not None and not validate_nzbn(nzbn):
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_NZBN", "message": "NZBN must be exactly 13 digits"},
+        )
+
+    # Validate business_type
+    valid_types = {"sole_trader", "partnership", "company", "trust", "other"}
+    if business_type not in valid_types:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_BUSINESS_TYPE",
+                "message": f"business_type must be one of: {', '.join(sorted(valid_types))}",
+            },
+        )
+
+    # Build update values
+    values: dict = {"business_type": business_type}
+    if nzbn is not None:
+        values["nzbn"] = nzbn
+    if nz_company_number is not None:
+        values["nz_company_number"] = nz_company_number
+    if gst_registered is not None:
+        values["gst_registered"] = gst_registered
+    if gst_registration_date is not None:
+        values["gst_registration_date"] = gst_registration_date
+    if income_tax_year_end is not None:
+        values["income_tax_year_end"] = income_tax_year_end
+    if provisional_tax_method is not None:
+        valid_methods = {"standard", "estimation", "ratio"}
+        if provisional_tax_method not in valid_methods:
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "INVALID_PROVISIONAL_METHOD",
+                    "message": f"provisional_tax_method must be one of: {', '.join(sorted(valid_methods))}",
+                },
+            )
+        values["provisional_tax_method"] = provisional_tax_method
+
+    await db.execute(
+        update(Organisation).where(Organisation.id == org_id).values(**values)
+    )
+    await db.flush()
+
+    # Re-read the org to return updated values
+    result = await db.execute(select(Organisation).where(Organisation.id == org_id))
+    org = result.scalar_one_or_none()
+    if org is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Organisation not found")
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="organisation.business_type_updated",
+        entity_type="organisation",
+        entity_id=org_id,
+        after_value=values,
+        ip_address=ip_address,
+    )
+
+    return {
+        "business_type": org.business_type,
+        "nzbn": org.nzbn,
+        "nz_company_number": org.nz_company_number,
+        "gst_registered": org.gst_registered,
+        "gst_registration_date": org.gst_registration_date,
+        "income_tax_year_end": org.income_tax_year_end,
+        "provisional_tax_method": org.provisional_tax_method,
+    }

@@ -94,8 +94,8 @@ export default function QuoteList() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
-  const abortRef = useRef<AbortController>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const abortRef = useRef<AbortController>(undefined)
 
   const fetchQuotes = useCallback(async (search: string, status: string, pg: number) => {
     if (abortRef.current) abortRef.current.abort()

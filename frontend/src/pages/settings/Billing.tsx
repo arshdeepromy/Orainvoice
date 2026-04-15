@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Fragment } from 'react'
 import { loadStripe, type Stripe } from '@stripe/stripe-js'
 import { Elements } from '@stripe/react-stripe-js'
 import { Button } from '@/components/ui/Button'
@@ -6,7 +6,6 @@ import { Badge } from '@/components/ui/Badge'
 import { Modal } from '@/components/ui/Modal'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
-import { DataTable, type Column } from '@/components/ui/DataTable'
 import { ToastContainer, useToast } from '@/components/ui/Toast'
 import { PaymentMethodManager } from '@/components/billing/PaymentMethodManager'
 import { CardForm } from '@/components/billing/CardForm'
@@ -61,6 +60,9 @@ interface BillingData {
     carjam_overage: number
     sms_overage: number
     total: number
+    gst: number
+    processing_fee: number
+    total_incl: number
   }
   storage?: {
     used_bytes: number
@@ -85,13 +87,26 @@ interface BillingData {
   }
 }
 
-interface PastInvoice {
+/* ── Billing Receipt type ── */
+
+interface BillingReceiptData {
   id: string
-  date: string
-  amount: number
+  billing_date: string
+  billing_interval: string
+  plan_name: string
+  plan_amount_cents: number
+  sms_overage_cents: number
+  carjam_overage_cents: number
+  storage_addon_cents: number
+  subtotal_excl_gst_cents: number
+  gst_amount_cents: number
+  processing_fee_cents: number
+  total_amount_cents: number
+  sms_overage_count: number
+  carjam_overage_count: number
+  storage_addon_gb: number
   status: string
-  pdf_url: string
-  [key: string]: unknown
+  created_at: string
 }
 
 /* ── Helpers ── */
@@ -335,9 +350,26 @@ function NextBillEstimate({
           </div>
         )}
         <hr className="border-gray-200" />
+        <div className="flex justify-between">
+          <span className="text-gray-600">Subtotal (excl. GST)</span>
+          <span className="text-gray-900 font-medium">{formatNZD(estimate.total)}</span>
+        </div>
+        {estimate.gst > 0 && (
+          <div className="flex justify-between">
+            <span className="text-gray-600">GST (15%)</span>
+            <span className="text-gray-900 font-medium">{formatNZD(estimate.gst)}</span>
+          </div>
+        )}
+        {estimate.processing_fee > 0 && (
+          <div className="flex justify-between">
+            <span className="text-gray-600">Processing fee</span>
+            <span className="text-gray-900 font-medium">{formatNZD(estimate.processing_fee)}</span>
+          </div>
+        )}
+        <hr className="border-gray-200" />
         <div className="flex justify-between font-semibold">
           <span className="text-gray-900">Estimated total</span>
-          <span className="text-gray-900">{formatNZD(estimate.total)}</span>
+          <span className="text-gray-900">{formatNZD(estimate.total_incl)}</span>
         </div>
       </div>
     </div>
@@ -579,53 +611,159 @@ function BranchCostBreakdown() {
   )
 }
 
-/* ── Past Invoices ── */
+/* ── Billing Receipts ── */
 
-function PastInvoices({ invoices }: { invoices: PastInvoice[] }) {
-  const columns: Column<PastInvoice>[] = [
-    {
-      key: 'date',
-      header: 'Date',
-      sortable: true,
-      render: (row) => formatDate(row.date),
-    },
-    {
-      key: 'amount',
-      header: 'Amount',
-      sortable: true,
-      render: (row) => formatNZD(row.amount),
-    },
-    {
-      key: 'status',
-      header: 'Status',
-      render: (row) => {
-        const variant = row.status === 'paid' ? 'success' : row.status === 'open' ? 'info' : 'neutral'
-        return <Badge variant={variant}>{row.status}</Badge>
-      },
-    },
-    {
-      key: 'pdf_url',
-      header: 'Receipt',
-      render: (row) =>
-        row.pdf_url ? (
-          <a
-            href={row.pdf_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-blue-600 hover:underline text-sm"
-          >
-            Download PDF
-          </a>
-        ) : (
-          <span className="text-gray-400 text-sm">—</span>
-        ),
-    },
-  ]
+function BillingReceipts() {
+  const [receipts, setReceipts] = useState<BillingReceiptData[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchReceipts = async () => {
+      setLoading(true)
+      try {
+        const res = await apiClient.get<{ receipts: BillingReceiptData[]; total: number }>(
+          '/billing/receipts',
+          { signal: controller.signal },
+        )
+        setReceipts(res.data?.receipts ?? [])
+        setTotal(res.data?.total ?? 0)
+      } catch (err: unknown) {
+        if (!controller.signal.aborted) {
+          // Silently fail — section shows empty state
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
+    fetchReceipts()
+    return () => controller.abort()
+  }, [])
+
+  if (loading) {
+    return (
+      <div>
+        <h3 className="text-lg font-semibold text-gray-900 mb-3">Payment receipts</h3>
+        <div className="flex justify-center py-6">
+          <Spinner label="Loading receipts" />
+        </div>
+      </div>
+    )
+  }
+
+  if (receipts.length === 0) {
+    return (
+      <div>
+        <h3 className="text-lg font-semibold text-gray-900 mb-3">Payment receipts</h3>
+        <p className="text-sm text-gray-500">No payment receipts yet.</p>
+      </div>
+    )
+  }
 
   return (
     <div>
-      <h3 className="text-lg font-semibold text-gray-900 mb-3">Past invoices</h3>
-      <DataTable columns={columns} data={invoices} keyField="id" caption="Past subscription invoices" />
+      <h3 className="text-lg font-semibold text-gray-900 mb-3">
+        Payment receipts {total > 0 && <span className="text-sm font-normal text-gray-500">({total})</span>}
+      </h3>
+      <div className="overflow-x-auto rounded-lg border border-gray-200">
+        <table className="min-w-full divide-y divide-gray-200" role="grid">
+          <caption className="sr-only">Billing payment receipts</caption>
+          <thead className="bg-gray-50">
+            <tr>
+              <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Date</th>
+              <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Amount</th>
+              <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
+              <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Details</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200 bg-white">
+            {receipts.map((r) => {
+              const isExpanded = expandedId === r.id
+              const totalNzd = (r.total_amount_cents ?? 0) / 100
+              return (
+                <Fragment key={r.id}>
+                  <tr className="hover:bg-gray-50">
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">
+                      {formatDate(r.billing_date ?? null)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-900">
+                      {formatNZD(totalNzd)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm">
+                      <Badge variant={r.status === 'paid' ? 'success' : r.status === 'refunded' ? 'info' : 'error'}>
+                        {r.status ?? 'unknown'}
+                      </Badge>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
+                      <button
+                        onClick={() => setExpandedId(isExpanded ? null : r.id)}
+                        className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                        aria-expanded={isExpanded}
+                        aria-controls={`receipt-detail-${r.id}`}
+                      >
+                        {isExpanded ? 'Hide' : 'View'}
+                      </button>
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr id={`receipt-detail-${r.id}`}>
+                      <td colSpan={4} className="px-4 py-4 bg-gray-50">
+                        <div className="max-w-md space-y-1 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Plan ({r.plan_name ?? 'Unknown'})</span>
+                            <span className="tabular-nums text-gray-900">{formatNZD((r.plan_amount_cents ?? 0) / 100)}</span>
+                          </div>
+                          {(r.sms_overage_cents ?? 0) > 0 && (
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">SMS overage ({r.sms_overage_count ?? 0} messages)</span>
+                              <span className="tabular-nums text-gray-900">{formatNZD((r.sms_overage_cents ?? 0) / 100)}</span>
+                            </div>
+                          )}
+                          {(r.carjam_overage_cents ?? 0) > 0 && (
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Carjam overage ({r.carjam_overage_count ?? 0} lookups)</span>
+                              <span className="tabular-nums text-gray-900">{formatNZD((r.carjam_overage_cents ?? 0) / 100)}</span>
+                            </div>
+                          )}
+                          {(r.storage_addon_cents ?? 0) > 0 && (
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Storage add-on ({r.storage_addon_gb ?? 0} GB)</span>
+                              <span className="tabular-nums text-gray-900">{formatNZD((r.storage_addon_cents ?? 0) / 100)}</span>
+                            </div>
+                          )}
+                          <hr className="border-gray-200 my-1" />
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Subtotal (excl. GST)</span>
+                            <span className="tabular-nums text-gray-900">{formatNZD((r.subtotal_excl_gst_cents ?? 0) / 100)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">GST (15%)</span>
+                            <span className="tabular-nums text-gray-900">{formatNZD((r.gst_amount_cents ?? 0) / 100)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Processing fee</span>
+                            <span className="tabular-nums text-gray-900">{formatNZD((r.processing_fee_cents ?? 0) / 100)}</span>
+                          </div>
+                          <hr className="border-gray-200 my-1" />
+                          <div className="flex justify-between font-semibold">
+                            <span className="text-gray-900">Total</span>
+                            <span className="tabular-nums text-gray-900">{formatNZD(totalNzd)}</span>
+                          </div>
+                          <p className="text-xs text-gray-500 pt-1">
+                            Interval: {INTERVAL_LABEL[r.billing_interval] ?? r.billing_interval ?? 'Monthly'}
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -1392,7 +1530,6 @@ function IntervalChangeModal({
 
 export function Billing() {
   const [billing, setBilling] = useState<BillingData | null>(null)
-  const [invoices, setInvoices] = useState<PastInvoice[]>([])
   const [loading, setLoading] = useState(true)
   const [addonOpen, setAddonOpen] = useState(false)
   const [planChangeOpen, setPlanChangeOpen] = useState(false)
@@ -1452,11 +1589,14 @@ export function Billing() {
         equivalent_monthly_price: Number(raw.equivalent_monthly_price ?? 0),
         pending_interval_change: raw.pending_interval_change ?? null,
         estimated_next_invoice: {
-          plan_fee: Number(raw.plan_monthly_price_nzd ?? 0),
+          plan_fee: Number(raw.interval_effective_price ?? raw.plan_monthly_price_nzd ?? 0),
           storage_addons: Number(raw.storage_addon_charge_nzd ?? 0),
           carjam_overage: Number(raw.carjam_overage_charge_nzd ?? 0),
           sms_overage: Number(raw.sms_overage_charge_nzd ?? 0),
           total: Number(raw.estimated_next_invoice_nzd ?? 0),
+          gst: Number(raw.gst_amount_nzd ?? 0),
+          processing_fee: Number(raw.processing_fee_nzd ?? 0),
+          total_incl: Number(raw.estimated_total_incl_nzd ?? 0),
         },
         storage: {
           used_bytes: (raw.storage_used_gb ?? 0) * 1024 * 1024 * 1024,
@@ -1480,25 +1620,8 @@ export function Billing() {
         },
       }
       setBilling(transformed)
-      // Fetch invoices separately — Stripe may not be configured
-      try {
-        const invoicesRes = await apiClient.get('/billing/invoices')
-        const rawInvoices = Array.isArray(invoicesRes.data) ? invoicesRes.data : (invoicesRes.data?.invoices ?? [])
-        const transformedInvoices: PastInvoice[] = rawInvoices.map((inv: Record<string, unknown>) => ({
-          id: inv.id as string,
-          date: inv.created ? new Date((inv.created as number) * 1000).toISOString() : '',
-          amount: ((inv.amount_paid as number) ?? (inv.amount_due as number) ?? 0) / 100,
-          status: (inv.status as string) ?? 'unknown',
-          pdf_url: (inv.invoice_pdf as string) ?? '',
-        }))
-        setInvoices(transformedInvoices)
-      } catch {
-        // Stripe not configured or no invoices — show empty list
-        setInvoices([])
-      }
     } catch {
       addToast('error', 'Failed to load billing information')
-      setInvoices([])
     } finally {
       setLoading(false)
     }
@@ -1628,8 +1751,8 @@ export function Billing() {
         {/* Branch cost breakdown */}
         <BranchCostBreakdown />
 
-        {/* Past invoices */}
-        <PastInvoices invoices={invoices} />
+        {/* Payment receipts */}
+        <BillingReceipts />
       </div>
 
       {/* Storage manage modal */}

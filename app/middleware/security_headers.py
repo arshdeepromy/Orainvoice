@@ -21,6 +21,30 @@ _CSRF_EXEMPT_PATHS: set[str] = {
     "/api/v2/payments/stripe/webhook",
     "/api/webhooks/connexus/incoming",
     "/api/webhooks/connexus/status",
+    "/api/v1/auth/login",
+    "/api/v1/auth/login/google",
+    "/api/v1/auth/token/refresh",
+    "/api/v1/auth/signup",
+    "/api/v1/auth/signup/confirm-payment",
+    "/api/v1/auth/verify-email",
+    "/api/v1/auth/verify-signup-email",
+    "/api/v1/auth/verify-captcha",
+    "/api/v1/auth/password/reset-request",
+    "/api/v1/auth/password/reset",
+    "/api/v1/auth/password/reset-backup",
+    "/api/v1/auth/password/check",
+    "/api/v1/auth/resend-invite",
+    "/api/v1/auth/resend-verification",
+    "/api/v1/auth/passkey/login/options",
+    "/api/v1/auth/passkey/login/verify",
+    "/api/v1/auth/mfa/verify",
+    "/api/v1/auth/mfa/challenge/send",
+    "/api/v1/auth/mfa/firebase-verify",
+    "/api/v1/auth/mfa/provider-config",
+    # Akahu OAuth callback (external redirect — no CSRF token)
+    "/api/v1/banking/callback",
+    # IRD Gateway callback (external redirect — no CSRF token)
+    "/api/v1/ird/callback",
 }
 
 

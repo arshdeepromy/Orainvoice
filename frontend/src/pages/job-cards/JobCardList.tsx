@@ -80,7 +80,7 @@ const PAGE_SIZE = 20
 
 function useRowTimer(jobId: string, isRunning: boolean, startedAt: string | null): number {
   const [elapsed, setElapsed] = useState(0)
-  const intervalRef = useRef<ReturnType<typeof setInterval>>()
+  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined)
 
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current)
@@ -201,8 +201,8 @@ export default function JobCardList() {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
 
   const { toasts, addToast, dismissToast } = useToast()
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
-  const abortRef = useRef<AbortController>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const abortRef = useRef<AbortController>(undefined)
 
   const fetchJobCards = useCallback(async (search: string, status: string, pg: number) => {
     if (abortRef.current) abortRef.current.abort()

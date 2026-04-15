@@ -60,7 +60,7 @@ export function VehicleLiveSearch({ vehicle, onVehicleFound, onCustomerAutoSelec
   const [syncMessage, setSyncMessage] = useState('')
   
   const containerRef = useRef<HTMLDivElement>(null)
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   // Click outside to close dropdown
   useEffect(() => {

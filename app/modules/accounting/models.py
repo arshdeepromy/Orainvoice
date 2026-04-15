@@ -69,7 +69,7 @@ class AccountingIntegration(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "provider IN ('xero','myob')",
+            "provider IN ('xero','myob','ird')",
             name="ck_accounting_integrations_provider",
         ),
         UniqueConstraint(

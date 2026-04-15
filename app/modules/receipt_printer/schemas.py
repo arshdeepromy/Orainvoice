@@ -8,27 +8,46 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+# Pattern for new writes — accepts legacy 'network' which gets mapped
+_CONNECTION_TYPE_PATTERN = r"^(usb|bluetooth|network|star_webprnt|epson_epos|generic_http|browser_print)$"
+
+# Legacy mapping: 'network' → 'generic_http' for new writes
+_LEGACY_CONNECTION_MAP = {"network": "generic_http"}
 
 
 class PrinterConfigCreate(BaseModel):
     name: str = Field(max_length=100)
-    connection_type: str = Field(pattern="^(usb|bluetooth|network)$")
+    connection_type: str = Field(pattern=_CONNECTION_TYPE_PATTERN)
     address: str | None = None
-    paper_width: int = Field(default=80, ge=58, le=80)
+    paper_width: int = Field(default=80, ge=30, le=120)
     is_default: bool = False
     is_kitchen_printer: bool = False
     location_id: UUID | None = None
 
+    @field_validator("connection_type", mode="after")
+    @classmethod
+    def _map_legacy_connection_type(cls, v: str) -> str:
+        return _LEGACY_CONNECTION_MAP.get(v, v)
+
 
 class PrinterConfigUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=100)
-    connection_type: str | None = Field(default=None, pattern="^(usb|bluetooth|network)$")
+    connection_type: str | None = Field(default=None, pattern=_CONNECTION_TYPE_PATTERN)
     address: str | None = None
-    paper_width: int | None = Field(default=None, ge=58, le=80)
+    paper_width: int | None = Field(default=None, ge=30, le=120)
     is_default: bool | None = None
     is_kitchen_printer: bool | None = None
     is_active: bool | None = None
+
+    @field_validator("connection_type", mode="after")
+    @classmethod
+    def _map_legacy_connection_type(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return _LEGACY_CONNECTION_MAP.get(v, v)
 
 
 class PrinterConfigResponse(BaseModel):

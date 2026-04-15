@@ -5,7 +5,9 @@ from __future__ import annotations
 import uuid
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select
@@ -291,6 +293,7 @@ async def update_org(
             action=payload.action,
             reason=payload.reason,
             new_plan_id=new_plan_uuid,
+            next_billing_date=payload.next_billing_date,
             notify_org_admin=payload.notify_org_admin,
             updated_by=uuid.UUID(user_id) if user_id else uuid.uuid4(),
             ip_address=ip_address,
@@ -4355,3 +4358,45 @@ async def org_branch_revenue(
             ),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Platform Security Audit Log (Req 7.1, 7.2, 7.8)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/security-audit-log",
+    summary="Get platform-wide security audit log",
+    dependencies=[require_role("global_admin")],
+)
+async def get_platform_audit_log_endpoint(
+    db: AsyncSession = Depends(get_db_session),
+    start_date: datetime | None = Query(default=None),
+    end_date: datetime | None = Query(default=None),
+    action: str | None = Query(default=None),
+    user_id: uuid.UUID | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25),
+):
+    """Return paginated security audit log entries across ALL organisations.
+
+    Unlike the org-level ``/org/security-audit-log`` endpoint, this does
+    not filter by ``org_id`` and includes an ``org_name`` field on each
+    entry resolved from the ``organisations`` table.
+
+    Only Global_Admin users can access this endpoint.
+    Requirements 7.1, 7.2, 7.8.
+    """
+    from app.modules.auth.security_settings_schemas import AuditLogFilters
+    from app.modules.auth.security_audit_service import get_platform_security_audit_log
+
+    filters = AuditLogFilters(
+        start_date=start_date,
+        end_date=end_date,
+        action=action,
+        user_id=user_id,
+        page=page,
+        page_size=page_size,
+    )
+    return await get_platform_security_audit_log(db, filters)

@@ -475,10 +475,13 @@ def _build_refund_credit_note_payload(refund_data: dict[str, Any]) -> dict[str, 
     """Build the Xero Credit Note payload for a refund.
 
     Extracted as a pure function for testability (Property 1).
-    Requirements: 1.1, 1.3, 1.4
+    Uses _xero_sales_account_code from refund_data if available,
+    falling back to "200" (default Xero sales code).
+    Requirements: 1.1, 1.3, 1.4, 5.1, 5.2
     """
     raw_date = refund_data.get("date", "")
     ref_date = raw_date.strftime("%Y-%m-%d") if hasattr(raw_date, "strftime") else str(raw_date or "")
+    sales_code = refund_data.get("_xero_sales_account_code", "200")
 
     return {
         "CreditNotes": [
@@ -494,7 +497,7 @@ def _build_refund_credit_note_payload(refund_data: dict[str, Any]) -> dict[str, 
                         "Description": f"Refund: {refund_data.get('reason', '')}",
                         "Quantity": 1,
                         "UnitAmount": str(float(refund_data.get("amount", 0))),
-                        "AccountCode": "200",
+                        "AccountCode": sales_code,
                         "TaxType": "OUTPUT2",
                     }
                 ],

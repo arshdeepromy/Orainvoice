@@ -4,7 +4,17 @@
  * **Validates: Requirement 22 — POS Module (Receipt Printer Integration)**
  */
 
-export type ConnectionType = 'usb' | 'bluetooth' | 'network';
+import type { PrinterDriver, PrintOptions } from './printerDrivers';
+import { resolveConnectionType } from './printerDrivers';
+import { StarWebPRNTDriver } from './starWebPRNTDriver';
+import { EpsonEPOSDriver } from './epsonEPOSDriver';
+import { GenericHTTPDriver } from './genericHTTPDriver';
+import { BrowserPrintDriver } from './browserPrintDriver';
+import { ESCPOSBuilder } from './escpos';
+
+export type ConnectionType =
+  | 'usb' | 'bluetooth' | 'network'
+  | 'star_webprnt' | 'epson_epos' | 'generic_http' | 'browser_print';
 
 export interface PrinterConnection {
   type: ConnectionType;
@@ -140,7 +150,7 @@ export async function connectNetworkPrinter(address: string): Promise<PrinterCon
 }
 
 // ---------------------------------------------------------------------------
-// Factory
+// Legacy Connection Factory (preserved for backward compatibility)
 // ---------------------------------------------------------------------------
 
 /**
@@ -161,4 +171,89 @@ export async function connectPrinter(
     default:
       throw new Error(`Unsupported connection type: ${type}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// LegacyConnectionAdapter (Task 8.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps existing `connectUSBPrinter` and `connectBluetoothPrinter` functions
+ * in the `PrinterDriver` interface so they can be used through `createDriver`.
+ *
+ * **Validates: Requirement 10 — Backward Compatibility**
+ */
+export class LegacyConnectionAdapter implements PrinterDriver {
+  readonly type: ConnectionType;
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  constructor(type: 'usb' | 'bluetooth', _address?: string) {
+    this.type = type;
+  }
+
+  async send(data: Uint8Array, _options?: PrintOptions): Promise<void> {
+    if (this.type === 'usb') {
+      const conn = await connectUSBPrinter();
+      await conn.send(data);
+    } else {
+      const conn = await connectBluetoothPrinter();
+      await conn.send(data);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Driver Factory (Task 8.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a `PrinterDriver` for the given connection type.
+ *
+ * Handles the legacy `network` type by resolving it to `generic_http` before
+ * dispatching. Network-based drivers require an `address` parameter.
+ *
+ * **Validates: Requirement 8.1, 10.1**
+ */
+export function createDriver(type: ConnectionType | string, address?: string): PrinterDriver {
+  const resolved = resolveConnectionType(type);
+
+  switch (resolved) {
+    case 'star_webprnt':
+      if (!address) throw new Error('Star WebPRNT requires an address');
+      return new StarWebPRNTDriver(address);
+    case 'epson_epos':
+      if (!address) throw new Error('Epson ePOS requires an address');
+      return new EpsonEPOSDriver(address);
+    case 'generic_http':
+      if (!address) throw new Error('Generic HTTP requires an address');
+      return new GenericHTTPDriver(address);
+    case 'browser_print':
+      return new BrowserPrintDriver();
+    case 'usb':
+    case 'bluetooth':
+      return new LegacyConnectionAdapter(resolved, address);
+    default:
+      throw new Error(`Unsupported connection type: ${resolved}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Test Receipt Builder (Task 8.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a test receipt containing the printer name, "TEST PRINT" heading,
+ * "Printer is working!" message, and the current date/time.
+ *
+ * **Validates: Requirement 8.2**
+ */
+export function buildTestReceipt(printerName: string, paperWidth: number): Uint8Array {
+  const builder = new ESCPOSBuilder(paperWidth);
+  builder
+    .center(printerName)
+    .center('TEST PRINT')
+    .text('Printer is working!')
+    .text(new Date().toLocaleString())
+    .cut();
+  return builder.build();
 }

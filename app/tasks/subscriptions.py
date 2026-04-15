@@ -133,12 +133,78 @@ async def process_recurring_billing_task() -> dict:
 
                     amount_cents = int((effective_price * Decimal("100")).to_integral_value())
 
-                    # Skip free plans (amount=0)
-                    if amount_cents <= 0:
+                    # 2b. Compute SMS overage charges (excl. GST)
+                    sms_overage_cents = 0
+                    sms_overage_count = 0
+                    try:
+                        from app.modules.admin.service import compute_sms_overage_for_billing
+                        sms_data = await compute_sms_overage_for_billing(session, org.id)
+                        sms_overage_count = sms_data.get("overage_count", 0)
+                        if sms_overage_count > 0:
+                            sms_overage_cents = round(sms_data["total_charge_nzd"] * 100)
+                    except Exception as exc:
+                        logger.warning("Failed to compute SMS overage for org %s: %s", org.id, exc)
+
+                    # 2c. Compute Carjam overage charges (excl. GST)
+                    carjam_overage_cents = 0
+                    carjam_overage_count = 0
+                    try:
+                        from app.modules.admin.service import (
+                            compute_carjam_overage,
+                            get_carjam_per_lookup_cost,
+                        )
+                        carjam_overage_count = compute_carjam_overage(
+                            org.carjam_lookups_this_month,
+                            plan.carjam_lookups_included,
+                        )
+                        if carjam_overage_count > 0:
+                            per_lookup_cost = await get_carjam_per_lookup_cost(session)
+                            carjam_overage_cents = round(carjam_overage_count * per_lookup_cost * 100)
+                    except Exception as exc:
+                        logger.warning("Failed to compute Carjam overage for org %s: %s", org.id, exc)
+
+                    # 2d. Compute storage add-on charge (excl. GST)
+                    # This is ONLY for extra storage purchased by the user,
+                    # NOT the storage included in the plan.
+                    storage_addon_cents = 0
+                    storage_addon_gb = 0
+                    try:
+                        from app.modules.admin.models import OrgStorageAddon
+                        addon_result = await session.execute(
+                            select(OrgStorageAddon).where(
+                                OrgStorageAddon.org_id == org.id
+                            )
+                        )
+                        addon = addon_result.scalar_one_or_none()
+                        if addon and float(addon.price_nzd_per_month) > 0:
+                            storage_addon_gb = addon.quantity_gb
+                            storage_addon_cents = round(float(addon.price_nzd_per_month) * 100)
+                    except Exception as exc:
+                        logger.warning("Failed to compute storage addon for org %s: %s", org.id, exc)
+
+                    # 2e. Total excl. GST = plan + SMS overage + Carjam overage + storage addon
+                    total_excl_gst_cents = amount_cents + sms_overage_cents + carjam_overage_cents + storage_addon_cents
+
+                    # Skip free plans with no overages
+                    if total_excl_gst_cents <= 0:
                         # Advance billing date even for free plans
                         org.next_billing_date = org.next_billing_date + compute_interval_duration(billing_interval)
+                        # Reset usage counters
+                        if sms_overage_count > 0:
+                            org.sms_sent_this_month = 0
+                        if carjam_overage_count > 0:
+                            org.carjam_lookups_this_month = 0
                         skipped += 1
                         continue
+
+                    # 2e. Apply GST and Stripe processing fee on the combined total
+                    from app.modules.organisations.service import (
+                        _compute_billing_breakdown,
+                        _load_signup_billing_config,
+                    )
+                    billing_config = await _load_signup_billing_config()
+                    breakdown = _compute_billing_breakdown(total_excl_gst_cents, billing_config)
+                    charge_amount_cents = breakdown["total_amount_cents"]
 
                     # 3. Get default OrgPaymentMethod (Req 5.3)
                     pm_result = await session.execute(
@@ -166,17 +232,32 @@ async def process_recurring_billing_task() -> dict:
                         continue
 
                     # 4. Charge (Req 5.3)
-                    await charge_org_payment_method(
+                    # Idempotency key prevents double-charges if the
+                    # container restarts after Stripe succeeds but before
+                    # next_billing_date is advanced in the DB.
+                    idem_key = f"billing-{org.id}-{org.next_billing_date.isoformat()}"
+                    charge_result = await charge_org_payment_method(
                         customer_id=org.stripe_customer_id,
                         payment_method_id=default_pm.stripe_payment_method_id,
-                        amount_cents=amount_cents,
+                        amount_cents=charge_amount_cents,
                         currency="nzd",
                         metadata={
                             "org_id": str(org.id),
                             "plan_id": str(plan.id),
                             "plan_name": plan.name,
                             "billing_interval": billing_interval,
+                            "plan_amount_cents": str(amount_cents),
+                            "sms_overage_cents": str(sms_overage_cents),
+                            "sms_overage_count": str(sms_overage_count),
+                            "carjam_overage_cents": str(carjam_overage_cents),
+                            "carjam_overage_count": str(carjam_overage_count),
+                            "storage_addon_cents": str(storage_addon_cents),
+                            "storage_addon_gb": str(storage_addon_gb),
+                            "subtotal_excl_gst_cents": str(total_excl_gst_cents),
+                            "gst_amount_cents": str(breakdown["gst_amount_cents"]),
+                            "processing_fee_cents": str(breakdown["processing_fee_cents"]),
                         },
+                        idempotency_key=idem_key,
                     )
 
                     # 5. On success: advance next_billing_date, reset retry count (Req 5.4)
@@ -184,13 +265,65 @@ async def process_recurring_billing_task() -> dict:
                     org_settings = dict(org.settings) if org.settings else {}
                     org_settings["billing_retry_count"] = 0
                     org.settings = org_settings
+
+                    # Reset usage counters after successful billing
+                    if sms_overage_count > 0:
+                        org.sms_sent_this_month = 0
+                    if carjam_overage_count > 0:
+                        org.carjam_lookups_this_month = 0
+
                     await session.flush()
+
+                    # 5b. Create billing receipt record
+                    from app.modules.billing.models import BillingReceipt
+                    receipt = BillingReceipt(
+                        org_id=org.id,
+                        stripe_payment_intent_id=charge_result["payment_intent_id"],
+                        billing_date=now,
+                        billing_interval=billing_interval,
+                        plan_amount_cents=amount_cents,
+                        sms_overage_cents=sms_overage_cents,
+                        carjam_overage_cents=carjam_overage_cents,
+                        storage_addon_cents=storage_addon_cents,
+                        subtotal_excl_gst_cents=total_excl_gst_cents,
+                        gst_amount_cents=breakdown["gst_amount_cents"],
+                        processing_fee_cents=breakdown["processing_fee_cents"],
+                        total_amount_cents=charge_amount_cents,
+                        plan_name=plan.name,
+                        sms_overage_count=sms_overage_count,
+                        carjam_overage_count=carjam_overage_count,
+                        storage_addon_gb=storage_addon_gb,
+                        currency="nzd",
+                        status="paid",
+                    )
+                    session.add(receipt)
+                    await session.flush()
+
+                    # 5c. Send receipt email to org admin (async, non-blocking)
+                    try:
+                        await _send_billing_receipt_email(
+                            session, org, receipt, breakdown,
+                        )
+                    except Exception as email_exc:
+                        logger.warning(
+                            "Failed to send billing receipt email for org %s: %s",
+                            org.id, email_exc,
+                        )
 
                     charged += 1
                     logger.info(
-                        "Charged org %s: %d cents (%s), next billing %s",
+                        "Charged org %s: %d cents total "
+                        "(plan=%d + sms_overage=%d + carjam_overage=%d + storage_addon=%d = %d excl GST, "
+                        "+%d GST +%d fee, %s), next billing %s",
                         org.id,
+                        charge_amount_cents,
                         amount_cents,
+                        sms_overage_cents,
+                        carjam_overage_cents,
+                        storage_addon_cents,
+                        total_excl_gst_cents,
+                        breakdown["gst_amount_cents"],
+                        breakdown["processing_fee_cents"],
                         billing_interval,
                         org.next_billing_date,
                     )
@@ -252,6 +385,105 @@ async def process_recurring_billing_task() -> dict:
         skipped,
     )
     return {"charged": charged, "failed": failed, "skipped": skipped, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# Billing receipt email helper
+# ---------------------------------------------------------------------------
+
+async def _send_billing_receipt_email(session, org, receipt, breakdown) -> None:
+    """Send a payment receipt email to the org admin.
+
+    Uses the existing log_email_sent + send_email_task pattern.
+    Non-blocking: the email is dispatched via the async task system.
+    """
+    from sqlalchemy import select
+    from app.modules.auth.models import User
+    from app.modules.notifications.service import log_email_sent
+    from app.tasks.notifications import send_email_task
+
+    admin_result = await session.execute(
+        select(User).where(
+            User.org_id == org.id,
+            User.role == "org_admin",
+            User.is_active.is_(True),
+        )
+    )
+    admin_user = admin_result.scalars().first()
+    if not admin_user:
+        return
+
+    total_nzd = receipt.total_amount_cents / 100
+    subtotal_nzd = receipt.subtotal_excl_gst_cents / 100
+    gst_nzd = receipt.gst_amount_cents / 100
+    processing_nzd = receipt.processing_fee_cents / 100
+    plan_nzd = receipt.plan_amount_cents / 100
+
+    # Build breakdown rows
+    rows = [f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'>Plan ({receipt.plan_name})</td>"
+            f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>${plan_nzd:.2f}</td></tr>"]
+    if receipt.sms_overage_cents > 0:
+        sms_nzd = receipt.sms_overage_cents / 100
+        rows.append(f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'>SMS overage ({receipt.sms_overage_count} messages)</td>"
+                     f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>${sms_nzd:.2f}</td></tr>")
+    if receipt.carjam_overage_cents > 0:
+        cj_nzd = receipt.carjam_overage_cents / 100
+        rows.append(f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'>Carjam overage ({receipt.carjam_overage_count} lookups)</td>"
+                     f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>${cj_nzd:.2f}</td></tr>")
+    if receipt.storage_addon_cents > 0:
+        stor_nzd = receipt.storage_addon_cents / 100
+        rows.append(f"<tr><td style='padding:6px 12px;border-bottom:1px solid #eee'>Storage add-on ({receipt.storage_addon_gb} GB)</td>"
+                     f"<td style='padding:6px 12px;border-bottom:1px solid #eee;text-align:right'>${stor_nzd:.2f}</td></tr>")
+
+    breakdown_html = "\n".join(rows)
+
+    subject = f"Your OraInvoice subscription payment receipt — ${total_nzd:.2f} NZD"
+    html_body = f"""<div style="font-family:sans-serif;max-width:600px;margin:0 auto">
+<h2 style="color:#1a1a1a">Payment Receipt</h2>
+<p>Hi,</p>
+<p>Your subscription payment for <strong>{org.name}</strong> has been processed successfully.</p>
+<table style="width:100%;border-collapse:collapse;margin:16px 0">
+<thead>
+<tr style="background:#f9fafb">
+<th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e5e7eb">Description</th>
+<th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e5e7eb">Amount (NZD)</th>
+</tr>
+</thead>
+<tbody>
+{breakdown_html}
+</tbody>
+<tfoot>
+<tr><td style="padding:6px 12px;border-top:1px solid #ddd">Subtotal (excl. GST)</td>
+<td style="padding:6px 12px;text-align:right;border-top:1px solid #ddd">${subtotal_nzd:.2f}</td></tr>
+<tr><td style="padding:6px 12px">GST (15%)</td>
+<td style="padding:6px 12px;text-align:right">${gst_nzd:.2f}</td></tr>
+<tr><td style="padding:6px 12px">Processing fee</td>
+<td style="padding:6px 12px;text-align:right">${processing_nzd:.2f}</td></tr>
+<tr style="font-weight:bold;background:#f9fafb">
+<td style="padding:8px 12px;border-top:2px solid #e5e7eb">Total</td>
+<td style="padding:8px 12px;text-align:right;border-top:2px solid #e5e7eb">${total_nzd:.2f}</td></tr>
+</tfoot>
+</table>
+<p style="color:#6b7280;font-size:14px">Billing interval: {receipt.billing_interval.capitalize()}</p>
+<p style="color:#6b7280;font-size:14px">You can view all your receipts in the Billing section of your OraInvoice dashboard.</p>
+</div>"""
+
+    log_entry = await log_email_sent(
+        session,
+        org_id=org.id,
+        recipient=admin_user.email,
+        template_type="billing_receipt",
+        subject=subject,
+        status="queued",
+    )
+    await send_email_task(
+        org_id=str(org.id),
+        log_id=str(log_entry["id"]),
+        to_email=admin_user.email,
+        subject=subject,
+        html_body=html_body,
+        template_type="billing_receipt",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -403,13 +635,25 @@ async def _convert_trial_to_active(session, org, now: datetime) -> None:
     if not default_pm:
         raise ValueError(f"No default payment method for org {org.id}")
 
+    # Apply GST and Stripe processing fee (same formula as signup)
+    charge_amount_cents = amount_cents
+    breakdown = None
+    if amount_cents > 0:
+        from app.modules.organisations.service import (
+            _compute_billing_breakdown,
+            _load_signup_billing_config,
+        )
+        billing_config = await _load_signup_billing_config()
+        breakdown = _compute_billing_breakdown(amount_cents, billing_config)
+        charge_amount_cents = breakdown["total_amount_cents"]
+
     try:
         # Charge the saved payment method (Req 4.1)
-        if amount_cents > 0:
+        if charge_amount_cents > 0:
             await charge_org_payment_method(
                 customer_id=org.stripe_customer_id,
                 payment_method_id=default_pm.stripe_payment_method_id,
-                amount_cents=amount_cents,
+                amount_cents=charge_amount_cents,
                 currency="nzd",
                 metadata={
                     "org_id": str(org.id),
@@ -417,6 +661,9 @@ async def _convert_trial_to_active(session, org, now: datetime) -> None:
                     "plan_name": plan.name,
                     "billing_interval": billing_interval,
                     "type": "trial_conversion",
+                    "plan_amount_cents": str(amount_cents),
+                    "gst_amount_cents": str(breakdown["gst_amount_cents"]) if breakdown else "0",
+                    "processing_fee_cents": str(breakdown["processing_fee_cents"]) if breakdown else "0",
                 },
             )
 

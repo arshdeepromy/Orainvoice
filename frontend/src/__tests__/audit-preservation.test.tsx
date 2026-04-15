@@ -1,3 +1,4 @@
+/// <reference types="node" />
 /**
  * Preservation property tests for platform audit fixes — frontend.
  *

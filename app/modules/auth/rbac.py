@@ -78,7 +78,12 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
 }
 
 
-def has_permission(role: str, permission: str, overrides: list[dict] | None = None) -> bool:
+def has_permission(
+    role: str,
+    permission: str,
+    overrides: list[dict] | None = None,
+    custom_role_permissions: list[str] | None = None,
+) -> bool:
     """Check if a role has a specific permission, considering overrides.
 
     Parameters
@@ -90,6 +95,10 @@ def has_permission(role: str, permission: str, overrides: list[dict] | None = No
     overrides:
         Optional list of permission override dicts with keys
         ``permission_key`` and ``is_granted``.
+    custom_role_permissions:
+        When the user has a custom role, this is the list of granted
+        permission keys (already filtered for disabled modules).
+        When provided, the static ROLE_PERMISSIONS dict is bypassed.
 
     Returns True if the permission is granted.
     """
@@ -98,6 +107,10 @@ def has_permission(role: str, permission: str, overrides: list[dict] | None = No
         for override in overrides:
             if override.get("permission_key") == permission:
                 return override.get("is_granted", False)
+
+    # If custom role permissions are provided, use them instead of built-in
+    if custom_role_permissions is not None:
+        return permission in custom_role_permissions
 
     # Check base role permissions
     role_perms = ROLE_PERMISSIONS.get(role, [])
@@ -384,6 +397,12 @@ async def enforce_rbac(request: Request):
     This can be added as a global dependency on the app or specific routers
     to automatically check role vs. path access rules.
 
+    When a user has a custom_role_id, loads the custom role's permissions
+    from the custom_roles table and filters through
+    evaluate_custom_role_permissions() for disabled modules.
+
+    Built-in roles continue using the static ROLE_PERMISSIONS dict unchanged.
+
     Skips enforcement for unauthenticated requests (those are handled by
     the auth middleware).
     """
@@ -402,6 +421,50 @@ async def enforce_rbac(request: Request):
             status_code=403,
             detail="Organisation membership required",
         )
+
+    # Check for custom role — load permissions from DB if present
+    custom_role_id = getattr(request.state, "custom_role_id", None)
+    if custom_role_id and org_id:
+        try:
+            from sqlalchemy import text as sa_text
+            db = getattr(request.state, "db", None)
+            if db:
+                from app.modules.auth.permission_registry import evaluate_custom_role_permissions
+
+                # Load custom role permissions
+                result = await db.execute(
+                    sa_text("SELECT permissions FROM custom_roles WHERE id = :id"),
+                    {"id": str(custom_role_id)},
+                )
+                row = result.fetchone()
+                if row and row[0]:
+                    import json
+                    perms = row[0] if isinstance(row[0], list) else json.loads(row[0])
+
+                    # Load disabled modules for the org
+                    disabled_result = await db.execute(
+                        sa_text(
+                            """
+                            SELECT mr.slug FROM module_registry mr
+                            WHERE mr.is_core = false
+                              AND mr.slug NOT IN (
+                                  SELECT om.module_slug FROM org_modules om
+                                  WHERE om.org_id = :org_id AND om.is_enabled = true
+                              )
+                            """
+                        ),
+                        {"org_id": str(org_id)},
+                    )
+                    disabled_modules = {r[0] for r in disabled_result.fetchall()}
+
+                    # Filter permissions for disabled modules
+                    effective_perms = evaluate_custom_role_permissions(perms, disabled_modules)
+
+                    # Store on request for downstream use
+                    request.state.custom_role_permissions = effective_perms
+        except Exception:
+            # If custom role loading fails, fall through to built-in RBAC
+            pass
 
     # Check path-based access
     denial_reason = check_role_path_access(role, path, method=request.method)

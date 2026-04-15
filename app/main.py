@@ -201,6 +201,10 @@ def create_app() -> FastAPI:
     from app.modules.quotes import models as _quote_models  # noqa: F401
     from app.modules.payments import models as _payment_models  # noqa: F401
     from app.modules.platform_settings import models as _platform_settings_models  # noqa: F401
+    from app.modules.ledger import models as _ledger_models  # noqa: F401
+    from app.modules.banking import models as _banking_models  # noqa: F401
+    from app.modules.tax_wallets import models as _tax_wallet_models  # noqa: F401
+    from app.modules.ird import models as _ird_models  # noqa: F401
 
     # Force SQLAlchemy to resolve all relationship references now,
     # while all models are loaded. This prevents lazy mapper configuration
@@ -262,8 +266,36 @@ def create_app() -> FastAPI:
     app.include_router(data_io_router, prefix="/api/v1/data", tags=["data-import-export"])
     app.include_router(webhooks_router, prefix="/api/v1/webhooks", tags=["webhooks"])
     app.include_router(accounting_router, prefix="/api/v1/org/accounting", tags=["accounting"])
+
+    from app.modules.auth.security_settings_router import router as security_settings_router
+    app.include_router(security_settings_router, prefix="/api/v1/org", tags=["security-settings"])
+
     app.include_router(kiosk_router, prefix="/api/v1/kiosk", tags=["kiosk"])
     app.include_router(scheduling_router, prefix="/api/v1/scheduling", tags=["scheduling"])
+
+    # --- Ledger module (COA + Journal Entries + Periods) ---
+    from app.modules.ledger.router import router as ledger_router
+    app.include_router(ledger_router, prefix="/api/v1/ledger", tags=["ledger"])
+
+    # --- GST Filing module (GST periods + IRD readiness) ---
+    from app.modules.ledger.gst_router import router as gst_router
+    app.include_router(gst_router, prefix="/api/v1/gst", tags=["gst"])
+
+    # --- Banking module (Akahu bank feeds + reconciliation) ---
+    from app.modules.banking.router import router as banking_router
+    app.include_router(banking_router, prefix="/api/v1/banking", tags=["banking"])
+
+    # --- Tax Wallets module (virtual tax savings wallets) ---
+    from app.modules.tax_wallets.router import router as tax_wallets_router
+    app.include_router(tax_wallets_router, prefix="/api/v1/tax-wallets", tags=["tax-wallets"])
+
+    # --- IRD Gateway module (GST + Income Tax filing via SOAP) ---
+    from app.modules.ird.router import router as ird_router
+    app.include_router(ird_router, prefix="/api/v1/ird", tags=["ird"])
+
+    # --- Integrations audit (test connection for any provider) ---
+    from app.modules.accounting.integrations_router import router as integrations_router
+    app.include_router(integrations_router, prefix="/api/v1/integrations", tags=["integrations"])
 
     # --- Claims module ---
     from app.modules.claims.router import router as claims_router

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -15,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.expenses.models import Expense, MileagePreference, MileageRate
 from app.modules.expenses.schemas import ExpenseCreate, ExpenseUpdate, MileagePreferenceUpdate
+
+logger = logging.getLogger(__name__)
 
 
 class ExpenseService:
@@ -102,6 +105,16 @@ class ExpenseService:
         )
         self.db.add(expense)
         await self.db.flush()
+
+        # Auto-post journal entry for the expense (Req 4.3, 4.6, 4.7)
+        try:
+            from app.modules.ledger.auto_poster import auto_post_expense
+            await auto_post_expense(self.db, expense, created_by or uuid.UUID(int=0))
+        except Exception as exc:
+            logger.warning(
+                "Auto-post failed for expense %s: %s", expense.id, exc
+            )
+
         return expense
 
     async def get_expense(
@@ -123,6 +136,18 @@ class ExpenseService:
             return None
         if expense.is_invoiced:
             raise ValueError("Cannot update an invoiced expense")
+
+        # GST lock check — reject edits on locked expenses (Req 14.3)
+        try:
+            if getattr(expense, "is_gst_locked", False):
+                raise ValueError(
+                    "GST_LOCKED: This expense is locked because its GST filing period has been filed. "
+                    "Edits are not permitted on GST-locked expenses."
+                )
+        except Exception as exc:
+            if "GST_LOCKED" in str(exc):
+                raise
+            pass  # Column may not exist yet — ignore
 
         update_data = payload.model_dump(exclude_unset=True)
         for field, value in update_data.items():

@@ -441,7 +441,7 @@ export default function KitchenDisplay() {
                 <div
                   key={order.id}
                   data-testid="kitchen-ready-card"
-                  className="rounded-xl border-2 border-green-500 bg-green-900 bg-opacity-30 p-4 shadow-lg text-green-100"
+                  className="rounded-xl border-2 border-green-500 bg-green-900/30 p-4 shadow-lg text-green-100"
                 >
                   <h3 className={`${headingTextClass} font-extrabold mb-1 leading-tight`}>
                     {order.item_name}

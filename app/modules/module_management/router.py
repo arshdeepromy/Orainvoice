@@ -57,6 +57,8 @@ async def list_modules(
     # Filter out global-admin-only modules for non-global_admin users
     if role != "global_admin":
         modules = [m for m in modules if m.get("category") not in GLOBAL_ADMIN_CATEGORIES]
+        # Hide modules not included in the org's subscription plan
+        modules = [m for m in modules if m.get("in_plan", True)]
 
     items = [ModuleResponse(**m) for m in modules]
     return ModuleListResponse(modules=items, total=len(items))

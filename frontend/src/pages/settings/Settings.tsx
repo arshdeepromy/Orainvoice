@@ -14,12 +14,14 @@ import { WebhookManagement } from './WebhookManagement'
 import { ModuleConfiguration } from './ModuleConfiguration'
 import NotificationsPage from '../notifications/NotificationsPage'
 import { Profile } from './Profile'
+import { SecuritySettings } from './SecuritySettings'
 
 type SettingsSection =
   | 'profile'
   | 'organisation'
   | 'branches'
   | 'users'
+  | 'security'
   | 'billing'
   | 'accounting'
   | 'currency'
@@ -34,6 +36,7 @@ const NAV_ITEMS: { id: SettingsSection; label: string; icon: string; adminOnly?:
   { id: 'organisation', label: 'Organisation', icon: '⚙', adminOnly: true },
   { id: 'branches', label: 'Branches', icon: '🏢', adminOnly: true, module: 'branch_management' },
   { id: 'users', label: 'Users', icon: '👥', adminOnly: true },
+  { id: 'security', label: 'Security', icon: '🔒', adminOnly: true },
   { id: 'billing', label: 'Billing', icon: '💳', adminOnly: true },
   { id: 'accounting', label: 'Accounting', icon: '📒', adminOnly: true },
   { id: 'currency', label: 'Currency', icon: '💱', adminOnly: true },
@@ -49,6 +52,7 @@ const SECTION_COMPONENTS: Record<SettingsSection, React.FC> = {
   organisation: OrgSettings,
   branches: BranchManagement,
   users: UserManagement,
+  security: SecuritySettings,
   billing: Billing,
   accounting: AccountingIntegrations,
   currency: CurrencySettings,

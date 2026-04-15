@@ -84,7 +84,19 @@ class BillingDashboardResponse(BaseModel):
     )
     estimated_next_invoice_nzd: float = Field(
         default=0.0,
-        description="Estimated next invoice total (plan + storage + Carjam overage)",
+        description="Estimated next invoice subtotal excl. GST (plan + storage + overages)",
+    )
+    gst_amount_nzd: float = Field(
+        default=0.0,
+        description="Estimated GST amount on the next invoice",
+    )
+    processing_fee_nzd: float = Field(
+        default=0.0,
+        description="Estimated Stripe processing fee on the next invoice",
+    )
+    estimated_total_incl_nzd: float = Field(
+        default=0.0,
+        description="Estimated total including GST and processing fee",
     )
     storage_addon_charge_nzd: float = Field(
         default=0.0, description="Storage add-on charges this period"
@@ -338,6 +350,44 @@ class StorageAddonStatusResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Payment method enforcement schemas — Requirements: 4.2, 4.7
+# ---------------------------------------------------------------------------
+
+
+class ExpiringMethodDetail(BaseModel):
+    """Card details for the soonest-expiring payment method.
+
+    Requirements: 4.2, 4.7
+    """
+
+    brand: str = Field(description="Card brand (e.g. Visa, Mastercard)")
+    last4: str = Field(description="Last four digits of the card number")
+    exp_month: int = Field(description="Card expiry month (1-12)")
+    exp_year: int = Field(description="Card expiry year (e.g. 2025)")
+
+
+class PaymentMethodStatusResponse(BaseModel):
+    """Response for GET /billing/payment-method-status.
+
+    Field names match exactly what the frontend expects
+    (per frontend-backend-contract-alignment steering, Rule 1).
+
+    Requirements: 4.2, 4.7
+    """
+
+    has_payment_method: bool = Field(
+        description="Whether the organisation has at least one payment method on file"
+    )
+    has_expiring_soon: bool = Field(
+        description="Whether any payment method is expiring within 30 days"
+    )
+    expiring_method: ExpiringMethodDetail | None = Field(
+        default=None,
+        description="Details of the soonest-expiring method, or null if none expiring soon",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Payment method schemas — Requirements: 5.1, 12.3
 # ---------------------------------------------------------------------------
 
@@ -451,3 +501,39 @@ class BranchCostBreakdownResponse(BaseModel):
     branch_count: int = Field(description="Number of active branches")
     billing_interval: str = Field(description="Current billing interval")
     currency: str = Field(default="nzd", description="Currency code")
+
+
+# ---------------------------------------------------------------------------
+# Billing receipt schemas
+# ---------------------------------------------------------------------------
+
+
+class BillingReceiptResponse(BaseModel):
+    """Single billing receipt for the receipts list."""
+
+    id: uuid.UUID
+    billing_date: datetime
+    billing_interval: str
+    plan_name: str
+    plan_amount_cents: int
+    sms_overage_cents: int = 0
+    carjam_overage_cents: int = 0
+    storage_addon_cents: int = 0
+    subtotal_excl_gst_cents: int
+    gst_amount_cents: int
+    processing_fee_cents: int
+    total_amount_cents: int
+    sms_overage_count: int = 0
+    carjam_overage_count: int = 0
+    storage_addon_gb: int = 0
+    status: str
+    created_at: datetime
+
+
+class BillingReceiptListResponse(BaseModel):
+    """Response for GET /billing/receipts."""
+
+    receipts: list[BillingReceiptResponse] = Field(
+        default_factory=list, description="List of billing receipts"
+    )
+    total: int = Field(default=0, description="Total number of receipts")

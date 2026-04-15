@@ -9,6 +9,7 @@ Provides:
 - PUT  /api/v1/billing/storage-addon — resize existing storage add-on
 - DELETE /api/v1/billing/storage-addon — remove storage add-on
 - GET  /api/v1/billing/trial — trial countdown data
+- GET  /api/v1/billing/payment-method-status — payment method enforcement status
 - GET  /api/v1/billing/invoices — list past subscription invoices
 - POST /api/v1/billing/webhook — Stripe subscription webhook handler
 
@@ -17,10 +18,11 @@ Requirements: 4.1–4.7, 5.1–5.7, 25.1, 25.2, 30.1, 30.2, 30.3, 30.4, 41.3, 42
 
 from __future__ import annotations
 
+import calendar
 import logging
 import math
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import stripe
@@ -36,6 +38,7 @@ from app.integrations.stripe_billing import (
     create_billing_portal_session,
     create_invoice_item,
     create_setup_intent,
+    create_stripe_customer,
     detach_payment_method,
     get_subscription_invoices,
     set_default_payment_method,
@@ -47,13 +50,17 @@ from app.integrations.stripe_connect import (
 from app.modules.admin.models import Organisation, OrgStorageAddon, SmsPackagePurchase, StoragePackage, SubscriptionPlan, Coupon, OrganisationCoupon
 from app.modules.auth.models import User
 from app.modules.auth.rbac import require_role
-from app.modules.billing.models import OrgPaymentMethod
+from app.modules.billing.models import BillingReceipt, OrgPaymentMethod
 from app.modules.billing.schemas import (
     BillingDashboardResponse,
+    BillingReceiptListResponse,
+    BillingReceiptResponse,
+    ExpiringMethodDetail,
     IntervalChangeRequest,
     IntervalChangeResponse,
     PaymentMethodListResponse,
     PaymentMethodResponse,
+    PaymentMethodStatusResponse,
     PlanChangeRequest,
     PlanDowngradeResponse,
     PlanUpgradeResponse,
@@ -65,6 +72,7 @@ from app.modules.billing.schemas import (
     SubscriptionInvoiceResponse,
     TrialStatusResponse,
 )
+from app.modules.billing.utils import is_expiring_soon
 from app.modules.billing.interval_pricing import (
     compute_effective_price,
     compute_equivalent_monthly,
@@ -172,6 +180,141 @@ async def get_trial_status(
         plan_name=plan.name if plan else "Unknown",
         plan_monthly_price_nzd=float(plan.monthly_price_nzd) if plan else 0.0,
         status=org.status,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Payment method status — Requirements: 4.1–4.8
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/payment-method-status",
+    response_model=PaymentMethodStatusResponse,
+    status_code=200,
+    responses={
+        401: {"description": "Authentication required"},
+        500: {"description": "Internal server error"},
+    },
+    summary="Payment method enforcement status",
+    dependencies=[
+        require_role(
+            "org_admin", "global_admin", "branch_admin", "salesperson", "kiosk",
+        )
+    ],
+)
+async def get_payment_method_status(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> PaymentMethodStatusResponse:
+    """Lightweight status check — local DB only, no Stripe calls.
+
+    Returns whether the org has a payment method on file and whether any
+    card is expiring within 30 days.  Used by the frontend enforcement
+    hook after login.
+
+    Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8
+    """
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+
+    # Safe defaults for users without an org (e.g. global_admin)
+    if org_uuid is None:
+        return PaymentMethodStatusResponse(
+            has_payment_method=True,
+            has_expiring_soon=False,
+            expiring_method=None,
+        )
+
+    try:
+        result = await db.execute(
+            select(OrgPaymentMethod).where(
+                OrgPaymentMethod.org_id == org_uuid
+            )
+        )
+        methods = result.scalars().all()
+    except Exception:
+        logger.exception(
+            "Failed to query payment methods for org %s", org_uuid,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+        )
+
+    # ── Stripe sync fallback ──
+    # After a SetupIntent is confirmed, the webhook may not have arrived yet.
+    # If the local DB has no methods but the org has a Stripe customer, sync
+    # from Stripe so the blocking modal can dismiss immediately.
+    if not methods:
+        try:
+            org_result = await db.execute(
+                select(Organisation).where(Organisation.id == org_uuid)
+            )
+            org = org_result.scalar_one_or_none()
+            if org and org.stripe_customer_id:
+                from app.integrations.stripe_billing import list_payment_methods as stripe_list_pms
+
+                stripe_methods = await stripe_list_pms(customer_id=org.stripe_customer_id)
+                for sm in stripe_methods:
+                    new_pm = OrgPaymentMethod(
+                        org_id=org_uuid,
+                        stripe_payment_method_id=sm["id"],
+                        brand=sm.get("brand", "unknown"),
+                        last4=sm.get("last4", "0000"),
+                        exp_month=sm.get("exp_month", 0),
+                        exp_year=sm.get("exp_year", 0),
+                        is_default=(sm == stripe_methods[0]),
+                        is_verified=True,
+                    )
+                    db.add(new_pm)
+                if stripe_methods:
+                    await db.flush()
+                    # Re-fetch from DB
+                    result2 = await db.execute(
+                        select(OrgPaymentMethod).where(
+                            OrgPaymentMethod.org_id == org_uuid
+                        )
+                    )
+                    methods = result2.scalars().all()
+                    logger.info(
+                        "Synced %d payment methods from Stripe for org %s (status endpoint)",
+                        len(stripe_methods), org_uuid,
+                    )
+        except Exception:
+            logger.warning(
+                "Failed to sync payment methods from Stripe for org %s",
+                org_uuid, exc_info=True,
+            )
+
+    has_payment_method = len(methods) > 0
+
+    # Find the soonest-expiring method among those expiring within 30 days
+    today = datetime.now(timezone.utc).date()
+    soonest_expiring: OrgPaymentMethod | None = None
+    soonest_expiry_date: date | None = None
+
+    for method in methods:
+        if is_expiring_soon(method.exp_month, method.exp_year, today):
+            last_day = calendar.monthrange(method.exp_year, method.exp_month)[1]
+            method_expiry = date(method.exp_year, method.exp_month, last_day)
+            if soonest_expiry_date is None or method_expiry < soonest_expiry_date:
+                soonest_expiring = method
+                soonest_expiry_date = method_expiry
+
+    has_expiring_soon = soonest_expiring is not None
+    expiring_method: ExpiringMethodDetail | None = None
+    if soonest_expiring is not None:
+        expiring_method = ExpiringMethodDetail(
+            brand=soonest_expiring.brand,
+            last4=soonest_expiring.last4,
+            exp_month=soonest_expiring.exp_month,
+            exp_year=soonest_expiring.exp_year,
+        )
+
+    return PaymentMethodStatusResponse(
+        has_payment_method=has_payment_method,
+        has_expiring_soon=has_expiring_soon,
+        expiring_method=expiring_method,
     )
 
 
@@ -375,11 +518,30 @@ async def get_billing_dashboard(
     if hasattr(org, "settings") and org.settings:
         pending_interval_change = org.settings.get("pending_interval_change")
 
+    # Compute GST and Stripe processing fee on the estimated total
+    gst_amount_nzd = 0.0
+    processing_fee_nzd = 0.0
+    total_incl_nzd = estimated_total
+    if estimated_total > 0:
+        from app.modules.organisations.service import (
+            _compute_billing_breakdown,
+            _load_signup_billing_config,
+        )
+        billing_config = await _load_signup_billing_config()
+        subtotal_cents = round(estimated_total * 100)
+        breakdown = _compute_billing_breakdown(subtotal_cents, billing_config)
+        gst_amount_nzd = breakdown["gst_amount_cents"] / 100
+        processing_fee_nzd = breakdown["processing_fee_cents"] / 100
+        total_incl_nzd = breakdown["total_amount_cents"] / 100
+
     return BillingDashboardResponse(
         current_plan=plan_name,
         plan_monthly_price_nzd=plan_price,
         next_billing_date=next_billing_date,
         estimated_next_invoice_nzd=round(estimated_total, 2),
+        gst_amount_nzd=round(gst_amount_nzd, 2),
+        processing_fee_nzd=round(processing_fee_nzd, 2),
+        estimated_total_incl_nzd=round(total_incl_nzd, 2),
         storage_addon_charge_nzd=round(storage_addon_charge, 2),
         carjam_overage_charge_nzd=round(carjam_overage_charge, 2),
         carjam_lookups_used=carjam_used,
@@ -508,6 +670,87 @@ async def get_branch_cost_breakdown(
         branch_count=breakdown["branch_count"],
         billing_interval=breakdown["billing_interval"],
         currency=breakdown["currency"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Billing receipts
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/receipts",
+    response_model=BillingReceiptListResponse,
+    status_code=200,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org Admin role required"},
+    },
+    summary="List billing receipts",
+    dependencies=[require_role("org_admin")],
+)
+async def list_billing_receipts(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """Return paginated billing receipts for the organisation.
+
+    Ordered by billing_date descending. Does NOT expose
+    stripe_payment_intent_id to the frontend (security hardening).
+    """
+    from app.modules.billing.models import BillingReceipt
+
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # Count total
+    count_stmt = (
+        select(func.count(BillingReceipt.id))
+        .where(BillingReceipt.org_id == org_uuid)
+    )
+    total = (await db.execute(count_stmt)).scalar() or 0
+
+    # Fetch page
+    stmt = (
+        select(BillingReceipt)
+        .where(BillingReceipt.org_id == org_uuid)
+        .order_by(BillingReceipt.billing_date.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await db.execute(stmt)
+    receipts = result.scalars().all()
+
+    return BillingReceiptListResponse(
+        receipts=[
+            BillingReceiptResponse(
+                id=r.id,
+                billing_date=r.billing_date,
+                billing_interval=r.billing_interval,
+                plan_name=r.plan_name,
+                plan_amount_cents=r.plan_amount_cents,
+                sms_overage_cents=r.sms_overage_cents,
+                carjam_overage_cents=r.carjam_overage_cents,
+                storage_addon_cents=r.storage_addon_cents,
+                subtotal_excl_gst_cents=r.subtotal_excl_gst_cents,
+                gst_amount_cents=r.gst_amount_cents,
+                processing_fee_cents=r.processing_fee_cents,
+                total_amount_cents=r.total_amount_cents,
+                sms_overage_count=r.sms_overage_count,
+                carjam_overage_count=r.carjam_overage_count,
+                storage_addon_gb=r.storage_addon_gb,
+                status=r.status,
+                created_at=r.created_at,
+            )
+            for r in receipts
+        ],
+        total=total,
     )
 
 
@@ -1017,12 +1260,38 @@ async def create_setup_intent_endpoint(
         )
 
     if not org.stripe_customer_id:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "detail": "No Stripe customer configured for this organisation. Please contact support."
-            },
-        )
+        # Auto-create a Stripe customer for this organisation so the
+        # blocking modal can proceed without requiring support intervention.
+        try:
+            user_result = await db.execute(
+                select(User).where(User.id == _user_uuid)
+            )
+            admin_user = user_result.scalar_one_or_none()
+            admin_email = admin_user.email if admin_user else f"org-{org_uuid}@orainvoice.com"
+
+            stripe_customer_id = await create_stripe_customer(
+                email=admin_email,
+                name=org.name,
+                metadata={"org_id": str(org.id)},
+            )
+            org.stripe_customer_id = stripe_customer_id
+            await db.flush()
+            await db.refresh(org)
+            logger.info(
+                "Auto-created Stripe customer %s for org %s",
+                stripe_customer_id, org_uuid,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to auto-create Stripe customer for org %s: %s",
+                org_uuid, exc,
+            )
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "detail": "Unable to set up billing. Please try again or contact support."
+                },
+            )
 
     try:
         intent_data = await create_setup_intent(
@@ -1914,10 +2183,28 @@ async def upgrade_plan(
     before_storage = org.storage_quota_gb
     before_interval = current_org_interval
 
+    # Compute prorated charge for the remainder of the billing period
+    # In a Stripe-managed subscription this would be handled by Stripe's
+    # proration engine; here we compute a simple daily proration.
+    prorated_charge_nzd = 0.0
+    if org.next_billing_date and current_plan:
+        now = datetime.now(timezone.utc)
+        remaining_days = max(0, (org.next_billing_date - now).days)
+        # Approximate interval length in days
+        interval_days_map = {"weekly": 7, "fortnightly": 14, "monthly": 30, "annual": 365}
+        interval_days = interval_days_map.get(selected_interval, 30)
+        if interval_days > 0:
+            daily_diff = float(new_effective_price - current_effective_price) / interval_days
+            prorated_charge_nzd = round(max(0.0, daily_diff * remaining_days), 2)
+
     # Update org immediately (Req 8.5)
     org.plan_id = new_plan.id
     org.storage_quota_gb = max(org.storage_quota_gb, new_plan.storage_quota_gb)
     org.billing_interval = selected_interval
+    # Set next_billing_date if not already set (e.g. upgrading from a free/demo plan)
+    if not org.next_billing_date:
+        from app.modules.billing.interval_pricing import compute_interval_duration
+        org.next_billing_date = datetime.now(timezone.utc) + compute_interval_duration(selected_interval)
     await db.flush()
 
     # Audit log

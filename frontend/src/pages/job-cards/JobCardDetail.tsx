@@ -100,7 +100,7 @@ const NEXT_STATUS: Partial<Record<JobCardStatus, { status: JobCardStatus; label:
 
 function useElapsedTimer(activeTimer: TimeEntry | null): number {
   const [elapsed, setElapsed] = useState(0)
-  const intervalRef = useRef<ReturnType<typeof setInterval>>()
+  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined)
 
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current)

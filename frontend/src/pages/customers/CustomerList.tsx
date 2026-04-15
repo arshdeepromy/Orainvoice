@@ -96,8 +96,8 @@ export default function CustomerList() {
   const [viewOpen, setViewOpen] = useState(false)
   const [viewCustomerId, setViewCustomerId] = useState<string | null>(null)
 
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
-  const abortRef = useRef<AbortController>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const abortRef = useRef<AbortController>(undefined)
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / pageSize)) : 1
 
@@ -317,14 +317,16 @@ export default function CustomerList() {
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Work Phone</th>
                   <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Receivables (BCY)</th>
                   <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Unused Credits (BCY)</th>
+                  {isAutomotive && (
                   <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Reminders WOF/Service</th>
+                  )}
                   <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
                 {!data.customers || data.customers.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-4 py-12 text-center text-sm text-gray-500">
+                    <td colSpan={isAutomotive ? 9 : 8} className="px-4 py-12 text-center text-sm text-gray-500">
                       {searchQuery ? 'No customers match your search.' : 'No customers yet. Create your first customer to get started.'}
                     </td>
                   </tr>
@@ -356,6 +358,7 @@ export default function CustomerList() {
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-900">
                         {formatNZD(c.unused_credits)}
                       </td>
+                      {isAutomotive && (
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
                         <button
                           onClick={(e) => { e.stopPropagation(); handleToggleReminder(c) }}
@@ -372,6 +375,7 @@ export default function CustomerList() {
                           />
                         </button>
                       </td>
+                      )}
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
                         <div className="flex items-center justify-center gap-1">
                           <button

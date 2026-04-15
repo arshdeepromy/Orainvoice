@@ -19,7 +19,7 @@ export function useCustomerClaims(customerId: string | undefined) {
   const [data, setData] = useState<CustomerClaimsSummary | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const abortRef = useRef<AbortController>()
+  const abortRef = useRef<AbortController>(undefined)
 
   const fetch = useCallback(async () => {
     if (!customerId) return

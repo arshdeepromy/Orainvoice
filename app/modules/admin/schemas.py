@@ -598,6 +598,8 @@ class OrgListItem(BaseModel):
     storage_quota_gb: int
     storage_used_bytes: int
     carjam_lookups_this_month: int
+    next_billing_date: datetime | None = None
+    billing_interval: str = "monthly"
     created_at: datetime
     updated_at: datetime
 
@@ -616,7 +618,7 @@ class OrgUpdateRequest(BaseModel):
 
     action: str = Field(
         ...,
-        description="Action: suspend, reinstate, activate, deactivate, delete_request, hard_delete_request, move_plan",
+        description="Action: suspend, reinstate, activate, deactivate, delete_request, hard_delete_request, move_plan, set_billing_date",
     )
     reason: str | None = Field(
         None,
@@ -627,6 +629,10 @@ class OrgUpdateRequest(BaseModel):
     new_plan_id: str | None = Field(
         None,
         description="Target plan UUID (required for move_plan action)",
+    )
+    next_billing_date: str | None = Field(
+        None,
+        description="Next billing date in ISO format (required for set_billing_date action)",
     )
     notify_org_admin: bool = Field(
         default=False,

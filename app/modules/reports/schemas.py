@@ -209,3 +209,152 @@ class FleetReportResponse(BaseModel):
     outstanding_balance: Decimal
     period_start: date
     period_end: date
+
+
+# ---------------------------------------------------------------------------
+# Profit & Loss Report  (GET /reports/profit-loss)
+# Requirements: 6.2
+# ---------------------------------------------------------------------------
+
+class ProfitLossLineItem(BaseModel):
+    account_id: uuid.UUID
+    account_code: str
+    account_name: str
+    amount: Decimal
+
+
+class ProfitLossResponse(BaseModel):
+    currency: str = "NZD"
+    revenue_items: list[ProfitLossLineItem] = []
+    total_revenue: Decimal
+    cogs_items: list[ProfitLossLineItem] = []
+    total_cogs: Decimal
+    gross_profit: Decimal
+    gross_margin_pct: Decimal
+    expense_items: list[ProfitLossLineItem] = []
+    total_expenses: Decimal
+    net_profit: Decimal
+    net_margin_pct: Decimal
+    period_start: date
+    period_end: date
+    basis: str
+
+
+# ---------------------------------------------------------------------------
+# Balance Sheet Report  (GET /reports/balance-sheet)
+# Requirements: 7.2
+# ---------------------------------------------------------------------------
+
+class BalanceSheetLineItem(BaseModel):
+    account_id: uuid.UUID
+    account_code: str
+    account_name: str
+    sub_type: str | None = None
+    balance: Decimal
+
+
+class BalanceSheetAssets(BaseModel):
+    current: list[BalanceSheetLineItem] = []
+    non_current: list[BalanceSheetLineItem] = []
+    total: Decimal
+
+
+class BalanceSheetLiabilities(BaseModel):
+    current: list[BalanceSheetLineItem] = []
+    non_current: list[BalanceSheetLineItem] = []
+    total: Decimal
+
+
+class BalanceSheetEquity(BaseModel):
+    items: list[BalanceSheetLineItem] = []
+    total: Decimal
+
+
+class BalanceSheetResponse(BaseModel):
+    currency: str = "NZD"
+    as_at_date: date
+    assets: BalanceSheetAssets
+    liabilities: BalanceSheetLiabilities
+    equity: BalanceSheetEquity
+    total_assets: Decimal
+    total_liabilities: Decimal
+    total_equity: Decimal
+    balanced: bool
+
+
+# ---------------------------------------------------------------------------
+# Aged Receivables Report  (GET /reports/aged-receivables)
+# Requirements: 8.1
+# ---------------------------------------------------------------------------
+
+class AgedReceivablesInvoice(BaseModel):
+    invoice_id: uuid.UUID
+    invoice_number: str | None = None
+    due_date: date | None = None
+    balance_due: Decimal
+    days_overdue: int
+    bucket: str
+
+
+class AgedReceivablesCustomer(BaseModel):
+    customer_id: uuid.UUID
+    customer_name: str
+    current: Decimal
+    days_31_60: Decimal = Field(alias="31_60")
+    days_61_90: Decimal = Field(alias="61_90")
+    days_90_plus: Decimal = Field(alias="90_plus")
+    total: Decimal
+    invoices: list[AgedReceivablesInvoice] = []
+
+    model_config = {"populate_by_name": True}
+
+
+class AgedReceivablesOverall(BaseModel):
+    current: Decimal
+    days_31_60: Decimal = Field(alias="31_60")
+    days_61_90: Decimal = Field(alias="61_90")
+    days_90_plus: Decimal = Field(alias="90_plus")
+    total: Decimal
+
+    model_config = {"populate_by_name": True}
+
+
+class AgedReceivablesResponse(BaseModel):
+    report_date: date
+    customers: list[AgedReceivablesCustomer] = []
+    overall: AgedReceivablesOverall
+
+
+# ---------------------------------------------------------------------------
+# Income Tax Estimate  (GET /reports/tax-estimate)
+# Requirements: 9.5
+# ---------------------------------------------------------------------------
+
+class TaxEstimateResponse(BaseModel):
+    currency: str = "NZD"
+    business_type: str
+    taxable_income: Decimal
+    estimated_tax: Decimal
+    effective_rate: Decimal
+    provisional_tax_amount: Decimal
+    next_provisional_due_date: date | None = None
+    already_paid: Decimal
+    balance_owing: Decimal
+    tax_year_start: date
+    tax_year_end: date
+
+
+# ---------------------------------------------------------------------------
+# Tax Position Dashboard  (GET /reports/tax-position)
+# Requirements: 10.1
+# ---------------------------------------------------------------------------
+
+class TaxPositionResponse(BaseModel):
+    currency: str = "NZD"
+    gst_owing: Decimal
+    next_gst_due: date | None = None
+    income_tax_estimate: Decimal
+    next_income_tax_due: date | None = None
+    provisional_tax_amount: Decimal
+    tax_year_start: date
+    tax_year_end: date

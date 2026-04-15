@@ -124,6 +124,30 @@ async def record_cash_payment(
         ip_address=ip_address,
     )
 
+    # Auto-post journal entry for the payment (Req 4.2, 4.6, 4.7)
+    try:
+        from app.modules.ledger.auto_poster import auto_post_payment
+        await auto_post_payment(db, payment, invoice, user_id)
+    except Exception as exc:
+        logger.warning(
+            "Auto-post failed for payment %s: %s", payment.id, exc
+        )
+
+    # Auto-sweep tax portions into wallets (Req 21.1, 21.2, 21.4, 21.5)
+    try:
+        from app.modules.tax_wallets.service import sweep_on_payment
+        await sweep_on_payment(
+            db,
+            org_id=org_id,
+            payment_amount=amount,
+            payment_id=payment.id,
+            user_id=user_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Tax auto-sweep failed for payment %s: %s", payment.id, exc
+        )
+
     return {
         "payment": {
             "id": payment.id,
@@ -444,6 +468,15 @@ async def handle_stripe_webhook(
         },
     )
 
+    # Auto-post journal entry for the Stripe payment (Req 4.2, 4.6, 4.7)
+    try:
+        from app.modules.ledger.auto_poster import auto_post_payment
+        await auto_post_payment(db, payment, invoice, invoice.created_by)
+    except Exception as exc:
+        logger.warning(
+            "Auto-post failed for Stripe payment %s: %s", payment.id, exc
+        )
+
     # Best-effort payment receipt email (non-blocking)
     try:
         from app.modules.customers.models import Customer
@@ -684,6 +717,15 @@ async def process_refund(
         },
         ip_address=ip_address,
     )
+
+    # Auto-post journal entry for the refund (Req 4.5, 4.6, 4.7)
+    try:
+        from app.modules.ledger.auto_poster import auto_post_refund
+        await auto_post_refund(db, refund_record, invoice, user_id)
+    except Exception as exc:
+        logger.warning(
+            "Auto-post failed for refund %s: %s", refund_record.id, exc
+        )
 
     return {
         "refund": refund_record,

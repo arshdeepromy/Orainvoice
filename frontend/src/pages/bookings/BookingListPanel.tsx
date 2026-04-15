@@ -5,7 +5,7 @@
  * Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.9
  */
 
-import { useEffect, useState, useCallback, useImperativeHandle, forwardRef } from 'react'
+import { useEffect, useState, useCallback, useImperativeHandle, type Ref } from 'react'
 import apiClient from '../../api/client'
 import { Badge, Button, Spinner, useToast, ConfirmDialog } from '../../components/ui'
 import { useModules } from '../../contexts/ModuleContext'
@@ -49,6 +49,7 @@ export interface BookingListPanelProps {
   refreshKey: number
   onRefresh: () => void
   onCreateJob?: (booking: BookingListItem) => void
+  ref?: Ref<BookingListPanelHandle>
 }
 
 /* ------------------------------------------------------------------ */
@@ -122,7 +123,7 @@ export interface BookingListPanelHandle {
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProps>(function BookingListPanel({
+function BookingListPanel({
   startDate,
   endDate: _endDate,
   calendarDate,
@@ -130,7 +131,8 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
   refreshKey,
   onRefresh,
   onCreateJob,
-}, ref) {
+  ref,
+}: BookingListPanelProps) {
   // The backend derives the date range from `view` + `date`, so we send the
   // raw calendar reference date (avoids timezone-shift issues when the
   // pre-computed startDate crosses a day boundary in UTC).
@@ -414,6 +416,6 @@ const BookingListPanel = forwardRef<BookingListPanelHandle, BookingListPanelProp
       />
     </div>
   )
-})
+}
 
 export default BookingListPanel

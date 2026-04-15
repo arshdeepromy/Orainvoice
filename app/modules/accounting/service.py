@@ -26,6 +26,36 @@ logger = logging.getLogger(__name__)
 
 VALID_PROVIDERS = ("xero", "myob")
 
+# Default Xero account codes (used when xero_account_code is not set on the Account)
+_DEFAULT_XERO_SALES_CODE = "200"
+_DEFAULT_XERO_BANK_CODE = "090"
+
+
+async def get_xero_account_code(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    ledger_code: str,
+    default: str,
+) -> str:
+    """Look up the xero_account_code for a given ledger account code.
+
+    Queries the accounts table for the org's account matching `ledger_code`
+    (e.g. "4000" for Sales Revenue, "1000" for Bank/Cash) and returns its
+    xero_account_code. Falls back to `default` when the account doesn't
+    exist or xero_account_code is null.
+
+    Requirements: 5.1, 5.2
+    """
+    from app.modules.ledger.models import Account
+
+    stmt = select(Account.xero_account_code).where(
+        Account.org_id == org_id,
+        Account.code == ledger_code,
+    )
+    result = await db.execute(stmt)
+    xero_code = result.scalar_one_or_none()
+    return xero_code if xero_code else default
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -393,6 +423,20 @@ async def sync_entity(
         return _sync_log_to_dict(entry)
 
     try:
+        # Resolve dynamic Xero account codes from the COA (Req 5.1, 5.2)
+        if provider == "xero" and entity_type in ("invoice", "credit_note", "refund"):
+            sales_code = await get_xero_account_code(
+                db, org_id, "4000", _DEFAULT_XERO_SALES_CODE,
+            )
+            # Inject into line items for invoice/credit_note
+            if entity_type in ("invoice", "credit_note"):
+                for li in entity_data.get("line_items", []):
+                    if li.get("account_code") in ("200", None):
+                        li["account_code"] = sales_code
+            # Inject as top-level key for refund payload builder
+            if entity_type == "refund":
+                entity_data["_xero_sales_account_code"] = sales_code
+
         external_id = await _dispatch_sync(
             provider=provider,
             access_token=access_token,
@@ -535,7 +579,9 @@ async def _reconstruct_entity_data(
                     "description": li.description or "",
                     "quantity": float(li.quantity) if li.quantity else 1,
                     "unit_price": float(li.unit_price) if li.unit_price else 0,
-                    "account_code": "200",
+                    "account_code": await get_xero_account_code(
+                        db, org_id, "4000", _DEFAULT_XERO_SALES_CODE,
+                    ),
                 }
                 for li in line_items
             ],
@@ -560,7 +606,9 @@ async def _reconstruct_entity_data(
             "invoice_number": invoice_number,
             "amount": float(payment.amount),
             "date": payment.created_at.strftime("%Y-%m-%d") if payment.created_at else "",
-            "account_code": "090",
+            "account_code": await get_xero_account_code(
+                db, org_id, "1000", _DEFAULT_XERO_BANK_CODE,
+            ),
             "reference": f"Payment {payment.id}",
         }
 
@@ -584,7 +632,9 @@ async def _reconstruct_entity_data(
                     "description": getattr(cn, "reason", "Credit note"),
                     "quantity": 1,
                     "unit_price": float(getattr(cn, "amount", 0)),
-                    "account_code": "200",
+                    "account_code": await get_xero_account_code(
+                        db, org_id, "4000", _DEFAULT_XERO_SALES_CODE,
+                    ),
                 }
             ],
         }

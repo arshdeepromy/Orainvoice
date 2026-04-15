@@ -131,14 +131,21 @@ class TestRevenueSummary:
         db = _mock_db()
         org_id = uuid.uuid4()
         row = _mock_row(
-            total_revenue=Decimal("1000.00"),
-            total_gst=Decimal("150.00"),
-            total_inclusive=Decimal("1150.00"),
+            total_revenue_nzd=Decimal("1000.00"),
+            total_gst_nzd=Decimal("150.00"),
+            total_inclusive_nzd=Decimal("1150.00"),
             invoice_count=5,
         )
-        result_mock = MagicMock()
-        result_mock.one.return_value = row
-        db.execute.return_value = result_mock
+        inv_result = MagicMock()
+        inv_result.one.return_value = row
+
+        cn_result = MagicMock()
+        cn_result.scalar.return_value = Decimal("0")
+
+        pay_result = MagicMock()
+        pay_result.scalar.return_value = Decimal("0")
+
+        db.execute.side_effect = [inv_result, cn_result, pay_result]
 
         data = await get_revenue_summary(
             db, org_id, date(2024, 1, 1), date(2024, 1, 31)
@@ -148,20 +155,28 @@ class TestRevenueSummary:
         assert data["total_inclusive"] == Decimal("1150.00")
         assert data["invoice_count"] == 5
         assert data["average_invoice"] == Decimal("230.00")
+        assert data["currency"] == "NZD"
 
     @pytest.mark.asyncio
     async def test_revenue_summary_zero_invoices(self):
         db = _mock_db()
         org_id = uuid.uuid4()
         row = _mock_row(
-            total_revenue=0,
-            total_gst=0,
-            total_inclusive=0,
+            total_revenue_nzd=0,
+            total_gst_nzd=0,
+            total_inclusive_nzd=0,
             invoice_count=0,
         )
-        result_mock = MagicMock()
-        result_mock.one.return_value = row
-        db.execute.return_value = result_mock
+        inv_result = MagicMock()
+        inv_result.one.return_value = row
+
+        cn_result = MagicMock()
+        cn_result.scalar.return_value = Decimal("0")
+
+        pay_result = MagicMock()
+        pay_result.scalar.return_value = Decimal("0")
+
+        db.execute.side_effect = [inv_result, cn_result, pay_result]
 
         data = await get_revenue_summary(
             db, org_id, date(2024, 1, 1), date(2024, 1, 31)
@@ -297,10 +312,13 @@ class TestGSTReturn:
         db = _mock_db()
         org_id = uuid.uuid4()
 
-        # Three sequential db.execute calls:
-        # 1. standard-rated line items sum
-        # 2. zero-rated line items sum
-        # 3. invoice-level GST totals
+        # Six sequential db.execute calls:
+        # 1. standard-rated line items sum (NZD-converted)
+        # 2. zero-rated line items sum (NZD-converted)
+        # 3. invoice-level GST totals (NZD-converted)
+        # 4. credit note refunds (NZD-converted)
+        # 5. refund payments (NZD-converted)
+        # 6. expense totals (purchases + input tax)
         std_result = MagicMock()
         std_result.scalar.return_value = Decimal("8000.00")
 
@@ -308,22 +326,44 @@ class TestGSTReturn:
         zero_result.scalar.return_value = Decimal("2000.00")
 
         gst_row = _mock_row(
-            total_gst=Decimal("1200.00"),
-            total_sales=Decimal("11200.00"),
+            total_gst_nzd=Decimal("1200.00"),
+            total_sales_nzd=Decimal("11200.00"),
         )
         gst_result = MagicMock()
         gst_result.one.return_value = gst_row
 
-        db.execute.side_effect = [std_result, zero_result, gst_result]
+        cn_result = MagicMock()
+        cn_result.scalar.return_value = Decimal("0")
+
+        pay_refund_result = MagicMock()
+        pay_refund_result.scalar.return_value = Decimal("0")
+
+        expense_row = _mock_row(
+            total_purchases=Decimal("3000.00"),
+            total_input_tax=Decimal("391.30"),
+        )
+        expense_result = MagicMock()
+        expense_result.one.return_value = expense_row
+
+        db.execute.side_effect = [
+            std_result, zero_result, gst_result,
+            cn_result, pay_refund_result, expense_result,
+        ]
 
         data = await get_gst_return(
             db, org_id, date(2024, 1, 1), date(2024, 3, 31)
         )
+        assert data["currency"] == "NZD"
         assert data["total_sales"] == Decimal("11200.00")
         assert data["total_gst_collected"] == Decimal("1200.00")
         assert data["standard_rated_sales"] == Decimal("8000.00")
         assert data["zero_rated_sales"] == Decimal("2000.00")
-        assert data["net_gst"] == Decimal("1200.00")
+        # Input tax from expenses
+        assert data["total_purchases"] == Decimal("3000.00")
+        assert data["total_input_tax"] == Decimal("391.30")
+        # Net GST payable = output (1200) - input (391.30) = 808.70
+        assert data["net_gst_payable"] == Decimal("808.70")
+        assert data["net_gst"] == Decimal("808.70")  # legacy alias
 
 
 # ---------------------------------------------------------------------------

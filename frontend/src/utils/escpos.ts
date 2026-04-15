@@ -31,12 +31,17 @@ const CMD = {
   OPEN_DRAWER: [ESC, 0x70, 0x00, 0x19, 0xfa],
 } as const;
 
-export type PaperWidth = 58 | 80;
+export type PaperWidth = number;
 
-const CHARS_PER_LINE: Record<PaperWidth, number> = {
-  58: 32,
-  80: 48,
-};
+/**
+ * Calculate characters per line for a given paper width in mm.
+ * Returns 32 for 58mm, 48 for 80mm, and floor(width / 1.667) for other widths.
+ */
+export function charsPerLine(widthMm: number): number {
+  if (widthMm === 58) return 32;
+  if (widthMm === 80) return 48;
+  return Math.floor(widthMm / 1.667);
+}
 
 export interface ReceiptLineItem {
   name: string;
@@ -61,6 +66,13 @@ export interface ReceiptData {
   cashTendered?: number;
   changeGiven?: number;
   footer?: string;
+  // Invoice receipt fields
+  customerName?: string;
+  gstNumber?: string;
+  amountPaid?: number;
+  balanceDue?: number;
+  totalRefunded?: number;
+  paymentBreakdown?: Array<{ method: string; amount: number }>;
 }
 
 /**
@@ -71,7 +83,7 @@ export class ESCPOSBuilder {
   private lineWidth: number;
 
   constructor(paperWidth: PaperWidth = 80) {
-    this.lineWidth = CHARS_PER_LINE[paperWidth];
+    this.lineWidth = charsPerLine(paperWidth);
     this.buffer.push(...CMD.INIT);
   }
 
@@ -189,11 +201,13 @@ export function buildReceipt(data: ReceiptData, paperWidth: PaperWidth = 80): Ui
   b.doubleSize(data.orgName);
   if (data.orgAddress) b.center(data.orgAddress);
   if (data.orgPhone) b.center(data.orgPhone);
+  if (data.gstNumber != null) b.center(`GST: ${data.gstNumber}`);
   b.separator('=');
 
   // Receipt info
   if (data.receiptNumber) b.columns('Receipt #:', data.receiptNumber);
   b.columns('Date:', data.date);
+  if (data.customerName != null) b.columns('Customer:', data.customerName);
   b.separator();
 
   // Line items
@@ -218,11 +232,24 @@ export function buildReceipt(data: ReceiptData, paperWidth: PaperWidth = 80): Ui
 
   // Payment
   b.columns('Payment:', data.paymentMethod.toUpperCase());
+  if (data.paymentBreakdown != null) {
+    for (const entry of data.paymentBreakdown) {
+      b.columns(`${entry.method}:`, formatCurrency(entry.amount));
+    }
+  }
   if (data.cashTendered != null) {
     b.columns('Tendered:', formatCurrency(data.cashTendered));
   }
   if (data.changeGiven != null && data.changeGiven > 0) {
     b.columns('Change:', formatCurrency(data.changeGiven));
+  }
+  if (data.amountPaid != null) {
+    b.columns('Amount Paid:', formatCurrency(data.amountPaid));
+  }
+  if (data.balanceDue != null && data.balanceDue > 0) {
+    b.raw(CMD.BOLD_ON);
+    b.columns('BALANCE DUE:', formatCurrency(data.balanceDue));
+    b.raw(CMD.BOLD_OFF);
   }
 
   // Footer

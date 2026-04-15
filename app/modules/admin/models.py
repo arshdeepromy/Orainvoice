@@ -123,6 +123,20 @@ class Organisation(Base):
     timezone: Mapped[str] = mapped_column(
         String(50), nullable=False, server_default="'UTC'"
     )
+
+    # Sprint 7 — Business Entity Type Classification (Req 29.1, 29.2)
+    business_type: Mapped[str | None] = mapped_column(
+        String(20), server_default="sole_trader", nullable=True
+    )
+    nzbn: Mapped[str | None] = mapped_column(String(13), nullable=True)
+    nz_company_number: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    gst_registered: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    gst_registration_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    income_tax_year_end: Mapped[date | None] = mapped_column(Date, server_default="2026-03-31", nullable=True)
+    provisional_tax_method: Mapped[str | None] = mapped_column(
+        String(20), server_default="standard", nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -134,6 +148,14 @@ class Organisation(Base):
         CheckConstraint(
             "status IN ('trial','active','payment_pending','grace_period','suspended','deleted')",
             name="ck_organisations_status",
+        ),
+        CheckConstraint(
+            "business_type IN ('sole_trader','partnership','company','trust','other')",
+            name="ck_organisations_business_type",
+        ),
+        CheckConstraint(
+            "provisional_tax_method IN ('standard','estimation','ratio')",
+            name="ck_organisations_provisional_method",
         ),
     )
 

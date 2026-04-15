@@ -206,14 +206,14 @@ async def list_payment_methods(
         type=type,
     )
     result = []
-    for pm in methods.get("data", []):
-        card = pm.get("card", {})
+    for pm in methods.data:
+        card = pm.card or {}
         result.append({
-            "id": pm["id"],
-            "brand": card.get("brand", ""),
-            "last4": card.get("last4", ""),
-            "exp_month": card.get("exp_month", 0),
-            "exp_year": card.get("exp_year", 0),
+            "id": pm.id,
+            "brand": getattr(card, "brand", "") or "",
+            "last4": getattr(card, "last4", "") or "",
+            "exp_month": getattr(card, "exp_month", 0) or 0,
+            "exp_year": getattr(card, "exp_year", 0) or 0,
         })
     logger.info(
         "Listed %d payment methods for customer %s",
@@ -311,10 +311,18 @@ async def charge_org_payment_method(
     amount_cents: int,
     currency: str = "nzd",
     metadata: dict | None = None,
+    idempotency_key: str | None = None,
 ) -> dict:
     """Charge a saved payment method off-session.
 
     Creates a PaymentIntent with off_session=True, confirm=True.
+
+    Parameters
+    ----------
+    idempotency_key:
+        Optional Stripe idempotency key to prevent double-charges on
+        retries.  Stripe deduplicates requests with the same key within
+        24 hours, returning the original PaymentIntent.
 
     Returns:
         {"payment_intent_id": str, "status": str, "amount_cents": int}
@@ -324,16 +332,19 @@ async def charge_org_payment_method(
         PaymentActionRequiredError: when authentication is needed
     """
     await _ensure_stripe_key()
+    create_kwargs: dict = dict(
+        customer=customer_id,
+        payment_method=payment_method_id,
+        amount=amount_cents,
+        currency=currency,
+        off_session=True,
+        confirm=True,
+        metadata=metadata or {},
+    )
+    if idempotency_key:
+        create_kwargs["idempotency_key"] = idempotency_key
     try:
-        intent = stripe.PaymentIntent.create(
-            customer=customer_id,
-            payment_method=payment_method_id,
-            amount=amount_cents,
-            currency=currency,
-            off_session=True,
-            confirm=True,
-            metadata=metadata or {},
-        )
+        intent = stripe.PaymentIntent.create(**create_kwargs)
     except stripe.error.CardError as e:
         err = e.error
         decline_code = err.decline_code if err else None

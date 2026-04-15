@@ -426,7 +426,7 @@ async def get_storage_addon_status(
 
     fallback_price = await _get_fallback_price_per_gb(db)
 
-    base_quota_gb = org.plan.storage_quota_gb
+    base_quota_gb = org.storage_quota_gb
     addon_gb = addon.quantity_gb if addon else 0
     total_quota_gb = base_quota_gb + addon_gb
     storage_used_gb = round(org.storage_used_bytes / (1024 ** 3), 2)
@@ -642,7 +642,7 @@ async def resize_storage_addon(
     # Validate downgrade: usage must not exceed new total quota
     old_quantity_gb = addon.quantity_gb
     if new_quantity_gb < old_quantity_gb:
-        base_quota_gb = org.plan.storage_quota_gb
+        base_quota_gb = org.storage_quota_gb
         new_total_quota_gb = base_quota_gb + new_quantity_gb
         storage_used_gb = org.storage_used_bytes / (1024 ** 3)
         if storage_used_gb > new_total_quota_gb:
@@ -734,7 +734,7 @@ async def remove_storage_addon(
         raise LookupError("No active storage add-on found")
 
     # Validate usage doesn't exceed base quota
-    base_quota_gb = org.plan.storage_quota_gb
+    base_quota_gb = org.storage_quota_gb
     storage_used_gb = org.storage_used_bytes / (1024 ** 3)
     if storage_used_gb > base_quota_gb:
         raise ValueError(

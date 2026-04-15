@@ -9,11 +9,12 @@
  */
 
 import { useTranslation } from '@/contexts/LocaleContext'
+import type { ElementType } from 'react'
 
 interface TranslatedTextProps {
   tKey: string
   vars?: Record<string, string>
-  as?: keyof JSX.IntrinsicElements
+  as?: ElementType
   className?: string
 }
 

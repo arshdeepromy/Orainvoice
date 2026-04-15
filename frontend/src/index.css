@@ -1,10 +1,9 @@
+@import './styles/themes.css';
 @import './styles/print.css';
 @import './styles/responsive.css';
-@import './styles/themes.css';
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+@config '../tailwind.config.js';
 
 /* Hide the reCAPTCHA badge — required by Firebase Phone Auth invisible reCAPTCHA.
    Google's ToS allows hiding it as long as you include their branding text,

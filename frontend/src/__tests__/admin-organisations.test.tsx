@@ -41,6 +41,8 @@ const mockOrgs: Organisation[] = [
     storage_used_gb: 2.5,
     storage_quota_gb: 10,
     last_login: '2025-06-20T14:30:00Z',
+    next_billing_date: '2025-07-10T00:00:00Z',
+    billing_interval: 'monthly',
   },
   {
     id: 'org-2',
@@ -53,6 +55,8 @@ const mockOrgs: Organisation[] = [
     storage_used_gb: 0.3,
     storage_quota_gb: 5,
     last_login: '2025-06-19T09:00:00Z',
+    next_billing_date: null,
+    billing_interval: 'monthly',
   },
   {
     id: 'org-3',
@@ -65,6 +69,8 @@ const mockOrgs: Organisation[] = [
     storage_used_gb: 8.1,
     storage_quota_gb: 50,
     last_login: null,
+    next_billing_date: '2025-04-15T00:00:00Z',
+    billing_interval: 'annual',
   },
 ]
 
