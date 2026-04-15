@@ -20,23 +20,21 @@ interface OrgUser {
   [key: string]: unknown
 }
 
+interface RoleOption {
+  slug: string
+  name: string
+  is_system: boolean
+}
+
 interface PlanInfo { user_seats: number }
 interface InviteForm { email: string; role: string; password: string }
 
-const ROLE_OPTIONS = [
-  { value: 'org_admin', label: 'Org Admin' },
-  { value: 'salesperson', label: 'Salesperson' },
-  { value: 'kiosk', label: 'Kiosk' },
-]
-
-const ROLE_LABELS: Record<string, string> = {
-  org_admin: 'Org Admin',
-  salesperson: 'Salesperson',
-  kiosk: 'Kiosk',
-}
+// Roles that should not appear in the invite dropdown
+const HIDDEN_ROLE_SLUGS = new Set(['global_admin'])
 
 export function UserManagement() {
   const [users, setUsers] = useState<OrgUser[]>([])
+  const [roles, setRoles] = useState<RoleOption[]>([])
   const [plan, setPlan] = useState<PlanInfo | null>(null)
   const [mfaPolicy, setMfaPolicy] = useState<'optional' | 'mandatory'>('optional')
   const [loading, setLoading] = useState(true)
@@ -48,9 +46,10 @@ export function UserManagement() {
   const fetchData = async (signal?: AbortSignal) => {
     setLoading(true)
     try {
-      const [userRes, settingsRes] = await Promise.all([
+      const [userRes, settingsRes, rolesRes] = await Promise.all([
         apiClient.get('/org/users', { signal }),
         apiClient.get('/org/settings', { signal }),
+        apiClient.get<RoleOption[]>('/org/roles', { signal }),
       ])
       // Handle both array and wrapped response formats
       const userData = Array.isArray(userRes.data) ? userRes.data : (userRes.data?.users ?? [])
@@ -59,6 +58,9 @@ export function UserManagement() {
       if (settingsRes.data?.plan) {
         setPlan({ user_seats: settingsRes.data?.plan?.user_seats ?? 0 })
       }
+      // Filter out global_admin from assignable roles
+      const allRoles = Array.isArray(rolesRes.data) ? rolesRes.data : []
+      setRoles(allRoles.filter((r) => !HIDDEN_ROLE_SLUGS.has(r?.slug)))
     } catch (err) {
       if (signal && signal.aborted) return
       addToast('error', 'Failed to load users')
@@ -191,13 +193,23 @@ export function UserManagement() {
     return new Date(iso).toLocaleDateString('en-NZ', { day: '2-digit', month: '2-digit', year: 'numeric' })
   }
 
+  const roleLabel = (slug: string) => {
+    const found = roles.find((r) => r?.slug === slug)
+    return found?.name ?? slug
+  }
+
+  const roleOptions = (roles ?? []).map((r) => ({
+    value: r?.slug ?? '',
+    label: r?.name ?? r?.slug ?? '',
+  }))
+
   const columns: Column<OrgUser>[] = [
     { key: 'email', header: 'Email', sortable: true },
     {
       key: 'role', header: 'Role',
       render: (row) => (
         <Badge variant={row.role === 'kiosk' ? 'warning' : 'info'}>
-          {ROLE_LABELS[row.role] ?? row.role}
+          {roleLabel(row.role)}
         </Badge>
       ),
     },
@@ -284,7 +296,7 @@ export function UserManagement() {
         <div className="space-y-4">
           <Input label="Email Address" type="email" value={inviteForm.email}
             onChange={(e) => setInviteForm((p) => ({ ...p, email: e.target.value }))} required />
-          <Select label="Role" options={ROLE_OPTIONS} value={inviteForm.role}
+          <Select label="Role" options={roleOptions} value={inviteForm.role}
             onChange={(e) => setInviteForm((p) => ({ ...p, role: e.target.value, password: '' }))} />
           {inviteForm.role === 'kiosk' && (
             <>

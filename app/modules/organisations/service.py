@@ -1169,8 +1169,18 @@ async def update_org_user(
 
     # Update role
     if role is not None:
-        if role not in ("org_admin", "salesperson", "kiosk"):
-            raise ValueError("Role must be 'org_admin', 'salesperson', or 'kiosk'")
+        BUILT_IN_ROLES = {"org_admin", "salesperson", "kiosk", "branch_admin", "location_manager", "staff_member", "franchise_admin"}
+        if role not in BUILT_IN_ROLES:
+            # Check if it's a valid custom role for this org
+            from app.modules.auth.models import CustomRole
+            custom_result = await db.execute(
+                select(CustomRole).where(
+                    CustomRole.org_id == org_id,
+                    CustomRole.slug == role,
+                )
+            )
+            if custom_result.scalar_one_or_none() is None:
+                raise ValueError(f"Invalid role '{role}'. Must be a built-in role or a custom role for this organisation.")
         user.role = role
         updated_fields.append("role")
 
