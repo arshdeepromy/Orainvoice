@@ -44,6 +44,15 @@ BUILT_IN_ROLE_NAMES: dict[str, str] = {
     "franchise_admin": "Franchise Admin",
 }
 
+# Roles that require specific modules to be enabled.
+# Roles not listed here are always available (e.g. org_admin, salesperson, staff_member).
+ROLE_REQUIRED_MODULES: dict[str, str] = {
+    "branch_admin": "branch_management",
+    "location_manager": "branch_management",
+    "franchise_admin": "franchise",
+    "kiosk": "pos",
+}
+
 
 def _slugify(name: str) -> str:
     """Convert a role name to a URL-safe slug."""
@@ -60,9 +69,20 @@ def _slugify(name: str) -> str:
 async def list_roles(db: AsyncSession, org_id: uuid.UUID) -> list[dict[str, Any]]:
     """List built-in roles + custom roles for an org, with user counts.
 
+    Filters out built-in roles whose required module is not enabled
+    for the org (e.g. branch_admin hidden when branch_management is off).
+    Global_admin is always excluded from org-level listings.
+
     Returns a list of dicts matching the RoleResponse schema shape.
     """
+    from app.core.modules import ModuleService
+
     org_id_str = str(org_id)
+
+    # Determine which modules are enabled for this org
+    svc = ModuleService(db)
+    all_modules = await svc.get_all_modules_for_org(org_id_str)
+    enabled_slugs = {m["slug"] for m in (all_modules or []) if m.get("is_enabled")}
 
     # Built-in roles with user counts
     built_in_rows = await db.execute(
@@ -86,6 +106,13 @@ async def list_roles(db: AsyncSession, org_id: uuid.UUID) -> list[dict[str, Any]
 
     roles: list[dict[str, Any]] = []
     for slug in sorted(BUILT_IN_ROLE_SLUGS):
+        # Always exclude global_admin from org-level role listings
+        if slug == "global_admin":
+            continue
+        # Filter out roles whose required module is not enabled
+        required_module = ROLE_REQUIRED_MODULES.get(slug)
+        if required_module and required_module not in enabled_slugs:
+            continue
         roles.append({
             "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"builtin.{slug}")),
             "org_id": org_id_str,
