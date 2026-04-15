@@ -18,6 +18,23 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+
+def get_client_ip(request: Request) -> str | None:
+    """Resolve the real client IP from proxy headers.
+
+    Checks ``X-Forwarded-For`` first (first IP in the chain is the
+    original client), then ``X-Real-IP``, and falls back to
+    ``request.client.host``.
+    """
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        # X-Forwarded-For: client, proxy1, proxy2 — first entry is the client
+        return forwarded_for.split(",")[0].strip()
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    return request.client.host if request.client else None
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -158,6 +175,9 @@ class AuthMiddleware:
 
         request = Request(scope)
         path = request.url.path
+
+        # Resolve real client IP from proxy headers once for all downstream use
+        request.state.client_ip = get_client_ip(request)
 
         if _is_public(path):
             # REM-15: Check portal token expiry for portal paths.

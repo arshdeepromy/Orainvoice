@@ -46,7 +46,7 @@ def _extract_org_context(
     """Extract org_id, user_id, and ip_address from request."""
     user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     try:
         org_uuid = uuid.UUID(org_id) if org_id else None
         user_uuid = uuid.UUID(user_id) if user_id else None

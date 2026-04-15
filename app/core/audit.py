@@ -17,7 +17,7 @@ Usage::
         entity_id=invoice.id,
         before_value=None,
         after_value={"status": "issued", "number": "INV-0042"},
-        ip_address=request.client.host,
+        ip_address=getattr(request.state, "client_ip", None),
         device_info=request.headers.get("user-agent"),
     )
 """

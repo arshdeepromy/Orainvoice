@@ -148,7 +148,7 @@ async def create_organisation(
     Requirement 8.1.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         plan_uuid = uuid.UUID(payload.plan_id)
@@ -272,7 +272,7 @@ async def update_org(
     Requirements 47.2, 47.3.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         org_uuid = uuid.UUID(org_id)
@@ -348,7 +348,7 @@ async def delete_org(
     Requirements 47.2, 47.3.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         org_uuid = uuid.UUID(org_id)
@@ -411,7 +411,7 @@ async def hard_delete_org(
     Requirements 47.2, 47.3.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         org_uuid = uuid.UUID(org_id)
@@ -536,7 +536,7 @@ async def configure_smtp(
     Requirement 33.1.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await save_smtp_config(
@@ -584,7 +584,7 @@ async def test_smtp_email(
     Requirement 33.2.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     # Look up the admin's email
     admin_email = getattr(request.state, "email", None)
@@ -644,7 +644,7 @@ async def configure_twilio(
     Requirement 36.1.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await save_twilio_config(
@@ -685,7 +685,7 @@ async def test_twilio_sms(
     Requirement 36.1.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     test_result = await send_test_sms(
         db,
@@ -797,7 +797,7 @@ async def create_subscription_plan(
     Requirements 40.1, 40.2, 40.4, 4.1, 4.5.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await create_plan(
@@ -851,7 +851,7 @@ async def update_subscription_plan(
     Requirements 40.3, 40.4.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         plan_uuid = uuid.UUID(plan_id)
@@ -921,7 +921,7 @@ async def archive_subscription_plan(
     Requirement 40.3.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         plan_uuid = uuid.UUID(plan_id)
@@ -965,7 +965,7 @@ async def delete_subscription_plan(
     Only Global_Admin users can access this endpoint.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         plan_uuid = uuid.UUID(plan_id)
@@ -1333,7 +1333,7 @@ async def backup_integration_settings(
     data = await export_integration_settings(db)
 
     # --- Audit log (REM-04) ---
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     await write_audit_log(
         session=db,
         action="admin.integration_backup_exported",
@@ -1369,7 +1369,7 @@ async def restore_integration_settings(
     from app.modules.admin.service import import_integration_settings
 
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         body = await request.json()
@@ -1461,7 +1461,7 @@ async def configure_carjam(
     Requirement 48.3.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await save_carjam_config(
@@ -1503,7 +1503,7 @@ async def test_carjam(
     Requirement 48.2.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     test_result = await test_carjam_connection(
         db,
@@ -1548,7 +1548,7 @@ async def test_vehicle_lookup(
     logger.info(f"Payload received: {payload}")
     
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     rego = payload.get("rego", "").upper().strip()
     
     logger.info(f"User ID: {user_id}, IP: {ip_address}, Rego: {rego}")
@@ -1955,7 +1955,7 @@ async def configure_stripe(
     Requirement 48.4.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await save_stripe_config(
@@ -1997,7 +1997,7 @@ async def test_stripe(
     Requirement 48.2.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     test_result = await test_stripe_connection(
         db,
@@ -2026,7 +2026,7 @@ async def test_stripe_keys(
     Uses the stored secret key to verify it's valid and has API access.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     from app.modules.admin.service import test_stripe_api_keys
     test_result = await test_stripe_api_keys(
@@ -2625,7 +2625,7 @@ async def update_settings(
     from app.modules.admin.service import update_platform_settings
 
     actor_user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     result = await update_platform_settings(
         db,
@@ -2689,7 +2689,7 @@ async def refresh_vehicle(
     from app.modules.admin.service import refresh_global_vehicle
 
     actor_user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     result = await refresh_global_vehicle(
         db,
@@ -2727,7 +2727,7 @@ async def delete_stale_vehicles_endpoint(
     from app.modules.admin.service import delete_stale_vehicles
 
     actor_user_id = getattr(request.state, "user_id", None) if request else None
-    ip_address = request.client.host if request and request.client else None
+    ip_address = getattr(request.state, "client_ip", None) if request else None
 
     result = await delete_stale_vehicles(
         db,
@@ -2818,7 +2818,7 @@ async def update_user_status(
         return JSONResponse(status_code=400, content={"detail": "Invalid user_id format"})
 
     actor_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await toggle_user_active(
@@ -2864,7 +2864,7 @@ async def create_global_admin_user(
     from app.modules.admin.service import create_global_admin
 
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await create_global_admin(
@@ -2914,7 +2914,7 @@ async def delete_user(
         return JSONResponse(status_code=400, content={"detail": "Invalid user_id format"})
 
     actor_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await delete_user_permanently(
@@ -2962,7 +2962,7 @@ async def admin_send_password_reset(
     if user is None:
         return JSONResponse(status_code=404, content={"detail": "User not found"})
 
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     await request_password_reset(db=db, email=user.email, ip_address=ip_address)
     await db.commit()
 
@@ -2994,7 +2994,7 @@ async def admin_reset_mfa(
         return JSONResponse(status_code=400, content={"detail": "Invalid user_id format"})
 
     actor_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await admin_reset_user_mfa(
@@ -3145,7 +3145,7 @@ async def update_user_status(
         return JSONResponse(status_code=400, content={"detail": "Invalid user_id format"})
 
     actor_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await toggle_user_active(
@@ -3342,7 +3342,7 @@ async def sync_holidays(
         return JSONResponse(status_code=400, content={"detail": f"Unsupported country. Use: {', '.join(valid_countries)}"})
 
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await sync_public_holidays(
@@ -3415,7 +3415,7 @@ async def create_coupon_endpoint(
 ):
     """Create a new coupon. Code is normalised to uppercase."""
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await create_coupon(
@@ -3486,7 +3486,7 @@ async def update_coupon_endpoint(
 ):
     """Update coupon fields. usage_limit must be >= times_redeemed."""
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         coupon_uuid = uuid.UUID(coupon_id)
@@ -3538,7 +3538,7 @@ async def delete_coupon_endpoint(
 ):
     """Soft-delete a coupon by setting is_active to false."""
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         coupon_uuid = uuid.UUID(coupon_id)
@@ -3582,7 +3582,7 @@ async def reactivate_coupon_endpoint(
 ):
     """Reactivate a previously deactivated coupon."""
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         coupon_uuid = uuid.UUID(coupon_id)
@@ -3738,7 +3738,7 @@ async def create_storage_package_endpoint(
     Requirements 2.2, 2.5.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await create_storage_package(
@@ -3783,7 +3783,7 @@ async def update_storage_package_endpoint(
     Requirements 2.3, 2.5.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         pkg_uuid = uuid.UUID(package_id)
@@ -3836,7 +3836,7 @@ async def delete_storage_package_endpoint(
     Requirements 2.4, 2.6.
     """
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         pkg_uuid = uuid.UUID(package_id)
@@ -3919,7 +3919,7 @@ async def set_org_context(
     await redis_pool.set(redis_key, str(org_uuid))
 
     # Audit log: admin.org_context_switched
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     await write_audit_log(
         session=db,
         action="admin.org_context_switched",
@@ -3990,7 +3990,7 @@ async def regenerate_portal_token(
 
     # Audit log
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     await write_audit_log(
         session=db,
         action="admin.portal_token_regenerated",

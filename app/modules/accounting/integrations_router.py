@@ -47,7 +47,7 @@ async def test_integration_connection(
     """
     org_id = getattr(request.state, "org_id", None)
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(

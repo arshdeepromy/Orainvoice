@@ -55,7 +55,7 @@ async def post_activate(
     db: AsyncSession = Depends(get_db_session),
 ):
     user_id = getattr(request.state, "user_id", None)
-    ip = request.client.host if request.client else None
+    ip = getattr(request.state, "client_ip", None)
     result = await activate_email_provider(
         db, provider_key=provider_key,
         admin_user_id=uuid.UUID(user_id) if user_id else None,
@@ -80,7 +80,7 @@ async def post_deactivate(
     db: AsyncSession = Depends(get_db_session),
 ):
     user_id = getattr(request.state, "user_id", None)
-    ip = request.client.host if request.client else None
+    ip = getattr(request.state, "client_ip", None)
     result = await deactivate_email_provider(
         db, provider_key=provider_key,
         admin_user_id=uuid.UUID(user_id) if user_id else None,
@@ -106,7 +106,7 @@ async def put_credentials(
     db: AsyncSession = Depends(get_db_session),
 ):
     user_id = getattr(request.state, "user_id", None)
-    ip = request.client.host if request.client else None
+    ip = getattr(request.state, "client_ip", None)
     result = await save_email_credentials(
         db,
         provider_key=provider_key,
@@ -142,7 +142,7 @@ async def post_test(
     """Send a test email using the specified provider."""
     user_id = getattr(request.state, "user_id", None)
     user_email = getattr(request.state, "email", None)
-    ip = request.client.host if request.client else None
+    ip = getattr(request.state, "client_ip", None)
     
     # Use provided email or fall back to admin's email
     to_email = payload.to_email if payload else user_email
@@ -171,7 +171,7 @@ async def put_priority(
 ):
     """Update the priority of an email provider (lower = higher priority)."""
     user_id = getattr(request.state, "user_id", None)
-    ip = request.client.host if request.client else None
+    ip = getattr(request.state, "client_ip", None)
     
     result = await update_email_provider_priority(
         db,

@@ -356,7 +356,7 @@ async def export_customers(
 
     # Audit log (REM-06)
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     await write_audit_log(
         session=db,
         org_id=org_id,
@@ -406,7 +406,7 @@ async def export_vehicles(
 
     # Audit log (REM-06)
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     await write_audit_log(
         session=db,
         org_id=org_id,
@@ -458,7 +458,7 @@ async def export_invoices(
 
     # Audit log (REM-06)
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     await write_audit_log(
         session=db,
         org_id=org_id,
@@ -527,7 +527,7 @@ async def bulk_import_customers_json_endpoint(
 
     # Audit log
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     await write_audit_log(
         session=db,
         org_id=org_id,
@@ -593,7 +593,7 @@ async def bulk_import_vehicles_json_endpoint(
 
     # Audit log
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     await write_audit_log(
         session=db,
         org_id=org_id,

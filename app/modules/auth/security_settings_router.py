@@ -52,7 +52,7 @@ def _extract_context(request: Request) -> tuple[uuid.UUID, uuid.UUID, str | None
     """Extract org_id, user_id, ip_address, and device_info from request state."""
     org_id = uuid.UUID(request.state.org_id)
     user_id = uuid.UUID(request.state.user_id)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     device_info = request.headers.get("user-agent")
     return org_id, user_id, ip_address, device_info
 

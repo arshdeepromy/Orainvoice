@@ -60,7 +60,7 @@ async def create_flag(
 ):
     """Create a new feature flag. Requires Global Admin."""
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     svc = FeatureFlagCRUDService(db)
     try:
         flag = await svc.create_flag(payload, created_by=user_id, ip_address=ip_address)
@@ -83,7 +83,7 @@ async def update_flag(
 ):
     """Update an existing feature flag by key. Requires Global Admin."""
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     svc = FeatureFlagCRUDService(db)
     try:
         flag = await svc.update_flag(key, payload, updated_by=user_id, ip_address=ip_address)
@@ -105,7 +105,7 @@ async def delete_flag(
 ):
     """Archive a feature flag (sets is_active=False). Requires Global Admin."""
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
     svc = FeatureFlagCRUDService(db)
     try:
         await svc.archive_flag(key, archived_by=user_id, ip_address=ip_address)

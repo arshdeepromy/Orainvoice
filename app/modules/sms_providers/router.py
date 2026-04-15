@@ -55,7 +55,7 @@ async def patch_provider(
 ):
     """Update provider settings (active, default, priority, config)."""
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     result = await update_sms_provider(
         db,
@@ -90,7 +90,7 @@ async def put_credentials(
 ):
     """Save encrypted credentials for an SMS provider."""
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     try:
         result = await save_provider_credentials(
@@ -153,7 +153,7 @@ async def test_provider(
     from app.modules.sms_providers.service import test_sms_provider
 
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     result = await test_sms_provider(
         db,
@@ -180,7 +180,7 @@ async def set_mfa_default(
     from app.modules.sms_providers.service import set_mfa_default_provider
 
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     result = await set_mfa_default_provider(
         db,
@@ -242,7 +242,7 @@ async def send_test_code(
         return JSONResponse(status_code=400, content={"success": False, "message": "Phone number is required"})
 
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if provider_key != "firebase_phone_auth":
         return JSONResponse(

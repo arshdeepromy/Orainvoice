@@ -120,7 +120,7 @@ async def save_onboarding(
     """
     user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(
@@ -248,7 +248,7 @@ async def update_settings(
     """
     user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(
@@ -371,7 +371,7 @@ async def create_new_branch(
     """
     user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(
@@ -434,7 +434,7 @@ async def assign_user_to_branches(
     """
     acting_user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(
@@ -509,7 +509,7 @@ async def update_branch_endpoint(
     """
     user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(
@@ -585,7 +585,7 @@ async def deactivate_branch_endpoint(
     """
     user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(
@@ -653,7 +653,7 @@ async def reactivate_branch_endpoint(
     """
     user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(
@@ -776,7 +776,7 @@ async def update_branch_settings_endpoint(
     """
     user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(
@@ -921,7 +921,7 @@ async def invite_user(
     """
     user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
@@ -994,7 +994,7 @@ async def update_user(
     """
     acting_user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
@@ -1064,7 +1064,7 @@ async def delete_user(
     """
     acting_user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
@@ -1116,7 +1116,7 @@ async def revoke_sessions(
     """
     acting_user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
@@ -1174,7 +1174,7 @@ async def delete_user_permanent(
 
     acting_user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
@@ -1259,7 +1259,7 @@ async def set_mfa_policy(
     """
     user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     if not org_id:
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
@@ -1836,7 +1836,7 @@ async def update_business_type(
         )
 
     user_id = getattr(request.state, "user_id", None)
-    ip_address = request.client.host if request.client else None
+    ip_address = getattr(request.state, "client_ip", None)
 
     result = await set_business_type(
         db,

@@ -200,7 +200,8 @@ class RateLimitMiddleware:
 
         # --- Password reset per-IP limit (strictest: 5/min) ---
         if path in _PASSWORD_RESET_PATHS:
-            client_ip = request.client.host if request.client else "unknown"
+            from app.middleware.auth import get_client_ip
+            client_ip = get_client_ip(request) or "unknown"
             key = f"rl:pwreset:ip:{client_ip}"
             allowed, retry_after = await _check_rate_limit(redis, key, _PASSWORD_RESET_LIMIT, now)
             if not allowed:
@@ -214,7 +215,8 @@ class RateLimitMiddleware:
 
         # --- Auth-endpoint per-IP limit (skip public read-only endpoints) ---
         if is_auth_endpoint(path) and path not in _PUBLIC_READ_ONLY_PATHS:
-            client_ip = request.client.host if request.client else "unknown"
+            from app.middleware.auth import get_client_ip
+            client_ip = get_client_ip(request) or "unknown"
             key = f"rl:auth:ip:{client_ip}"
             allowed, retry_after = await _check_rate_limit(
                 redis, key, settings.rate_limit_auth_per_ip_per_minute, now,
