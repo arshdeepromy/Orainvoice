@@ -92,6 +92,28 @@ async def _load_webhook_secret_from_db() -> str:
             return ""
 
 
+async def get_stripe_connect_client_id() -> str:
+    """Return the Stripe Connect client ID from DB config or env fallback."""
+    from app.core.database import async_session_factory
+    from app.modules.admin.models import IntegrationConfig
+    from app.core.encryption import envelope_decrypt_str
+    from sqlalchemy import select
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(IntegrationConfig).where(IntegrationConfig.name == "stripe")
+        )
+        config_row = result.scalar_one_or_none()
+        if config_row:
+            try:
+                data = json.loads(envelope_decrypt_str(config_row.config_encrypted))
+                client_id = data.get("connect_client_id", "")
+                if client_id:
+                    return client_id
+            except Exception:
+                pass
+    return settings.stripe_connect_client_id
+
 
 async def get_stripe_secret_key() -> str:
     """Return the Stripe secret key, loading from DB with caching."""

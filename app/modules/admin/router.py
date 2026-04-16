@@ -1965,6 +1965,7 @@ async def configure_stripe(
             signing_secret=payload.signing_secret,
             publishable_key=payload.publishable_key,
             secret_key=payload.secret_key,
+            connect_client_id=payload.connect_client_id,
             updated_by=uuid.UUID(user_id) if user_id else uuid.uuid4(),
             ip_address=ip_address,
         )

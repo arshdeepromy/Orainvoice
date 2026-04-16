@@ -52,6 +52,7 @@ const INTEGRATION_FIELDS: Record<IntegrationName, FieldDef[]> = {
   stripe: [
     { key: 'publishable_key', label: 'Publishable key', type: 'password', placeholder: 'pk_test_... or pk_live_...', backendKey: 'publishable_key_last4', helperText: 'Used by the frontend for Stripe.js / Elements', group: 'api-keys' },
     { key: 'secret_key', label: 'Secret key', type: 'password', placeholder: 'sk_test_... or sk_live_...', backendKey: 'secret_key_last4', helperText: 'Used by the backend for API calls (charges, subscriptions)', group: 'api-keys' },
+    { key: 'connect_client_id', label: 'Connect client ID', type: 'password', placeholder: 'ca_...', backendKey: 'connect_client_id_last4', helperText: 'Found in Stripe Dashboard → Settings → Connect → OAuth settings', group: 'connect' },
     { key: 'platform_account_id', label: 'Platform account ID', type: 'password', placeholder: 'acct_...', backendKey: 'platform_account_id_last4', group: 'connect' },
     { key: 'webhook_endpoint', label: 'Webhook endpoint URL', type: 'text', placeholder: 'https://...', group: 'connect' },
     { key: 'signing_secret', label: 'Webhook signing secret', type: 'password', placeholder: '••••••••', backendKey: 'signing_secret_last4', group: 'connect' },
@@ -465,6 +466,26 @@ function IntegrationPanel({
             <h3 className="text-md font-semibold text-gray-900">Platform &amp; Webhooks</h3>
             <p className="text-xs text-gray-500">Stripe Connect platform account and webhook configuration.</p>
             {fields.filter((f) => f.group === 'connect').map(renderField)}
+
+            {/* Connect Setup Guide */}
+            {name === 'stripe' && (
+              <div className="mt-4 rounded-lg bg-blue-50 border border-blue-200 p-4 space-y-3">
+                <h4 className="text-sm font-medium text-blue-900">Stripe Connect Setup Guide</h4>
+                <div className="text-sm text-blue-800 space-y-2">
+                  <p>To enable online payments for your organisations:</p>
+                  <ol className="list-decimal list-inside space-y-1 ml-2">
+                    <li>Go to <a href="https://dashboard.stripe.com/settings/connect" target="_blank" rel="noopener noreferrer" className="underline font-medium">Stripe Dashboard → Settings → Connect</a></li>
+                    <li>Enable Connect and choose <strong>Platform</strong> business model</li>
+                    <li>Under <strong>OAuth settings</strong>, copy the <strong>client_id</strong> (starts with <code className="bg-blue-100 px-1 rounded">ca_</code>) and paste it above</li>
+                    <li>Add this <strong>Redirect URI</strong> to your Stripe Connect OAuth settings:</li>
+                  </ol>
+                  <div className="bg-white rounded border border-blue-300 px-3 py-2 font-mono text-xs break-all select-all">
+                    {window.location.origin}/api/v1/org/stripe-connect/callback
+                  </div>
+                  <p className="text-xs text-blue-600">Click the URI above to select it, then paste it into Stripe's redirect URI field.</p>
+                </div>
+              </div>
+            )}
 
             {testResult && (
               <AlertBanner

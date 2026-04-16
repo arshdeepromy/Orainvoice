@@ -309,6 +309,9 @@ class StripeConfigRequest(BaseModel):
     secret_key: str | None = Field(
         default=None, description="Stripe secret key (sk_test_... or sk_live_...)"
     )
+    connect_client_id: str | None = Field(
+        default=None, description="Stripe Connect client ID (ca_...)"
+    )
 
 
 class StripeConfigResponse(BaseModel):
@@ -320,6 +323,9 @@ class StripeConfigResponse(BaseModel):
     )
     webhook_endpoint: str
     is_verified: bool
+    connect_client_id_last4: str = Field(
+        default="", description="Last 4 chars of Connect client ID for display"
+    )
 
 
 class StripeTestResponse(BaseModel):

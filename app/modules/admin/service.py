@@ -1433,6 +1433,7 @@ async def save_stripe_config(
     signing_secret: str | None = None,
     publishable_key: str | None = None,
     secret_key: str | None = None,
+    connect_client_id: str | None = None,
     updated_by: uuid.UUID,
     ip_address: str | None = None,
 ) -> dict:
@@ -1477,6 +1478,7 @@ async def save_stripe_config(
         "signing_secret": signing_secret or old_config.get("signing_secret", ""),
         "publishable_key": publishable_key or old_config.get("publishable_key", ""),
         "secret_key": secret_key or old_config.get("secret_key", ""),
+        "connect_client_id": connect_client_id or old_config.get("connect_client_id", ""),
     }
 
     config_data = json.dumps(config_data_dict)
@@ -1525,6 +1527,7 @@ async def save_stripe_config(
         "platform_account_last4": final_platform_account_id[-4:] if len(final_platform_account_id) >= 4 else final_platform_account_id,
         "webhook_endpoint": final_webhook_endpoint,
         "is_verified": current_verified,
+        "connect_client_id_last4": config_data_dict["connect_client_id"][-4:] if len(config_data_dict["connect_client_id"]) >= 4 else config_data_dict["connect_client_id"],
     }
 
 
@@ -1701,7 +1704,7 @@ _SAFE_FIELDS: dict[str, list[str]] = {
 # Maps integration name → list of fields to show as masked (last 4 chars)
 _MASKED_FIELDS: dict[str, list[str]] = {
     "carjam": ["api_key"],
-    "stripe": ["platform_account_id", "signing_secret", "publishable_key", "secret_key"],
+    "stripe": ["platform_account_id", "signing_secret", "publishable_key", "secret_key", "connect_client_id"],
     "smtp": ["api_key"],
     "twilio": ["account_sid", "auth_token"],
 }
