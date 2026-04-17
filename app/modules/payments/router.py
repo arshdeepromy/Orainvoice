@@ -277,7 +277,11 @@ WALLET_METHODS = {"apple_pay", "google_pay"}
 async def _fetch_stripe_account_name(stripe_account_id: str) -> str:
     """Fetch the business name from a connected Stripe account.
 
-    Tries business_profile.name first, then settings.dashboard.display_name.
+    Tries multiple fields in order:
+    1. business_profile.name
+    2. settings.dashboard.display_name
+    3. company.name
+    4. email (last resort)
     Returns empty string on any error (fail gracefully).
     """
     import httpx
@@ -294,18 +298,17 @@ async def _fetch_stripe_account_name(stripe_account_id: str) -> str:
                 auth=(secret_key, ""),
             )
             resp.raise_for_status()
-            account_data = resp.json()
+            data = resp.json()
 
-        name = account_data.get("business_profile", {}).get("name", "")
-        if name:
-            return name
-
-        display_name = (
-            account_data.get("settings", {})
-            .get("dashboard", {})
-            .get("display_name", "")
+        # Try each name field in priority order
+        name = (
+            (data.get("business_profile") or {}).get("name")
+            or (data.get("settings") or {}).get("dashboard", {}).get("display_name")
+            or (data.get("company") or {}).get("name")
+            or data.get("email")
+            or ""
         )
-        return display_name or ""
+        return name
     except Exception:
         logger.warning(
             "Failed to fetch account name for Stripe account %s",
