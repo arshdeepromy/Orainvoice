@@ -114,6 +114,34 @@ function StripeLinkIcon({ className = 'h-8 w-12' }: { className?: string }) {
   )
 }
 
+function AfterpayIcon({ className = 'h-8 w-12' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Afterpay">
+      <rect width="48" height="32" rx="4" fill="#B2FCE4" />
+      <text x="24" y="18" textAnchor="middle" fill="#000" fontSize="6" fontWeight="700" fontFamily="Arial, sans-serif">Afterpay</text>
+    </svg>
+  )
+}
+
+function KlarnaIcon({ className = 'h-8 w-12' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Klarna">
+      <rect width="48" height="32" rx="4" fill="#FFB3C7" />
+      <text x="24" y="18" textAnchor="middle" fill="#000" fontSize="7" fontWeight="700" fontFamily="Arial, sans-serif">Klarna</text>
+    </svg>
+  )
+}
+
+function GenericPaymentIcon({ className = 'h-8 w-12', label = '' }: { className?: string; label?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label={label}>
+      <rect width="48" height="32" rx="4" fill="#F3F4F6" stroke="#D1D5DB" strokeWidth="1" />
+      <rect x="8" y="10" width="32" height="4" rx="1" fill="#9CA3AF" />
+      <rect x="8" y="18" width="20" height="3" rx="1" fill="#D1D5DB" />
+    </svg>
+  )
+}
+
 function CardBrandIcons() {
   return (
     <div className="flex items-center gap-1.5">
@@ -135,8 +163,12 @@ function PaymentMethodIcon({ type }: { type: string }) {
       return <GooglePayIcon />
     case 'link':
       return <StripeLinkIcon />
+    case 'afterpay_clearpay':
+      return <AfterpayIcon />
+    case 'klarna':
+      return <KlarnaIcon />
     default:
-      return null
+      return <GenericPaymentIcon label={type} />
   }
 }
 

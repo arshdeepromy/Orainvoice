@@ -221,39 +221,128 @@ async def disconnect_online_payments(
 
 
 # ---------------------------------------------------------------------------
-# Available payment method definitions for NZ Stripe Connect
+# Payment method metadata — maps Stripe payment method types to display info
 # ---------------------------------------------------------------------------
 
-AVAILABLE_PAYMENT_METHODS = [
-    {
-        "type": "card",
+PAYMENT_METHOD_DISPLAY = {
+    "card": {
         "name": "Credit & Debit Cards",
         "description": "Visa, Mastercard, American Express, UnionPay",
         "always_on": True,
         "card_brands": ["visa", "mastercard", "amex", "unionpay"],
     },
-    {
-        "type": "apple_pay",
+    "apple_pay": {
         "name": "Apple Pay",
         "description": "Available on Safari and Apple devices",
         "always_on": False,
         "card_brands": [],
     },
-    {
-        "type": "google_pay",
+    "google_pay": {
         "name": "Google Pay",
         "description": "Available on Chrome and Android devices",
         "always_on": False,
         "card_brands": [],
     },
-    {
-        "type": "link",
+    "link": {
         "name": "Stripe Link",
         "description": "One-click checkout for returning customers",
         "always_on": False,
         "card_brands": [],
     },
-]
+    "afterpay_clearpay": {
+        "name": "Afterpay",
+        "description": "Buy now, pay later in 4 instalments",
+        "always_on": False,
+        "card_brands": [],
+    },
+    "klarna": {
+        "name": "Klarna",
+        "description": "Pay later or in instalments",
+        "always_on": False,
+        "card_brands": [],
+    },
+}
+
+# Wallet methods that are automatically available when cards are enabled
+# (Stripe enables these via the card capability, not as separate capabilities)
+WALLET_METHODS = {"apple_pay", "google_pay"}
+
+
+async def _fetch_available_payment_methods(
+    stripe_account_id: str,
+) -> list[dict]:
+    """Fetch available payment methods from the connected Stripe account.
+
+    Queries the Stripe Account API to get the account's active capabilities,
+    then maps them to our display metadata. Wallets (Apple Pay, Google Pay)
+    are included when card_payments capability is active.
+
+    Returns a list of dicts with type, name, description, always_on, card_brands.
+    """
+    import httpx
+    from app.integrations.stripe_billing import get_stripe_secret_key
+
+    secret_key = await get_stripe_secret_key()
+    if not secret_key:
+        logger.warning("Stripe secret key not configured — returning default payment methods")
+        return [{"type": "card", **PAYMENT_METHOD_DISPLAY["card"]}]
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"https://api.stripe.com/v1/accounts/{stripe_account_id}",
+                auth=(secret_key, ""),
+            )
+            resp.raise_for_status()
+            account_data = resp.json()
+    except Exception:
+        logger.exception(
+            "Failed to fetch Stripe account %s — returning default payment methods",
+            stripe_account_id,
+        )
+        return [{"type": "card", **PAYMENT_METHOD_DISPLAY["card"]}]
+
+    # Extract active capabilities from the account
+    capabilities = account_data.get("capabilities", {})
+    available_methods: list[dict] = []
+    seen_types: set[str] = set()
+
+    # Map Stripe capabilities to our payment method types
+    capability_to_type = {
+        "card_payments": "card",
+        "link_payments": "link",
+        "afterpay_clearpay_payments": "afterpay_clearpay",
+        "klarna_payments": "klarna",
+    }
+
+    for capability_name, method_type in capability_to_type.items():
+        status = capabilities.get(capability_name)
+        if status == "active" and method_type in PAYMENT_METHOD_DISPLAY:
+            if method_type not in seen_types:
+                available_methods.append({
+                    "type": method_type,
+                    **PAYMENT_METHOD_DISPLAY[method_type],
+                })
+                seen_types.add(method_type)
+
+    # If card_payments is active, also add wallet methods (Apple Pay, Google Pay)
+    if capabilities.get("card_payments") == "active":
+        for wallet_type in ["apple_pay", "google_pay"]:
+            if wallet_type not in seen_types and wallet_type in PAYMENT_METHOD_DISPLAY:
+                available_methods.append({
+                    "type": wallet_type,
+                    **PAYMENT_METHOD_DISPLAY[wallet_type],
+                })
+                seen_types.add(wallet_type)
+
+    # Ensure card is always first if present
+    available_methods.sort(key=lambda m: (m["type"] != "card", m["type"]))
+
+    # Fallback: if no capabilities found, at least show card
+    if not available_methods:
+        available_methods = [{"type": "card", **PAYMENT_METHOD_DISPLAY["card"]}]
+
+    return available_methods
 
 
 @router.get(
@@ -273,8 +362,9 @@ async def get_payment_methods(
 ):
     """Return the list of available payment method types with their enabled status.
 
-    Reads from org.settings JSONB field under key 'enabled_payment_methods'.
-    If not set, defaults to ['card'] (cards enabled by default).
+    Fetches the connected account's capabilities from Stripe to determine
+    which payment methods are actually available for the merchant, then
+    overlays the org's enabled/disabled preferences.
     """
     from app.modules.admin.models import Organisation
 
@@ -295,6 +385,15 @@ async def get_payment_methods(
             content={"detail": "Organisation not found"},
         )
 
+    if not org.stripe_connect_account_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "No Stripe account connected."},
+        )
+
+    # Fetch available methods from Stripe based on account capabilities
+    available = await _fetch_available_payment_methods(org.stripe_connect_account_id)
+
     # Read enabled methods from org settings, default to ["card"]
     org_settings = org.settings or {}
     enabled_methods: list[str] = org_settings.get("enabled_payment_methods", ["card"])
@@ -309,10 +408,10 @@ async def get_payment_methods(
             name=pm["name"],
             description=pm["description"],
             enabled=pm["type"] in enabled_methods,
-            always_on=pm["always_on"],
-            card_brands=pm["card_brands"],
+            always_on=pm.get("always_on", False),
+            card_brands=pm.get("card_brands", []),
         )
-        for pm in AVAILABLE_PAYMENT_METHODS
+        for pm in available
     ]
 
     return PaymentMethodsResponse(payment_methods=payment_methods)
@@ -338,6 +437,7 @@ async def update_payment_methods(
     """Update which payment methods are enabled for the org.
 
     Cards ('card') cannot be disabled — they are always included.
+    Only methods available on the connected Stripe account can be enabled.
     Stores the preference in org.settings['enabled_payment_methods'].
     """
     from app.modules.admin.models import Organisation
@@ -361,13 +461,21 @@ async def update_payment_methods(
             content={"detail": "Organisation not found"},
         )
 
-    # Validate that all requested methods are known types
-    valid_types = {pm["type"] for pm in AVAILABLE_PAYMENT_METHODS}
+    if not org.stripe_connect_account_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "No Stripe account connected."},
+        )
+
+    # Fetch available methods from Stripe to validate
+    available = await _fetch_available_payment_methods(org.stripe_connect_account_id)
+    valid_types = {pm["type"] for pm in available}
+
     for method in payload.enabled_methods:
         if method not in valid_types:
             return JSONResponse(
                 status_code=400,
-                content={"detail": f"Unknown payment method type: {method}"},
+                content={"detail": f"Payment method '{method}' is not available on your Stripe account."},
             )
 
     # Ensure 'card' is always included
@@ -398,17 +506,17 @@ async def update_payment_methods(
         ip_address=ip_address,
     )
 
-    # Build response
+    # Build response using Stripe-fetched available methods
     payment_methods = [
         PaymentMethodInfo(
             type=pm["type"],
             name=pm["name"],
             description=pm["description"],
             enabled=pm["type"] in enabled_methods,
-            always_on=pm["always_on"],
-            card_brands=pm["card_brands"],
+            always_on=pm.get("always_on", False),
+            card_brands=pm.get("card_brands", []),
         )
-        for pm in AVAILABLE_PAYMENT_METHODS
+        for pm in available
     ]
 
     return PaymentMethodsResponse(payment_methods=payment_methods)
