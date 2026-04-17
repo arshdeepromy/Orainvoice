@@ -299,6 +299,7 @@ class OnlinePaymentsStatusResponse(BaseModel):
 
     is_connected: bool
     account_id_last4: str = ""
+    account_name: str = ""
     connect_client_id_configured: bool
     application_fee_percent: Decimal | None = None
 

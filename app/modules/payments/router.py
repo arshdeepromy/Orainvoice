@@ -133,9 +133,15 @@ async def get_online_payments_status(
     except Exception:
         logger.warning("Failed to read application_fee_percent from Stripe config")
 
+    # Fetch account name from Stripe when connected
+    account_name = ""
+    if is_connected and org.stripe_connect_account_id:
+        account_name = await _fetch_stripe_account_name(org.stripe_connect_account_id)
+
     return OnlinePaymentsStatusResponse(
         is_connected=is_connected,
         account_id_last4=account_id_last4,
+        account_name=account_name,
         connect_client_id_configured=connect_client_id_configured,
         application_fee_percent=application_fee_percent,
     )
@@ -266,6 +272,46 @@ PAYMENT_METHOD_DISPLAY = {
 # Wallet methods that are automatically available when cards are enabled
 # (Stripe enables these via the card capability, not as separate capabilities)
 WALLET_METHODS = {"apple_pay", "google_pay"}
+
+
+async def _fetch_stripe_account_name(stripe_account_id: str) -> str:
+    """Fetch the business name from a connected Stripe account.
+
+    Tries business_profile.name first, then settings.dashboard.display_name.
+    Returns empty string on any error (fail gracefully).
+    """
+    import httpx
+    from app.integrations.stripe_billing import get_stripe_secret_key
+
+    try:
+        secret_key = await get_stripe_secret_key()
+        if not secret_key:
+            return ""
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"https://api.stripe.com/v1/accounts/{stripe_account_id}",
+                auth=(secret_key, ""),
+            )
+            resp.raise_for_status()
+            account_data = resp.json()
+
+        name = account_data.get("business_profile", {}).get("name", "")
+        if name:
+            return name
+
+        display_name = (
+            account_data.get("settings", {})
+            .get("dashboard", {})
+            .get("display_name", "")
+        )
+        return display_name or ""
+    except Exception:
+        logger.warning(
+            "Failed to fetch account name for Stripe account %s",
+            stripe_account_id,
+        )
+        return ""
 
 
 async def _fetch_available_payment_methods(

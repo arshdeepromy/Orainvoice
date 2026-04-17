@@ -19,6 +19,7 @@ import apiClient from '@/api/client'
 interface OnlinePaymentsStatus {
   is_connected: boolean
   account_id_last4: string
+  account_name: string
   connect_client_id_configured: boolean
   application_fee_percent: number | null
 }
@@ -142,83 +143,56 @@ function GenericPaymentIcon({ className = 'h-8 w-12', label = '' }: { className?
   )
 }
 
-function CardBrandIcons() {
-  return (
-    <div className="flex items-center gap-1.5">
-      <VisaIcon className="h-6 w-9" />
-      <MastercardIcon className="h-6 w-9" />
-      <AmexIcon className="h-6 w-9" />
-      <UnionPayIcon className="h-6 w-9" />
-    </div>
-  )
-}
+/* ── Small Checkbox Icon for inline grid ── */
 
-function PaymentMethodIcon({ type }: { type: string }) {
+function SmallPaymentMethodIcon({ type }: { type: string }) {
+  const size = 'h-5 w-7'
   switch (type) {
     case 'card':
-      return <CardBrandIcons />
+      return (
+        <div className="flex items-center gap-0.5">
+          <VisaIcon className={size} />
+          <MastercardIcon className={size} />
+          <AmexIcon className={size} />
+          <UnionPayIcon className={size} />
+        </div>
+      )
     case 'apple_pay':
-      return <ApplePayIcon />
+      return <ApplePayIcon className={size} />
     case 'google_pay':
-      return <GooglePayIcon />
+      return <GooglePayIcon className={size} />
     case 'link':
-      return <StripeLinkIcon />
+      return <StripeLinkIcon className={size} />
     case 'afterpay_clearpay':
-      return <AfterpayIcon />
+      return <AfterpayIcon className={size} />
     case 'klarna':
-      return <KlarnaIcon />
+      return <KlarnaIcon className={size} />
     default:
-      return <GenericPaymentIcon label={type} />
+      return <GenericPaymentIcon className={size} label={type} />
   }
 }
 
-/* ── Toggle Switch ── */
+/* ── Pencil Edit Icon ── */
 
-function ToggleSwitch({
-  checked,
-  onChange,
-  disabled = false,
-  label,
-}: {
-  checked: boolean
-  onChange: (checked: boolean) => void
-  disabled?: boolean
-  label: string
-}) {
+function PencilIcon({ className = 'h-4 w-4' }: { className?: string }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`
-        relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent
-        transition-colors duration-200 ease-in-out
-        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-indigo-500
-        ${checked ? 'bg-indigo-600' : 'bg-gray-200'}
-        ${disabled ? 'opacity-50 cursor-not-allowed' : ''}
-      `}
-    >
-      <span
-        className={`
-          pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-lg ring-0
-          transition-transform duration-200 ease-in-out
-          ${checked ? 'translate-x-5' : 'translate-x-0'}
-        `}
-      />
-    </button>
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z" />
+    </svg>
   )
 }
 
-/* ── Payment Methods Section ── */
+
+/* ── Payment Methods Section (inline checkboxes) ── */
 
 function PaymentMethodsSection() {
   const [methods, setMethods] = useState<PaymentMethodInfo[]>([])
   const [loadingMethods, setLoadingMethods] = useState(true)
-  const [togglingMethod, setTogglingMethod] = useState<string | null>(null)
   const [methodsError, setMethodsError] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  // Draft state for checkbox edits (only used while editing)
+  const [draftEnabled, setDraftEnabled] = useState<Set<string>>(new Set())
 
   const fetchMethods = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -243,104 +217,139 @@ function PaymentMethodsSection() {
     return () => controller.abort()
   }, [fetchMethods])
 
-  const handleToggle = async (methodType: string, newEnabled: boolean) => {
-    setTogglingMethod(methodType)
-    setMethodsError(null)
+  const enabledMethodNames = (methods ?? [])
+    .filter((m) => m?.enabled)
+    .map((m) => m?.name ?? '')
+    .filter(Boolean)
 
-    // Build the new enabled list from current state
-    const currentEnabled = (methods ?? [])
-      .filter((m) => m?.enabled)
-      .map((m) => m?.type)
-      .filter(Boolean) as string[]
-
-    let newEnabledMethods: string[]
-    if (newEnabled) {
-      newEnabledMethods = [...new Set([...currentEnabled, methodType])]
-    } else {
-      newEnabledMethods = currentEnabled.filter((t) => t !== methodType)
-    }
-
+  const handleEditClick = () => {
+    // Initialize draft from current enabled state
+    const enabled = new Set<string>(
+      (methods ?? []).filter((m) => m?.enabled).map((m) => m?.type ?? '').filter(Boolean),
+    )
     // Always include card
-    if (!newEnabledMethods.includes('card')) {
-      newEnabledMethods.push('card')
-    }
+    enabled.add('card')
+    setDraftEnabled(enabled)
+    setEditing(true)
+    setMethodsError(null)
+  }
 
+  const handleCancel = () => {
+    setEditing(false)
+    setMethodsError(null)
+  }
+
+  const handleCheckboxChange = (methodType: string, checked: boolean) => {
+    setDraftEnabled((prev) => {
+      const next = new Set(prev)
+      if (checked) {
+        next.add(methodType)
+      } else {
+        next.delete(methodType)
+      }
+      // Always keep card
+      next.add('card')
+      return next
+    })
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    setMethodsError(null)
     try {
       const res = await apiClient.put<PaymentMethodsResponse>(
         '/payments/online-payments/payment-methods',
-        { enabled_methods: newEnabledMethods },
+        { enabled_methods: Array.from(draftEnabled) },
       )
       setMethods(res.data?.payment_methods ?? [])
+      setEditing(false)
     } catch (err) {
       const axiosErr = err as { response?: { data?: { detail?: string } } }
       const detail = axiosErr.response?.data?.detail
       setMethodsError(detail ?? 'Failed to update payment methods.')
     } finally {
-      setTogglingMethod(null)
+      setSaving(false)
     }
   }
 
   if (loadingMethods) {
     return (
-      <div className="rounded-lg border border-gray-200 p-5">
-        <div className="flex items-center justify-center py-6">
-          <Spinner size="md" label="Loading payment methods…" />
-        </div>
+      <div className="flex items-center gap-2 mt-3">
+        <Spinner size="sm" label="Loading payment methods…" />
+        <span className="text-sm text-gray-500">Loading payment methods…</span>
       </div>
     )
   }
 
   return (
-    <div className="rounded-lg border border-gray-200 p-5">
-      <div className="mb-4">
-        <h3 className="text-lg font-semibold text-gray-900">Payment Methods</h3>
-        <p className="text-sm text-gray-600 mt-1">
-          Manage which payment methods your customers can use
-        </p>
-      </div>
-
+    <div className="mt-3">
       {methodsError && (
-        <AlertBanner variant="error" onDismiss={() => setMethodsError(null)} className="mb-4">
+        <AlertBanner variant="error" onDismiss={() => setMethodsError(null)} className="mb-3">
           {methodsError}
         </AlertBanner>
       )}
 
-      <div className="space-y-3">
-        {(methods ?? []).map((method) => (
-          <div
-            key={method?.type ?? ''}
-            className="flex items-center justify-between rounded-lg border border-gray-100 bg-gray-50/50 p-4 transition-all duration-150 hover:border-gray-200 hover:bg-white hover:shadow-sm"
+      {!editing ? (
+        /* ── Summary view: "Payment Methods: Credit Card, Apple Pay ✏️" ── */
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm text-gray-600">Payment Methods:</span>
+          <span className="text-sm font-medium text-gray-900">
+            {enabledMethodNames.length > 0 ? enabledMethodNames.join(', ') : 'Credit & Debit Cards'}
+          </span>
+          <button
+            type="button"
+            onClick={handleEditClick}
+            className="inline-flex items-center text-gray-400 hover:text-indigo-600 transition-colors p-0.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+            aria-label="Edit payment methods"
           >
-            <div className="flex items-center gap-4 min-w-0">
-              <div className="shrink-0">
-                <PaymentMethodIcon type={method?.type ?? ''} />
-              </div>
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-gray-900">{method?.name ?? ''}</p>
-                <p className="text-xs text-gray-500 mt-0.5">{method?.description ?? ''}</p>
-              </div>
-            </div>
-
-            <div className="shrink-0 ml-4">
-              {method?.always_on ? (
-                <Badge variant="info" className="whitespace-nowrap">Required</Badge>
-              ) : (
-                <div className="flex items-center gap-2">
-                  {togglingMethod === method?.type && (
-                    <Spinner size="sm" />
-                  )}
-                  <ToggleSwitch
-                    checked={method?.enabled ?? false}
-                    onChange={(checked) => handleToggle(method?.type ?? '', checked)}
-                    disabled={togglingMethod !== null}
-                    label={`Toggle ${method?.name ?? ''}`}
-                  />
-                </div>
-              )}
-            </div>
+            <PencilIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ) : (
+        /* ── Edit view: inline checkbox grid ── */
+        <div>
+          <div className="mb-2">
+            <span className="text-sm font-medium text-gray-900">Payment Methods:</span>
+            <p className="text-xs text-gray-500 mt-0.5">Choose which payment methods to accept:</p>
           </div>
-        ))}
-      </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 mb-3">
+            {(methods ?? []).map((method) => {
+              const isCard = method?.type === 'card'
+              const isChecked = isCard || draftEnabled.has(method?.type ?? '')
+              return (
+                <label
+                  key={method?.type ?? ''}
+                  className={`
+                    flex items-center gap-2 rounded-md border px-3 py-2 text-sm cursor-pointer transition-all
+                    ${isChecked ? 'border-indigo-300 bg-indigo-50/50' : 'border-gray-200 bg-white hover:border-gray-300'}
+                    ${isCard ? 'opacity-75 cursor-not-allowed' : ''}
+                  `}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isChecked}
+                    disabled={isCard}
+                    onChange={(e) => handleCheckboxChange(method?.type ?? '', e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
+                  />
+                  <SmallPaymentMethodIcon type={method?.type ?? ''} />
+                  <span className="text-gray-900 truncate">{method?.name ?? ''}</span>
+                </label>
+              )
+            })}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={handleSave} loading={saving}>
+              Save
+            </Button>
+            <Button size="sm" variant="secondary" onClick={handleCancel} disabled={saving}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -368,6 +377,7 @@ export default function OnlinePaymentsSettings() {
       setStatus({
         is_connected: res.data?.is_connected ?? false,
         account_id_last4: res.data?.account_id_last4 ?? '',
+        account_name: res.data?.account_name ?? '',
         connect_client_id_configured: res.data?.connect_client_id_configured ?? false,
         application_fee_percent: res.data?.application_fee_percent ?? null,
       })
@@ -529,31 +539,40 @@ export default function OnlinePaymentsSettings() {
             <h3 className="text-lg font-semibold text-gray-900">Stripe</h3>
             <Badge variant="success">Connected</Badge>
           </div>
-          <p className="text-sm text-gray-600 mb-1">
-            Account: <span className="font-medium text-gray-900">····{status?.account_id_last4 ?? ''}</span>
-          </p>
-          {(status?.application_fee_percent ?? null) !== null && (
-            <p className="text-sm text-gray-600 mb-1">
-              Platform fee: <span className="font-medium text-gray-900">{status?.application_fee_percent ?? 0}%</span> per transaction
-            </p>
-          )}
-          <p className="text-sm text-gray-600 mb-4">
-            Your customers can pay invoices online via Stripe Checkout. Payments are deposited directly into your Stripe account.
-          </p>
-          <Button
-            variant="danger"
-            size="sm"
-            onClick={() => setShowDisconnectDialog(true)}
-            loading={disconnecting}
-          >
-            Disconnect
-          </Button>
-        </div>
-      )}
 
-      {/* Payment Methods — shown when connected */}
-      {status?.is_connected === true && (
-        <PaymentMethodsSection />
+          <div className="space-y-1 mb-3">
+            <p className="text-sm text-gray-600">
+              Integration Status: <span className="font-medium text-green-600">Active</span>
+            </p>
+            {(status?.account_name ?? '') !== '' && (
+              <p className="text-sm text-gray-600">
+                Account Name: <span className="font-semibold text-gray-900">{status?.account_name ?? ''}</span>
+              </p>
+            )}
+            <p className="text-sm text-gray-500">
+              Account: <span className="font-medium text-gray-700">····{status?.account_id_last4 ?? ''}</span>
+            </p>
+            {(status?.application_fee_percent ?? null) !== null && (
+              <p className="text-sm text-gray-500">
+                Platform fee: <span className="font-medium text-gray-700">{status?.application_fee_percent ?? 0}%</span> per transaction
+              </p>
+            )}
+          </div>
+
+          {/* Inline payment methods section */}
+          <PaymentMethodsSection />
+
+          <div className="mt-4 pt-3 border-t border-gray-100">
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => setShowDisconnectDialog(true)}
+              loading={disconnecting}
+            >
+              Disconnect
+            </Button>
+          </div>
+        </div>
       )}
 
       {/* Disconnect confirmation dialog */}
