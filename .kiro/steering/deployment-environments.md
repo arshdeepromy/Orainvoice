@@ -49,40 +49,167 @@ ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -
 
 ### Step 2: Backup production database
 ```bash
-# Create backup directory if needed
 ssh nerdy@192.168.1.90 'mkdir -p ~/invoicing-backups'
-# Dump the database inside the container, then copy out
 ssh nerdy@192.168.1.90 'docker exec invoicing-postgres-1 pg_dump -U postgres -Fc workshoppro -f /tmp/backup.dump && docker cp invoicing-postgres-1:/tmp/backup.dump ~/invoicing-backups/workshoppro_$(date +%Y%m%d_%H%M%S).dump && docker exec invoicing-postgres-1 rm /tmp/backup.dump'
-# Verify backup was created and has reasonable size
 ssh nerdy@192.168.1.90 'ls -lh ~/invoicing-backups/ | tail -5'
 ```
 
-### Step 3: Sync code to Pi
-```bash
-# From local workspace root, tar and pipe to Pi (excludes node_modules, .git, etc.)
-tar --exclude='node_modules' --exclude='.git' --exclude='__pycache__' --exclude='.hypothesis' --exclude='*.pyc' --exclude='.env' -cf - . | ssh nerdy@192.168.1.90 'cd ~/invoicing && tar xf -'
-# Copy the Pi-specific env file
-scp .env.pi nerdy@192.168.1.90:~/invoicing/.env
+### Step 3: Build frontend locally (Pi can't build Vite on ARM)
+
+The Pi's ARM CPU can't reliably build the Vite frontend. Build it locally and transfer the pre-built dist.
+
+```powershell
+# Delete any stale local dist (prevents Docker from using cached old build)
+Remove-Item -Recurse -Force frontend/dist 2>$null
+
+# Build frontend in Docker with --no-cache to force fresh Vite build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml build --no-cache frontend
+
+# Start the frontend container to populate the volume
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d frontend
+
+# Copy the pre-built dist from the container to a clean local directory
+docker cp invoicing-frontend-1:/app/dist frontend_dist_export
 ```
 
-### Step 4: Rebuild and restart containers
-```bash
-ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml up --build -d'
+### Step 4: Sync code to Pi using git archive + SCP
+
+**IMPORTANT:** Windows `tar` does NOT work for syncing to Pi. It has issues with:
+- Exclude flags being ignored
+- Permission errors on existing files
+- Symlinks from Docker volumes
+- `__pycache__` directories owned by root
+
+**Use `git archive` instead** — it creates a clean tar from the git repo:
+
+```powershell
+# Ensure all changes are committed and pushed
+git add -A
+git commit -m "deploy: <description>"
+git push origin <branch>
+
+# Create a clean tar from the current HEAD (excludes .git, node_modules, __pycache__ automatically)
+git archive --format=tar HEAD -o deploy.tar
+
+# SCP the tar to Pi
+scp deploy.tar nerdy@192.168.1.90:/tmp/deploy.tar
 ```
 
-### Step 5: Verify deployment
+### Step 5: Extract code on Pi
+
 ```bash
-# Check containers are healthy
+# Fix directory permissions (Docker sets directories to read-only)
+ssh nerdy@192.168.1.90 'cd ~/invoicing && find . -maxdepth 5 -type d -exec chmod u+w {} \; 2>/dev/null'
+
+# Extract the git archive (overwrites existing files)
+ssh nerdy@192.168.1.90 'cd ~/invoicing && tar --overwrite -xf /tmp/deploy.tar'
+
+# Verify critical files landed
+ssh nerdy@192.168.1.90 'ls ~/invoicing/app/main.py ~/invoicing/Dockerfile ~/invoicing/docker-compose.yml'
+```
+
+### Step 6: Transfer pre-built frontend dist
+
+```powershell
+# Create the dist directory on Pi if it doesn't exist
+ssh nerdy@192.168.1.90 'mkdir -p ~/invoicing/frontend/dist/assets'
+
+# SCP the pre-built dist files
+scp -r frontend_dist_export/* nerdy@192.168.1.90:/home/nerdy/invoicing/frontend/dist/
+```
+
+### Step 7: Rebuild and restart containers on Pi
+
+```bash
+# Rebuild app container (backend only — uses cached pip layers, fast)
+ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml up -d --build --force-recreate app'
+
+# Rebuild frontend + nginx (frontend uses pre-built dist, no Vite build needed)
+ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml stop frontend nginx && docker compose -f docker-compose.yml -f docker-compose.pi.yml rm -f frontend nginx && docker volume rm invoicing_frontend_dist 2>/dev/null && docker compose -f docker-compose.yml -f docker-compose.pi.yml up -d --build frontend nginx'
+```
+
+**CRITICAL:** After frontend container starts, fix the assets directory permissions:
+```bash
+ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml exec frontend chmod -R 755 /app/dist/assets'
+```
+Without this, nginx can't read the JS/CSS files and you get a blank white page.
+
+### Step 8: Verify deployment
+
+```bash
+# Check all containers are running
 ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml ps'
+
+# Check migration is at head
+ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml exec app alembic current'
+
 # Check app logs for errors
 ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml logs app --tail 20'
-# Verify API responds
+
+# Verify frontend is accessible (should return 200, not blank page)
 ssh nerdy@192.168.1.90 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8999/'
+
+# Verify API responds
+ssh nerdy@192.168.1.90 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8999/api/v1/auth/stripe-publishable-key'
 ```
 
-### Step 6: Confirm with user
-- Report deployment status
-- If errors found, offer to rollback
+### Step 9: Cleanup
+
+```powershell
+# Remove local temp files
+Remove-Item deploy.tar 2>$null
+Remove-Item -Recurse -Force frontend_dist_export 2>$null
+
+# Remove tar from Pi
+ssh nerdy@192.168.1.90 'rm -f /tmp/deploy.tar'
+```
+
+---
+
+## Known Deployment Issues and Fixes
+
+### Issue: Blank white page after deployment
+**Cause:** The `frontend/dist/assets/` directory gets created with `drwx------` (700) permissions inside the Docker volume. Nginx worker runs as non-root and can't read the JS/CSS files.
+**Fix:** Run `chmod -R 755 /app/dist/assets` inside the frontend container after every deployment (Step 7 above).
+
+### Issue: Windows tar fails with "Cannot open: File exists" or "Permission denied"
+**Cause:** Windows tar can't overwrite files owned by root on the Pi, and has issues with Docker-created symlinks and `__pycache__` directories.
+**Fix:** Use `git archive` instead of Windows tar. Git archive creates a clean tar from the repo that extracts cleanly on Linux.
+
+### Issue: Pi can't build frontend (Vite fails on ARM)
+**Cause:** Some npm packages don't have ARM64 binaries, and Vite build can be unreliable on the Pi's limited resources.
+**Fix:** Always build the frontend locally on Windows, then transfer the pre-built `dist/` to Pi. The Dockerfile detects `dist/` exists and skips the Vite build ("Using pre-built dist/").
+
+### Issue: Old frontend assets still showing after deployment
+**Cause:** The Docker volume `invoicing_frontend_dist` caches old assets. New deployment adds new files but doesn't remove old ones.
+**Fix:** Delete the volume before recreating the frontend container: `docker volume rm invoicing_frontend_dist`
+
+### Issue: Directory permissions on Pi prevent file extraction
+**Cause:** Docker sets directories to read-only (`dr-xr-xr-x`) when building images. The `nerdy` user can't write to them.
+**Fix:** Run `find . -maxdepth 5 -type d -exec chmod u+w {} \;` before extracting the tar.
+
+### Issue: `.env.pi` not copied
+**Cause:** `git archive` excludes `.env*` files (they're in `.gitignore`).
+**Fix:** `.env.pi` should already exist on the Pi from initial setup. If it needs updating, SCP it separately: `scp .env.pi nerdy@192.168.1.90:~/invoicing/.env`
+
+---
+
+## Database Comparison (Dev vs Prod)
+
+After deployment, verify tables match:
+```powershell
+# Save dev tables
+docker compose exec postgres psql -U postgres -d workshoppro -t -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;" > dev_tables.txt
+
+# Save prod tables
+ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml exec -T postgres psql -U postgres -d workshoppro -t -c "SELECT tablename FROM pg_tables WHERE schemaname = '\''public'\'' ORDER BY tablename;"' > prod_tables.txt
+
+# Compare
+$dev = (Get-Content dev_tables.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+$prod = (Get-Content prod_tables.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+Compare-Object $dev $prod
+# No output = tables match
+```
 
 ## Rollback Procedure
 
