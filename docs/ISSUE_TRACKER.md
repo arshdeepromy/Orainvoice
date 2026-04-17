@@ -3662,3 +3662,43 @@ This follows the established pattern used everywhere else in the codebase (per p
 **Files Changed**:
 - `app/modules/auth/models.py` — added `foreign_keys` to User ↔ CustomRole relationships
 - `app/middleware/security_headers.py` — expanded `_CSRF_EXEMPT_PATHS` with all pre-auth endpoints
+
+
+---
+
+### ISSUE-111: Stripe payment succeeds on frontend but invoice stays "issued" — webhook not received in local dev
+
+- **Date**: 2026-04-17
+- **Severity**: high
+- **Status**: in-progress
+- **Reporter**: user
+- **Feature**: stripe-invoice-payment-flow
+
+**Symptoms**: Customer pays invoice via the custom Stripe Elements payment page. The page shows "Payment Successful" with the correct amount. However:
+1. Invoice remains "issued" with full balance due in the app
+2. No payment record created in the database
+3. No receipt email sent to the customer
+4. Stripe Connect dashboard shows $0 volume (test mode)
+
+**Root Cause**: The payment flow relies entirely on the `payment_intent.succeeded` webhook from Stripe to record the payment, update the invoice, and send the receipt email. In local development, Stripe cannot deliver webhooks to `localhost` — the webhook endpoint is unreachable from the internet. The frontend confirms payment via `stripe.confirmCardPayment()` which succeeds (the money is collected by Stripe), but the backend never learns about it.
+
+This is a design gap: the system has no fallback mechanism when webhooks are delayed or undeliverable. In production with a public URL, webhooks will work, but there should still be a safety net for:
+- Webhook delivery delays (Stripe retries over 72 hours)
+- Webhook endpoint downtime
+- Local development without Stripe CLI
+
+**Fix Plan**: Add a backend endpoint `POST /api/v1/public/pay/{token}/confirm` that the frontend calls after `stripe.confirmCardPayment()` succeeds. This endpoint:
+1. Retrieves the PaymentIntent from Stripe API to verify its status
+2. If `status == "succeeded"`, records the payment (same logic as webhook handler)
+3. Idempotent — if webhook already processed it, this is a no-op
+4. Sends the receipt email if payment was just recorded
+
+This provides a synchronous confirmation path alongside the async webhook path, ensuring payments are always recorded even if webhooks are delayed.
+
+**Files to Change**:
+- `app/modules/payments/public_router.py` — add confirm endpoint
+- `frontend/src/pages/public/InvoicePaymentPage.tsx` — call confirm after payment success
+- `app/modules/payments/service.py` — extract shared payment recording logic
+
+**Related Issues**: N/A (new feature gap)
+**Related Steering**: #[[file:.kiro/steering/integration-credentials-architecture.md]]

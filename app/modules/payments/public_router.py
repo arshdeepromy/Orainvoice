@@ -248,3 +248,145 @@ async def get_payment_page(
         is_payable=False,
         error_message=f"This invoice has status '{invoice.status}' and cannot be paid online.",
     )
+
+
+# ── Payment confirmation endpoint ─────────────────────────────────────────
+# Called by the frontend after stripe.confirmCardPayment() succeeds.
+# Verifies the PaymentIntent status with Stripe and records the payment
+# if the webhook hasn't already done so.  This is the synchronous fallback
+# for when webhooks are delayed or undeliverable (e.g. local dev).
+# ISSUE-111
+
+
+@router.post(
+    "/pay/{token}/confirm",
+    status_code=200,
+    responses={
+        404: {"description": "Invalid payment link"},
+        410: {"description": "Payment link expired"},
+        429: {"description": "Rate limit exceeded"},
+    },
+    summary="Confirm payment after client-side Stripe confirmation",
+)
+async def confirm_payment(
+    token: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Verify PaymentIntent status with Stripe and record the payment.
+
+    This endpoint is called by the frontend after ``stripe.confirmCardPayment()``
+    returns success.  It retrieves the PaymentIntent from Stripe to verify
+    its status, then records the payment using the same logic as the webhook
+    handler.  Idempotent — if the webhook already recorded the payment, this
+    is a no-op.
+
+    ISSUE-111: Webhooks can't reach localhost in dev, and may be delayed
+    in production.  This provides a synchronous confirmation path.
+    """
+    # --- Rate limit check ---
+    allowed = await _check_payment_page_rate_limit(request)
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many requests. Please try again later."},
+            headers={"Retry-After": str(_PAYMENT_PAGE_WINDOW)},
+        )
+
+    # --- Token validation ---
+    try:
+        payment_token = await validate_payment_token(db, token=token)
+    except ValueError as exc:
+        if str(exc) == "expired":
+            return JSONResponse(
+                status_code=410,
+                content={"detail": "This payment link has expired."},
+            )
+        return JSONResponse(status_code=404, content={"detail": "Invalid payment link"})
+
+    if payment_token is None:
+        return JSONResponse(status_code=404, content={"detail": "Invalid payment link"})
+
+    # --- Fetch invoice ---
+    invoice_result = await db.execute(
+        select(Invoice).where(Invoice.id == payment_token.invoice_id)
+    )
+    invoice = invoice_result.scalar_one_or_none()
+    if invoice is None:
+        return JSONResponse(status_code=404, content={"detail": "Invalid payment link"})
+
+    # Already paid or not payable — nothing to do
+    if invoice.status not in ("issued", "partially_paid", "overdue"):
+        return {"status": "already_processed", "invoice_status": invoice.status}
+
+    # No PaymentIntent on this invoice — can't verify
+    pi_id = invoice.stripe_payment_intent_id
+    if not pi_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "No payment intent associated with this invoice."},
+        )
+
+    # --- Fetch org's Connected Account ---
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == payment_token.org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org is None or not org.stripe_connect_account_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Stripe account not configured."},
+        )
+
+    # --- Retrieve PaymentIntent from Stripe to verify status ---
+    import httpx
+    from app.integrations.stripe_billing import get_stripe_secret_key
+
+    secret_key = await get_stripe_secret_key()
+    if not secret_key:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Payment verification unavailable."},
+        )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            stripe_resp = await client.get(
+                f"https://api.stripe.com/v1/payment_intents/{pi_id}",
+                auth=(secret_key, ""),
+                headers={"Stripe-Account": org.stripe_connect_account_id},
+            )
+            stripe_resp.raise_for_status()
+            pi_data = stripe_resp.json()
+    except Exception:
+        logger.exception("Failed to retrieve PaymentIntent %s from Stripe", pi_id)
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "Could not verify payment with Stripe. Please wait a moment and refresh."},
+        )
+
+    # --- Check PaymentIntent status ---
+    pi_status = pi_data.get("status", "")
+    if pi_status != "succeeded":
+        return {
+            "status": "pending",
+            "payment_intent_status": pi_status,
+            "message": "Payment has not been confirmed by Stripe yet.",
+        }
+
+    # --- Record the payment (same logic as webhook handler) ---
+    # Use handle_stripe_webhook with a synthetic event — this is idempotent
+    from app.modules.payments.service import handle_stripe_webhook
+
+    result = await handle_stripe_webhook(
+        db,
+        event_type="payment_intent.succeeded",
+        event_data=pi_data,
+    )
+
+    return {
+        "status": result.get("status", "unknown"),
+        "invoice_status": result.get("invoice_status", invoice.status),
+        "payment_id": result.get("payment_id"),
+        "amount": result.get("amount"),
+    }

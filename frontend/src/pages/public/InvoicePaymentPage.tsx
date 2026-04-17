@@ -189,9 +189,10 @@ interface PaymentFormProps {
   currency: string
   invoiceNumber: string | null
   clientSecret: string
+  token: string
 }
 
-function PaymentForm({ balanceDue, currency, invoiceNumber, clientSecret }: PaymentFormProps) {
+function PaymentForm({ balanceDue, currency, invoiceNumber, clientSecret, token }: PaymentFormProps) {
   const stripe = useStripe()
   const elements = useElements()
   const [processing, setProcessing] = useState(false)
@@ -226,6 +227,14 @@ function PaymentForm({ balanceDue, currency, invoiceNumber, clientSecret }: Paym
     }
 
     if (paymentIntent?.status === 'succeeded') {
+      // Call backend to verify and record the payment (ISSUE-111)
+      // This ensures the payment is recorded even if the webhook is delayed
+      try {
+        await axios.post(`/api/v1/public/pay/${token}/confirm`)
+      } catch {
+        // Non-fatal — webhook will eventually record it
+        console.warn('Payment confirm call failed — webhook will handle it')
+      }
       setSucceeded(true)
       setProcessing(false)
     } else {
@@ -483,6 +492,7 @@ export default function InvoicePaymentPage() {
                   currency={data?.currency ?? 'NZD'}
                   invoiceNumber={data?.invoice_number ?? null}
                   clientSecret={data.client_secret}
+                  token={token ?? ''}
                 />
               </Elements>
             ) : (
