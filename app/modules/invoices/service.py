@@ -1333,7 +1333,7 @@ async def get_invoice(
                 else None
             ),
             "amount": float(p.amount),
-            "method": p.payment_method if hasattr(p, "payment_method") else "cash",
+            "method": p.method if hasattr(p, "method") else "cash",
             "recorded_by": recorder_map.get(p.recorded_by, str(p.recorded_by)) if hasattr(p, "recorded_by") and p.recorded_by else "",
             "note": getattr(p, "note", None) or getattr(p, "notes", None),
             "is_refund": bool(getattr(p, "is_refund", False)),
