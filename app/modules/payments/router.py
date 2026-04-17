@@ -20,11 +20,13 @@ from app.modules.auth.rbac import require_role
 from app.modules.payments.schemas import (
     CashPaymentRequest,
     CashPaymentResponse,
+    ManagePayoutsResponse,
     OnlinePaymentsDisconnectResponse,
     OnlinePaymentsStatusResponse,
     PaymentHistoryResponse,
     PaymentMethodsResponse,
     PaymentMethodInfo,
+    PayoutInfoResponse,
     RefundRequest,
     RefundResponse,
     RegeneratePaymentLinkResponse,
@@ -569,6 +571,235 @@ async def update_payment_methods(
     ]
 
     return PaymentMethodsResponse(payment_methods=payment_methods)
+
+
+@router.get(
+    "/online-payments/payout-info",
+    response_model=PayoutInfoResponse,
+    status_code=200,
+    responses={
+        400: {"description": "No Stripe account connected"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org Admin role required"},
+    },
+    summary="Get payout bank details and schedule for the connected Stripe account",
+    dependencies=[require_role("org_admin")],
+)
+async def get_payout_info(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the connected account's payout bank details and schedule.
+
+    Fetches the Stripe account to extract external_accounts (bank info)
+    and payout schedule settings. Bank account numbers are masked — only
+    the last 4 digits are exposed.
+    """
+    import httpx
+    from app.modules.admin.models import Organisation
+    from app.integrations.stripe_billing import get_stripe_secret_key
+
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Organisation not found"},
+        )
+
+    if not org.stripe_connect_account_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "No Stripe account connected."},
+        )
+
+    secret_key = await get_stripe_secret_key()
+    if not secret_key:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Stripe secret key not configured."},
+        )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"https://api.stripe.com/v1/accounts/{org.stripe_connect_account_id}",
+                auth=(secret_key, ""),
+            )
+            resp.raise_for_status()
+            account_data = resp.json()
+    except Exception:
+        logger.exception(
+            "Failed to fetch Stripe account %s for payout info",
+            org.stripe_connect_account_id,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Failed to fetch payout information from Stripe."},
+        )
+
+    # Extract bank account info from external_accounts
+    bank_name = ""
+    bank_last4 = ""
+    bank_currency = ""
+    external_accounts = (account_data.get("external_accounts") or {}).get("data") or []
+    if external_accounts:
+        bank = external_accounts[0]
+        bank_name = bank.get("bank_name") or ""
+        bank_last4 = bank.get("last4") or ""
+        bank_currency = (bank.get("currency") or "").upper()
+
+    # Extract payout schedule
+    payout_settings = (account_data.get("settings") or {}).get("payouts") or {}
+    schedule = payout_settings.get("schedule") or {}
+    interval = schedule.get("interval") or ""
+    delay_days = schedule.get("delay_days") or 0
+
+    # Build human-readable schedule string
+    if interval == "daily":
+        payout_schedule = f"Daily ({delay_days}-day delay)"
+    elif interval == "weekly":
+        day = schedule.get("weekly_anchor") or ""
+        payout_schedule = f"Weekly ({day.capitalize()})" if day else "Weekly"
+    elif interval == "monthly":
+        anchor = schedule.get("monthly_anchor")
+        if anchor:
+            suffix = "th"
+            if anchor == 1:
+                suffix = "st"
+            elif anchor == 2:
+                suffix = "nd"
+            elif anchor == 3:
+                suffix = "rd"
+            payout_schedule = f"Monthly ({anchor}{suffix})"
+        else:
+            payout_schedule = "Monthly"
+    elif interval == "manual":
+        payout_schedule = "Manual"
+    else:
+        payout_schedule = interval.capitalize() if interval else ""
+
+    payouts_enabled = account_data.get("payouts_enabled") or False
+
+    return PayoutInfoResponse(
+        payouts_enabled=payouts_enabled,
+        bank_name=bank_name,
+        bank_last4=bank_last4,
+        bank_currency=bank_currency,
+        payout_schedule=payout_schedule,
+        payout_interval=interval,
+        payout_delay_days=delay_days,
+    )
+
+
+@router.post(
+    "/online-payments/manage-payouts",
+    response_model=ManagePayoutsResponse,
+    status_code=200,
+    responses={
+        400: {"description": "No Stripe account connected"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org Admin role required"},
+    },
+    summary="Create a Stripe Account Link for managing payouts",
+    dependencies=[require_role("org_admin")],
+)
+async def manage_payouts(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a Stripe Account Link for the connected account and return the URL.
+
+    Uses account_update type for already-onboarded accounts, falling back
+    to account_onboarding if needed. The return and refresh URLs point
+    back to the Online Payments settings page.
+    """
+    import httpx
+    from app.modules.admin.models import Organisation
+    from app.integrations.stripe_billing import get_stripe_secret_key
+
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Organisation not found"},
+        )
+
+    if not org.stripe_connect_account_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "No Stripe account connected."},
+        )
+
+    secret_key = await get_stripe_secret_key()
+    if not secret_key:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Stripe secret key not configured."},
+        )
+
+    frontend_base = (settings.frontend_base_url or "http://localhost:5173").rstrip("/")
+    return_url = f"{frontend_base}/settings?tab=online-payments"
+    refresh_url = f"{frontend_base}/settings?tab=online-payments"
+
+    # Try account_update first (for already-onboarded accounts),
+    # fall back to account_onboarding
+    link_url = ""
+    for link_type in ("account_update", "account_onboarding"):
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    "https://api.stripe.com/v1/account_links",
+                    auth=(secret_key, ""),
+                    data={
+                        "account": org.stripe_connect_account_id,
+                        "type": link_type,
+                        "return_url": return_url,
+                        "refresh_url": refresh_url,
+                    },
+                )
+                resp.raise_for_status()
+                link_data = resp.json()
+                link_url = link_data.get("url") or ""
+                if link_url:
+                    break
+        except httpx.HTTPStatusError:
+            # account_update may fail if not fully onboarded — try next type
+            continue
+        except Exception:
+            logger.exception(
+                "Failed to create Stripe Account Link (%s) for account %s",
+                link_type,
+                org.stripe_connect_account_id,
+            )
+            continue
+
+    if not link_url:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Failed to create Stripe account management link."},
+        )
+
+    return ManagePayoutsResponse(url=link_url)
 
 
 @router.post(

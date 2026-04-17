@@ -356,6 +356,146 @@ function PaymentMethodsSection() {
 
 /* ── Component ── */
 
+/* ── Payout Settings Section ── */
+
+interface PayoutInfo {
+  payouts_enabled: boolean
+  bank_name: string
+  bank_last4: string
+  bank_currency: string
+  payout_schedule: string
+  payout_interval: string
+  payout_delay_days: number
+}
+
+function PayoutSettingsSection() {
+  const [payoutInfo, setPayoutInfo] = useState<PayoutInfo | null>(null)
+  const [loadingPayout, setLoadingPayout] = useState(true)
+  const [payoutError, setPayoutError] = useState<string | null>(null)
+  const [redirecting, setRedirecting] = useState(false)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchPayoutInfo = async () => {
+      try {
+        const res = await apiClient.get<PayoutInfo>(
+          '/payments/online-payments/payout-info',
+          { signal: controller.signal },
+        )
+        setPayoutInfo({
+          payouts_enabled: res.data?.payouts_enabled ?? false,
+          bank_name: res.data?.bank_name ?? '',
+          bank_last4: res.data?.bank_last4 ?? '',
+          bank_currency: res.data?.bank_currency ?? '',
+          payout_schedule: res.data?.payout_schedule ?? '',
+          payout_interval: res.data?.payout_interval ?? '',
+          payout_delay_days: res.data?.payout_delay_days ?? 0,
+        })
+        setPayoutError(null)
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setPayoutError('Failed to load payout settings.')
+        }
+      } finally {
+        setLoadingPayout(false)
+      }
+    }
+    fetchPayoutInfo()
+    return () => controller.abort()
+  }, [])
+
+  const handleManagePayouts = async () => {
+    setRedirecting(true)
+    setPayoutError(null)
+    try {
+      const res = await apiClient.post<{ url: string }>(
+        '/payments/online-payments/manage-payouts',
+      )
+      const url = res.data?.url ?? ''
+      if (url) {
+        window.location.href = url
+      } else {
+        setPayoutError('No management URL returned. Please try again.')
+        setRedirecting(false)
+      }
+    } catch (err) {
+      const axiosErr = err as { response?: { data?: { detail?: string } } }
+      const detail = axiosErr.response?.data?.detail
+      setPayoutError(detail ?? 'Failed to open payout management. Please try again.')
+      setRedirecting(false)
+    }
+  }
+
+  if (loadingPayout) {
+    return (
+      <div className="mt-4 pt-3 border-t border-gray-100">
+        <div className="flex items-center gap-2">
+          <Spinner size="sm" label="Loading payout settings…" />
+          <span className="text-sm text-gray-500">Loading payout settings…</span>
+        </div>
+      </div>
+    )
+  }
+
+  const hasBankAccount = (payoutInfo?.bank_last4 ?? '') !== ''
+
+  return (
+    <div className="mt-4 pt-3 border-t border-gray-100">
+      <h4 className="text-sm font-semibold text-gray-900 mb-2">Payout Settings</h4>
+
+      {payoutError && (
+        <AlertBanner variant="error" onDismiss={() => setPayoutError(null)} className="mb-3">
+          {payoutError}
+        </AlertBanner>
+      )}
+
+      {hasBankAccount ? (
+        <div className="space-y-1 mb-3">
+          <p className="text-sm text-gray-600">
+            Bank Account:{' '}
+            <span className="font-medium text-gray-900">
+              ····{payoutInfo?.bank_last4 ?? ''}
+              {(payoutInfo?.bank_name ?? '') !== '' && ` (${payoutInfo?.bank_name ?? ''}`}
+              {(payoutInfo?.bank_currency ?? '') !== '' && `, ${payoutInfo?.bank_currency ?? ''}`}
+              {(payoutInfo?.bank_name ?? '') !== '' && ')'}
+            </span>
+          </p>
+          {(payoutInfo?.payout_schedule ?? '') !== '' && (
+            <p className="text-sm text-gray-600">
+              Payout Schedule:{' '}
+              <span className="font-medium text-gray-900">{payoutInfo?.payout_schedule ?? ''}</span>
+            </p>
+          )}
+          <p className="text-sm text-gray-600">
+            Status:{' '}
+            {payoutInfo?.payouts_enabled ? (
+              <span className="font-medium text-green-600">✓ Payouts enabled</span>
+            ) : (
+              <span className="font-medium text-amber-600">Payouts not enabled</span>
+            )}
+          </p>
+        </div>
+      ) : (
+        <div className="mb-3">
+          <p className="text-sm text-gray-600">No bank account configured for payouts.</p>
+          <p className="text-sm text-gray-500">Set up your bank account to receive payments.</p>
+        </div>
+      )}
+
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={handleManagePayouts}
+        loading={redirecting}
+      >
+        {hasBankAccount ? 'Manage Payouts →' : 'Set Up Payouts →'}
+      </Button>
+    </div>
+  )
+}
+
+/* ── Main Component ── */
+
 export default function OnlinePaymentsSettings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [status, setStatus] = useState<OnlinePaymentsStatus | null>(null)
@@ -561,6 +701,9 @@ export default function OnlinePaymentsSettings() {
 
           {/* Inline payment methods section */}
           <PaymentMethodsSection />
+
+          {/* Payout settings section */}
+          <PayoutSettingsSection />
 
           <div className="mt-4 pt-3 border-t border-gray-100">
             <Button

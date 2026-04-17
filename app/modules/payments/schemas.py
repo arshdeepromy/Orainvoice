@@ -315,6 +315,36 @@ class OnlinePaymentsDisconnectResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Payout settings schemas
+# ---------------------------------------------------------------------------
+
+
+class PayoutInfoResponse(BaseModel):
+    """Response from GET /payments/online-payments/payout-info.
+
+    Returns the connected account's payout bank details and schedule.
+    Bank account numbers are masked — only the last 4 digits are exposed.
+    """
+
+    payouts_enabled: bool = False
+    bank_name: str = ""
+    bank_last4: str = ""
+    bank_currency: str = ""
+    payout_schedule: str = ""  # e.g. "Daily", "Weekly (Monday)", "Monthly (1st)"
+    payout_interval: str = ""  # "daily", "weekly", "monthly", "manual"
+    payout_delay_days: int = 0
+
+
+class ManagePayoutsResponse(BaseModel):
+    """Response from POST /payments/online-payments/manage-payouts.
+
+    Returns a Stripe Account Link URL for managing payout settings.
+    """
+
+    url: str
+
+
+# ---------------------------------------------------------------------------
 # Public payment page schemas (Req 6.1, 6.2, 6.3)
 # ---------------------------------------------------------------------------
 
