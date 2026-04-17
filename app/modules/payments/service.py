@@ -266,18 +266,13 @@ async def generate_stripe_payment_link(
         if customer and customer.email:
             # Dispatch email asynchronously (best-effort)
             try:
-                from app.integrations.brevo import send_email
-
-                await send_email(
+                await _send_receipt_email(
+                    db,
                     to_email=customer.email,
-                    subject=f"Payment link for invoice {invoice.invoice_number or invoice.id}",
-                    body=(
-                        f"Please complete your payment of "
-                        f"{invoice.currency} {pay_amount} using the "
-                        f"following link:\n\n{payment_url}"
-                    ),
+                    invoice=invoice,
+                    pay_amount=pay_amount,
                 )
-            except (ConnectionError, TimeoutError, OSError) as exc:
+            except Exception as exc:
                 logger.warning("Failed to send payment link email for invoice %s: %s", invoice.id, exc)
     elif send_via == "sms":
         customer_result = await db.execute(
@@ -348,6 +343,104 @@ async def generate_stripe_payment_link(
         "amount": pay_amount,
         "send_via": send_via,
     }
+
+
+async def _send_receipt_email(
+    db: AsyncSession,
+    *,
+    to_email: str,
+    invoice: Invoice,
+    pay_amount: Decimal,
+) -> None:
+    """Send a payment receipt email using the configured SMTP provider.
+
+    Uses the same email provider infrastructure as email_invoice() — reads
+    from the email_providers table, not from brevo.py.  Best-effort: logs
+    warnings on failure but does not raise.
+    """
+    import json as _json
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    from app.core.encryption import envelope_decrypt_str
+    from app.modules.admin.models import EmailProvider, Organisation
+
+    # Get org name for the email
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == invoice.org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    org_name = org.name if org else "Your Company"
+
+    inv_number = invoice.invoice_number or str(invoice.id)
+    currency = invoice.currency or "NZD"
+
+    # Find active email provider
+    provider_result = await db.execute(
+        select(EmailProvider)
+        .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)  # noqa: E712
+        .order_by(EmailProvider.priority)
+    )
+    providers = list(provider_result.scalars().all())
+    if not providers:
+        logger.warning("No active email provider — cannot send receipt for invoice %s", invoice.id)
+        return
+
+    subject = f"Payment receipt for invoice {inv_number}"
+    body = (
+        f"Hi,\n\n"
+        f"Thank you for your payment of {currency} {pay_amount}.\n\n"
+        f"Invoice: {inv_number}\n"
+        f"Amount paid: {currency} {pay_amount}\n"
+        f"Remaining balance: {currency} {invoice.balance_due}\n\n"
+        f"Thank you for your business.\n\n"
+        f"{org_name}\n"
+    )
+
+    for provider in providers:
+        try:
+            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
+            credentials = _json.loads(creds_json)
+
+            smtp_host = provider.smtp_host
+            smtp_port = provider.smtp_port or 587
+            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
+            username = credentials.get("username") or credentials.get("api_key", "")
+            password = credentials.get("password") or credentials.get("api_key", "")
+
+            config = provider.config or {}
+            from_email = config.get("from_email") or username
+            from_name = config.get("from_name") or org_name
+
+            msg = MIMEMultipart("mixed")
+            msg["From"] = f"{from_name} <{from_email}>"
+            msg["To"] = to_email
+            msg["Subject"] = subject
+            msg.attach(MIMEText(body, "plain"))
+
+            if smtp_encryption == "ssl":
+                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+            else:
+                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+                if smtp_encryption == "tls":
+                    server.starttls()
+
+            if username and password:
+                server.login(username, password)
+
+            server.sendmail(from_email, to_email, msg.as_string())
+            server.quit()
+            logger.info("Sent payment receipt email for invoice %s to %s", invoice.id, to_email)
+            return
+        except Exception as exc:
+            logger.warning(
+                "Email provider %s failed for receipt (invoice %s): %s",
+                provider.provider_key, invoice.id, exc,
+            )
+            continue
+
+    logger.warning("All email providers failed for receipt email (invoice %s)", invoice.id)
 
 
 async def handle_stripe_webhook(
@@ -507,24 +600,19 @@ async def handle_stripe_webhook(
     # Best-effort payment receipt email (non-blocking)
     try:
         from app.modules.customers.models import Customer
-        from app.integrations.brevo import send_email
 
         cust_result = await db.execute(
             select(Customer).where(Customer.id == invoice.customer_id)
         )
         customer = cust_result.scalar_one_or_none()
         if customer and customer.email:
-            await send_email(
+            await _send_receipt_email(
+                db,
                 to_email=customer.email,
-                subject=f"Payment receipt for invoice {invoice.invoice_number or invoice.id}",
-                body=(
-                    f"Thank you for your payment of {invoice.currency} {pay_amount}.\n\n"
-                    f"Invoice: {invoice.invoice_number or invoice.id}\n"
-                    f"Amount paid: {invoice.currency} {pay_amount}\n"
-                    f"Remaining balance: {invoice.currency} {invoice.balance_due}\n"
-                ),
+                invoice=invoice,
+                pay_amount=pay_amount,
             )
-    except (ConnectionError, TimeoutError, OSError, ImportError) as exc:
+    except Exception as exc:
         logger.warning("Failed to send payment receipt email for invoice %s: %s", invoice.id, exc)
 
     return {
