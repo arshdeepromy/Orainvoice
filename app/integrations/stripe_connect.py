@@ -186,11 +186,17 @@ async def create_payment_link(
     if application_fee_amount and application_fee_amount > 0:
         payload["payment_intent_data[application_fee_amount]"] = str(application_fee_amount)
 
+    from app.integrations.stripe_billing import get_stripe_secret_key
+
+    secret_key = await get_stripe_secret_key()
+    if not secret_key:
+        raise RuntimeError("Stripe secret key not configured. Set it via Global Admin > Integrations.")
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             "https://api.stripe.com/v1/checkout/sessions",
             data=payload,
-            auth=(settings.stripe_secret_key, ""),
+            auth=(secret_key, ""),
             headers={"Stripe-Account": stripe_account_id},
         )
         response.raise_for_status()
@@ -252,11 +258,17 @@ async def create_payment_intent(
     if application_fee_amount and application_fee_amount > 0:
         payload["application_fee_amount"] = str(application_fee_amount)
 
+    from app.integrations.stripe_billing import get_stripe_secret_key
+
+    secret_key = await get_stripe_secret_key()
+    if not secret_key:
+        raise RuntimeError("Stripe secret key not configured. Set it via Global Admin > Integrations.")
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             "https://api.stripe.com/v1/payment_intents",
             data=payload,
-            auth=(settings.stripe_secret_key, ""),
+            auth=(secret_key, ""),
             headers={"Stripe-Account": stripe_account_id},
         )
         response.raise_for_status()
@@ -310,11 +322,17 @@ async def create_stripe_refund(
         "amount": str(amount),
     }
 
+    from app.integrations.stripe_billing import get_stripe_secret_key
+
+    secret_key = await get_stripe_secret_key()
+    if not secret_key:
+        raise RuntimeError("Stripe secret key not configured. Set it via Global Admin > Integrations.")
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             "https://api.stripe.com/v1/refunds",
             data=payload,
-            auth=(settings.stripe_secret_key, ""),
+            auth=(secret_key, ""),
             headers={"Stripe-Account": stripe_account_id},
         )
         response.raise_for_status()

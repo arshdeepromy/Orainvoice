@@ -18,7 +18,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.config import settings
 from app.core.database import get_db_session
 from app.modules.invoices.models import Invoice
 from app.modules.admin.models import Organisation
@@ -229,13 +228,17 @@ async def get_payment_page(
         # Connected account ID (safe to expose — equivalent to publishable key)
         connected_account_id = org.stripe_connect_account_id
 
+        # Get publishable key from DB config (same source as secret key)
+        from app.integrations.stripe_billing import get_stripe_publishable_key
+        publishable_key = await get_stripe_publishable_key()
+
         return PaymentPageResponse(
             **base_data,
             is_paid=False,
             is_payable=True,
             client_secret=client_secret,
             connected_account_id=connected_account_id,
-            publishable_key=settings.stripe_publishable_key or None,
+            publishable_key=publishable_key or None,
         )
 
     # --- Fallback for any other status (e.g. refunded, partially_refunded) ---
