@@ -6,6 +6,7 @@ import { CustomerCreateModal } from '../../components/customers/CustomerCreateMo
 import { VehicleLiveSearch } from '../../components/vehicles/VehicleLiveSearch'
 import { useTenant } from '../../contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
+import { useAuth } from '../../contexts/AuthContext'
 import { ModuleGate } from '../../components/common/ModuleGate'
 import { useModules } from '../../contexts/ModuleContext'
 
@@ -720,6 +721,7 @@ export default function InvoiceCreate() {
   const isEditMode = Boolean(editId)
   const { settings, tradeFamily } = useTenant()
   const { selectedBranchId } = useBranch()
+  const { user } = useAuth()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const { isEnabled } = useModules()
   const vehiclesEnabled = isEnabled('vehicles')
@@ -961,6 +963,13 @@ export default function InvoiceCreate() {
           const salespeopleData = salespeopleRes.data
           const salespeopleArray = Array.isArray(salespeopleData) ? salespeopleData : (salespeopleData?.salespeople || [])
           setSalespeople(salespeopleArray)
+          // Auto-select the logged-in user as salesperson (if not editing and not already set)
+          if (!editId && !salesperson && user?.id) {
+            const currentUser = salespeopleArray.find((s: Salesperson) => s.id === user.id)
+            if (currentUser) {
+              setSalesperson(currentUser.id)
+            }
+          }
         }
       } catch {
         // Non-blocking

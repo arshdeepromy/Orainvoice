@@ -2064,7 +2064,11 @@ async def list_salespeople(
     return [
         {
             "id": str(u.id),
-            "name": u.email,  # Use email as display name
+            "name": (
+                f"{u.first_name} {u.last_name}".strip()
+                if getattr(u, "first_name", None) or getattr(u, "last_name", None)
+                else u.email
+            ),
         }
         for u in users
     ]
