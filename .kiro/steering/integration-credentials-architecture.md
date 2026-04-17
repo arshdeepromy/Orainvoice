@@ -236,8 +236,124 @@ If an integration API call returns 401/403 or similar auth errors:
 
 | Integration | Config Name | Key Helper Location | GUI Page |
 |---|---|---|---|
-| Stripe | `stripe` | `app/integrations/stripe_billing.py` → `get_stripe_secret_key()`, `get_stripe_publishable_key()` | Admin > Integrations > Stripe |
+| Stripe | `stripe` | `app/integrations/stripe_billing.py` → `get_stripe_secret_key()`, `get_stripe_publishable_key()`, `get_stripe_webhook_secret()` | Admin > Integrations > Stripe |
 | CarJam | `carjam` | `app/integrations/carjam.py` → `get_carjam_api_key()` | Admin > Integrations > CarJam |
 | Xero | `xero` | `app/integrations/xero.py` → OAuth token management | Admin > Integrations > Xero |
 | SMS (Connexus) | `twilio` | `app/integrations/sms.py` | Admin > Integrations > SMS |
 | Email (SMTP) | `email_providers` table | `app/modules/admin/service.py` | Admin > Email Providers |
+
+---
+
+## Stripe Connect — Full Setup Guide
+
+Stripe Connect is used for processing invoice payments on behalf of organisations (connected accounts). The platform (OraInvoice) acts as the intermediary. This section documents every step needed to configure Stripe Connect from scratch.
+
+### Prerequisites
+
+- A Stripe account (platform account) with Connect enabled
+- Access to the Stripe Dashboard as an admin
+- A publicly accessible URL for your app (for webhooks and OAuth redirects)
+
+### Step 1: Enable Stripe Connect
+
+1. Go to **Stripe Dashboard** → **Settings** → **Connect**
+2. Enable Connect and choose **Platform** business model
+3. Note your **Platform account ID** (`acct_...`) — visible at the top of the dashboard or in Settings → Business settings
+
+### Step 2: Configure OAuth for Connected Accounts
+
+1. In Stripe Dashboard → **Settings** → **Connect** → **OAuth** tab
+2. Enable **OAuth for Stripe Dashboard accounts**
+3. Copy the **Test client ID** (starts with `ca_`) — this is the Connect client ID
+4. Under **Redirects**, add your app's OAuth callback URL:
+   - Dev: `https://<your-dev-domain>/settings/online-payments`
+   - Prod: `https://<your-prod-domain>/settings/online-payments`
+
+### Step 3: Get API Keys
+
+1. Go to **Stripe Dashboard** → **Developers** → **API keys**
+2. Copy the **Secret key** (`sk_test_...` for sandbox, `sk_live_...` for production)
+3. Copy the **Publishable key** (`pk_test_...` for sandbox, `pk_live_...` for production)
+
+### Step 4: Configure Webhook for Connect Events
+
+This is critical for recording payments made on connected accounts.
+
+1. Go to **Stripe Dashboard** → **Developers** → **Webhooks**
+2. Click **Add endpoint** (or **Add destination** in newer UI)
+3. Under **Events from**, select **"Connected and v2 accounts"** (NOT "Your account")
+4. In the events search box, find and select:
+   - `payment_intent.succeeded`
+   - `checkout.session.completed`
+5. Click **Continue**
+6. Set the **Endpoint URL**: `https://<your-domain>/api/v1/payments/stripe/webhook`
+7. Give it a name (e.g., "OraInvoice Dev" or "OraInvoice Prod")
+8. Click **Create destination**
+9. On the endpoint detail page, click **Reveal** under Signing secret
+10. Copy the `whsec_...` value
+
+### Step 5: Save Everything in OraInvoice
+
+Go to **Global Admin → Integrations → Stripe** and fill in:
+
+| Field | Value | Where to find it |
+|---|---|---|
+| **Secret Key** | `sk_test_...` or `sk_live_...` | Stripe Dashboard → Developers → API keys |
+| **Publishable Key** | `pk_test_...` or `pk_live_...` | Stripe Dashboard → Developers → API keys |
+| **Connect Client ID** | `ca_...` | Stripe Dashboard → Settings → Connect → OAuth tab |
+| **Platform Account ID** | `acct_...` | Stripe Dashboard → Settings → Business settings (or top of dashboard) |
+| **Webhook Endpoint URL** | `https://<domain>/api/v1/payments/stripe/webhook` | The URL you entered in Step 4 (for reference only) |
+| **Webhook Signing Secret** | `whsec_...` | From Step 4.10 above |
+
+Click **Save configuration**, then **Test connection** to verify.
+
+### Step 6: Org Connects Their Stripe Account
+
+Once the platform is configured, each organisation connects their own Stripe account:
+
+1. Org admin goes to **Settings → Online Payments**
+2. Clicks **Connect with Stripe**
+3. Redirected to Stripe OAuth flow → authorises the connection
+4. Redirected back to the app with an auth code
+5. Backend exchanges the code for the connected account ID (`acct_...`)
+6. Connected account ID is stored on the `organisations` table (`stripe_connect_account_id`)
+
+### Environment-Specific Webhook URLs
+
+| Environment | Webhook URL |
+|---|---|
+| Dev (local via tunnel) | `https://devin.oraflows.co.nz/api/v1/payments/stripe/webhook` |
+| Production (Pi) | `https://<prod-domain>/api/v1/payments/stripe/webhook` |
+
+Each environment needs its own webhook endpoint in Stripe with its own signing secret. The signing secret for each environment is saved in that environment's database via Global Admin.
+
+### Troubleshooting Webhooks
+
+If payments succeed on the frontend but the invoice doesn't update:
+
+1. **Check Stripe Dashboard → Developers → Webhooks → your endpoint** — look for failed deliveries
+2. **Check the endpoint status** — is it showing errors (4xx, 5xx)?
+3. **Verify the signing secret** matches what's in Global Admin → Integrations → Stripe
+4. **Check app logs**: `docker compose logs app --tail 200 | Select-String "webhook|signature"`
+5. **Verify the endpoint is reachable** — try `curl -X POST https://<your-domain>/api/v1/payments/stripe/webhook` (should return 400 "Missing Stripe-Signature header")
+6. **For local dev without public URL**: The confirm endpoint (`POST /api/v1/public/pay/{token}/confirm`) acts as a fallback — the frontend calls it after payment success to record the payment synchronously
+
+### Payment Flow Summary
+
+```
+Customer pays → stripe.confirmCardPayment() → Stripe processes payment
+                                                    ↓
+                                            Two paths to record:
+                                                    ↓
+                    ┌───────────────────────────────────────────────────┐
+                    │                                                   │
+            Path A (async):                                    Path B (sync):
+            Stripe sends webhook                        Frontend calls confirm
+            payment_intent.succeeded                    POST /public/pay/{token}/confirm
+            → Backend records payment                   → Backend verifies PI with Stripe
+            → Updates invoice status                    → Records payment (idempotent)
+            → Sends receipt email                       → Updates invoice status
+                    │                                   → Sends receipt email
+                    └───────────────────────────────────────────────────┘
+                                    Both paths are idempotent
+```
