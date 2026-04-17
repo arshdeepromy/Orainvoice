@@ -3414,6 +3414,51 @@ async def email_invoice(
     currency = invoice_dict.get("currency", "NZD")
     payment_page_url = invoice_dict.get("payment_page_url")
 
+    # For already-issued invoices with Stripe gateway: ensure payment link
+    # exists and uses the current FRONTEND_BASE_URL.  If the stored URL is
+    # stale (e.g. http://localhost from before the domain was configured) or
+    # missing, regenerate it so the email contains a working link.
+    inv_gateway = invoice_dict.get("payment_gateway")
+    inv_status = invoice_dict.get("status")
+    if (
+        inv_gateway == "stripe"
+        and inv_status in ("issued", "partially_paid", "overdue")
+        and balance_due
+        and float(balance_due) > 0
+    ):
+        frontend_base = (settings.frontend_base_url or "http://localhost").rstrip("/")
+        needs_regen = (
+            not payment_page_url
+            or not payment_page_url.startswith(frontend_base)
+        )
+        if needs_regen:
+            try:
+                inv_obj_result = await db.execute(
+                    select(Invoice).where(
+                        Invoice.id == invoice_id, Invoice.org_id == org_id
+                    )
+                )
+                inv_obj_for_regen = inv_obj_result.scalar_one_or_none()
+                org_regen_result = await db.execute(
+                    select(Organisation).where(Organisation.id == org_id)
+                )
+                org_for_regen = org_regen_result.scalar_one_or_none()
+                if inv_obj_for_regen and org_for_regen:
+                    await _maybe_create_stripe_payment_intent(
+                        db, inv_obj_for_regen, org_for_regen
+                    )
+                    await db.refresh(inv_obj_for_regen)
+                    payment_page_url = inv_obj_for_regen.payment_page_url
+                    logger.info(
+                        "Regenerated payment link for invoice %s on resend",
+                        invoice_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to regenerate payment link for invoice %s on resend",
+                    invoice_id,
+                )
+
     # Find all active email providers ordered by priority (failover)
     provider_result = await db.execute(
         select(EmailProvider)
