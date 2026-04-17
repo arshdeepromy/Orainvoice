@@ -369,6 +369,7 @@ async def stripe_webhook_endpoint(
     Requirements: 25.4
     """
     from app.integrations.stripe_connect import verify_webhook_signature
+    from app.integrations.stripe_billing import get_stripe_webhook_secret
 
     # Read raw body for signature verification
     payload = await request.body()
@@ -380,11 +381,20 @@ async def stripe_webhook_endpoint(
             content={"detail": "Missing Stripe-Signature header"},
         )
 
+    # Load webhook signing secret from DB (not env var)
+    webhook_secret = await get_stripe_webhook_secret()
+    if not webhook_secret:
+        logger.error("Stripe webhook secret not configured — cannot verify signature")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Webhook verification not configured"},
+        )
+
     try:
         event = verify_webhook_signature(
             payload=payload,
             sig_header=sig_header,
-            webhook_secret=settings.stripe_webhook_secret,
+            webhook_secret=webhook_secret,
         )
     except ValueError as exc:
         logger.warning("Stripe webhook signature verification failed: %s", exc)

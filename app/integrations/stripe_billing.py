@@ -187,6 +187,51 @@ async def get_stripe_publishable_key() -> str:
     return settings.stripe_publishable_key
 
 
+# Webhook signing secret — separate cache since it's a different key
+_cached_webhook_secret: str = ""
+_webhook_cache_ts: float = 0.0
+
+
+async def _load_webhook_secret_from_db() -> str:
+    """Load Stripe webhook signing secret from integration_configs."""
+    from app.core.database import async_session_factory
+    from app.modules.admin.models import IntegrationConfig
+    from app.core.encryption import envelope_decrypt_str
+    from sqlalchemy import select
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(IntegrationConfig).where(IntegrationConfig.name == "stripe")
+        )
+        config_row = result.scalar_one_or_none()
+        if config_row is None:
+            return ""
+        try:
+            data = json.loads(envelope_decrypt_str(config_row.config_encrypted))
+            return data.get("signing_secret", "")
+        except Exception as exc:
+            logger.warning("Failed to decrypt Stripe webhook secret from DB: %s", exc)
+            return ""
+
+
+async def get_stripe_webhook_secret() -> str:
+    """Return the Stripe webhook signing secret, loading from DB with caching."""
+    global _cached_webhook_secret, _webhook_cache_ts
+
+    now = time.time()
+    if _cached_webhook_secret and (now - _webhook_cache_ts) < _CACHE_TTL:
+        return _cached_webhook_secret
+
+    secret = await _load_webhook_secret_from_db()
+    if secret:
+        _cached_webhook_secret = secret
+        _webhook_cache_ts = now
+        return secret
+
+    # Fallback to env var
+    return settings.stripe_webhook_secret
+
+
 async def _ensure_stripe_key() -> None:
     """Set stripe.api_key from DB config before making API calls."""
     key = await get_stripe_secret_key()
