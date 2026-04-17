@@ -12,6 +12,36 @@ from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator
 
 
+# ---------------------------------------------------------------------------
+# Payment methods management schemas
+# ---------------------------------------------------------------------------
+
+
+class PaymentMethodInfo(BaseModel):
+    """A single payment method type with its enabled status."""
+
+    type: str = Field(..., description="Payment method identifier (e.g. 'card', 'apple_pay')")
+    name: str = Field(..., description="Display name")
+    description: str = Field(..., description="Short description")
+    enabled: bool = Field(..., description="Whether this method is currently enabled")
+    always_on: bool = Field(False, description="If true, this method cannot be disabled")
+    card_brands: list[str] = Field(default_factory=list, description="Card brand identifiers (for card type)")
+
+
+class PaymentMethodsResponse(BaseModel):
+    """Response from GET /payments/online-payments/payment-methods."""
+
+    payment_methods: list[PaymentMethodInfo]
+
+
+class UpdatePaymentMethodsRequest(BaseModel):
+    """Request body for PUT /payments/online-payments/payment-methods."""
+
+    enabled_methods: list[str] = Field(
+        ..., description="List of payment method type identifiers to enable"
+    )
+
+
 class CashPaymentRequest(BaseModel):
     """Request body for recording a cash payment against an invoice."""
 

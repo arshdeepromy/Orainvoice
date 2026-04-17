@@ -23,12 +23,15 @@ from app.modules.payments.schemas import (
     OnlinePaymentsDisconnectResponse,
     OnlinePaymentsStatusResponse,
     PaymentHistoryResponse,
+    PaymentMethodsResponse,
+    PaymentMethodInfo,
     RefundRequest,
     RefundResponse,
     RegeneratePaymentLinkResponse,
     StripePaymentLinkRequest,
     StripePaymentLinkResponse,
     StripeWebhookResponse,
+    UpdatePaymentMethodsRequest,
 )
 from app.modules.payments.service import (
     record_cash_payment,
@@ -215,6 +218,200 @@ async def disconnect_online_payments(
         message="Stripe account disconnected successfully",
         previous_account_last4=previous_account_last4,
     )
+
+
+# ---------------------------------------------------------------------------
+# Available payment method definitions for NZ Stripe Connect
+# ---------------------------------------------------------------------------
+
+AVAILABLE_PAYMENT_METHODS = [
+    {
+        "type": "card",
+        "name": "Credit & Debit Cards",
+        "description": "Visa, Mastercard, American Express, UnionPay",
+        "always_on": True,
+        "card_brands": ["visa", "mastercard", "amex", "unionpay"],
+    },
+    {
+        "type": "apple_pay",
+        "name": "Apple Pay",
+        "description": "Available on Safari and Apple devices",
+        "always_on": False,
+        "card_brands": [],
+    },
+    {
+        "type": "google_pay",
+        "name": "Google Pay",
+        "description": "Available on Chrome and Android devices",
+        "always_on": False,
+        "card_brands": [],
+    },
+    {
+        "type": "link",
+        "name": "Stripe Link",
+        "description": "One-click checkout for returning customers",
+        "always_on": False,
+        "card_brands": [],
+    },
+]
+
+
+@router.get(
+    "/online-payments/payment-methods",
+    response_model=PaymentMethodsResponse,
+    status_code=200,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org Admin role required"},
+    },
+    summary="Get available payment methods and their enabled status",
+    dependencies=[require_role("org_admin")],
+)
+async def get_payment_methods(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the list of available payment method types with their enabled status.
+
+    Reads from org.settings JSONB field under key 'enabled_payment_methods'.
+    If not set, defaults to ['card'] (cards enabled by default).
+    """
+    from app.modules.admin.models import Organisation
+
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Organisation not found"},
+        )
+
+    # Read enabled methods from org settings, default to ["card"]
+    org_settings = org.settings or {}
+    enabled_methods: list[str] = org_settings.get("enabled_payment_methods", ["card"])
+
+    # Cards are always enabled regardless of stored value
+    if "card" not in enabled_methods:
+        enabled_methods.append("card")
+
+    payment_methods = [
+        PaymentMethodInfo(
+            type=pm["type"],
+            name=pm["name"],
+            description=pm["description"],
+            enabled=pm["type"] in enabled_methods,
+            always_on=pm["always_on"],
+            card_brands=pm["card_brands"],
+        )
+        for pm in AVAILABLE_PAYMENT_METHODS
+    ]
+
+    return PaymentMethodsResponse(payment_methods=payment_methods)
+
+
+@router.put(
+    "/online-payments/payment-methods",
+    response_model=PaymentMethodsResponse,
+    status_code=200,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org Admin role required"},
+    },
+    summary="Update enabled payment methods",
+    dependencies=[require_role("org_admin")],
+)
+async def update_payment_methods(
+    payload: UpdatePaymentMethodsRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update which payment methods are enabled for the org.
+
+    Cards ('card') cannot be disabled — they are always included.
+    Stores the preference in org.settings['enabled_payment_methods'].
+    """
+    from app.modules.admin.models import Organisation
+    from app.core.audit import write_audit_log
+    from sqlalchemy.orm.attributes import flag_modified
+
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Organisation not found"},
+        )
+
+    # Validate that all requested methods are known types
+    valid_types = {pm["type"] for pm in AVAILABLE_PAYMENT_METHODS}
+    for method in payload.enabled_methods:
+        if method not in valid_types:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"Unknown payment method type: {method}"},
+            )
+
+    # Ensure 'card' is always included
+    enabled_methods = list(set(payload.enabled_methods) | {"card"})
+
+    # Read previous value for audit
+    org_settings = dict(org.settings or {})
+    previous_methods = org_settings.get("enabled_payment_methods", ["card"])
+
+    # Update settings
+    org_settings["enabled_payment_methods"] = enabled_methods
+    org.settings = org_settings
+    flag_modified(org, "settings")
+
+    await db.flush()
+    await db.refresh(org)
+
+    # Write audit log
+    await write_audit_log(
+        session=db,
+        org_id=org_uuid,
+        user_id=user_uuid,
+        action="payment_methods.updated",
+        entity_type="organisation",
+        entity_id=org_uuid,
+        before_value={"enabled_payment_methods": previous_methods},
+        after_value={"enabled_payment_methods": enabled_methods},
+        ip_address=ip_address,
+    )
+
+    # Build response
+    payment_methods = [
+        PaymentMethodInfo(
+            type=pm["type"],
+            name=pm["name"],
+            description=pm["description"],
+            enabled=pm["type"] in enabled_methods,
+            always_on=pm["always_on"],
+            card_brands=pm["card_brands"],
+        )
+        for pm in AVAILABLE_PAYMENT_METHODS
+    ]
+
+    return PaymentMethodsResponse(payment_methods=payment_methods)
 
 
 @router.post(
