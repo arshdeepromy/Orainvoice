@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Modal } from '../../components/ui'
 import { ModuleGate } from '../../components/common/ModuleGate'
+import { useModules } from '../../contexts/ModuleContext'
 import { useTenant } from '../../contexts/TenantContext'
 import { CreditNoteModal } from '../../components/invoices/CreditNoteModal'
 import { RefundModal } from '../../components/invoices/RefundModal'
@@ -252,6 +253,8 @@ export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { tradeFamily } = useTenant()
+  const { isEnabled: isModuleEnabled } = useModules()
+  const smsEnabled = isModuleEnabled('sms')
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null)
@@ -690,6 +693,7 @@ export default function InvoiceDetail() {
                 >
                   📧 Send Email
                 </button>
+                {smsEnabled && (
                 <button
                   type="button"
                   className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 rounded-b-md border-t border-gray-100"
@@ -697,6 +701,7 @@ export default function InvoiceDetail() {
                 >
                   💬 Send SMS
                 </button>
+                )}
               </div>
             )}
           </div>
@@ -1287,6 +1292,7 @@ export default function InvoiceDetail() {
           >
             📧 Send Email
           </Button>
+          {smsEnabled && (
           <Button
             size="sm"
             variant="secondary"
@@ -1294,6 +1300,7 @@ export default function InvoiceDetail() {
           >
             💬 Send SMS
           </Button>
+          )}
         </div>
       </Modal>
     </div>
