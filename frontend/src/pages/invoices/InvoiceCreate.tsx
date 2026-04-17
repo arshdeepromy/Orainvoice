@@ -176,6 +176,11 @@ function newLineItem(): LineItem {
   }
 }
 
+/** Check if a line item is "empty" — no description and rate is 0 */
+function isEmptyLine(item: LineItem): boolean {
+  return (!item.description || item.description.trim() === '') && item.rate === 0
+}
+
 function calcLineAmount(item: LineItem): number {
   return Math.round(item.quantity * item.rate * 100) / 100
 }
@@ -1053,8 +1058,7 @@ export default function InvoiceCreate() {
       taxId = 'gst_15'
     }
     const desc = item.subtitle ? `${item.item_name} (${item.subtitle})` : item.item_name
-    setLineItems(prev => [...prev, {
-      key: crypto.randomUUID(),
+    const newItem: Partial<LineItem> = {
       item_id: item.catalogue_item_id,
       stock_item_id: item.id,
       description: desc,
@@ -1064,7 +1068,18 @@ export default function InvoiceCreate() {
       tax_id: taxId,
       amount: rate,
       gst_inclusive: isGstInclusive,
-    }])
+    }
+    setLineItems(prev => {
+      const emptyIdx = prev.findIndex(isEmptyLine)
+      if (emptyIdx >= 0) {
+        // Fill the first empty line
+        const updated = [...prev]
+        updated[emptyIdx] = { ...updated[emptyIdx], ...newItem }
+        return updated
+      }
+      // No empty line — append new one
+      return [...prev, { key: crypto.randomUUID(), ...newItem } as LineItem]
+    })
     setStockPickerOpen(false)
   }
   const openLabourPicker = async () => {
@@ -1073,7 +1088,24 @@ export default function InvoiceCreate() {
     catch { setLabourRates([]) } finally { setLabourLoading(false) }
   }
   const addLabourLineItem = (rate: typeof labourRates[0]) => {
-    setLineItems(prev => [...prev, { key: crypto.randomUUID(), description: `Labour: ${rate.name}`, quantity: 1, rate: parseFloat(rate.hourly_rate) || 0, tax_rate: 15, tax_id: 'gst_15', amount: parseFloat(rate.hourly_rate) || 0 }])
+    const labourRate = parseFloat(rate.hourly_rate) || 0
+    const newItem: Partial<LineItem> = {
+      description: `Labour: ${rate.name}`,
+      quantity: 1,
+      rate: labourRate,
+      tax_rate: 15,
+      tax_id: 'gst_15',
+      amount: labourRate,
+    }
+    setLineItems(prev => {
+      const emptyIdx = prev.findIndex(isEmptyLine)
+      if (emptyIdx >= 0) {
+        const updated = [...prev]
+        updated[emptyIdx] = { ...updated[emptyIdx], ...newItem }
+        return updated
+      }
+      return [...prev, { key: crypto.randomUUID(), ...newItem } as LineItem]
+    })
     setLabourPickerOpen(false)
   }
 
