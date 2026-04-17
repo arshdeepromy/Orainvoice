@@ -24,6 +24,8 @@ from app.modules.catalogue.schemas import (
     LabourRateCreateResponse,
     LabourRateListResponse,
     LabourRateResponse,
+    LabourRateUpdateRequest,
+    LabourRateResponse,
     PartCreateRequest,
     PartCreateResponse,
     PartListResponse,
@@ -892,6 +894,58 @@ async def create_labour_rate_endpoint(
 
     return LabourRateCreateResponse(
         message="Labour rate created",
+        labour_rate=LabourRateResponse(**rate_data),
+    )
+
+
+@router.put(
+    "/labour-rates/{rate_id}",
+    response_model=LabourRateCreateResponse,
+    status_code=200,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Labour rate not found"},
+    },
+    summary="Update a labour rate",
+    dependencies=[require_role("org_admin")],
+)
+async def update_labour_rate_endpoint(
+    rate_id: uuid.UUID,
+    payload: LabourRateUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update an existing labour rate's name, hourly rate, or active status."""
+    from app.modules.catalogue.service import update_labour_rate
+
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        rate_data = await update_labour_rate(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid or uuid.uuid4(),
+            rate_id=rate_id,
+            name=payload.name,
+            hourly_rate=payload.hourly_rate,
+            is_active=payload.is_active,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400 if "not found" not in str(exc).lower() else 404,
+            content={"detail": str(exc)},
+        )
+
+    return LabourRateCreateResponse(
+        message="Labour rate updated",
         labour_rate=LabourRateResponse(**rate_data),
     )
 

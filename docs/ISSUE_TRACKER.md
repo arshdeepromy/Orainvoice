@@ -3702,3 +3702,27 @@ This provides a synchronous confirmation path alongside the async webhook path, 
 
 **Related Issues**: N/A (new feature gap)
 **Related Steering**: #[[file:.kiro/steering/integration-credentials-architecture.md]]
+
+
+---
+
+### ISSUE-112: PUT /catalogue/labour-rates/{id} returns 404 — endpoint missing
+
+- **Date**: 2026-04-17
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+
+**Symptoms**: Updating a labour rate in the Catalogue page throws a 404 error. The frontend calls `PUT /api/v1/catalogue/labour-rates/{id}` but the backend only had GET (list) and POST (create) endpoints — no PUT for updates.
+
+**Root Cause**: The PUT endpoint for updating labour rates was never implemented. The frontend `LabourRates.tsx` component calls `apiClient.put()` for both editing rate details and toggling active/inactive status, but the backend router only had `@router.get("/labour-rates")` and `@router.post("/labour-rates")`.
+
+**Fix Applied**:
+1. Added `LabourRateUpdateRequest` schema with optional `name`, `hourly_rate`, `is_active` fields
+2. Added `update_labour_rate()` service function with validation, audit logging, and `flush()` + `refresh()` pattern
+3. Added `PUT /catalogue/labour-rates/{rate_id}` router endpoint with `require_role("org_admin")`
+
+**Files Changed**:
+- `app/modules/catalogue/schemas.py` — added `LabourRateUpdateRequest`
+- `app/modules/catalogue/service.py` — added `update_labour_rate()`
+- `app/modules/catalogue/router.py` — added PUT endpoint + imported new schema

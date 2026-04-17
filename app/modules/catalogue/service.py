@@ -629,3 +629,63 @@ async def create_labour_rate(
     )
 
     return _labour_rate_to_dict(labour_rate)
+
+
+async def update_labour_rate(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    rate_id: uuid.UUID,
+    name: str | None = None,
+    hourly_rate: str | None = None,
+    is_active: bool | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Update an existing labour rate.
+
+    Only provided fields are updated. Returns the updated rate dict.
+    """
+    result = await db.execute(
+        select(LabourRate).where(
+            LabourRate.id == rate_id,
+            LabourRate.org_id == org_id,
+        )
+    )
+    labour_rate = result.scalar_one_or_none()
+    if labour_rate is None:
+        raise ValueError("Labour rate not found")
+
+    before = _labour_rate_to_dict(labour_rate)
+
+    if name is not None:
+        labour_rate.name = name
+    if hourly_rate is not None:
+        try:
+            rate = Decimal(hourly_rate)
+        except (InvalidOperation, ValueError):
+            raise ValueError("Invalid hourly rate format")
+        if rate < 0:
+            raise ValueError("Hourly rate cannot be negative")
+        labour_rate.hourly_rate = rate
+    if is_active is not None:
+        labour_rate.is_active = is_active
+
+    await db.flush()
+    await db.refresh(labour_rate)
+
+    after = _labour_rate_to_dict(labour_rate)
+
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="catalogue.labour_rate.updated",
+        entity_type="labour_rates",
+        entity_id=labour_rate.id,
+        before_value=before,
+        after_value=after,
+        ip_address=ip_address,
+    )
+
+    return after

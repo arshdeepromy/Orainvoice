@@ -374,3 +374,11 @@ class LabourRateCreateResponse(BaseModel):
 
     message: str
     labour_rate: LabourRateResponse
+
+
+class LabourRateUpdateRequest(BaseModel):
+    """PUT /api/v1/catalogue/labour-rates/{id} request body."""
+
+    name: str | None = Field(None, min_length=1, max_length=100, description="Rate name")
+    hourly_rate: str | None = Field(None, description="Hourly rate as decimal string")
+    is_active: bool | None = Field(None, description="Active/inactive status")
