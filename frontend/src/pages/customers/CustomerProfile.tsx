@@ -156,6 +156,7 @@ export default function CustomerProfilePage() {
   const { tradeFamily } = useTenant()
   const { isEnabled: isModuleEnabled } = useModules()
   const smsEnabled = isModuleEnabled('sms')
+  const vehiclesEnabled = isModuleEnabled('vehicles')
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
   const [customer, setCustomer] = useState<CustomerProfile | null>(null)
@@ -629,10 +630,12 @@ export default function CustomerProfilePage() {
             {formatNZD(customer.outstanding_balance)}
           </p>
         </div>
+        {vehiclesEnabled && (
         <div className="rounded-lg border border-gray-200 p-4">
           <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Vehicles</p>
           <p className="mt-1 text-xl font-semibold text-gray-900">{customer.vehicles.length}</p>
         </div>
+        )}
         <div className="rounded-lg border border-gray-200 p-4">
           <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Invoices</p>
           <p className="mt-1 text-xl font-semibold text-gray-900">{customer.invoices.length}</p>
@@ -667,7 +670,7 @@ export default function CustomerProfilePage() {
       {/* Tabs: Vehicles, Invoices & Claims */}
       <Tabs
         tabs={[
-          { id: 'vehicles', label: `Vehicles (${customer.vehicles.length})`, content: vehiclesTab },
+          ...(vehiclesEnabled ? [{ id: 'vehicles', label: `Vehicles (${customer.vehicles.length})`, content: vehiclesTab }] : []),
           { id: 'invoices', label: `Invoices (${customer.invoices.length})`, content: invoicesTab },
           {
             id: 'claims',
@@ -747,7 +750,7 @@ export default function CustomerProfilePage() {
             ),
           },
         ]}
-        defaultTab="vehicles"
+        defaultTab={vehiclesEnabled ? 'vehicles' : 'invoices'}
       />
 
       {/* ---- Notify Modal ---- */}
@@ -982,7 +985,8 @@ export default function CustomerProfilePage() {
               Configure automatic reminders for this customer. Each reminder type can be enabled separately with its own timing and notification channel.
             </p>
 
-            {/* Service Due */}
+            {/* Service Due — vehicle module only */}
+            {vehiclesEnabled && (
             <div className="rounded-lg border border-gray-200 p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium text-gray-900">Service Due</h3>
@@ -1055,9 +1059,10 @@ export default function CustomerProfilePage() {
                 </>
               )}
             </div>
+            )}
 
             {/* WOF Expiry — automotive only */}
-            {isAutomotive && (
+            {isAutomotive && vehiclesEnabled && (
             <div className="rounded-lg border border-gray-200 p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium text-gray-900">WOF Expiry</h3>
