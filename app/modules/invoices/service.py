@@ -3426,7 +3426,8 @@ async def email_invoice(
         and balance_due
         and float(balance_due) > 0
     ):
-        frontend_base = (settings.frontend_base_url or "http://localhost").rstrip("/")
+        from app.config import settings as app_settings
+        frontend_base = (app_settings.frontend_base_url or "http://localhost").rstrip("/")
         needs_regen = (
             not payment_page_url
             or not payment_page_url.startswith(frontend_base)
