@@ -208,6 +208,12 @@ class Invoice(Base):
     quote_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
+    stripe_payment_intent_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    payment_page_url: Mapped[str | None] = mapped_column(
+        String(500), nullable=True
+    )
     invoice_data_json: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default="{}"
     )

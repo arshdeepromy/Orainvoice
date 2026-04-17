@@ -15,6 +15,7 @@ import { ModuleConfiguration } from './ModuleConfiguration'
 import NotificationsPage from '../notifications/NotificationsPage'
 import { Profile } from './Profile'
 import { SecuritySettings } from './SecuritySettings'
+import OnlinePaymentsSettings from './OnlinePaymentsSettings'
 
 type SettingsSection =
   | 'profile'
@@ -30,6 +31,7 @@ type SettingsSection =
   | 'webhooks'
   | 'modules'
   | 'notifications'
+  | 'online-payments'
 
 const NAV_ITEMS: { id: SettingsSection; label: string; icon: string; adminOnly?: boolean; module?: string }[] = [
   { id: 'profile', label: 'Profile', icon: '👤' },
@@ -38,6 +40,7 @@ const NAV_ITEMS: { id: SettingsSection; label: string; icon: string; adminOnly?:
   { id: 'users', label: 'Users', icon: '👥', adminOnly: true },
   { id: 'security', label: 'Security', icon: '🔒', adminOnly: true },
   { id: 'billing', label: 'Billing', icon: '💳', adminOnly: true },
+  { id: 'online-payments', label: 'Online Payments', icon: '💰', adminOnly: true },
   { id: 'accounting', label: 'Accounting', icon: '📒', adminOnly: true },
   { id: 'currency', label: 'Currency', icon: '💱', adminOnly: true },
   { id: 'language', label: 'Language', icon: '🌐', adminOnly: true },
@@ -61,6 +64,7 @@ const SECTION_COMPONENTS: Record<SettingsSection, React.FC> = {
   webhooks: WebhookManagement,
   modules: ModuleConfiguration,
   notifications: NotificationsPage,
+  'online-payments': OnlinePaymentsSettings,
 }
 
 export function Settings() {

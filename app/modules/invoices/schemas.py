@@ -144,6 +144,10 @@ class InvoiceCreateRequest(BaseModel):
     discount_value: Decimal | None = Field(default=None, ge=0)
     currency: str = Field(default="NZD", max_length=3, min_length=3)
     exchange_rate_to_nzd: Decimal | None = Field(default=None, gt=0)
+    payment_gateway: str | None = Field(
+        default=None,
+        description="Payment gateway for this invoice (e.g. 'stripe', 'cash')",
+    )
 
     @field_validator("global_vehicle_id", "branch_id", mode="before")
     @classmethod
@@ -268,6 +272,8 @@ class InvoiceResponse(BaseModel):
     vehicle: dict | None = None
     additional_vehicles: list[dict] = Field(default_factory=list)
     fluid_usage: list[dict] = Field(default_factory=list)
+    payment_page_url: str | None = None
+    payment_gateway: str | None = None
     created_by: uuid.UUID
     created_at: datetime
     updated_at: datetime
@@ -395,6 +401,10 @@ class UpdateInvoiceRequest(BaseModel):
     discount_value: Decimal | None = Field(default=None, ge=0)
     shipping_charges: Decimal | None = Field(default=None, ge=0)
     adjustment: Decimal | None = None
+    payment_gateway: str | None = Field(
+        default=None,
+        description="Payment gateway for this invoice (e.g. 'stripe', 'cash')",
+    )
     currency: str | None = Field(default=None, max_length=3, min_length=3)
 
     @field_validator("global_vehicle_id", "customer_id", "branch_id", mode="before")
@@ -483,7 +493,7 @@ class InvoiceSearchResult(BaseModel):
     """A single row in the invoice search results list.
 
     Displays: invoice number, customer name, rego, total, status, issue date.
-    Requirements: 21.4
+    Requirements: 21.4, 8.1
     """
 
     id: uuid.UUID
@@ -493,6 +503,7 @@ class InvoiceSearchResult(BaseModel):
     total: Decimal
     status: str
     issue_date: date | None = None
+    has_stripe_payment: bool = False
 
 
 class InvoiceListResponse(BaseModel):

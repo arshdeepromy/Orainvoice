@@ -112,6 +112,7 @@ class PortalInvoicesResponse(BaseModel):
     invoices: list[PortalInvoiceItem]
     total_outstanding: Decimal
     total_paid: Decimal
+    org_has_stripe_connect: bool = False
 
 
 # ---------------------------------------------------------------------------

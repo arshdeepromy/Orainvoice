@@ -818,6 +818,7 @@ export default function InvoiceCreate() {
   
   // Payment gateway
   const [paymentGateway, setPaymentGateway] = useState('cash')
+  const [stripeConnected, setStripeConnected] = useState(false)
   
   // Make recurring
   const [makeRecurring, setMakeRecurring] = useState(false)
@@ -833,6 +834,16 @@ export default function InvoiceCreate() {
   const [paidModalOpen, setPaidModalOpen] = useState(false)
   const [paidMethod, setPaidMethod] = useState('cash')
   const [paidSaving, setPaidSaving] = useState(false)
+
+  // Fetch Stripe Connect status for payment method option
+  useEffect(() => {
+    const controller = new AbortController()
+    apiClient.get<{ is_connected: boolean }>('/payments/online-payments/status', { signal: controller.signal })
+      .then(res => setStripeConnected(res.data?.is_connected ?? false))
+      .catch(() => {})
+    return () => controller.abort()
+  }, [])
+
   // Load existing invoice for edit mode
   useEffect(() => {
     if (!editId) return
@@ -1777,16 +1788,39 @@ export default function InvoiceCreate() {
                 />
                 <span className="text-sm text-gray-700">Bank Transfer</span>
               </label>
-              <label className="flex items-center gap-2 cursor-not-allowed opacity-50" title="Stripe integration coming soon">
-                <input
-                  type="radio"
-                  name="paymentGateway"
-                  value="stripe"
-                  disabled
-                  className="h-4 w-4 text-gray-400"
-                />
-                <span className="text-sm text-gray-400">Stripe <span className="text-xs italic">(coming soon)</span></span>
-              </label>
+              {stripeConnected ? (
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="paymentGateway"
+                    value="stripe"
+                    checked={paymentGateway === 'stripe'}
+                    onChange={(e) => setPaymentGateway(e.target.value)}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700">Stripe</span>
+                </label>
+              ) : (
+                <label className="flex items-center gap-2 opacity-50">
+                  <input
+                    type="radio"
+                    name="paymentGateway"
+                    value="stripe"
+                    disabled
+                    className="h-4 w-4 text-gray-400"
+                  />
+                  <span className="text-sm text-gray-400">
+                    Stripe —{' '}
+                    <a
+                      href="/settings?tab=online-payments"
+                      className="text-blue-500 underline hover:text-blue-700"
+                      onClick={(e) => { e.preventDefault(); window.location.href = '/settings?tab=online-payments' }}
+                    >
+                      Configure
+                    </a>
+                  </span>
+                </label>
+              )}
             </div>
           </div>
 

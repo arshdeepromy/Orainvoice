@@ -54,6 +54,10 @@ _PUBLIC_READ_ONLY_PATHS: set[str] = {
     "/api/v2/auth/stripe-publishable-key",
 }
 
+# Payment page prefix — rate limited at 20 req/min per IP (Req 9.3)
+_PAYMENT_PAGE_PREFIX = "/api/v1/public/pay/"
+_PAYMENT_PAGE_RATE_LIMIT = 20
+
 # Default password reset limit per IP per minute.
 _PASSWORD_RESET_LIMIT = 5
 
@@ -208,6 +212,23 @@ class RateLimitMiddleware:
                 response = JSONResponse(
                     status_code=429,
                     content={"detail": "Too many password reset requests — try again later"},
+                    headers={"Retry-After": str(retry_after)},
+                )
+                await response(scope, receive, send)
+                return
+
+        # --- Payment page per-IP limit (20/min — Req 9.3) ---
+        if path.startswith(_PAYMENT_PAGE_PREFIX):
+            from app.middleware.auth import get_client_ip
+            client_ip = get_client_ip(request) or "unknown"
+            key = f"rl:payment_page:ip:{client_ip}"
+            allowed, retry_after = await _check_rate_limit(
+                redis, key, _PAYMENT_PAGE_RATE_LIMIT, now,
+            )
+            if not allowed:
+                response = JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many requests. Please try again later."},
                     headers={"Retry-After": str(retry_after)},
                 )
                 await response(scope, receive, send)

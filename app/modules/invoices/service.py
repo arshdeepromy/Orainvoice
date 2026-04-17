@@ -219,6 +219,105 @@ async def _get_next_invoice_number(
 
 
 
+async def _maybe_create_stripe_payment_intent(
+    db: AsyncSession,
+    invoice: "Invoice",
+    org: "Organisation",
+) -> None:
+    """Auto-generate a Stripe PaymentIntent and payment token when applicable.
+
+    Called after an invoice transitions to "issued" status.  Checks whether
+    the invoice has ``payment_gateway == "stripe"`` in its ``invoice_data_json``
+    and the org has a Connected Account.  On success, stores the PaymentIntent
+    ID, client secret, and payment page URL on the invoice record.
+
+    If PaymentIntent creation fails the invoice is still issued — the error
+    is logged and the email will be sent without a payment link.
+
+    Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7
+    """
+    inv_data = invoice.invoice_data_json or {}
+    if inv_data.get("payment_gateway") != "stripe":
+        return
+
+    # Check org has a Connected Account
+    stripe_account_id = getattr(org, "stripe_connect_account_id", None)
+    if not stripe_account_id:
+        logger.warning(
+            "Invoice %s has payment_gateway=stripe but org %s has no "
+            "stripe_connect_account_id — skipping PaymentIntent creation",
+            invoice.id,
+            org.id,
+        )
+        return
+
+    try:
+        from app.integrations.stripe_connect import create_payment_intent
+        from app.integrations.stripe_billing import get_application_fee_percent
+        from app.modules.payments.token_service import generate_payment_token
+        from sqlalchemy.orm.attributes import flag_modified
+
+        # Calculate amount in cents
+        amount_cents = int(invoice.balance_due * 100)
+        if amount_cents <= 0:
+            logger.warning(
+                "Invoice %s has balance_due <= 0 (%s) — skipping PaymentIntent",
+                invoice.id,
+                invoice.balance_due,
+            )
+            return
+
+        # Calculate application fee if configured
+        fee_percent = await get_application_fee_percent()
+        application_fee_amount: int | None = None
+        if fee_percent and fee_percent > 0:
+            application_fee_amount = int(amount_cents * fee_percent / 100)
+
+        # Create PaymentIntent on Connected Account
+        pi_result = await create_payment_intent(
+            amount=amount_cents,
+            currency=invoice.currency,
+            invoice_id=str(invoice.id),
+            stripe_account_id=stripe_account_id,
+            application_fee_amount=application_fee_amount,
+        )
+
+        # Generate payment token + URL
+        _token, payment_url = await generate_payment_token(
+            db,
+            org_id=invoice.org_id,
+            invoice_id=invoice.id,
+        )
+
+        # Store on invoice record
+        invoice.stripe_payment_intent_id = pi_result["payment_intent_id"]
+        invoice.payment_page_url = payment_url
+
+        # Store client_secret in invoice_data_json
+        data_json = dict(invoice.invoice_data_json or {})
+        data_json["stripe_client_secret"] = pi_result["client_secret"]
+        invoice.invoice_data_json = data_json
+        flag_modified(invoice, "invoice_data_json")
+
+        await db.flush()
+        await db.refresh(invoice)
+
+        logger.info(
+            "Created PaymentIntent %s for invoice %s (amount=%d cents, account=%s)",
+            pi_result["payment_intent_id"],
+            invoice.id,
+            amount_cents,
+            stripe_account_id,
+        )
+
+    except Exception:
+        logger.exception(
+            "Failed to create Stripe PaymentIntent for invoice %s — "
+            "invoice will be issued without payment link",
+            invoice.id,
+        )
+
+
 async def create_invoice(
     db: AsyncSession,
     *,
@@ -248,6 +347,7 @@ async def create_invoice(
     currency: str = "NZD",
     exchange_rate_to_nzd: Decimal | None = None,
     terms_and_conditions: str | None = None,
+    payment_gateway: str | None = None,
     ip_address: str | None = None,
 ) -> dict:
     """Create a new invoice (draft or issued).
@@ -369,6 +469,7 @@ async def create_invoice(
             k: v for k, v in {
                 "payment_terms": payment_terms,
                 "terms_and_conditions": terms_and_conditions,
+                "payment_gateway": payment_gateway,
                 "additional_vehicles": [
                     {
                         "id": str(v["id"]) if v.get("id") else "",
@@ -589,6 +690,10 @@ async def create_invoice(
         if gv:
             gv.wof_expiry = vehicle_wof_expiry_date
 
+    # Auto-generate Stripe PaymentIntent when issuing with stripe gateway
+    if status == "issued":
+        await _maybe_create_stripe_payment_intent(db, invoice, org)
+
     await db.refresh(invoice)
     return _invoice_to_dict(invoice, created_line_items)
 
@@ -634,6 +739,8 @@ def _invoice_to_dict(invoice: Invoice, line_items: list[LineItem]) -> dict:
         "terms_and_conditions": (invoice.invoice_data_json or {}).get("terms_and_conditions"),
         "additional_vehicles": (invoice.invoice_data_json or {}).get("additional_vehicles", []),
         "fluid_usage": (invoice.invoice_data_json or {}).get("fluid_usage", []),
+        "payment_page_url": invoice.payment_page_url,
+        "payment_gateway": (invoice.invoice_data_json or {}).get("payment_gateway"),
     }
 
 
@@ -1405,10 +1512,6 @@ async def issue_invoice(
                 except Exception:
                     pass
 
-    result = _invoice_to_dict(invoice, line_items)
-    result["tax_compliance"] = compliance
-    result["line_item_tax_details"] = tax_details
-
     # Auto-post journal entry for the issued invoice (Req 4.1, 4.6, 4.7, 4.8)
     try:
         from app.modules.ledger.auto_poster import auto_post_invoice
@@ -1417,6 +1520,13 @@ async def issue_invoice(
         logger.warning(
             "Auto-post failed for invoice %s: %s", invoice.id, exc
         )
+
+    # Auto-generate Stripe PaymentIntent when issuing with stripe gateway
+    await _maybe_create_stripe_payment_intent(db, invoice, org)
+
+    result = _invoice_to_dict(invoice, line_items)
+    result["tax_compliance"] = compliance
+    result["line_item_tax_details"] = tax_details
 
     return result
 
@@ -1633,7 +1743,7 @@ async def update_invoice(
     # Fields stored in invoice_data_json (no direct column)
     json_fields = {
         "payment_terms", "terms_and_conditions",
-        "shipping_charges", "adjustment",
+        "shipping_charges", "adjustment", "payment_gateway",
     }
     applied = {}
     for field, value in updates.items():
@@ -2234,6 +2344,19 @@ async def search_invoices(
     total_result = await db.execute(count_q)
     total = total_result.scalar() or 0
 
+    # Correlated subquery: has at least one non-refund Stripe payment (Req 8.1)
+    has_stripe_payment = (
+        select(sa_func.count(Payment.id))
+        .where(
+            Payment.invoice_id == Invoice.id,
+            Payment.method == "stripe",
+            Payment.is_refund == False,
+        )
+        .correlate(Invoice)
+        .scalar_subquery()
+        > 0
+    ).label("has_stripe_payment")
+
     # Data query — select only the fields needed for the list view
     data_q = (
         select(
@@ -2245,6 +2368,7 @@ async def search_invoices(
             Invoice.total,
             Invoice.status,
             Invoice.issue_date,
+            has_stripe_payment,
         )
         .join(Customer, Invoice.customer_id == Customer.id, isouter=True)
         .where(*base_filter)
@@ -2268,6 +2392,7 @@ async def search_invoices(
                 "total": row.total,
                 "status": row.status,
                 "issue_date": row.issue_date,
+                "has_stripe_payment": row.has_stripe_payment,
             }
         )
 
@@ -3287,6 +3412,7 @@ async def email_invoice(
     org_name = invoice_dict.get("org_name") or "Your Company"
     balance_due = invoice_dict.get("balance_due", 0)
     currency = invoice_dict.get("currency", "NZD")
+    payment_page_url = invoice_dict.get("payment_page_url")
 
     # Find all active email providers ordered by priority (failover)
     provider_result = await db.execute(
@@ -3312,6 +3438,10 @@ async def email_invoice(
             f"Hi,\n\n"
             f"Please find attached invoice {inv_number} from {org_name}.\n\n"
             f"Amount Due: {currency} {balance_due}\n\n"
+        )
+        if payment_page_url:
+            body += f"Pay online: {payment_page_url}\n\n"
+        body += (
             f"If you have any questions, please don't hesitate to contact us.\n\n"
             f"Thank you for your business.\n\n"
             f"{org_name}\n"
@@ -3402,6 +3532,14 @@ async def email_invoice(
         await db.flush()
         await db.refresh(invoice_obj)
         inv_number = invoice_obj.invoice_number or inv_number
+
+        # Auto-generate Stripe PaymentIntent for newly issued invoice
+        _org_result_pi = await db.execute(
+            select(Organisation).where(Organisation.id == org_id)
+        )
+        org_for_pi = _org_result_pi.scalar_one_or_none()
+        if org_for_pi:
+            await _maybe_create_stripe_payment_intent(db, invoice_obj, org_for_pi)
 
     # Audit log
     await write_audit_log(

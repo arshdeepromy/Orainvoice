@@ -1434,6 +1434,7 @@ async def save_stripe_config(
     publishable_key: str | None = None,
     secret_key: str | None = None,
     connect_client_id: str | None = None,
+    application_fee_percent: Decimal | None = None,
     updated_by: uuid.UUID,
     ip_address: str | None = None,
 ) -> dict:
@@ -1479,6 +1480,7 @@ async def save_stripe_config(
         "publishable_key": publishable_key or old_config.get("publishable_key", ""),
         "secret_key": secret_key or old_config.get("secret_key", ""),
         "connect_client_id": connect_client_id or old_config.get("connect_client_id", ""),
+        "application_fee_percent": str(application_fee_percent) if application_fee_percent is not None else old_config.get("application_fee_percent"),
     }
 
     config_data = json.dumps(config_data_dict)

@@ -26,7 +26,7 @@ STRIPE_CONNECT_AUTHORIZE_URL = "https://connect.stripe.com/oauth/authorize"
 STRIPE_CONNECT_TOKEN_URL = "https://connect.stripe.com/oauth/token"
 
 
-def generate_connect_url(org_id: uuid.UUID) -> tuple[str, str]:
+async def generate_connect_url(org_id: uuid.UUID) -> tuple[str, str]:
     """Generate a Stripe Connect OAuth authorisation URL.
 
     Parameters
@@ -40,11 +40,15 @@ def generate_connect_url(org_id: uuid.UUID) -> tuple[str, str]:
         ``(authorize_url, state_token)`` — the URL to redirect the user to
         and the CSRF state token to verify on callback.
     """
+    from app.integrations.stripe_billing import get_stripe_connect_client_id
+
     state = f"{org_id}:{secrets.token_urlsafe(32)}"
+
+    client_id = await get_stripe_connect_client_id()
 
     params = {
         "response_type": "code",
-        "client_id": settings.stripe_connect_client_id,
+        "client_id": client_id,
         "scope": "read_write",
         "redirect_uri": settings.stripe_connect_redirect_uri,
         "state": state,
@@ -90,11 +94,15 @@ async def handle_connect_callback(code: str, state: str) -> dict:
         raise ValueError("Invalid org_id in state token") from exc
 
     # Exchange authorisation code for connected account
+    from app.integrations.stripe_billing import get_stripe_secret_key
+
+    secret_key = await get_stripe_secret_key()
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             STRIPE_CONNECT_TOKEN_URL,
             data={
-                "client_secret": settings.stripe_secret_key,
+                "client_secret": secret_key,
                 "code": code,
                 "grant_type": "authorization_code",
             },
@@ -114,6 +122,7 @@ async def create_payment_link(
     stripe_account_id: str,
     success_url: str | None = None,
     cancel_url: str | None = None,
+    application_fee_amount: int | None = None,
 ) -> dict:
     """Create a Stripe Checkout Session for an invoice payment.
 
@@ -135,6 +144,11 @@ async def create_payment_link(
         URL to redirect to after successful payment.
     cancel_url:
         URL to redirect to if the customer cancels.
+    application_fee_amount:
+        Optional platform application fee in the smallest currency unit
+        (e.g. cents).  When provided and > 0, included as
+        ``payment_intent_data[application_fee_amount]`` in the Checkout
+        Session so Stripe splits the fee to the platform.
 
     Returns
     -------
@@ -169,6 +183,9 @@ async def create_payment_link(
         "metadata[platform]": "workshoppro_nz",
     }
 
+    if application_fee_amount and application_fee_amount > 0:
+        payload["payment_intent_data[application_fee_amount]"] = str(application_fee_amount)
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             "https://api.stripe.com/v1/checkout/sessions",
@@ -183,6 +200,73 @@ async def create_payment_link(
         "session_id": session_data["id"],
         "payment_url": session_data["url"],
     }
+
+async def create_payment_intent(
+    *,
+    amount: int,
+    currency: str,
+    invoice_id: str,
+    stripe_account_id: str,
+    application_fee_amount: int | None = None,
+) -> dict:
+    """Create a Stripe PaymentIntent on a Connected Account.
+
+    Unlike ``create_payment_link()`` which creates a hosted Checkout Session,
+    this function creates a PaymentIntent directly — the frontend handles
+    payment confirmation client-side via ``stripe.confirmPayment()``.
+
+    Parameters
+    ----------
+    amount:
+        Payment amount in the smallest currency unit (e.g. cents).
+    currency:
+        Three-letter ISO currency code (e.g. ``"nzd"``).
+    invoice_id:
+        The platform invoice ID — stored in PaymentIntent metadata.
+    stripe_account_id:
+        The connected Stripe account ID (``acct_...``).
+    application_fee_amount:
+        Optional platform application fee in the smallest currency unit.
+        When provided and > 0, included as ``application_fee_amount`` on
+        the PaymentIntent so Stripe splits the fee to the platform.
+
+    Returns
+    -------
+    dict
+        ``{"payment_intent_id": "pi_...", "client_secret": "pi_..._secret_..."}``
+
+    Raises
+    ------
+    httpx.HTTPStatusError
+        If the Stripe API call fails.
+
+    Requirements: 1.1, 1.3, 1.4, 1.6
+    """
+    payload = {
+        "amount": str(amount),
+        "currency": currency.lower(),
+        "metadata[invoice_id]": invoice_id,
+        "metadata[platform]": "workshoppro_nz",
+    }
+
+    if application_fee_amount and application_fee_amount > 0:
+        payload["application_fee_amount"] = str(application_fee_amount)
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://api.stripe.com/v1/payment_intents",
+            data=payload,
+            auth=(settings.stripe_secret_key, ""),
+            headers={"Stripe-Account": stripe_account_id},
+        )
+        response.raise_for_status()
+
+    pi_data = response.json()
+    return {
+        "payment_intent_id": pi_data["id"],
+        "client_secret": pi_data["client_secret"],
+    }
+
 
 async def create_stripe_refund(
     *,

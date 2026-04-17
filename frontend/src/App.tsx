@@ -65,6 +65,7 @@ const ReportsPage = lazy(() => import('@/pages/reports/ReportsPage'))
 
 /* Settings pages */
 const OrgSettingsPage = lazy(() => import('@/pages/settings/Settings').then(m => ({ default: m.Settings })))
+const OnlinePaymentsSettings = lazy(() => import('@/pages/settings/OnlinePaymentsSettings'))
 const NotificationsPage = lazy(() => import('@/pages/notifications/NotificationsPage'))
 
 /* Extended org pages */
@@ -107,6 +108,9 @@ const JobsPage = lazy(() => import('@/pages/jobs/JobsPage'))
 
 /* Portal pages (public, token-based) */
 const PortalPage = lazy(() => import('@/pages/portal/PortalPage').then(m => ({ default: m.PortalPage })))
+
+/* Invoice payment page (public, token-based — lazy to keep Stripe bundles out of main chunk) */
+const InvoicePaymentPage = lazy(() => import('@/pages/public/InvoicePaymentPage'))
 
 /* Catalogue pages */
 const CataloguePage = lazy(() => import('@/pages/catalogue/CataloguePage'))
@@ -359,6 +363,7 @@ function AppRoutes() {
           {/* Settings (org_admin only — branch_admin redirected to /dashboard) */}
           <Route element={<RequireOrgAdmin />}>
             <Route path="/settings" element={<SafePage name="settings"><OrgSettingsPage /></SafePage>} />
+            <Route path="/settings/online-payments" element={<SafePage name="online-payments-settings"><OnlinePaymentsSettings /></SafePage>} />
           </Route>
 
           {/* Notifications */}
@@ -494,6 +499,9 @@ function AppRoutes() {
 
       {/* Customer portal (public, token-based access) */}
       <Route path="/portal/:token" element={<SafePage name="portal"><PortalPage /></SafePage>} />
+
+      {/* Invoice payment page (public, token-based access — Stripe Elements) */}
+      <Route path="/pay/:token" element={<SafePage name="invoice-payment"><InvoicePaymentPage /></SafePage>} />
 
       {/* Fallback */}
       <Route

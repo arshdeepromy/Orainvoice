@@ -576,6 +576,10 @@ def create_app() -> FastAPI:
     from app.modules.quotes.public_router import router as public_quote_router
     app.include_router(public_quote_router, prefix="/api/v1/public/quotes", tags=["public-quotes"])
 
+    # --- Public (no-auth) payment page ---
+    from app.modules.payments.public_router import router as public_payment_router
+    app.include_router(public_payment_router, prefix="/api/v1/public", tags=["public-payments"])
+
     @app.get("/health")
     async def health_check():
         return {"status": "ok"}

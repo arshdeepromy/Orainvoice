@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from decimal import Decimal
 
 import stripe
 
@@ -113,6 +114,40 @@ async def get_stripe_connect_client_id() -> str:
             except Exception:
                 pass
     return settings.stripe_connect_client_id
+
+
+async def get_application_fee_percent() -> Decimal | None:
+    """Return the configured application fee percentage, or None if not set.
+
+    Reads the ``application_fee_percent`` value from the encrypted Stripe
+    integration config row.  Returns ``None`` when the value is absent,
+    empty, or cannot be parsed as a Decimal.
+
+    Requirements: 7.1, 7.2
+    """
+    from app.core.database import async_session_factory
+    from app.modules.admin.models import IntegrationConfig
+    from app.core.encryption import envelope_decrypt_str
+    from sqlalchemy import select
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(IntegrationConfig).where(IntegrationConfig.name == "stripe")
+        )
+        config_row = result.scalar_one_or_none()
+        if config_row is None:
+            return None
+        try:
+            data = json.loads(envelope_decrypt_str(config_row.config_encrypted))
+            raw_value = data.get("application_fee_percent")
+            if raw_value is None or raw_value == "":
+                return None
+            return Decimal(str(raw_value))
+        except Exception as exc:
+            logger.warning(
+                "Failed to read application_fee_percent from Stripe config: %s", exc
+            )
+            return None
 
 
 async def get_stripe_secret_key() -> str:

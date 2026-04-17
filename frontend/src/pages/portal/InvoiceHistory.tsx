@@ -17,6 +17,16 @@ export interface PortalInvoice {
   line_items_summary: string
 }
 
+interface PortalInvoicesResponse {
+  invoices: PortalInvoice[]
+  org_has_stripe_connect: boolean
+  total_outstanding: number
+  total_paid: number
+}
+
+/** Invoice statuses eligible for online payment */
+const PAYABLE_STATUSES = new Set(['issued', 'partially_paid', 'overdue'])
+
 interface InvoiceHistoryProps {
   token: string
   primaryColor: string
@@ -32,6 +42,7 @@ const STATUS_CONFIG: Record<string, { label: string; variant: 'success' | 'warni
 
 export function InvoiceHistory({ token, primaryColor }: InvoiceHistoryProps) {
   const [invoices, setInvoices] = useState<PortalInvoice[]>([])
+  const [orgHasStripeConnect, setOrgHasStripeConnect] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [payingInvoice, setPayingInvoice] = useState<PortalInvoice | null>(null)
@@ -40,8 +51,9 @@ export function InvoiceHistory({ token, primaryColor }: InvoiceHistoryProps) {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<PortalInvoice[]>(`/portal/${token}/invoices`)
-      setInvoices(res.data)
+      const res = await apiClient.get<PortalInvoicesResponse>(`/portal/${token}/invoices`)
+      setInvoices(res.data?.invoices ?? [])
+      setOrgHasStripeConnect(res.data?.org_has_stripe_connect ?? false)
     } catch {
       setError('Failed to load invoices.')
     } finally {
@@ -91,7 +103,10 @@ export function InvoiceHistory({ token, primaryColor }: InvoiceHistoryProps) {
     <div className="space-y-3">
       {invoices.map((inv) => {
         const cfg = STATUS_CONFIG[inv.status] ?? { label: inv.status, variant: 'neutral' as const }
-        const canPay = inv.balance_due > 0 && inv.status !== 'voided'
+        const canPay =
+          orgHasStripeConnect &&
+          inv.balance_due > 0 &&
+          PAYABLE_STATUSES.has(inv.status)
 
         return (
           <div

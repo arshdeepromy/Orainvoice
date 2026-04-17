@@ -216,6 +216,7 @@ async def get_portal_invoices(
         invoices=items,
         total_outstanding=total_outstanding,
         total_paid=total_paid,
+        org_has_stripe_connect=bool(org.stripe_connect_account_id),
     )
 
 
@@ -362,6 +363,14 @@ async def create_portal_payment(
     # Amount in smallest currency unit (cents)
     amount_cents = int(pay_amount * 100)
 
+    # Calculate application fee if configured (Req 7.1, 7.2)
+    from app.integrations.stripe_billing import get_application_fee_percent
+
+    fee_percent = await get_application_fee_percent()
+    application_fee_amount: int | None = None
+    if fee_percent and fee_percent > 0:
+        application_fee_amount = int(amount_cents * fee_percent / 100)
+
     portal_base = app_settings.frontend_base_url or "http://localhost:3000"
     success_url = f"{portal_base}/portal/{token}/payment-success?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{portal_base}/portal/{token}/invoices"
@@ -373,6 +382,7 @@ async def create_portal_payment(
         stripe_account_id=stripe_account,
         success_url=success_url,
         cancel_url=cancel_url,
+        application_fee_amount=application_fee_amount,
     )
 
     return PortalPayResponse(

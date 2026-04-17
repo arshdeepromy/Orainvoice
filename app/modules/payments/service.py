@@ -238,12 +238,21 @@ async def generate_stripe_payment_link(
     # Convert to smallest currency unit (cents)
     amount_cents = int(pay_amount * 100)
 
+    # Calculate application fee if configured (Req 7.1, 7.2)
+    from app.integrations.stripe_billing import get_application_fee_percent
+
+    fee_percent = await get_application_fee_percent()
+    application_fee_amount: int | None = None
+    if fee_percent and fee_percent > 0:
+        application_fee_amount = int(amount_cents * fee_percent / 100)
+
     # Create Stripe Checkout Session
     stripe_result = await create_payment_link(
         amount=amount_cents,
         currency=invoice.currency,
         invoice_id=str(invoice.id),
         stripe_account_id=org.stripe_connect_account_id,
+        application_fee_amount=application_fee_amount,
     )
 
     payment_url = stripe_result["payment_url"]
@@ -349,7 +358,7 @@ async def handle_stripe_webhook(
 ) -> dict:
     """Process a Stripe webhook event.
 
-    Currently handles ``checkout.session.completed`` events:
+    Handles ``checkout.session.completed`` and ``payment_intent.succeeded`` events:
     - Creates a Payment record with method='stripe'
     - Updates invoice amount_paid, balance_due, and status
     - Sends a best-effort payment receipt email
@@ -359,7 +368,8 @@ async def handle_stripe_webhook(
     db:
         Active async database session.
     event_type:
-        The Stripe event type string (e.g. ``"checkout.session.completed"``).
+        The Stripe event type string (e.g. ``"checkout.session.completed"``
+        or ``"payment_intent.succeeded"``).
     event_data:
         The ``data.object`` portion of the Stripe event payload.
 
@@ -368,13 +378,13 @@ async def handle_stripe_webhook(
     dict
         Summary of the action taken.
 
-    Requirements: 25.4
+    Requirements: 25.4, 7.1, 7.2, 7.3, 7.4, 7.5, 7.6
     """
-    if event_type != "checkout.session.completed":
+    if event_type not in ("checkout.session.completed", "payment_intent.succeeded"):
         return {"status": "ignored", "reason": f"Unhandled event type: {event_type}"}
 
-    session_obj = event_data
-    metadata = session_obj.get("metadata", {})
+    obj = event_data
+    metadata = obj.get("metadata", {})
     invoice_id_str = metadata.get("invoice_id")
 
     if not invoice_id_str:
@@ -385,11 +395,17 @@ async def handle_stripe_webhook(
     except (ValueError, TypeError):
         return {"status": "error", "reason": f"Invalid invoice_id: {invoice_id_str}"}
 
-    # Amount is in smallest currency unit (cents) — convert to Decimal
-    amount_total = session_obj.get("amount_total", 0)
-    amount = Decimal(amount_total) / Decimal("100")
+    # Extract amount and payment intent ID based on event type
+    if event_type == "payment_intent.succeeded":
+        # PaymentIntent object: amount in `amount_received` (cents), PI ID is `id`
+        amount_cents = obj.get("amount_received", 0)
+        stripe_payment_intent = obj.get("id", "")
+    else:
+        # Checkout Session object: amount in `amount_total` (cents), PI ID in `payment_intent`
+        amount_cents = obj.get("amount_total", 0)
+        stripe_payment_intent = obj.get("payment_intent", "")
 
-    stripe_payment_intent = session_obj.get("payment_intent", "")
+    amount = Decimal(amount_cents) / Decimal("100")
 
     # Fetch invoice (no org filter — webhook has no auth context, but we
     # trust the payload because signature was already verified)
@@ -406,6 +422,17 @@ async def handle_stripe_webhook(
             "status": "ignored",
             "reason": f"Invoice status '{invoice.status}' is not payable",
         }
+
+    # Idempotency check — prevent duplicate payments (Req 6.6)
+    if stripe_payment_intent:
+        existing = await db.execute(
+            select(Payment).where(
+                Payment.stripe_payment_intent_id == stripe_payment_intent,
+                Payment.is_refund == False,  # noqa: E712
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            return {"status": "ignored", "reason": "Duplicate event"}
 
     # Cap payment at balance_due to avoid overpayment
     pay_amount = min(amount, invoice.balance_due)

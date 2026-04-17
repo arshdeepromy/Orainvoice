@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class ProvisionOrganisationRequest(BaseModel):
@@ -312,6 +313,36 @@ class StripeConfigRequest(BaseModel):
     connect_client_id: str | None = Field(
         default=None, description="Stripe Connect client ID (ca_...)"
     )
+    application_fee_percent: Decimal | None = Field(
+        default=None,
+        ge=0,
+        le=50,
+        description="Application fee percentage (0-50%) for Stripe Connect payments",
+    )
+
+    @field_validator(
+        "platform_account_id",
+        "webhook_endpoint",
+        "signing_secret",
+        "publishable_key",
+        "secret_key",
+        "connect_client_id",
+        mode="before",
+    )
+    @classmethod
+    def _empty_str_to_none(cls, v: object) -> object:
+        """Convert empty strings to None so min_length constraints don't reject them."""
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
+    @field_validator("application_fee_percent", mode="before")
+    @classmethod
+    def _empty_decimal_to_none(cls, v: object) -> object:
+        """Convert empty strings to None for the Decimal field."""
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
 
 
 class StripeConfigResponse(BaseModel):

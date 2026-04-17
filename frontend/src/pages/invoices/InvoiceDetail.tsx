@@ -24,6 +24,21 @@ import PrinterErrorModal from '../../components/pos/PrinterErrorModal'
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
+interface OnlinePaymentsStatus {
+  is_connected: boolean
+  account_id_last4: string
+  connect_client_id_configured: boolean
+  application_fee_percent: number | null
+}
+
+interface PaymentLinkResult {
+  payment_url: string
+  invoice_id: string
+  amount: number
+  send_via: string
+  message: string
+}
+
 type InvoiceStatus = 'draft' | 'issued' | 'partially_paid' | 'paid' | 'overdue' | 'voided' | 'refunded' | 'partially_refunded'
 type BadgeVariant = 'success' | 'warning' | 'error' | 'info' | 'neutral'
 
@@ -265,6 +280,14 @@ export default function InvoiceDetail() {
   const [creditNoteModalOpen, setCreditNoteModalOpen] = useState(false)
   const [refundModalOpen, setRefundModalOpen] = useState(false)
 
+  /* Stripe payment link */
+  const [stripeStatus, setStripeStatus] = useState<OnlinePaymentsStatus | null>(null)
+  const [generatingLink, setGeneratingLink] = useState(false)
+  const [regeneratingLink, setRegeneratingLink] = useState(false)
+  const [paymentLinkResult, setPaymentLinkResult] = useState<PaymentLinkResult | null>(null)
+  const [paymentLinkModalOpen, setPaymentLinkModalOpen] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
+
   /* Send Reminder */
   const [reminderOpen, setReminderOpen] = useState(false)
   const [sendingReminder, setSendingReminder] = useState(false)
@@ -297,6 +320,29 @@ export default function InvoiceDetail() {
   }, [id])
 
   useEffect(() => { fetchInvoice() }, [fetchInvoice])
+
+  /* ---- Fetch org Stripe Connect status ---- */
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchStripeStatus = async () => {
+      try {
+        const res = await apiClient.get<OnlinePaymentsStatus>(
+          '/payments/online-payments/status',
+          { signal: controller.signal },
+        )
+        setStripeStatus({
+          is_connected: res.data?.is_connected ?? false,
+          account_id_last4: res.data?.account_id_last4 ?? '',
+          connect_client_id_configured: res.data?.connect_client_id_configured ?? false,
+          application_fee_percent: res.data?.application_fee_percent ?? null,
+        })
+      } catch {
+        // Silently ignore — button simply won't show if status can't be fetched
+      }
+    }
+    fetchStripeStatus()
+    return () => controller.abort()
+  }, [])
 
   /* ---- Actions ---- */
   const handleDuplicate = async () => {
@@ -398,6 +444,91 @@ export default function InvoiceDetail() {
       setActionMessage(detail || 'Failed to download PDF.')
     } finally {
       setDownloading(false)
+    }
+  }
+
+  /* ---- Stripe Payment Link ---- */
+  const canShowPaymentLink =
+    stripeStatus?.is_connected === true &&
+    ['issued', 'partially_paid', 'overdue'].includes(invoice?.status ?? '')
+
+  const handleGeneratePaymentLink = async () => {
+    if (!invoice) return
+    setGeneratingLink(true)
+    setActionMessage('')
+    try {
+      const res = await apiClient.post<PaymentLinkResult>(
+        '/payments/stripe/create-link',
+        { invoice_id: invoice.id },
+      )
+      setPaymentLinkResult({
+        payment_url: res.data?.payment_url ?? '',
+        invoice_id: res.data?.invoice_id ?? '',
+        amount: res.data?.amount ?? 0,
+        send_via: res.data?.send_via ?? 'none',
+        message: res.data?.message ?? '',
+      })
+      setPaymentLinkModalOpen(true)
+      setLinkCopied(false)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setActionMessage(detail || 'Failed to generate payment link.')
+    } finally {
+      setGeneratingLink(false)
+    }
+  }
+
+  const handleCopyPaymentLink = async () => {
+    const url = paymentLinkResult?.payment_url ?? ''
+    if (!url) return
+    try {
+      await navigator.clipboard.writeText(url)
+      setLinkCopied(true)
+      setTimeout(() => setLinkCopied(false), 2000)
+    } catch {
+      setActionMessage('Failed to copy link to clipboard.')
+    }
+  }
+
+  const handleSendPaymentLinkVia = async (channel: 'email' | 'sms') => {
+    if (!invoice) return
+    setActionMessage('')
+    try {
+      await apiClient.post<PaymentLinkResult>(
+        '/payments/stripe/create-link',
+        { invoice_id: invoice.id, send_via: channel },
+      )
+      setPaymentLinkModalOpen(false)
+      setActionMessage(`Payment link sent via ${channel === 'email' ? 'email' : 'SMS'}.`)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setActionMessage(detail || `Failed to send payment link via ${channel}.`)
+    }
+  }
+
+  /* ---- Regenerate Payment Link ---- */
+  const handleRegeneratePaymentLink = async () => {
+    if (!invoice) return
+    setRegeneratingLink(true)
+    setActionMessage('')
+    try {
+      const res = await apiClient.post<{ payment_page_url: string; invoice_id: string }>(
+        `/payments/invoice/${invoice.id}/regenerate-payment-link`,
+      )
+      setPaymentLinkResult({
+        payment_url: res.data?.payment_page_url ?? '',
+        invoice_id: res.data?.invoice_id ?? '',
+        amount: 0,
+        send_via: 'none',
+        message: '',
+      })
+      setPaymentLinkModalOpen(true)
+      setLinkCopied(false)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setActionMessage(detail || 'Failed to regenerate payment link.')
+    } finally {
+      setRegeneratingLink(false)
     }
   }
 
@@ -517,6 +648,16 @@ export default function InvoiceDetail() {
           {isRefundButtonVisible(invoice.amount_paid) && (
             <Button size="sm" variant="secondary" onClick={() => setRefundModalOpen(true)}>
               Process Refund
+            </Button>
+          )}
+          {canShowPaymentLink && (
+            <Button size="sm" variant="primary" onClick={handleGeneratePaymentLink} loading={generatingLink}>
+              Send Payment Link
+            </Button>
+          )}
+          {canShowPaymentLink && (
+            <Button size="sm" variant="secondary" onClick={handleRegeneratePaymentLink} loading={regeneratingLink}>
+              Regenerate Payment Link
             </Button>
           )}
           <Button size="sm" variant="secondary" onClick={handleDuplicate} loading={duplicating}>
@@ -968,7 +1109,17 @@ export default function InvoiceDetail() {
                       <td className={`whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums font-medium ${payment.is_refund ? 'text-red-600' : 'text-gray-900'}`}>
                         {formatNZD(payment.amount)}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700 capitalize">{payment.method}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm">
+                        {(payment.method ?? 'cash') === 'stripe' ? (
+                          <span className="inline-flex items-center rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-700 ring-1 ring-inset ring-indigo-600/20">
+                            Stripe
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center rounded-full bg-gray-50 px-2.5 py-0.5 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-500/20 capitalize">
+                            {payment.method ?? 'Cash'}
+                          </span>
+                        )}
+                      </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{payment.recorded_by}</td>
                     </tr>
                     {shouldShowRefundNote(!!payment.is_refund, payment.refund_note) && (
@@ -1106,6 +1257,45 @@ export default function InvoiceDetail() {
         errorMessage={printerError.message}
         onBrowserPrint={handlePrinterErrorBrowserPrint}
       />
+
+      {/* ---- Payment Link Modal ---- */}
+      <Modal
+        open={paymentLinkModalOpen}
+        onClose={() => setPaymentLinkModalOpen(false)}
+        title="Payment Link"
+      >
+        <p className="text-sm text-gray-600 mb-3">
+          Share this link with your customer to collect payment online via Stripe.
+        </p>
+        <div className="rounded-md border border-gray-200 bg-gray-50 p-3 mb-4">
+          <p className="text-sm text-gray-900 break-all font-mono">
+            {paymentLinkResult?.payment_url ?? ''}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant={linkCopied ? 'primary' : 'secondary'}
+            onClick={handleCopyPaymentLink}
+          >
+            {linkCopied ? '✓ Copied' : 'Copy Link'}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => handleSendPaymentLinkVia('email')}
+          >
+            📧 Send Email
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => handleSendPaymentLinkVia('sms')}
+          >
+            💬 Send SMS
+          </Button>
+        </div>
+      </Modal>
     </div>
   )
 }

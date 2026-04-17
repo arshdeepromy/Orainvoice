@@ -6,7 +6,7 @@ Requirements: 24.1, 24.2, 24.3
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, Field, field_validator
@@ -242,3 +242,92 @@ class RefundResponse(BaseModel):
     invoice_amount_paid: Decimal
     stripe_refund_id: str | None = None
     message: str
+
+
+# ---------------------------------------------------------------------------
+# Online Payments settings schemas (Req 1.6, 1.7, 3.2)
+# ---------------------------------------------------------------------------
+
+
+class RegeneratePaymentLinkResponse(BaseModel):
+    """Response from POST /payments/invoice/{id}/regenerate-payment-link."""
+
+    payment_page_url: str = Field(
+        ..., description="New public payment page URL"
+    )
+    invoice_id: uuid.UUID = Field(
+        ..., description="The invoice this payment link is for"
+    )
+
+
+class OnlinePaymentsStatusResponse(BaseModel):
+    """Response from GET /payments/online-payments/status.
+
+    Returns the org's Stripe Connect status for the settings page.
+    The account ID is masked — only the last 4 characters are exposed.
+    """
+
+    is_connected: bool
+    account_id_last4: str = ""
+    connect_client_id_configured: bool
+    application_fee_percent: Decimal | None = None
+
+
+class OnlinePaymentsDisconnectResponse(BaseModel):
+    """Response from POST /payments/online-payments/disconnect.
+
+    Confirms disconnection and returns the masked previous account ID.
+    """
+
+    message: str
+    previous_account_last4: str
+
+
+# ---------------------------------------------------------------------------
+# Public payment page schemas (Req 6.1, 6.2, 6.3)
+# ---------------------------------------------------------------------------
+
+
+class PaymentPageLineItem(BaseModel):
+    """A single line item displayed on the public payment page."""
+
+    description: str
+    quantity: Decimal
+    unit_price: Decimal
+    line_total: Decimal
+
+
+class PaymentPageResponse(BaseModel):
+    """Response from GET /api/v1/public/pay/{token}.
+
+    Contains invoice preview data, org branding, Stripe config (when payable),
+    and status flags for the custom payment page.
+    """
+
+    # Org branding
+    org_name: str
+    org_logo_url: str | None = None
+    org_primary_colour: str | None = None
+
+    # Invoice preview
+    invoice_number: str | None = None
+    issue_date: date | None = None
+    due_date: date | None = None
+    currency: str = "NZD"
+    line_items: list[PaymentPageLineItem] = []
+    subtotal: Decimal
+    gst_amount: Decimal
+    total: Decimal
+    amount_paid: Decimal
+    balance_due: Decimal
+    status: str
+
+    # Stripe config (only populated when invoice is payable)
+    client_secret: str | None = None
+    connected_account_id: str | None = None
+    publishable_key: str | None = None
+
+    # Flags
+    is_paid: bool = False
+    is_payable: bool = False
+    error_message: str | None = None

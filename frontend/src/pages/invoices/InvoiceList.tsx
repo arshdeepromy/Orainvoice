@@ -40,6 +40,7 @@ interface InvoiceSummary {
   due_date?: string | null
   created_at?: string
   branch_id?: string | null
+  has_stripe_payment?: boolean
 }
 
 interface InvoiceListResponse {
@@ -908,6 +909,13 @@ export default function InvoiceList() {
                     <svg className="w-3 h-3 text-emerald-500" fill="currentColor" viewBox="0 0 20 20">
                       <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
                     </svg>
+                  )}
+                  {inv.has_stripe_payment && (
+                    <span title="Paid online" className="inline-flex items-center">
+                      <svg className="w-3.5 h-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z" />
+                      </svg>
+                    </span>
                   )}
                   {dueLabel && <span className={dueLabel.className}>{dueLabel.text}</span>}
                 </div>

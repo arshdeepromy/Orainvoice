@@ -1575,7 +1575,7 @@ async def initiate_stripe_connect(
             content={"detail": "Organisation context required"},
         )
 
-    authorize_url, state = generate_connect_url(org_uuid)
+    authorize_url, state = await generate_connect_url(org_uuid)
 
     # Audit the initiation
     await write_audit_log(

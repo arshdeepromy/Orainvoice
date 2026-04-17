@@ -20,9 +20,12 @@ from app.modules.auth.rbac import require_role
 from app.modules.payments.schemas import (
     CashPaymentRequest,
     CashPaymentResponse,
+    OnlinePaymentsDisconnectResponse,
+    OnlinePaymentsStatusResponse,
     PaymentHistoryResponse,
     RefundRequest,
     RefundResponse,
+    RegeneratePaymentLinkResponse,
     StripePaymentLinkRequest,
     StripePaymentLinkResponse,
     StripeWebhookResponse,
@@ -53,6 +56,165 @@ def _extract_org_context(
     except (ValueError, TypeError):
         return None, None, ip_address
     return org_uuid, user_uuid, ip_address
+
+
+@router.get(
+    "/online-payments/status",
+    response_model=OnlinePaymentsStatusResponse,
+    status_code=200,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="Get Stripe Connect online payments status for the org",
+    dependencies=[require_role("org_admin", "global_admin")],
+)
+async def get_online_payments_status(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the org's Stripe Connect status for the Online Payments settings page.
+
+    The account ID is masked — only the last 4 characters are exposed,
+    never the full ID.
+
+    Requirements: 1.6, 1.7, 2.6
+    """
+    from decimal import Decimal
+    from app.modules.admin.models import Organisation, IntegrationConfig
+    from app.integrations.stripe_billing import get_stripe_connect_client_id
+    from app.core.encryption import envelope_decrypt_str
+    import json
+
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # Fetch organisation
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Organisation not found"},
+        )
+
+    # Determine connection status and mask account ID
+    is_connected = org.stripe_connect_account_id is not None
+    account_id_last4 = ""
+    if is_connected and org.stripe_connect_account_id:
+        account_id_last4 = org.stripe_connect_account_id[-4:]
+
+    # Check if Stripe Connect client ID is configured
+    connect_client_id = await get_stripe_connect_client_id()
+    connect_client_id_configured = bool(connect_client_id)
+
+    # Read application_fee_percent from Stripe integration config
+    # (get_application_fee_percent helper is added in Task 2.2 — read directly for now)
+    application_fee_percent = None
+    try:
+        config_result = await db.execute(
+            select(IntegrationConfig).where(IntegrationConfig.name == "stripe")
+        )
+        config_row = config_result.scalar_one_or_none()
+        if config_row:
+            data = json.loads(envelope_decrypt_str(config_row.config_encrypted))
+            fee_str = data.get("application_fee_percent")
+            if fee_str is not None:
+                application_fee_percent = Decimal(str(fee_str))
+    except Exception:
+        logger.warning("Failed to read application_fee_percent from Stripe config")
+
+    return OnlinePaymentsStatusResponse(
+        is_connected=is_connected,
+        account_id_last4=account_id_last4,
+        connect_client_id_configured=connect_client_id_configured,
+        application_fee_percent=application_fee_percent,
+    )
+
+
+@router.post(
+    "/online-payments/disconnect",
+    response_model=OnlinePaymentsDisconnectResponse,
+    status_code=200,
+    responses={
+        400: {"description": "No Stripe account connected"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org Admin role required"},
+    },
+    summary="Disconnect the org's Stripe Connect account",
+    dependencies=[require_role("org_admin")],
+)
+async def disconnect_online_payments(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Disconnect the org's Stripe Connect account.
+
+    Clears the connected account from the organisation record and writes
+    an audit log entry.  The previous account ID is masked in the response
+    — only the last 4 characters are returned.
+
+    Requirements: 3.2, 3.4
+    """
+    from app.modules.admin.models import Organisation
+    from app.core.audit import write_audit_log
+
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # Fetch organisation
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Organisation not found"},
+        )
+
+    # Return 400 if no Stripe account is connected
+    if not org.stripe_connect_account_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "No Stripe account is connected."},
+        )
+
+    # Capture previous account ID for audit, then clear it
+    previous_account_id = org.stripe_connect_account_id
+    previous_account_last4 = previous_account_id[-4:] if len(previous_account_id) >= 4 else previous_account_id
+
+    org.stripe_connect_account_id = None
+    await db.flush()
+    await db.refresh(org)
+
+    # Write audit log entry
+    await write_audit_log(
+        session=db,
+        org_id=org_uuid,
+        user_id=user_uuid,
+        action="stripe_connect.disconnected",
+        entity_type="organisation",
+        entity_id=org_uuid,
+        before_value={"stripe_connect_account_id_last4": previous_account_last4},
+        after_value={"stripe_connect_account_id": None},
+        ip_address=ip_address,
+    )
+
+    return OnlinePaymentsDisconnectResponse(
+        message="Stripe account disconnected successfully",
+        previous_account_last4=previous_account_last4,
+    )
 
 
 @router.post(
@@ -392,3 +554,133 @@ async def process_refund_endpoint(
     _asyncio.create_task(sync_refund_bg(org_uuid, _refund_sync_data))
 
     return result
+
+
+@router.post(
+    "/invoice/{invoice_id}/regenerate-payment-link",
+    response_model=RegeneratePaymentLinkResponse,
+    status_code=201,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="Regenerate a Stripe payment link for an invoice",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def regenerate_payment_link_endpoint(
+    invoice_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Regenerate a Stripe payment link for an invoice.
+
+    Creates a new PaymentIntent and payment token, invalidating any
+    previous tokens.  The invoice must be in a payable state (issued,
+    partially_paid, or overdue) and the org must have a Connected Account.
+
+    Requirements: 8.1, 8.2, 8.3, 8.4
+    """
+    from app.modules.admin.models import Organisation
+    from app.modules.invoices.models import Invoice
+    from app.integrations.stripe_connect import create_payment_intent
+    from app.integrations.stripe_billing import get_application_fee_percent
+    from app.modules.payments.token_service import generate_payment_token
+    from sqlalchemy.orm.attributes import flag_modified
+
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid or not user_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # Fetch invoice and validate it belongs to the org
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.org_id == org_uuid,
+        )
+    )
+    invoice = result.scalar_one_or_none()
+    if invoice is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invoice not found"},
+        )
+
+    # Validate invoice is in a payable state
+    payable_statuses = {"issued", "partially_paid", "overdue"}
+    if invoice.status not in payable_statuses:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Cannot regenerate payment link for this invoice status."},
+        )
+
+    # Validate org has a Connected Account
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = org_result.scalar_one_or_none()
+    if org is None or not org.stripe_connect_account_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Please connect a Stripe account first."},
+        )
+
+    stripe_account_id = org.stripe_connect_account_id
+
+    # Calculate amount in cents
+    amount_cents = int(invoice.balance_due * 100)
+    if amount_cents <= 0:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invoice balance due must be greater than zero."},
+        )
+
+    # Calculate application fee if configured
+    fee_percent = await get_application_fee_percent()
+    application_fee_amount: int | None = None
+    if fee_percent and fee_percent > 0:
+        application_fee_amount = int(amount_cents * fee_percent / 100)
+
+    # Create new PaymentIntent on Connected Account
+    pi_result = await create_payment_intent(
+        amount=amount_cents,
+        currency=invoice.currency,
+        invoice_id=str(invoice.id),
+        stripe_account_id=stripe_account_id,
+        application_fee_amount=application_fee_amount,
+    )
+
+    # Generate new payment token + URL (invalidates old tokens)
+    _token, payment_url = await generate_payment_token(
+        db,
+        org_id=org_uuid,
+        invoice_id=invoice.id,
+    )
+
+    # Update invoice record
+    invoice.stripe_payment_intent_id = pi_result["payment_intent_id"]
+    invoice.payment_page_url = payment_url
+
+    # Store client_secret in invoice_data_json
+    data_json = dict(invoice.invoice_data_json or {})
+    data_json["stripe_client_secret"] = pi_result["client_secret"]
+    invoice.invoice_data_json = data_json
+    flag_modified(invoice, "invoice_data_json")
+
+    await db.flush()
+    await db.refresh(invoice)
+
+    logger.info(
+        "Regenerated payment link for invoice %s (PI=%s, account=%s)",
+        invoice.id,
+        pi_result["payment_intent_id"],
+        stripe_account_id,
+    )
+
+    return RegeneratePaymentLinkResponse(
+        payment_page_url=payment_url,
+        invoice_id=invoice.id,
+    )

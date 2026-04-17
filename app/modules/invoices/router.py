@@ -165,6 +165,7 @@ async def create_invoice_endpoint(
             currency=payload.currency,
             exchange_rate_to_nzd=payload.exchange_rate_to_nzd,
             terms_and_conditions=payload.terms_and_conditions,
+            payment_gateway=payload.payment_gateway,
             ip_address=ip_address,
         )
     except ValueError as exc:

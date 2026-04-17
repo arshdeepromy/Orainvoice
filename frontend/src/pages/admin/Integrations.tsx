@@ -480,7 +480,7 @@ function IntegrationPanel({
                     <li>Add this <strong>Redirect URI</strong> to your Stripe Connect OAuth settings:</li>
                   </ol>
                   <div className="bg-white rounded border border-blue-300 px-3 py-2 font-mono text-xs break-all select-all">
-                    {window.location.origin}/api/v1/org/stripe-connect/callback
+                    {window.location.origin}/settings/online-payments
                   </div>
                   <p className="text-xs text-blue-600">Click the URI above to select it, then paste it into Stripe's redirect URI field.</p>
                 </div>

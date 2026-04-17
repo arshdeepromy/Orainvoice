@@ -2,6 +2,7 @@
 
 Tables:
 - payments: cash and Stripe payment records per organisation (RLS enabled)
+- payment_tokens: secure, time-limited tokens for public payment page access
 """
 
 from __future__ import annotations
@@ -70,3 +71,46 @@ class Payment(Base):
     organisation = relationship("Organisation", backref="payments")
     invoice = relationship("Invoice", back_populates="payments")
     recorded_by_user = relationship("User", backref="recorded_payments")
+
+
+class PaymentToken(Base):
+    """Secure, time-limited token for public payment page access.
+
+    Token format: ``secrets.token_urlsafe(48)`` (~64 chars).
+    Expiry: 72 hours from creation.
+    When a new token is generated for the same invoice, all previous
+    tokens are set to ``is_active = False``.
+    """
+
+    __tablename__ = "payment_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    token: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True,
+    )
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+    # Relationships
+    invoice = relationship("Invoice", backref="payment_tokens")
+    organisation = relationship("Organisation", backref="payment_tokens")

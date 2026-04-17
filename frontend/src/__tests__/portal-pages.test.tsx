@@ -98,7 +98,7 @@ describe('Customer Portal Pages', () => {
   describe('PortalPage', () => {
     function setupPortalMocks(portalInfo = makePortalInfo()) {
       ;(apiClient.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
-        if (url.endsWith('/invoices')) return Promise.resolve({ data: [] })
+        if (url.endsWith('/invoices')) return Promise.resolve({ data: { invoices: [], org_has_stripe_connect: false, total_outstanding: 0, total_paid: 0 } })
         if (url.endsWith('/vehicles')) return Promise.resolve({ data: [] })
         return Promise.resolve({ data: portalInfo })
       })
@@ -167,13 +167,26 @@ describe('Customer Portal Pages', () => {
   })
 
   describe('InvoiceHistory', () => {
+    /** Helper to build a PortalInvoicesResponse shape */
+    function makeInvoicesResponse(
+      invoices: PortalInvoice[],
+      overrides: { org_has_stripe_connect?: boolean } = {},
+    ) {
+      return {
+        invoices,
+        org_has_stripe_connect: overrides.org_has_stripe_connect ?? true,
+        total_outstanding: 0,
+        total_paid: 0,
+      }
+    }
+
     // 61.2: Displays invoice history
     it('displays invoice list with status badges', async () => {
       ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: [
+        data: makeInvoicesResponse([
           makeInvoice({ id: 'i1', invoice_number: 'INV-0042', status: 'issued', total: 350 }),
           makeInvoice({ id: 'i2', invoice_number: 'INV-0041', status: 'paid', total: 200, balance_due: 0 }),
-        ],
+        ]),
       })
 
       render(<InvoiceHistory token="test-token" primaryColor="#2563eb" />)
@@ -187,7 +200,7 @@ describe('Customer Portal Pages', () => {
     // 61.2: Shows outstanding balance per invoice
     it('shows balance due for unpaid invoices', async () => {
       ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: [makeInvoice({ balance_due: 150, total: 350 })],
+        data: makeInvoicesResponse([makeInvoice({ balance_due: 150, total: 350 })]),
       })
 
       render(<InvoiceHistory token="test-token" primaryColor="#2563eb" />)
@@ -195,10 +208,10 @@ describe('Customer Portal Pages', () => {
       expect(await screen.findByText('$150.00 due')).toBeInTheDocument()
     })
 
-    // 61.3: Pay Now button shown for unpaid invoices
-    it('shows Pay Now button for invoices with outstanding balance', async () => {
+    // 61.3 + 5.1: Pay Now button shown when org has Stripe Connect and invoice is payable
+    it('shows Pay Now button for invoices with outstanding balance when org has Stripe Connect', async () => {
       ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: [makeInvoice({ balance_due: 350 })],
+        data: makeInvoicesResponse([makeInvoice({ balance_due: 350, status: 'issued' })]),
       })
 
       render(<InvoiceHistory token="test-token" primaryColor="#2563eb" />)
@@ -206,10 +219,52 @@ describe('Customer Portal Pages', () => {
       expect(await screen.findByRole('button', { name: /pay now/i })).toBeInTheDocument()
     })
 
+    // 5.5: No Pay Now button when org has no Stripe Connect
+    it('does not show Pay Now button when org has no Stripe Connect', async () => {
+      ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: makeInvoicesResponse(
+          [makeInvoice({ balance_due: 350, status: 'issued' })],
+          { org_has_stripe_connect: false },
+        ),
+      })
+
+      render(<InvoiceHistory token="test-token" primaryColor="#2563eb" />)
+
+      await screen.findByText('INV-0042')
+      expect(screen.queryByRole('button', { name: /pay now/i })).not.toBeInTheDocument()
+    })
+
+    // 5.1: Pay Now shown for partially_paid and overdue statuses
+    it('shows Pay Now button for partially_paid and overdue invoices', async () => {
+      ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: makeInvoicesResponse([
+          makeInvoice({ id: 'i1', invoice_number: 'INV-0050', balance_due: 100, status: 'partially_paid' }),
+          makeInvoice({ id: 'i2', invoice_number: 'INV-0051', balance_due: 200, status: 'overdue' }),
+        ]),
+      })
+
+      render(<InvoiceHistory token="test-token" primaryColor="#2563eb" />)
+
+      const buttons = await screen.findAllByRole('button', { name: /pay now/i })
+      expect(buttons).toHaveLength(2)
+    })
+
+    // 5.1: No Pay Now button for voided invoices even with Stripe Connect
+    it('does not show Pay Now button for voided invoices', async () => {
+      ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: makeInvoicesResponse([makeInvoice({ status: 'voided', balance_due: 350 })]),
+      })
+
+      render(<InvoiceHistory token="test-token" primaryColor="#2563eb" />)
+
+      await screen.findByText('INV-0042')
+      expect(screen.queryByRole('button', { name: /pay now/i })).not.toBeInTheDocument()
+    })
+
     // 61.3: No Pay Now button for paid invoices
     it('does not show Pay Now button for fully paid invoices', async () => {
       ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: [makeInvoice({ status: 'paid', balance_due: 0 })],
+        data: makeInvoicesResponse([makeInvoice({ status: 'paid', balance_due: 0 })]),
       })
 
       render(<InvoiceHistory token="test-token" primaryColor="#2563eb" />)
@@ -220,7 +275,9 @@ describe('Customer Portal Pages', () => {
 
     // Empty state
     it('shows empty message when no invoices exist', async () => {
-      ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] })
+      ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: makeInvoicesResponse([]),
+      })
 
       render(<InvoiceHistory token="test-token" primaryColor="#2563eb" />)
 
