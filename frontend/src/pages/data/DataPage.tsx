@@ -21,7 +21,7 @@ export default function DataPage() {
   return (
     <div className="px-4 py-6 sm:px-6 lg:px-8">
       <h1 className="text-2xl font-semibold text-gray-900 mb-4">Data Management</h1>
-      <Tabs tabs={tabs} defaultTab="import" />
+      <Tabs tabs={tabs} defaultTab="import" urlPersist />
     </div>
   )
 }
