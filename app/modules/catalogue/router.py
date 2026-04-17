@@ -949,6 +949,49 @@ async def update_labour_rate_endpoint(
         labour_rate=LabourRateResponse(**rate_data),
     )
 
+
+@router.delete(
+    "/labour-rates/{rate_id}",
+    status_code=200,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Labour rate not found"},
+    },
+    summary="Permanently delete a labour rate",
+    dependencies=[require_role("org_admin")],
+)
+async def delete_labour_rate_endpoint(
+    rate_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Permanently delete a labour rate (hard delete)."""
+    from app.modules.catalogue.service import delete_labour_rate
+
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        await delete_labour_rate(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid or uuid.uuid4(),
+            rate_id=rate_id,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc)},
+        )
+
+    return {"message": "Labour rate deleted"}
+
 # ===========================================================================
 # Part Categories endpoints
 # ===========================================================================

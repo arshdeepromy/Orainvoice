@@ -113,6 +113,16 @@ export default function LabourRates() {
     }
   }
 
+  const handleDelete = async (rate: LabourRate) => {
+    if (!window.confirm(`Permanently delete "${rate.name}"? This cannot be undone.`)) return
+    try {
+      await apiClient.delete(`/catalogue/labour-rates/${rate.id}`)
+      fetchRates()
+    } catch {
+      setError('Failed to delete labour rate.')
+    }
+  }
+
   const updateField = <K extends keyof LabourRateForm>(field: K, value: LabourRateForm[K]) => {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
@@ -172,7 +182,10 @@ export default function LabourRates() {
                       </button>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-right">
-                      <Button size="sm" variant="secondary" onClick={() => openEdit(rate)}>Edit</Button>
+                      <div className="flex items-center justify-end gap-2">
+                        <Button size="sm" variant="secondary" onClick={() => openEdit(rate)}>Edit</Button>
+                        <Button size="sm" variant="danger" onClick={() => handleDelete(rate)}>Delete</Button>
+                      </div>
                     </td>
                   </tr>
                 ))
