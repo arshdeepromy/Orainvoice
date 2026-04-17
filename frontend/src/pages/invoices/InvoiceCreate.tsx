@@ -819,6 +819,7 @@ export default function InvoiceCreate() {
     tmp.innerHTML = raw
     return tmp.textContent || tmp.innerText || ''
   })
+  const [saveTermsAsDefault, setSaveTermsAsDefault] = useState(false)
   
   // Attachments
   const [attachments, setAttachments] = useState<File[]>([])
@@ -1236,15 +1237,31 @@ export default function InvoiceCreate() {
   })
 
   // Save handlers
+  // Save terms as default if checkbox is checked
+  const maybeSaveTermsAsDefault = async () => {
+    if (saveTermsAsDefault && termsAndConditions.trim()) {
+      try {
+        await apiClient.put('/org/settings', {
+          terms_and_conditions: termsAndConditions.trim(),
+        })
+        setSaveTermsAsDefault(false)
+      } catch {
+        // Non-blocking
+      }
+    }
+  }
+
   const handleSaveDraft = async () => {
     if (!validate()) return
     setSaving(true)
     try {
       if (isEditMode && editId) {
         await apiClient.put(`/invoices/${editId}`, buildPayload('draft'))
+        await maybeSaveTermsAsDefault()
         navigate(`/invoices/${editId}`)
       } else {
         const res = await apiClient.post('/invoices', buildPayload('draft'))
+        await maybeSaveTermsAsDefault()
         const newId = (res.data as any)?.id || (res.data as any)?.invoice?.id
         navigate(newId ? `/invoices/${newId}` : '/invoices')
       }
@@ -1262,9 +1279,11 @@ export default function InvoiceCreate() {
     try {
       if (isEditMode && editId) {
         await apiClient.put(`/invoices/${editId}`, buildPayload('sent'))
+        await maybeSaveTermsAsDefault()
         navigate(`/invoices/${editId}`)
       } else {
         const res = await apiClient.post('/invoices', buildPayload('sent'))
+        await maybeSaveTermsAsDefault()
         const newId = (res.data as any)?.id || (res.data as any)?.invoice?.id
         navigate(newId ? `/invoices/${newId}` : '/invoices')
       }
@@ -1762,6 +1781,15 @@ export default function InvoiceCreate() {
               placeholder="Enter the terms and conditions of your business to be displayed in your transaction"
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
+            <label className="mt-2 flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={saveTermsAsDefault}
+                onChange={(e) => setSaveTermsAsDefault(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span className="text-sm text-gray-600">Use this in future for all invoices of all customers.</span>
+            </label>
           </div>
 
           {/* Attach Files */}
