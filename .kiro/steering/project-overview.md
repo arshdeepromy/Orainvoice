@@ -57,6 +57,7 @@ OraInvoice is a multi-tenant SaaS invoicing and business management platform bui
 - All bugs are logged in #[[file:docs/ISSUE_TRACKER.md]] (currently up to ISSUE-106)
 - Database migrations must be idempotent where possible (use IF NOT EXISTS for CREATE TABLE)
 - The `get_db_session` dependency uses `session.begin()` which auto-commits — use `flush()` not `commit()` in services
+- Integration API keys (Stripe, CarJam, Xero, SMS) are stored encrypted in the DB, configured via Global Admin GUI — never read from `.env` for API calls (see #[[file:.kiro/steering/integration-credentials-architecture.md]])
 
 ## Current State (as of 2026-04-08)
 

@@ -26,6 +26,9 @@ After logout, `Authorization` and `X-Branch-Id` headers may remain in localStora
 
 ## 2. Credential & Secret Handling
 
+**Integration API keys are stored in the database, NOT in environment variables.**
+All third-party credentials (Stripe, CarJam, Xero, SMS, etc.) are configured via the Global Admin GUI and stored encrypted in the `integration_configs` table. Code must use the DB-backed helper functions (e.g., `get_stripe_secret_key()`) to retrieve them — never `settings.stripe_secret_key` or similar env-based config. See #[[file:.kiro/steering/integration-credentials-architecture.md]] for the full pattern.
+
 **Never store masked credential values back to the database.**
 When a UI re-saves a form containing masked secrets (e.g., `sk_live_****`), the backend must detect the mask pattern and skip the update for that field. Otherwise the real credential is silently replaced with the mask string. *(ISSUE-062)*
 
@@ -149,6 +152,7 @@ Before shipping any new endpoint or middleware:
 - [ ] Public endpoints are excluded from auth middleware
 - [ ] All roles (including platform roles with no org_id) are tested
 - [ ] Secrets are masked in responses and not overwritten by mask values on save
+- [ ] Integration API keys are loaded from DB helpers, NOT from `settings.*` env vars
 - [ ] SQL queries use bound parameters (except SET LOCAL with validated UUIDs)
 - [ ] Rate limits are configured and return Retry-After
 - [ ] CORS allows the frontend origin
