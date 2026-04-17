@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Modal, Tabs, Input, Select } from '../../components/ui'
 import { useTenant } from '../../contexts/TenantContext'
+import { useModules } from '../../contexts/ModuleContext'
 import { useCustomerClaims } from '../../hooks/useCustomerClaims'
 
 /* ------------------------------------------------------------------ */
@@ -153,6 +154,8 @@ export default function CustomerProfilePage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { tradeFamily } = useTenant()
+  const { isEnabled: isModuleEnabled } = useModules()
+  const smsEnabled = isModuleEnabled('sms')
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
   const [customer, setCustomer] = useState<CustomerProfile | null>(null)
@@ -589,7 +592,7 @@ export default function CustomerProfilePage() {
             </Button>
           )}
           <Button size="sm" variant="secondary" onClick={() => setNotifyOpen(true)}>
-            Send Email / SMS
+            {smsEnabled ? 'Send Email / SMS' : 'Send Email'}
           </Button>
           <Button size="sm" variant="secondary" onClick={() => setMergeOpen(true)}>
             Merge Customer
@@ -748,8 +751,9 @@ export default function CustomerProfilePage() {
       />
 
       {/* ---- Notify Modal ---- */}
-      <Modal open={notifyOpen} onClose={() => { setNotifyOpen(false); setNotifyError('') }} title="Send Email / SMS">
+      <Modal open={notifyOpen} onClose={() => { setNotifyOpen(false); setNotifyError('') }} title={smsEnabled ? 'Send Email / SMS' : 'Send Email'}>
         <div className="space-y-3">
+          {smsEnabled ? (
           <Select
             label="Channel"
             options={[
@@ -759,6 +763,7 @@ export default function CustomerProfilePage() {
             value={notifyChannel}
             onChange={(e) => setNotifyChannel(e.target.value as 'email' | 'sms')}
           />
+          ) : null}
           {notifyChannel === 'email' && (
             <Input label="Subject" value={notifySubject} onChange={(e) => setNotifySubject(e.target.value)} />
           )}
@@ -1005,8 +1010,10 @@ export default function CustomerProfilePage() {
                       label="Notify via"
                       options={[
                         { value: 'email', label: 'Email' },
-                        { value: 'sms', label: 'SMS' },
-                        { value: 'both', label: 'Email & SMS' },
+                        ...(smsEnabled ? [
+                          { value: 'sms', label: 'SMS' },
+                          { value: 'both', label: 'Email & SMS' },
+                        ] : []),
                       ]}
                       value={reminderConfig.service_due.channel}
                       onChange={(e) => updateReminder('service_due', { channel: e.target.value as 'email' | 'sms' | 'both' })}
@@ -1078,8 +1085,10 @@ export default function CustomerProfilePage() {
                       label="Notify via"
                       options={[
                         { value: 'email', label: 'Email' },
-                        { value: 'sms', label: 'SMS' },
-                        { value: 'both', label: 'Email & SMS' },
+                        ...(smsEnabled ? [
+                          { value: 'sms', label: 'SMS' },
+                          { value: 'both', label: 'Email & SMS' },
+                        ] : []),
                       ]}
                       value={reminderConfig.wof_expiry.channel}
                       onChange={(e) => updateReminder('wof_expiry', { channel: e.target.value as 'email' | 'sms' | 'both' })}
