@@ -345,23 +345,42 @@ async def generate_stripe_payment_link(
     }
 
 
+_METHOD_DISPLAY_NAMES: dict[str, str] = {
+    "card": "Credit/Debit Card",
+    "afterpay_clearpay": "Afterpay",
+    "klarna": "Klarna",
+    "bank_transfer": "Bank Transfer",
+}
+
+
+def _payment_method_display_name(method_type: str) -> str:
+    """Return a human-friendly label for a Stripe payment method type."""
+    return _METHOD_DISPLAY_NAMES.get(method_type, method_type.replace("_", " ").title())
+
+
 async def _send_receipt_email(
     db: AsyncSession,
     *,
     to_email: str,
     invoice: Invoice,
     pay_amount: Decimal,
+    surcharge_amount: Decimal = Decimal("0"),
+    payment_method_type: str | None = None,
 ) -> None:
     """Send a payment receipt email using the configured SMTP provider.
 
     Uses the same email provider infrastructure as email_invoice() — reads
     from the email_providers table, not from brevo.py.  Best-effort: logs
     warnings on failure but does not raise.
+
+    Attaches the invoice PDF (with updated payment status) so the customer
+    has a complete record.
     """
     import json as _json
     import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
+    from email.mime.application import MIMEApplication
 
     from app.core.encryption import envelope_decrypt_str
     from app.modules.admin.models import EmailProvider, Organisation
@@ -376,6 +395,16 @@ async def _send_receipt_email(
     inv_number = invoice.invoice_number or str(invoice.id)
     currency = invoice.currency or "NZD"
 
+    # Generate the invoice PDF with updated payment status
+    pdf_bytes: bytes | None = None
+    try:
+        from app.modules.invoices.service import generate_invoice_pdf
+        pdf_bytes = await generate_invoice_pdf(
+            db, org_id=invoice.org_id, invoice_id=invoice.id,
+        )
+    except Exception as exc:
+        logger.warning("Failed to generate PDF for receipt email (invoice %s): %s", invoice.id, exc)
+
     # Find active email provider
     provider_result = await db.execute(
         select(EmailProvider)
@@ -388,15 +417,30 @@ async def _send_receipt_email(
         return
 
     subject = f"Payment receipt for invoice {inv_number}"
-    body = (
-        f"Hi,\n\n"
-        f"Thank you for your payment of {currency} {pay_amount}.\n\n"
-        f"Invoice: {inv_number}\n"
-        f"Amount paid: {currency} {pay_amount}\n"
-        f"Remaining balance: {currency} {invoice.balance_due}\n\n"
-        f"Thank you for your business.\n\n"
-        f"{org_name}\n"
-    )
+
+    if surcharge_amount > 0:
+        method_label = _payment_method_display_name(payment_method_type or "")
+        body = (
+            f"Hi,\n\n"
+            f"Thank you for your payment.\n\n"
+            f"Invoice: {inv_number}\n"
+            f"Invoice amount: {currency} {pay_amount}\n"
+            f"Payment method surcharge ({method_label}): {currency} {surcharge_amount}\n"
+            f"Total paid: {currency} {pay_amount + surcharge_amount}\n"
+            f"Remaining balance: {currency} {invoice.balance_due}\n\n"
+            f"Thank you for your business.\n\n"
+            f"{org_name}\n"
+        )
+    else:
+        body = (
+            f"Hi,\n\n"
+            f"Thank you for your payment of {currency} {pay_amount}.\n\n"
+            f"Invoice: {inv_number}\n"
+            f"Amount paid: {currency} {pay_amount}\n"
+            f"Remaining balance: {currency} {invoice.balance_due}\n\n"
+            f"Thank you for your business.\n\n"
+            f"{org_name}\n"
+        )
 
     for provider in providers:
         try:
@@ -418,6 +462,15 @@ async def _send_receipt_email(
             msg["To"] = to_email
             msg["Subject"] = subject
             msg.attach(MIMEText(body, "plain"))
+
+            # Attach invoice PDF if generated successfully
+            if pdf_bytes:
+                pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
+                pdf_filename = f"{inv_number}.pdf"
+                pdf_attachment.add_header(
+                    "Content-Disposition", "attachment", filename=pdf_filename,
+                )
+                msg.attach(pdf_attachment)
 
             if smtp_encryption == "ssl":
                 server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
@@ -498,7 +551,25 @@ async def handle_stripe_webhook(
         amount_cents = obj.get("amount_total", 0)
         stripe_payment_intent = obj.get("payment_intent", "")
 
-    amount = Decimal(amount_cents) / Decimal("100")
+    # Extract surcharge info from PaymentIntent metadata (Req 6.1, 6.4)
+    surcharge_str = metadata.get("surcharge_amount", "0")
+    surcharge_method = metadata.get("surcharge_method", "")
+    original_amount_str = metadata.get("original_amount")
+    try:
+        surcharge = Decimal(surcharge_str)
+    except Exception:
+        surcharge = Decimal("0")
+
+    # The PI amount includes surcharge, but we record them separately.
+    # Use original_amount from metadata (the invoice balance_due before surcharge);
+    # fall back to subtracting surcharge from the total if metadata is missing.
+    if original_amount_str:
+        try:
+            amount = Decimal(original_amount_str)
+        except Exception:
+            amount = Decimal(amount_cents) / Decimal("100") - surcharge
+    else:
+        amount = Decimal(amount_cents) / Decimal("100") - surcharge
 
     # Fetch invoice (no org filter — webhook has no auth context, but we
     # trust the payload because signature was already verified)
@@ -537,11 +608,13 @@ async def handle_stripe_webhook(
     before_amount_paid = invoice.amount_paid
     before_balance_due = invoice.balance_due
 
-    # Create payment record
+    # Create payment record with surcharge breakdown (Req 6.1, 6.3)
     payment = Payment(
         org_id=invoice.org_id,
         invoice_id=invoice.id,
         amount=pay_amount,
+        surcharge_amount=surcharge,
+        payment_method_type=surcharge_method or None,
         method="stripe",
         stripe_payment_intent_id=stripe_payment_intent,
         recorded_by=invoice.created_by,  # system-initiated; attribute to invoice creator
@@ -581,6 +654,8 @@ async def handle_stripe_webhook(
             "invoice_id": str(invoice.id),
             "invoice_status": new_status,
             "payment_amount": str(pay_amount),
+            "surcharge_amount": str(surcharge),
+            "payment_method_type": surcharge_method or None,
             "amount_paid": str(invoice.amount_paid),
             "balance_due": str(invoice.balance_due),
             "payment_id": str(payment.id),
@@ -611,6 +686,8 @@ async def handle_stripe_webhook(
                 to_email=customer.email,
                 invoice=invoice,
                 pay_amount=pay_amount,
+                surcharge_amount=surcharge,
+                payment_method_type=surcharge_method or None,
             )
     except Exception as exc:
         logger.warning("Failed to send payment receipt email for invoice %s: %s", invoice.id, exc)
@@ -621,6 +698,8 @@ async def handle_stripe_webhook(
         "invoice_id": str(invoice.id),
         "invoice_status": new_status,
         "amount": str(pay_amount),
+        "surcharge_amount": str(surcharge),
+        "payment_method_type": surcharge_method or None,
     }
 
 

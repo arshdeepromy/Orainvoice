@@ -59,6 +59,12 @@ class Payment(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    surcharge_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, server_default="0.00"
+    )
+    payment_method_type: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(

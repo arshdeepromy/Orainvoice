@@ -37,6 +37,34 @@ interface PaymentMethodsResponse {
   payment_methods: PaymentMethodInfo[]
 }
 
+interface SurchargeRateConfig {
+  percentage: string
+  fixed: string
+  enabled: boolean
+}
+
+interface SurchargeSettingsData {
+  surcharge_enabled: boolean
+  surcharge_acknowledged: boolean
+  surcharge_rates: Record<string, SurchargeRateConfig>
+}
+
+/** Default NZ Stripe Connect fee rates for rate-exceeds-cost warnings */
+const DEFAULT_STRIPE_RATES: Record<string, { percentage: number }> = {
+  card: { percentage: 2.9 },
+  afterpay_clearpay: { percentage: 6.0 },
+  klarna: { percentage: 5.99 },
+  bank_transfer: { percentage: 1.0 },
+}
+
+/** Display names for payment method types */
+const METHOD_DISPLAY_NAMES: Record<string, string> = {
+  card: 'Card (Visa / Mastercard)',
+  afterpay_clearpay: 'Afterpay',
+  klarna: 'Klarna',
+  bank_transfer: 'Bank Transfer',
+}
+
 /* ── SVG Icons ── */
 
 function VisaIcon({ className = 'h-8 w-12' }: { className?: string }) {
@@ -354,7 +382,324 @@ function PaymentMethodsSection() {
   )
 }
 
-/* ── Component ── */
+/* ── Surcharge Settings Section ── */
+
+function SurchargeSettingsSection() {
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Last-saved state (used for Cancel reset)
+  const [savedData, setSavedData] = useState<SurchargeSettingsData | null>(null)
+
+  // Draft state (editable)
+  const [enabled, setEnabled] = useState(false)
+  const [acknowledged, setAcknowledged] = useState(false)
+  const [rates, setRates] = useState<Record<string, SurchargeRateConfig>>({})
+
+  // Validation errors keyed by "method.field"
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({})
+
+  // Track whether user has made changes
+  const [dirty, setDirty] = useState(false)
+
+  const applyData = (data: SurchargeSettingsData) => {
+    setEnabled(data.surcharge_enabled ?? false)
+    setAcknowledged(data.surcharge_acknowledged ?? false)
+    setRates(data.surcharge_rates ?? {})
+    setSavedData(data)
+    setDirty(false)
+    setValidationErrors({})
+  }
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchSettings = async () => {
+      try {
+        const res = await apiClient.get<SurchargeSettingsData>(
+          '/payments/online-payments/surcharge-settings',
+          { signal: controller.signal },
+        )
+        applyData({
+          surcharge_enabled: res.data?.surcharge_enabled ?? false,
+          surcharge_acknowledged: res.data?.surcharge_acknowledged ?? false,
+          surcharge_rates: res.data?.surcharge_rates ?? {},
+        })
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError('Failed to load surcharge settings.')
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
+    fetchSettings()
+    return () => controller.abort()
+  }, [])
+
+  const validateRates = (currentRates: Record<string, SurchargeRateConfig>): Record<string, string> => {
+    const errors: Record<string, string> = {}
+    for (const [method, rate] of Object.entries(currentRates)) {
+      const pct = parseFloat(rate?.percentage ?? '0')
+      const fixed = parseFloat(rate?.fixed ?? '0')
+      if (isNaN(pct) || pct < 0) {
+        errors[`${method}.percentage`] = 'Must be 0% or above'
+      } else if (pct > 10) {
+        errors[`${method}.percentage`] = 'Must not exceed 10%'
+      }
+      if (isNaN(fixed) || fixed < 0) {
+        errors[`${method}.fixed`] = 'Must be $0 or above'
+      } else if (fixed > 5) {
+        errors[`${method}.fixed`] = 'Must not exceed $5.00'
+      }
+    }
+    return errors
+  }
+
+  const handleToggleEnabled = (checked: boolean) => {
+    setEnabled(checked)
+    setDirty(true)
+  }
+
+  const handleRateChange = (method: string, field: 'percentage' | 'fixed', value: string) => {
+    setRates((prev) => ({
+      ...prev,
+      [method]: {
+        ...(prev[method] ?? { percentage: '0', fixed: '0', enabled: false }),
+        [field]: value,
+      },
+    }))
+    setDirty(true)
+    // Clear validation error for this field on change
+    setValidationErrors((prev) => {
+      const next = { ...prev }
+      delete next[`${method}.${field}`]
+      return next
+    })
+  }
+
+  const handleMethodToggle = (method: string, checked: boolean) => {
+    setRates((prev) => ({
+      ...prev,
+      [method]: {
+        ...(prev[method] ?? { percentage: '0', fixed: '0', enabled: false }),
+        enabled: checked,
+      },
+    }))
+    setDirty(true)
+  }
+
+  const handleAcknowledgeChange = (checked: boolean) => {
+    setAcknowledged(checked)
+    setDirty(true)
+  }
+
+  const handleCancel = () => {
+    if (savedData) {
+      applyData(savedData)
+    }
+  }
+
+  const handleSave = async () => {
+    // Validate
+    const errors = validateRates(rates)
+    if (Object.keys(errors).length > 0) {
+      setValidationErrors(errors)
+      return
+    }
+
+    // Check acknowledgement on first enable
+    if (enabled && !(savedData?.surcharge_acknowledged ?? false) && !acknowledged) {
+      setError('Please acknowledge the NZ compliance notice before enabling surcharges.')
+      return
+    }
+
+    setSaving(true)
+    setError(null)
+    try {
+      const res = await apiClient.put<SurchargeSettingsData>(
+        '/payments/online-payments/surcharge-settings',
+        {
+          surcharge_enabled: enabled,
+          surcharge_acknowledged: acknowledged,
+          surcharge_rates: rates,
+        },
+      )
+      applyData({
+        surcharge_enabled: res.data?.surcharge_enabled ?? false,
+        surcharge_acknowledged: res.data?.surcharge_acknowledged ?? false,
+        surcharge_rates: res.data?.surcharge_rates ?? {},
+      })
+    } catch (err) {
+      const axiosErr = err as { response?: { data?: { detail?: string } } }
+      const detail = axiosErr.response?.data?.detail
+      setError(detail ?? 'Failed to save surcharge settings.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /** Check if a configured rate exceeds the default Stripe rate by > 0.5pp */
+  const getRateWarning = (method: string, configuredPct: string): string | null => {
+    const defaultRate = DEFAULT_STRIPE_RATES[method]?.percentage ?? 0
+    const configured = parseFloat(configuredPct ?? '0')
+    if (isNaN(configured)) return null
+    if (configured - defaultRate > 0.5) {
+      return `Exceeds default Stripe rate (${defaultRate}%) by more than 0.5pp — may exceed actual costs`
+    }
+    return null
+  }
+
+  if (loading) {
+    return (
+      <div className="mt-4 pt-3 border-t border-gray-100">
+        <div className="flex items-center gap-2">
+          <Spinner size="sm" label="Loading surcharge settings…" />
+          <span className="text-sm text-gray-500">Loading surcharge settings…</span>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-4 pt-3 border-t border-gray-100">
+      <h4 className="text-sm font-semibold text-gray-900 mb-2">Surcharge Settings</h4>
+
+      {error && (
+        <AlertBanner variant="error" onDismiss={() => setError(null)} className="mb-3">
+          {error}
+        </AlertBanner>
+      )}
+
+      {/* NZ compliance notice */}
+      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 mb-3">
+        <p className="text-xs text-amber-800">
+          NZ law requires surcharges to not exceed actual merchant processing costs and to be disclosed before payment.
+        </p>
+      </div>
+
+      {/* Master toggle */}
+      <label className="flex items-center gap-2 mb-3 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => handleToggleEnabled(e.target.checked)}
+          className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+        />
+        <span className="text-sm font-medium text-gray-900">Pass processing fees to customers</span>
+      </label>
+
+      {/* Rate table — shown when enabled */}
+      {enabled && (
+        <>
+          <div className="overflow-x-auto mb-3">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  <th className="text-left py-2 pr-3 font-medium text-gray-700">Payment Method</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Percentage (%)</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Fixed ($)</th>
+                  <th className="text-center py-2 pl-3 font-medium text-gray-700">Enabled</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(rates).map(([method, rate]) => {
+                  const pctError = validationErrors[`${method}.percentage`] ?? null
+                  const fixedError = validationErrors[`${method}.fixed`] ?? null
+                  const rateWarning = getRateWarning(method, rate?.percentage ?? '0')
+                  return (
+                    <tr key={method} className="border-b border-gray-100">
+                      <td className="py-2 pr-3 text-gray-900">
+                        {METHOD_DISPLAY_NAMES[method] ?? method}
+                      </td>
+                      <td className="py-2 px-3">
+                        <div>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            max="10"
+                            value={rate?.percentage ?? '0'}
+                            onChange={(e) => handleRateChange(method, 'percentage', e.target.value)}
+                            className={`w-20 rounded-md border px-2 py-1 text-sm tabular-nums ${
+                              pctError ? 'border-red-300 focus:ring-red-500' : 'border-gray-300 focus:ring-indigo-500'
+                            } focus:outline-none focus:ring-1`}
+                            aria-label={`${METHOD_DISPLAY_NAMES[method] ?? method} percentage`}
+                          />
+                          {pctError && (
+                            <p className="text-xs text-red-600 mt-0.5">{pctError}</p>
+                          )}
+                          {rateWarning && !pctError && (
+                            <p className="text-xs text-amber-600 mt-0.5">{rateWarning}</p>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-2 px-3">
+                        <div>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            max="5"
+                            value={rate?.fixed ?? '0'}
+                            onChange={(e) => handleRateChange(method, 'fixed', e.target.value)}
+                            className={`w-20 rounded-md border px-2 py-1 text-sm tabular-nums ${
+                              fixedError ? 'border-red-300 focus:ring-red-500' : 'border-gray-300 focus:ring-indigo-500'
+                            } focus:outline-none focus:ring-1`}
+                            aria-label={`${METHOD_DISPLAY_NAMES[method] ?? method} fixed fee`}
+                          />
+                          {fixedError && (
+                            <p className="text-xs text-red-600 mt-0.5">{fixedError}</p>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-2 pl-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={rate?.enabled ?? false}
+                          onChange={(e) => handleMethodToggle(method, e.target.checked)}
+                          className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                          aria-label={`Enable surcharge for ${METHOD_DISPLAY_NAMES[method] ?? method}`}
+                        />
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Acknowledgement checkbox — required on first enable */}
+          {!(savedData?.surcharge_acknowledged ?? false) && (
+            <label className="flex items-start gap-2 mb-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(e) => handleAcknowledgeChange(e.target.checked)}
+                className="h-4 w-4 mt-0.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span className="text-sm text-gray-700">
+                I acknowledge that surcharges must comply with NZ consumer law
+              </span>
+            </label>
+          )}
+        </>
+      )}
+
+      {/* Save / Cancel buttons */}
+      {dirty && (
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={handleSave} loading={saving}>
+            Save
+          </Button>
+          <Button size="sm" variant="secondary" onClick={handleCancel} disabled={saving}>
+            Cancel
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
 
 /* ── Payout Settings Section ── */
 
@@ -701,6 +1046,9 @@ export default function OnlinePaymentsSettings() {
 
           {/* Inline payment methods section */}
           <PaymentMethodsSection />
+
+          {/* Surcharge settings section */}
+          <SurchargeSettingsSection />
 
           {/* Payout settings section */}
           <PayoutSettingsSection />

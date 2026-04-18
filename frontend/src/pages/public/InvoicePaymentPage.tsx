@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, FormEvent } from 'react'
 import { useParams } from 'react-router-dom'
 import { loadStripe } from '@stripe/stripe-js'
-import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js'
+import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js'
 import axios from 'axios'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
@@ -14,6 +14,12 @@ interface PaymentPageLineItem {
   quantity: number
   unit_price: number
   line_total: number
+}
+
+interface SurchargeRateInfo {
+  percentage: string
+  fixed: string
+  enabled: boolean
 }
 
 interface PaymentPageData {
@@ -37,6 +43,8 @@ interface PaymentPageData {
   is_paid: boolean
   is_payable: boolean
   error_message: string | null
+  surcharge_enabled: boolean
+  surcharge_rates: Record<string, SurchargeRateInfo>
 }
 
 /* ── Currency formatter ── */
@@ -180,6 +188,15 @@ function InvoicePreview({ data }: InvoicePreviewProps) {
   )
 }
 
+/* ── Payment method display names for surcharge labels ── */
+
+const METHOD_DISPLAY_NAMES: Record<string, string> = {
+  card: 'Credit/Debit Card',
+  afterpay_clearpay: 'Afterpay',
+  klarna: 'Klarna',
+  bank_transfer: 'Bank Transfer',
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
    Task 8.2 — Payment Form Sub-Component
    ══════════════════════════════════════════════════════════════════════════ */
@@ -190,14 +207,63 @@ interface PaymentFormProps {
   invoiceNumber: string | null
   clientSecret: string
   token: string
+  surchargeEnabled: boolean
+  surchargeRates: Record<string, SurchargeRateInfo>
 }
 
-function PaymentForm({ balanceDue, currency, invoiceNumber, clientSecret, token }: PaymentFormProps) {
+function PaymentForm({ balanceDue: rawBalanceDue, currency, invoiceNumber, clientSecret, token, surchargeEnabled, surchargeRates }: PaymentFormProps) {
+  const balanceDue = Number(rawBalanceDue) || 0
   const stripe = useStripe()
   const elements = useElements()
   const [processing, setProcessing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [succeeded, setSucceeded] = useState(false)
+  const [selectedMethod, setSelectedMethod] = useState<string | null>(null)
+  const [surchargeAmount, setSurchargeAmount] = useState<number>(0)
+  const [updatingPI, setUpdatingPI] = useState(false)
+
+  /* Compute surcharge locally for instant display, then update PaymentIntent on backend */
+  useEffect(() => {
+    if (!selectedMethod || !surchargeEnabled) {
+      setSurchargeAmount(0)
+      return
+    }
+
+    const rate = surchargeRates?.[selectedMethod]
+    if (!rate?.enabled) {
+      setSurchargeAmount(0)
+      return
+    }
+
+    // Local calculation for instant display
+    const pct = parseFloat(rate?.percentage ?? '0') ?? 0
+    const fixed = parseFloat(rate?.fixed ?? '0') ?? 0
+    const computed = Math.round(((balanceDue ?? 0) * pct / 100 + fixed) * 100) / 100
+    setSurchargeAmount(computed)
+
+    // Update PaymentIntent on backend
+    const controller = new AbortController()
+    const updatePI = async () => {
+      setUpdatingPI(true)
+      try {
+        await axios.post(
+          `/api/v1/public/pay/${token}/update-surcharge`,
+          { payment_method_type: selectedMethod },
+          { signal: controller.signal },
+        )
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError('Failed to update payment amount. Please try again.')
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setUpdatingPI(false)
+        }
+      }
+    }
+    updatePI()
+    return () => controller.abort()
+  }, [selectedMethod, surchargeEnabled, balanceDue, token, surchargeRates])
 
   const amountDisplay = formatCurrency(balanceDue ?? 0, currency ?? 'NZD')
 
@@ -208,17 +274,13 @@ function PaymentForm({ balanceDue, currency, invoiceNumber, clientSecret, token 
     setProcessing(true)
     setError(null)
 
-    const cardElement = elements.getElement(CardElement)
-    if (!cardElement) {
-      setError('Card element not found. Please refresh and try again.')
-      setProcessing(false)
-      return
-    }
-
-    const { error: stripeError, paymentIntent } = await stripe.confirmCardPayment(
-      clientSecret,
-      { payment_method: { card: cardElement } },
-    )
+    const { error: stripeError, paymentIntent } = await stripe.confirmPayment({
+      elements,
+      confirmParams: {
+        return_url: `${window.location.origin}/pay/${token}`,
+      },
+      redirect: 'if_required',
+    })
 
     if (stripeError) {
       setError(stripeError.message ?? 'Payment failed. Please try again.')
@@ -227,7 +289,7 @@ function PaymentForm({ balanceDue, currency, invoiceNumber, clientSecret, token 
     }
 
     if (paymentIntent?.status === 'succeeded') {
-      // Call backend to verify and record the payment (ISSUE-111)
+      // Call backend to verify and record the payment
       // This ensures the payment is recorded even if the webhook is delayed
       try {
         await axios.post(`/api/v1/public/pay/${token}/confirm`)
@@ -237,6 +299,11 @@ function PaymentForm({ balanceDue, currency, invoiceNumber, clientSecret, token 
       }
       setSucceeded(true)
       setProcessing(false)
+    } else if (paymentIntent?.status === 'requires_action') {
+      // Some payment methods (e.g. 3D Secure) need additional action
+      // Stripe handles this automatically via the redirect
+      setError('Additional verification required. Please follow the prompts.')
+      setProcessing(false)
     } else {
       setError('Payment was not completed. Please try again.')
       setProcessing(false)
@@ -244,6 +311,10 @@ function PaymentForm({ balanceDue, currency, invoiceNumber, clientSecret, token 
   }
 
   if (succeeded) {
+    const totalPaid = balanceDue + (surchargeAmount ?? 0)
+    const totalDisplay = formatCurrency(totalPaid, currency ?? 'NZD')
+    const methodLabel = METHOD_DISPLAY_NAMES[selectedMethod ?? ''] ?? selectedMethod ?? ''
+
     return (
       <div className="rounded-lg border border-green-200 bg-green-50 p-6 text-center">
         <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
@@ -253,10 +324,26 @@ function PaymentForm({ balanceDue, currency, invoiceNumber, clientSecret, token 
         </div>
         <h3 className="text-lg font-semibold text-green-900">Payment Successful</h3>
         <p className="mt-2 text-sm text-green-700">
-          {amountDisplay} has been paid
+          {totalDisplay} has been paid
           {invoiceNumber ? ` for invoice ${invoiceNumber}` : ''}.
         </p>
-        <p className="mt-1 text-sm text-green-600">
+        {(surchargeAmount ?? 0) > 0 && (
+          <div className="mt-3 rounded-md border border-green-200 bg-green-100/50 p-3 text-left text-sm text-green-800 space-y-1">
+            <div className="flex justify-between">
+              <span>Invoice amount</span>
+              <span className="tabular-nums">{formatCurrency(balanceDue, currency ?? 'NZD')}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Surcharge ({methodLabel})</span>
+              <span className="tabular-nums">{formatCurrency(surchargeAmount ?? 0, currency ?? 'NZD')}</span>
+            </div>
+            <div className="flex justify-between font-semibold border-t border-green-200 pt-1">
+              <span>Total paid</span>
+              <span className="tabular-nums">{totalDisplay}</span>
+            </div>
+          </div>
+        )}
+        <p className="mt-2 text-sm text-green-600">
           You will receive a confirmation email shortly.
         </p>
       </div>
@@ -267,7 +354,7 @@ function PaymentForm({ balanceDue, currency, invoiceNumber, clientSecret, token 
     <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
       <h3 className="text-lg font-semibold text-gray-900">Payment Details</h3>
       <p className="mt-1 text-sm text-gray-600">
-        Enter your card details to pay {amountDisplay}
+        Choose a payment method to pay {amountDisplay}
       </p>
 
       <form onSubmit={handleSubmit} className="mt-5 space-y-4" data-testid="invoice-payment-form">
@@ -277,29 +364,44 @@ function PaymentForm({ balanceDue, currency, invoiceNumber, clientSecret, token 
           </AlertBanner>
         )}
 
-        {/* Amount summary */}
+        {/* Amount summary — surcharge-aware */}
         <div className="rounded-md border border-gray-200 bg-gray-50 p-4">
-          <div className="flex justify-between text-sm font-semibold text-gray-900">
-            <span>Amount to pay</span>
-            <span className="tabular-nums">{amountDisplay}</span>
-          </div>
+          {(surchargeAmount ?? 0) > 0 ? (
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm text-gray-700">
+                <span>Invoice balance</span>
+                <span className="tabular-nums">{formatCurrency(balanceDue ?? 0, currency ?? 'NZD')}</span>
+              </div>
+              <div className="flex justify-between text-sm text-gray-700">
+                <span>Payment method surcharge ({METHOD_DISPLAY_NAMES[selectedMethod ?? ''] ?? selectedMethod ?? 'Unknown'})</span>
+                <span className="tabular-nums">{formatCurrency(surchargeAmount ?? 0, currency ?? 'NZD')}</span>
+              </div>
+              <div className="flex justify-between text-sm font-semibold text-gray-900 border-t border-gray-200 pt-2">
+                <span>Total to pay</span>
+                <span className="tabular-nums">{formatCurrency((balanceDue ?? 0) + (surchargeAmount ?? 0), currency ?? 'NZD')}</span>
+              </div>
+              <p className="text-xs text-gray-500 pt-1">
+                A surcharge is applied to cover payment processing fees
+              </p>
+            </div>
+          ) : (
+            <div className="flex justify-between text-sm font-semibold text-gray-900">
+              <span>Amount to pay</span>
+              <span className="tabular-nums">{amountDisplay}</span>
+            </div>
+          )}
         </div>
 
-        {/* Card element */}
-        <div className="rounded-md border border-gray-300 p-3">
-          <CardElement
-            options={{
-              hidePostalCode: true,
-              style: {
-                base: {
-                  fontSize: '16px',
-                  color: '#1f2937',
-                  '::placeholder': { color: '#9ca3af' },
-                },
-              },
-            }}
-          />
-        </div>
+        {/* Payment Element — shows all enabled payment methods (card, Afterpay, Klarna, etc.) */}
+        <PaymentElement
+          options={{
+            layout: 'tabs',
+          }}
+          onChange={(event) => {
+            const methodType = event.value?.type ?? null
+            setSelectedMethod(methodType)
+          }}
+        />
 
         <p className="text-xs text-gray-500">
           Your payment is processed securely by Stripe. Card details are never stored on our servers.
@@ -308,10 +410,10 @@ function PaymentForm({ balanceDue, currency, invoiceNumber, clientSecret, token 
         <Button
           type="submit"
           loading={processing}
-          disabled={!stripe || processing}
+          disabled={!stripe || processing || updatingPI}
           className="w-full"
         >
-          Pay {amountDisplay}
+          Pay {formatCurrency((balanceDue ?? 0) + (surchargeAmount ?? 0), currency ?? 'NZD')}
         </Button>
       </form>
     </div>
@@ -327,6 +429,28 @@ export default function InvoicePaymentPage() {
   const [data, setData] = useState<PaymentPageData | null>(null)
   const [loading, setLoading] = useState(true)
   const [errorState, setErrorState] = useState<{ type: 'not_found' | 'expired' | 'network'; message: string } | null>(null)
+  const [redirectResult, setRedirectResult] = useState<'succeeded' | 'failed' | null>(null)
+
+  /* Check for Stripe redirect status (Klarna, Afterpay, etc. redirect back with query params) */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const status = params.get('redirect_status')
+    if (status === 'succeeded') {
+      setRedirectResult('succeeded')
+      // Also call confirm endpoint to record the payment
+      if (token) {
+        axios.post(`/api/v1/public/pay/${token}/confirm`).catch(() => {
+          console.warn('Payment confirm call failed — webhook will handle it')
+        })
+      }
+    } else if (status === 'failed') {
+      setRedirectResult('failed')
+    }
+    // Clean up the URL query params so refreshing doesn't re-trigger
+    if (status) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [token])
 
   /* Fetch payment page data on mount */
   useEffect(() => {
@@ -417,6 +541,35 @@ export default function InvoicePaymentPage() {
     )
   }
 
+  /* ── Redirect result from Klarna/Afterpay/etc. ── */
+  if (redirectResult === 'succeeded') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+        <div className="w-full max-w-md">
+          <div className="rounded-lg border border-green-200 bg-green-50 p-6 text-center">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
+              <svg className="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-semibold text-green-900">Payment Successful</h3>
+            <p className="mt-2 text-sm text-green-700">
+              Your payment for invoice {data?.invoice_number ?? ''} has been processed.
+            </p>
+            <p className="mt-1 text-sm text-green-600">
+              You will receive a confirmation email shortly.
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (redirectResult === 'failed') {
+    // Payment failed after redirect — show the payment page again with an error
+    // Don't return early — let the page render normally so they can retry
+  }
+
   /* ── Invoice already paid ── */
   if (data?.is_paid) {
     return (
@@ -488,11 +641,13 @@ export default function InvoicePaymentPage() {
             {stripePromise && data?.client_secret ? (
               <Elements stripe={stripePromise} options={{ clientSecret: data.client_secret }}>
                 <PaymentForm
-                  balanceDue={data?.balance_due ?? 0}
+                  balanceDue={Number(data?.balance_due ?? 0)}
                   currency={data?.currency ?? 'NZD'}
                   invoiceNumber={data?.invoice_number ?? null}
                   clientSecret={data.client_secret}
                   token={token ?? ''}
+                  surchargeEnabled={data?.surcharge_enabled ?? false}
+                  surchargeRates={data?.surcharge_rates ?? {}}
                 />
               </Elements>
             ) : (

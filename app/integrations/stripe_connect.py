@@ -251,6 +251,7 @@ async def create_payment_intent(
     payload = {
         "amount": str(amount),
         "currency": currency.lower(),
+        "automatic_payment_methods[enabled]": "true",
         "metadata[invoice_id]": invoice_id,
         "metadata[platform]": "workshoppro_nz",
     }

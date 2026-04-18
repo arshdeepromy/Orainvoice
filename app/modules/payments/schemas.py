@@ -392,3 +392,75 @@ class PaymentPageResponse(BaseModel):
     is_paid: bool = False
     is_payable: bool = False
     error_message: str | None = None
+
+    # Surcharge config (only populated when surcharging is enabled)
+    surcharge_enabled: bool = False
+    surcharge_rates: dict[str, SurchargeRateInfo] = {}
+
+
+# ---------------------------------------------------------------------------
+# Surcharge settings schemas (Req 1.1, 1.2, 1.3, 2.1, 2.4)
+# ---------------------------------------------------------------------------
+
+
+class SurchargeRateConfig(BaseModel):
+    """Fee rate configuration for a single payment method."""
+
+    percentage: str = Field(..., description="Percentage fee as string e.g. '2.90'")
+    fixed: str = Field(..., description="Fixed fee as string e.g. '0.30'")
+    enabled: bool = Field(True, description="Whether surcharge is active for this method")
+
+
+class SurchargeSettingsResponse(BaseModel):
+    """Response from GET /payments/online-payments/surcharge-settings."""
+
+    surcharge_enabled: bool = Field(False, description="Whether surcharging is enabled for the org")
+    surcharge_acknowledged: bool = Field(False, description="Whether the NZ compliance notice has been acknowledged")
+    surcharge_rates: dict[str, SurchargeRateConfig] = Field(
+        default_factory=dict, description="Per-method surcharge rate configuration"
+    )
+
+
+class UpdateSurchargeSettingsRequest(BaseModel):
+    """Request body for PUT /payments/online-payments/surcharge-settings."""
+
+    surcharge_enabled: bool = Field(..., description="Whether to enable surcharging for the org")
+    surcharge_acknowledged: bool = Field(False, description="Whether the NZ compliance notice is acknowledged")
+    surcharge_rates: dict[str, SurchargeRateConfig] = Field(
+        ..., description="Per-method surcharge rate configuration"
+    )
+
+
+class SurchargeRateInfo(BaseModel):
+    """Surcharge rate info included in the payment page response."""
+
+    percentage: str = Field(..., description="Percentage fee as string e.g. '2.90'")
+    fixed: str = Field(..., description="Fixed fee as string e.g. '0.30'")
+    enabled: bool = Field(..., description="Whether surcharge is active for this method")
+
+
+# ---------------------------------------------------------------------------
+# Surcharge update schemas (Req 5.1, 5.2)
+# ---------------------------------------------------------------------------
+
+
+class UpdateSurchargeRequest(BaseModel):
+    """Request body for POST /public/pay/{token}/update-surcharge."""
+
+    payment_method_type: str = Field(
+        ..., description="Payment method type e.g. 'card', 'afterpay_clearpay', 'klarna'"
+    )
+
+
+class UpdateSurchargeResponse(BaseModel):
+    """Response from POST /public/pay/{token}/update-surcharge."""
+
+    surcharge_amount: str = Field(
+        ..., description="Surcharge amount as string e.g. '2.90'"
+    )
+    total_amount: str = Field(
+        ..., description="Total amount (balance_due + surcharge) as string"
+    )
+    payment_intent_updated: bool = Field(
+        ..., description="Whether the Stripe PaymentIntent was updated"
+    )

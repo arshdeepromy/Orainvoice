@@ -33,7 +33,15 @@ from app.modules.payments.schemas import (
     StripePaymentLinkRequest,
     StripePaymentLinkResponse,
     StripeWebhookResponse,
+    SurchargeSettingsResponse,
+    SurchargeRateConfig,
     UpdatePaymentMethodsRequest,
+    UpdateSurchargeSettingsRequest,
+)
+from app.modules.payments.surcharge import (
+    DEFAULT_SURCHARGE_RATES,
+    serialise_rates,
+    validate_surcharge_rates,
 )
 from app.modules.payments.service import (
     record_cash_payment,
@@ -800,6 +808,206 @@ async def manage_payouts(
         )
 
     return ManagePayoutsResponse(url=link_url)
+
+
+@router.get(
+    "/online-payments/surcharge-settings",
+    response_model=SurchargeSettingsResponse,
+    status_code=200,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org Admin role required"},
+    },
+    summary="Get surcharge settings for the org",
+    dependencies=[require_role("org_admin")],
+)
+async def get_surcharge_settings(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the org's surcharge configuration.
+
+    Reads surcharge_enabled, surcharge_acknowledged, and surcharge_rates
+    from the org's settings JSONB column. Returns defaults when no
+    configuration exists.
+
+    Requirements: 1.5, 2.3
+    """
+    from app.modules.admin.models import Organisation
+
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Organisation not found"},
+        )
+
+    org_settings = org.settings or {}
+    surcharge_enabled = org_settings.get("surcharge_enabled", False)
+    surcharge_acknowledged = org_settings.get("surcharge_acknowledged", False)
+    raw_rates = org_settings.get("surcharge_rates")
+
+    if raw_rates:
+        surcharge_rates = {
+            method: SurchargeRateConfig(
+                percentage=rate.get("percentage", "0.00"),
+                fixed=rate.get("fixed", "0.00"),
+                enabled=rate.get("enabled", False),
+            )
+            for method, rate in raw_rates.items()
+        }
+    else:
+        # No config exists — return defaults
+        default_serialised = serialise_rates(DEFAULT_SURCHARGE_RATES)
+        surcharge_rates = {
+            method: SurchargeRateConfig(
+                percentage=rate["percentage"],
+                fixed=rate["fixed"],
+                enabled=rate["enabled"],
+            )
+            for method, rate in default_serialised.items()
+        }
+
+    return SurchargeSettingsResponse(
+        surcharge_enabled=surcharge_enabled,
+        surcharge_acknowledged=surcharge_acknowledged,
+        surcharge_rates=surcharge_rates,
+    )
+
+
+@router.put(
+    "/online-payments/surcharge-settings",
+    response_model=SurchargeSettingsResponse,
+    status_code=200,
+    responses={
+        400: {"description": "Compliance acknowledgement required"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org Admin role required"},
+        422: {"description": "Invalid surcharge rates"},
+    },
+    summary="Update surcharge settings for the org",
+    dependencies=[require_role("org_admin")],
+)
+async def update_surcharge_settings(
+    payload: UpdateSurchargeSettingsRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update the org's surcharge configuration.
+
+    Validates rates, enforces NZ compliance acknowledgement on first enable,
+    serialises rates, and saves to the org's settings JSONB column.
+    Writes an audit log entry for the change.
+
+    Requirements: 1.1, 1.2, 1.3, 2.1, 2.2, 2.4, 2.5, 2.6, 2.7, 8.4
+    """
+    from app.modules.admin.models import Organisation
+    from app.core.audit import write_audit_log
+    from sqlalchemy.orm.attributes import flag_modified
+
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # Validate surcharge rates
+    rates_for_validation = {
+        method: {
+            "percentage": rate.percentage,
+            "fixed": rate.fixed,
+            "enabled": rate.enabled,
+        }
+        for method, rate in payload.surcharge_rates.items()
+    }
+    validation_errors = validate_surcharge_rates(rates_for_validation)
+    if validation_errors:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "; ".join(validation_errors)},
+        )
+
+    # Fetch organisation
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Organisation not found"},
+        )
+
+    # Check NZ compliance acknowledgement on first enable
+    org_settings = dict(org.settings or {})
+    was_previously_enabled = org_settings.get("surcharge_enabled", False)
+    if payload.surcharge_enabled and not was_previously_enabled and not payload.surcharge_acknowledged:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Please acknowledge the NZ compliance notice"},
+        )
+
+    # Capture previous values for audit log
+    previous_surcharge_enabled = org_settings.get("surcharge_enabled", False)
+    previous_surcharge_rates = org_settings.get("surcharge_rates")
+
+    # Serialise rates and update org settings
+    serialised = serialise_rates(rates_for_validation)
+    org_settings["surcharge_enabled"] = payload.surcharge_enabled
+    org_settings["surcharge_acknowledged"] = payload.surcharge_acknowledged
+    org_settings["surcharge_rates"] = serialised
+    org.settings = org_settings
+    flag_modified(org, "settings")
+
+    await db.flush()
+    await db.refresh(org)
+
+    # Write audit log
+    await write_audit_log(
+        session=db,
+        org_id=org_uuid,
+        user_id=user_uuid,
+        action="org.surcharge_settings_updated",
+        entity_type="organisation",
+        entity_id=org_uuid,
+        before_value={
+            "surcharge_enabled": previous_surcharge_enabled,
+            "surcharge_rates": previous_surcharge_rates,
+        },
+        after_value={
+            "surcharge_enabled": payload.surcharge_enabled,
+            "surcharge_rates": serialised,
+        },
+        ip_address=ip_address,
+    )
+
+    # Build response from the refreshed org settings
+    updated_settings = org.settings or {}
+    response_rates = {
+        method: SurchargeRateConfig(
+            percentage=rate.get("percentage", "0.00"),
+            fixed=rate.get("fixed", "0.00"),
+            enabled=rate.get("enabled", False),
+        )
+        for method, rate in (updated_settings.get("surcharge_rates") or {}).items()
+    }
+
+    return SurchargeSettingsResponse(
+        surcharge_enabled=updated_settings.get("surcharge_enabled", False),
+        surcharge_acknowledged=updated_settings.get("surcharge_acknowledged", False),
+        surcharge_rates=response_rates,
+    )
 
 
 @router.post(

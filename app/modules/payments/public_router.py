@@ -24,6 +24,15 @@ from app.modules.admin.models import Organisation
 from app.modules.payments.schemas import (
     PaymentPageLineItem,
     PaymentPageResponse,
+    SurchargeRateInfo,
+    UpdateSurchargeRequest,
+    UpdateSurchargeResponse,
+)
+from app.modules.payments.surcharge import (
+    DEFAULT_SURCHARGE_RATES,
+    deserialise_rates,
+    get_surcharge_for_method,
+    serialise_rates,
 )
 from app.modules.payments.token_service import validate_payment_token
 
@@ -160,6 +169,37 @@ async def get_payment_page(
     org_logo_url = org_settings.get("logo_url")
     org_primary_colour = org_settings.get("primary_colour")
 
+    # --- Read surcharge config from org settings ---
+    surcharge_enabled = bool(org_settings.get("surcharge_enabled", False))
+    surcharge_rates_for_response: dict[str, SurchargeRateInfo] = {}
+
+    if surcharge_enabled:
+        raw_rates = org_settings.get("surcharge_rates", {})
+        if raw_rates and isinstance(raw_rates, dict):
+            try:
+                deserialised = deserialise_rates(raw_rates, DEFAULT_SURCHARGE_RATES)
+                serialised = serialise_rates(deserialised)
+                surcharge_rates_for_response = {
+                    method: SurchargeRateInfo(
+                        percentage=rate["percentage"],
+                        fixed=rate["fixed"],
+                        enabled=rate["enabled"],
+                    )
+                    for method, rate in serialised.items()
+                }
+            except Exception:
+                logger.warning(
+                    "Malformed surcharge_rates for org %s — falling back to empty rates",
+                    org.id,
+                )
+                surcharge_rates_for_response = {}
+        else:
+            logger.warning(
+                "surcharge_enabled=True but surcharge_rates missing/invalid for org %s",
+                org.id,
+            )
+            surcharge_rates_for_response = {}
+
     # --- Build line items from invoice relationship ---
     line_items = [
         PaymentPageLineItem(
@@ -187,6 +227,8 @@ async def get_payment_page(
         amount_paid=invoice.amount_paid,
         balance_due=invoice.balance_due,
         status=invoice.status,
+        surcharge_enabled=surcharge_enabled,
+        surcharge_rates=surcharge_rates_for_response,
     )
 
     # --- Invoice already paid ---
@@ -375,7 +417,11 @@ async def confirm_payment(
         }
 
     # --- Record the payment (same logic as webhook handler) ---
-    # Use handle_stripe_webhook with a synthetic event — this is idempotent
+    # Use handle_stripe_webhook with a synthetic event — this is idempotent.
+    # Surcharge data (surcharge_amount, surcharge_method, original_amount)
+    # is already present in pi_data["metadata"] because the update-surcharge
+    # endpoint stored it on the PaymentIntent.  handle_stripe_webhook()
+    # extracts it automatically — no additional extraction needed here.
     from app.modules.payments.service import handle_stripe_webhook
 
     result = await handle_stripe_webhook(
@@ -389,4 +435,165 @@ async def confirm_payment(
         "invoice_status": result.get("invoice_status", invoice.status),
         "payment_id": result.get("payment_id"),
         "amount": result.get("amount"),
+        "surcharge_amount": result.get("surcharge_amount"),
+        "payment_method_type": result.get("payment_method_type"),
     }
+
+
+# ── Surcharge update endpoint ──────────────────────────────────────────────
+# Called by the frontend when the customer selects or changes a payment
+# method on the public payment page.  Computes the surcharge server-side
+# and updates the Stripe PaymentIntent amount accordingly.
+# Requirements: 5.1, 5.2, 5.3, 5.5
+
+
+@router.post(
+    "/pay/{token}/update-surcharge",
+    response_model=UpdateSurchargeResponse,
+    status_code=200,
+    responses={
+        404: {"description": "Invalid payment link"},
+        410: {"description": "Payment link expired"},
+        429: {"description": "Rate limit exceeded"},
+    },
+    summary="Update PaymentIntent surcharge for selected payment method",
+)
+async def update_surcharge(
+    token: str,
+    body: UpdateSurchargeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Compute surcharge and update the Stripe PaymentIntent amount.
+
+    This is a public endpoint — no authentication required.  Security is
+    provided by the payment token.  The frontend sends only the
+    ``payment_method_type``; the backend computes the surcharge server-side
+    to prevent client-side tampering.
+
+    Requirements: 5.1, 5.2, 5.3, 5.5
+    """
+    # --- Rate limit check ---
+    allowed = await _check_payment_page_rate_limit(request)
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many requests. Please try again later."},
+            headers={"Retry-After": str(_PAYMENT_PAGE_WINDOW)},
+        )
+
+    # --- Token validation ---
+    try:
+        payment_token = await validate_payment_token(db, token=token)
+    except ValueError as exc:
+        if str(exc) == "expired":
+            return JSONResponse(
+                status_code=410,
+                content={
+                    "detail": (
+                        "This payment link has expired. "
+                        "Please contact the business for a new link."
+                    )
+                },
+            )
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Invalid payment link"},
+        )
+
+    if payment_token is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Invalid payment link"},
+        )
+
+    # --- Fetch invoice ---
+    invoice_result = await db.execute(
+        select(Invoice).where(Invoice.id == payment_token.invoice_id)
+    )
+    invoice = invoice_result.scalar_one_or_none()
+    if invoice is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Invalid payment link"},
+        )
+
+    # --- Fetch organisation ---
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == payment_token.org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Invalid payment link"},
+        )
+
+    # --- Read surcharge config from org settings ---
+    org_settings = org.settings or {}
+    surcharge_enabled = org_settings.get("surcharge_enabled", False)
+    raw_rates = org_settings.get("surcharge_rates", {})
+
+    # --- Compute surcharge server-side ---
+    from decimal import Decimal
+
+    balance_due = invoice.balance_due or Decimal("0")
+
+    if surcharge_enabled and raw_rates:
+        rates = deserialise_rates(raw_rates, DEFAULT_SURCHARGE_RATES)
+        surcharge = get_surcharge_for_method(
+            balance_due, body.payment_method_type, rates,
+        )
+    else:
+        surcharge = Decimal("0.00")
+
+    total_amount = balance_due + surcharge
+
+    # --- Update PaymentIntent via Stripe API ---
+    pi_id = invoice.stripe_payment_intent_id
+    pi_updated = False
+
+    if pi_id and org.stripe_connect_account_id:
+        import httpx
+        from app.integrations.stripe_billing import get_stripe_secret_key
+
+        secret_key = await get_stripe_secret_key()
+        if secret_key:
+            new_amount_cents = int(total_amount * 100)
+            payload = {
+                "amount": str(new_amount_cents),
+                "metadata[surcharge_amount]": str(surcharge),
+                "metadata[surcharge_method]": body.payment_method_type,
+                "metadata[original_amount]": str(balance_due),
+            }
+            try:
+                async with httpx.AsyncClient() as client:
+                    stripe_resp = await client.post(
+                        f"https://api.stripe.com/v1/payment_intents/{pi_id}",
+                        data=payload,
+                        auth=(secret_key, ""),
+                        headers={
+                            "Stripe-Account": org.stripe_connect_account_id,
+                        },
+                    )
+                    stripe_resp.raise_for_status()
+                    pi_updated = True
+            except Exception:
+                logger.exception(
+                    "Failed to update PaymentIntent %s with surcharge", pi_id,
+                )
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "detail": (
+                            "Could not update payment amount with Stripe. "
+                            "Please try again."
+                        )
+                    },
+                )
+
+    return UpdateSurchargeResponse(
+        surcharge_amount=str(surcharge),
+        total_amount=str(total_amount),
+        payment_intent_updated=pi_updated,
+    )
