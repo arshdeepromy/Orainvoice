@@ -1,0 +1,134 @@
+{% extends "_invoice_base.html" %}
+
+{# Compact Mono — Monochrome, monospace font, receipt/typewriter feel, grid borders, logo right #}
+{# Layout: compact | Logo: side (right) | Primary: #1a1a1a | Accent: #525252 | Header BG: #fafafa #}
+
+{% block page_styles %}
+<style>
+  /* Compact Mono — monochrome, monospace, receipt-style */
+  @page {
+    size: A4;
+    margin: 12mm 10mm 14mm 10mm;
+  }
+  body { font-family: 'Courier New', Courier, monospace; font-size: 9pt; color: #333; }
+  .org-name { font-family: 'Courier New', Courier, monospace; font-size: 12pt; font-weight: 700; color: #000; }
+  .org-details { font-family: 'Courier New', Courier, monospace; font-size: 7.5pt; color: #666; }
+  .items-table { font-family: 'Courier New', Courier, monospace; border: 1px solid #999; }
+  .items-table thead th {
+    background: #333;
+    color: #fff;
+    padding: 4px 8px;
+    font-size: 7.5pt;
+    font-weight: 700;
+    font-family: 'Courier New', Courier, monospace;
+    border: 1px solid #999;
+    border-radius: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .items-table thead th:first-child { border-radius: 0 !important; }
+  .items-table thead th:last-child { border-radius: 0 !important; }
+  .items-table tbody td {
+    padding: 4px 8px;
+    border: 1px solid #ccc;
+    font-size: 8pt;
+    font-family: 'Courier New', Courier, monospace;
+  }
+  .items-table tbody tr:nth-child(even) td { background: #f5f5f5; }
+  .balance-bar { background: #333; border-radius: 0; padding: 6px 10px; }
+  .balance-bar table { font-family: 'Courier New', Courier, monospace; font-size: 9pt; }
+  .vehicle-bar { padding: 4px 8px; margin-bottom: 8px; background: #f5f5f5; border: 1px solid #ccc; border-radius: 0; }
+  .vehicle-bar table { font-family: 'Courier New', Courier, monospace; }
+  .meta-table { font-family: 'Courier New', Courier, monospace; font-size: 8pt; }
+  .meta-table td { padding: 2px 0; }
+  .meta-table .val { font-weight: 700; }
+  .totals-table { font-family: 'Courier New', Courier, monospace; font-size: 8pt; }
+  .totals-table td { padding: 2px 0; }
+  .total-row td { font-size: 9.5pt; border-top: 2px solid #333; }
+  .section-title { font-family: 'Courier New', Courier, monospace; color: #333; font-size: 7.5pt; border-bottom: 1px solid #999; letter-spacing: 1.5px; }
+  .footer-text { font-family: 'Courier New', Courier, monospace; font-size: 7pt; }
+  .status-banner { font-size: 8.5pt; padding: 5px; margin: 8px 0; border-radius: 0; font-family: 'Courier New', Courier, monospace; }
+  .bill-to-label { font-family: 'Courier New', Courier, monospace; color: #333; }
+  .bill-to-name { font-family: 'Courier New', Courier, monospace; }
+  .bill-to-detail { font-family: 'Courier New', Courier, monospace; }
+</style>
+{% endblock %}
+
+{% block header %}
+<table style="width:100%; margin-bottom:8px; border-bottom:2px solid #333; padding-bottom:8px;" cellpadding="0" cellspacing="0">
+  <tr>
+    <td style="vertical-align:top; width:55%;">
+      <div style="font-family:'Courier New',Courier,monospace; font-size:14pt; font-weight:900; color:#000; letter-spacing:2px; text-transform:uppercase;">INVOICE</div>
+      <div style="font-family:'Courier New',Courier,monospace; font-size:8.5pt; color:#999; margin-top:2px;"># {{ invoice.invoice_number or 'DRAFT' }}</div>
+      <div style="margin-top:6px;">
+        <div class="org-name">{{ org.name }}</div>
+        <div class="org-details">
+          {% if org.address_unit %}{{ org.address_unit }}<br>{% endif %}
+          {% if org.address_street %}{{ org.address_street }}<br>{% endif %}
+          {% if org.address_city or org.address_state or org.address_postcode %}
+            {{ org.address_city or '' }}{% if org.address_city and (org.address_state or org.address_postcode) %}, {% endif %}{{ org.address_state or '' }}{% if org.address_state and org.address_postcode %}, {% endif %}{{ org.address_postcode or '' }}<br>
+          {% elif org.address %}{{ org.address }}<br>{% endif %}
+          {% if org.phone %}{{ org.phone }}{% endif %}{% if org.phone and org.email %} | {% endif %}{% if org.email %}{{ org.email }}{% endif %}
+        </div>
+      </div>
+    </td>
+    <td style="vertical-align:top; text-align:right; width:45%;">
+      {% if org.logo_url %}
+      <img src="{{ org.logo_url }}" alt="{{ org.name }}" style="max-height:40px; max-width:140px;">
+      {% endif %}
+      <div style="margin-top:8px; padding:5px 10px; border:1px solid #999; text-align:center;">
+        <div style="font-family:'Courier New',Courier,monospace; font-size:7pt; color:#999; text-transform:uppercase; letter-spacing:1px;">Balance Due</div>
+        <div style="font-family:'Courier New',Courier,monospace; font-size:13pt; font-weight:800; color:#000;">NZD{{ "%.2f" | format(invoice.balance_due | float) }}</div>
+      </div>
+    </td>
+  </tr>
+</table>
+{% endblock %}
+
+{% block bill_to %}
+<table style="width:100%; margin-bottom:8px;" cellpadding="0" cellspacing="0">
+  <tr>
+    <td style="vertical-align:top; width:55%; padding-right:12px;">
+      <div style="border:1px solid #ccc; padding:6px 10px;">
+        <div class="bill-to-label" style="font-size:7pt; letter-spacing:1px;">BILL TO</div>
+        <div class="bill-to-name" style="font-size:9.5pt; font-weight:700;">{{ customer.display_name or (customer.first_name ~ ' ' ~ customer.last_name) }}</div>
+        {% if customer.company_name %}<div class="bill-to-detail" style="font-size:8pt; font-weight:600;">{{ customer.company_name }}</div>{% endif %}
+        {% if customer.address %}<div class="bill-to-detail" style="font-size:7.5pt;">{{ customer.address }}</div>{% endif %}
+        {% if customer.email %}<div class="bill-to-detail" style="font-size:7.5pt;">{{ customer.email }}</div>{% endif %}
+        {% if customer.phone %}<div class="bill-to-detail" style="font-size:7.5pt;">{{ customer.phone }}</div>{% endif %}
+      </div>
+    </td>
+    <td style="vertical-align:top; width:45%;">
+      <table class="meta-table" style="margin-left:auto;">
+        {% if invoice.issue_date %}
+        <tr><td class="lbl">Date :</td><td class="val">{{ invoice.issue_date }}</td></tr>
+        {% endif %}
+        <tr>
+          <td class="lbl">Terms :</td>
+          <td class="val">
+            {% if invoice.payment_terms %}
+              {{ invoice.payment_terms | replace('_', ' ') | title }}
+            {% else %}
+              Due on Receipt
+            {% endif %}
+          </td>
+        </tr>
+        {% if invoice.due_date %}
+        <tr><td class="lbl">Due :</td><td class="val">{{ invoice.due_date }}</td></tr>
+        {% endif %}
+        {% if org.gst_number %}
+        <tr><td class="lbl">GST :</td><td class="val">{{ org.gst_number }}</td></tr>
+        {% endif %}
+      </table>
+    </td>
+  </tr>
+</table>
+{% endblock %}
+
+{% block footer %}
+<div style="margin-top:10px; border-top:1px solid #999; padding-top:6px; text-align:center;">
+  {% if org.invoice_footer %}<p class="footer-text" style="color:#666;">{{ org.invoice_footer }}</p>{% endif %}
+  <p class="footer-text" style="color:#333; font-weight:700;">Thank you for your business.</p>
+  {% if org.gst_number %}<p class="footer-text" style="color:#999;">Use Invoice # as bank transfer ref.</p>{% endif %}
+</div>
+{% endblock %}

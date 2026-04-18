@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -435,6 +435,80 @@ async def delete_line_item_endpoint(
         invoice=invoice_resp,
         message="Line item removed successfully",
     )
+
+
+# ---------------------------------------------------------------------------
+# Template endpoints — MUST be before /{invoice_id} to avoid path conflicts
+# Requirements: 1.1, 1.2, 6.1, 6.2, 6.5, 6.6
+# ---------------------------------------------------------------------------
+
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class TemplatePreviewRequest(BaseModel):
+    template_id: str = Field(..., description="Template ID from the registry")
+    primary_colour: Optional[str] = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    accent_colour: Optional[str] = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    header_bg_colour: Optional[str] = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
+
+
+@router.get(
+    "/invoice-templates",
+    summary="List available invoice PDF templates",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def list_invoice_templates():
+    """Return the catalogue of available invoice templates.
+
+    Requirements: 1.1, 1.2
+    """
+    from app.modules.invoices.template_registry import list_templates
+
+    return {"templates": list_templates()}
+
+
+@router.post(
+    "/invoice-templates/preview",
+    summary="Preview an invoice template with sample data",
+    dependencies=[require_role("org_admin")],
+)
+async def preview_invoice_template(
+    payload: TemplatePreviewRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Render a sample invoice using the specified template and colour overrides.
+
+    Returns HTML string for iframe rendering in the frontend.
+
+    Requirements: 6.1, 6.2, 6.5, 6.6
+    """
+    from app.modules.invoices.template_registry import get_template_metadata
+    from app.modules.invoices.template_preview import render_template_preview
+
+    meta = get_template_metadata(payload.template_id)
+    if meta is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Template '{payload.template_id}' not found",
+        )
+
+    org_id = getattr(request.state, "org_id", None)
+    org_uuid = uuid.UUID(org_id) if org_id else None
+
+    html = await render_template_preview(
+        db,
+        org_id=org_uuid,
+        template_meta=meta,
+        colour_overrides={
+            "primary_colour": payload.primary_colour,
+            "accent_colour": payload.accent_colour,
+            "header_bg_colour": payload.header_bg_colour,
+        },
+    )
+    return {"html": html}
 
 
 # ---------------------------------------------------------------------------
@@ -1607,3 +1681,4 @@ async def send_reminder_endpoint(
 
     await db.commit()
     return result
+

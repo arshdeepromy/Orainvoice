@@ -1,0 +1,109 @@
+{% extends "_invoice_base.html" %}
+
+{# Bold Header — Large coloured header block with angled bottom edge, centered logo, big INVOICE text #}
+{# Layout: standard | Logo: center | Primary: #dc2626 | Accent: #b91c1c | Header BG: #1a1a1a #}
+
+{% block page_styles %}
+<style>
+  /* Bold Header — large dark header with angled bottom, bold geometric style */
+  .items-table thead th {
+    background: transparent;
+    color: var(--primary);
+    font-weight: 800;
+    font-size: 8.5pt;
+    letter-spacing: 1.2px;
+    border-bottom: 3px solid var(--header-bg);
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .items-table thead th:first-child { border-radius: 0; }
+  .items-table thead th:last-child { border-radius: 0; }
+  .items-table tbody td { border-bottom: 1px solid #f0f0f0; padding: 10px 12px; }
+  .items-table tbody tr:nth-child(even) td { background: transparent; }
+  .balance-bar { background: var(--primary); border-radius: 0; }
+  .vehicle-bar { border-left: 4px solid var(--primary); border-radius: 0; }
+  .section-title { color: var(--primary); border-bottom: 2px solid var(--primary); font-weight: 800; }
+  .total-row td { border-top: 3px solid var(--header-bg); }
+  .status-banner { border-radius: 0; font-weight: 900; }
+</style>
+{% endblock %}
+
+{% block header %}
+{# Large coloured header block ~120px with angled bottom edge using border trick #}
+<div style="background:var(--header-bg); margin:-18mm -14mm 0 -14mm; padding:20mm 14mm 18px 14mm; text-align:center; -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important;">
+  {% if org.logo_url %}
+  <div style="text-align:center; margin-bottom:10px;">
+    <img src="{{ org.logo_url }}" alt="{{ org.name }}" style="max-height:60px; max-width:200px;">
+  </div>
+  {% endif %}
+  <div style="font-size:18pt; font-weight:900; color:#fff; text-align:center;">{{ org.name }}</div>
+  <div style="font-size:8.5pt; color:#d4d4d4; text-align:center; margin-top:3px;">
+    {% if org.address_unit %}{{ org.address_unit }} · {% endif %}
+    {% if org.address_street %}{{ org.address_street }} · {% endif %}
+    {% if org.address_city or org.address_state or org.address_postcode %}
+      {{ org.address_city or '' }}{% if org.address_city and (org.address_state or org.address_postcode) %}, {% endif %}{{ org.address_state or '' }} {{ org.address_postcode or '' }}
+    {% elif org.address %}{{ org.address }}{% endif %}
+    <br>
+    {% if org.phone %}{{ org.phone }}{% endif %}{% if org.phone and org.email %} · {% endif %}{% if org.email %}{{ org.email }}{% endif %}
+  </div>
+</div>
+{# Angled bottom edge using border trick — a div with thick bottom-border forming a triangle #}
+<div style="width:0; height:0; border-left:0 solid transparent; border-right:100vw solid transparent; border-top:18px solid var(--header-bg); margin:0 -14mm 10px -14mm; -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important;"></div>
+
+<div style="text-align:center; margin-bottom:16px;">
+  <div style="font-size:28pt; font-weight:900; color:#1a1a1a; letter-spacing:-1px;">INVOICE</div>
+  <div style="font-size:10pt; color:#a3a3a3; margin-top:2px;"># {{ invoice.invoice_number or 'DRAFT' }}</div>
+</div>
+{% endblock %}
+
+{% block bill_to %}
+<table style="width:100%; margin-bottom:16px;" cellpadding="0" cellspacing="0">
+  <tr>
+    <td style="vertical-align:top; width:50%; padding-right:20px;">
+      <div style="font-size:8pt; font-weight:700; text-transform:uppercase; letter-spacing:0.8px; color:var(--primary); margin-bottom:4px;">Bill To</div>
+      <div class="bill-to-name">{{ customer.display_name or (customer.first_name ~ ' ' ~ customer.last_name) }}</div>
+      {% if customer.company_name %}<div class="bill-to-detail" style="font-weight:600;">{{ customer.company_name }}</div>{% endif %}
+      {% if customer.address %}<div class="bill-to-detail">{{ customer.address }}</div>{% endif %}
+      {% if customer.email %}<div class="bill-to-detail">{{ customer.email }}</div>{% endif %}
+      {% if customer.phone %}<div class="bill-to-detail">{{ customer.phone }}</div>{% endif %}
+    </td>
+    <td style="vertical-align:top; width:50%;">
+      <table class="meta-table" style="margin-left:auto;">
+        {% if invoice.issue_date %}
+        <tr><td class="lbl">Invoice Date :</td><td class="val">{{ invoice.issue_date }}</td></tr>
+        {% endif %}
+        <tr>
+          <td class="lbl">Terms :</td>
+          <td class="val">
+            {% if invoice.payment_terms %}
+              {{ invoice.payment_terms | replace('_', ' ') | title }}
+            {% else %}
+              Due on Receipt
+            {% endif %}
+          </td>
+        </tr>
+        {% if invoice.due_date %}
+        <tr><td class="lbl">Due Date :</td><td class="val">{{ invoice.due_date }}</td></tr>
+        {% endif %}
+        {% if org.gst_number %}
+        <tr><td class="lbl">GST No :</td><td class="val">{{ org.gst_number }}</td></tr>
+        {% endif %}
+      </table>
+      <div style="margin-top:8px; padding:8px 16px; border:2px solid var(--primary); text-align:center;">
+        <div style="font-size:8pt; color:#a3a3a3; text-transform:uppercase; letter-spacing:0.5px;">Balance Due</div>
+        <div style="font-size:18pt; font-weight:900; color:var(--primary);">NZD{{ "%.2f" | format(invoice.balance_due | float) }}</div>
+      </div>
+    </td>
+  </tr>
+</table>
+{% endblock %}
+
+{% block footer %}
+<div style="margin-top:24px; background:var(--header-bg); margin-left:-14mm; margin-right:-14mm; margin-bottom:-22mm; padding:14px 14mm 22mm 14mm; text-align:center; -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important;">
+  {% if org.invoice_footer %}<p style="font-size:8pt; color:#d4d4d4; line-height:1.6; font-weight:600;">{{ org.invoice_footer }}</p>{% endif %}
+  <p style="font-size:9pt; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:1px; line-height:1.6;">Thank you for your business</p>
+  {% if org.gst_number %}
+  <p style="font-size:8pt; color:#a3a3a3; line-height:1.6;">Payments can be paid by direct bank transfer. Please use your Invoice number as your ref number.</p>
+  {% endif %}
+</div>
+{% endblock %}

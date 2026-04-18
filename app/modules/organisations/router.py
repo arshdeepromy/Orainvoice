@@ -230,6 +230,7 @@ async def get_settings(
         400: {"description": "Validation error"},
         401: {"description": "Authentication required"},
         403: {"description": "Org_Admin role required"},
+        422: {"description": "Invalid template ID or colour value"},
     },
     summary="Update organisation settings",
     dependencies=[require_role("org_admin")],
@@ -281,9 +282,16 @@ async def update_settings(
             **update_kwargs,
         )
     except ValueError as exc:
+        error_msg = str(exc)
+        # Template and colour validation errors → 422 Unprocessable Entity
+        if "invoice template" in error_msg.lower() or "hex colour" in error_msg.lower():
+            return JSONResponse(
+                status_code=422,
+                content={"detail": error_msg},
+            )
         return JSONResponse(
             status_code=400,
-            content={"detail": str(exc)},
+            content={"detail": error_msg},
         )
 
     if not result["updated_fields"]:

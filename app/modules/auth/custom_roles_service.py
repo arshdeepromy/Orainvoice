@@ -50,7 +50,6 @@ ROLE_REQUIRED_MODULES: dict[str, str] = {
     "branch_admin": "branch_management",
     "location_manager": "branch_management",
     "franchise_admin": "franchise",
-    "kiosk": "pos",
 }
 
 

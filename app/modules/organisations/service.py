@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -218,6 +219,8 @@ SETTINGS_JSONB_KEYS = {
     "allow_partial_payments",
     "terms_and_conditions",
     "sidebar_display_mode",
+    "invoice_template_id",
+    "invoice_template_colours",
 }
 
 
@@ -301,6 +304,20 @@ async def update_org_settings(
     gst_number = kwargs.get("gst_number")
     if gst_number is not None:
         validate_ird_gst_number(gst_number)
+
+    # --- Validate invoice template ID if provided ---
+    if "invoice_template_id" in kwargs:
+        from app.modules.invoices.template_registry import validate_template_id
+        validate_template_id(kwargs["invoice_template_id"])
+
+    # --- Validate invoice template colours if provided ---
+    if "invoice_template_colours" in kwargs:
+        colours = kwargs["invoice_template_colours"]
+        hex_pattern = re.compile(r"^#[0-9A-Fa-f]{6}$")
+        for key in ("primary_colour", "accent_colour", "header_bg_colour"):
+            val = colours.get(key)
+            if val and not hex_pattern.match(val):
+                raise ValueError(f"Invalid hex colour for {key}: {val}")
 
     # --- Update org name (top-level column) ---
     org_name = kwargs.get("org_name")

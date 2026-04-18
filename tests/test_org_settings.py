@@ -555,3 +555,205 @@ class TestUpdateOrgSettings:
 
         assert "email_signature" in result["updated_fields"]
         assert org.settings["email_signature"] == "Best regards,\nWorkshop NZ Team"
+
+
+# ---------------------------------------------------------------------------
+# Invoice Template Validation Tests (Task 4.5)
+# Requirements: 3.2, 3.3, 3.4, 10.3
+# ---------------------------------------------------------------------------
+
+
+class TestInvoiceTemplateValidation:
+    """Tests for invoice template ID and colour validation in update_org_settings."""
+
+    @pytest.mark.asyncio
+    async def test_valid_template_id_accepted(self):
+        """A valid template ID from the registry is accepted and persisted."""
+        org = _make_org()
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        with patch(
+            "app.modules.organisations.service.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            result = await update_org_settings(
+                db, org_id=org.id, user_id=uuid.uuid4(),
+                invoice_template_id="classic",
+            )
+
+        assert "invoice_template_id" in result["updated_fields"]
+        assert org.settings["invoice_template_id"] == "classic"
+
+    @pytest.mark.asyncio
+    async def test_invalid_template_id_rejected(self):
+        """An unknown template ID raises ValueError before persisting."""
+        org = _make_org()
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        with pytest.raises(ValueError, match="Unknown invoice template"):
+            await update_org_settings(
+                db, org_id=org.id, user_id=uuid.uuid4(),
+                invoice_template_id="nonexistent-template",
+            )
+
+    @pytest.mark.asyncio
+    async def test_valid_template_colours_accepted(self):
+        """Valid hex colours are accepted and persisted."""
+        org = _make_org()
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        colours = {
+            "primary_colour": "#FF5733",
+            "accent_colour": "#1e40af",
+            "header_bg_colour": "#ffffff",
+        }
+
+        with patch(
+            "app.modules.organisations.service.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            result = await update_org_settings(
+                db, org_id=org.id, user_id=uuid.uuid4(),
+                invoice_template_colours=colours,
+            )
+
+        assert "invoice_template_colours" in result["updated_fields"]
+        assert org.settings["invoice_template_colours"] == colours
+
+    @pytest.mark.asyncio
+    async def test_invalid_primary_colour_rejected(self):
+        """Invalid hex for primary_colour raises ValueError."""
+        org = _make_org()
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        colours = {
+            "primary_colour": "not-a-hex",
+            "accent_colour": "#1e40af",
+            "header_bg_colour": "#ffffff",
+        }
+
+        with pytest.raises(ValueError, match="Invalid hex colour for primary_colour"):
+            await update_org_settings(
+                db, org_id=org.id, user_id=uuid.uuid4(),
+                invoice_template_colours=colours,
+            )
+
+    @pytest.mark.asyncio
+    async def test_invalid_accent_colour_rejected(self):
+        """Invalid hex for accent_colour raises ValueError."""
+        org = _make_org()
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        colours = {
+            "primary_colour": "#FF5733",
+            "accent_colour": "#GGG",
+            "header_bg_colour": "#ffffff",
+        }
+
+        with pytest.raises(ValueError, match="Invalid hex colour for accent_colour"):
+            await update_org_settings(
+                db, org_id=org.id, user_id=uuid.uuid4(),
+                invoice_template_colours=colours,
+            )
+
+    @pytest.mark.asyncio
+    async def test_invalid_header_bg_colour_rejected(self):
+        """Invalid hex for header_bg_colour raises ValueError."""
+        org = _make_org()
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        colours = {
+            "primary_colour": "#FF5733",
+            "accent_colour": "#1e40af",
+            "header_bg_colour": "rgb(255,255,255)",
+        }
+
+        with pytest.raises(ValueError, match="Invalid hex colour for header_bg_colour"):
+            await update_org_settings(
+                db, org_id=org.id, user_id=uuid.uuid4(),
+                invoice_template_colours=colours,
+            )
+
+    @pytest.mark.asyncio
+    async def test_template_id_and_colours_together(self):
+        """Both template ID and colours can be set in a single update."""
+        org = _make_org()
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        colours = {
+            "primary_colour": "#8b5cf6",
+            "accent_colour": "#7c3aed",
+            "header_bg_colour": "#1e1b4b",
+        }
+
+        with patch(
+            "app.modules.organisations.service.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            result = await update_org_settings(
+                db, org_id=org.id, user_id=uuid.uuid4(),
+                invoice_template_id="modern-dark",
+                invoice_template_colours=colours,
+            )
+
+        assert "invoice_template_id" in result["updated_fields"]
+        assert "invoice_template_colours" in result["updated_fields"]
+        assert org.settings["invoice_template_id"] == "modern-dark"
+        assert org.settings["invoice_template_colours"] == colours
+
+    @pytest.mark.asyncio
+    async def test_existing_settings_unchanged_with_template_update(self):
+        """Updating template fields does not affect existing settings (Req 10.3)."""
+        org = _make_org(settings={
+            "gst_number": "12-345-678",
+            "gst_percentage": 15.0,
+            "invoice_prefix": "INV-",
+        })
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        with patch(
+            "app.modules.organisations.service.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            await update_org_settings(
+                db, org_id=org.id, user_id=uuid.uuid4(),
+                invoice_template_id="classic",
+            )
+
+        # Existing settings preserved
+        assert org.settings["gst_number"] == "12-345-678"
+        assert org.settings["gst_percentage"] == 15.0
+        assert org.settings["invoice_prefix"] == "INV-"
+        # New template field added
+        assert org.settings["invoice_template_id"] == "classic"
+
+    @pytest.mark.asyncio
+    async def test_partial_colours_with_missing_keys_accepted(self):
+        """Colours dict with missing keys (None values) is accepted."""
+        org = _make_org()
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        # Only primary_colour provided, others absent
+        colours = {
+            "primary_colour": "#FF5733",
+        }
+
+        with patch(
+            "app.modules.organisations.service.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            result = await update_org_settings(
+                db, org_id=org.id, user_id=uuid.uuid4(),
+                invoice_template_colours=colours,
+            )
+
+        assert "invoice_template_colours" in result["updated_fields"]

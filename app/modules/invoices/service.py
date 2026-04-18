@@ -3250,6 +3250,17 @@ async def generate_invoice_pdf(
             invoice_dict["due_date"] = d.strftime("%d %b %Y")
 
     settings = org.settings or {}
+
+    # Resolve country code to full name for display
+    _raw_country = settings.get("address_country") or ""
+    _COUNTRY_NAMES = {
+        "NZ": "New Zealand", "AU": "Australia", "US": "United States",
+        "GB": "United Kingdom", "CA": "Canada", "IE": "Ireland",
+        "SG": "Singapore", "ZA": "South Africa", "IN": "India",
+        "PH": "Philippines", "FJ": "Fiji", "WS": "Samoa", "TO": "Tonga",
+    }
+    _display_country = _COUNTRY_NAMES.get(_raw_country.upper(), _raw_country) if len(_raw_country) == 2 else _raw_country
+
     org_context = {
         "name": org.name,
         "logo_url": settings.get("logo_url"),
@@ -3261,13 +3272,12 @@ async def generate_invoice_pdf(
             settings.get("address_city"),
             settings.get("address_state"),
             settings.get("address_postcode"),
-            settings.get("address_country"),
         ])) or settings.get("address"),
         "address_unit": settings.get("address_unit"),
         "address_street": settings.get("address_street"),
         "address_city": settings.get("address_city"),
         "address_state": settings.get("address_state"),
-        "address_country": settings.get("address_country"),
+        "address_country": _display_country if _display_country else None,
         "address_postcode": settings.get("address_postcode"),
         "phone": settings.get("phone"),
         "email": settings.get("email"),
@@ -3346,7 +3356,29 @@ async def generate_invoice_pdf(
         return str(value)
 
     env.filters["pdfdate"] = _pdf_format_date
-    template = env.get_template("invoice.html")
+
+    # Template resolution: use org's selected template or default -----------
+    template_id = settings.get("invoice_template_id")
+    template_colours = settings.get("invoice_template_colours") or {}
+    template_file = "invoice.html"  # default
+    colour_context: dict = {}
+
+    if template_id:
+        from app.modules.invoices.template_registry import get_template_metadata
+
+        meta = get_template_metadata(template_id)
+        if meta:
+            template_file = meta.template_file
+            # Resolve colours: org override > template default
+            colour_context = {
+                "primary_colour": template_colours.get("primary_colour") or meta.default_primary_colour,
+                "accent_colour": template_colours.get("accent_colour") or meta.default_accent_colour,
+                "header_bg_colour": template_colours.get("header_bg_colour") or meta.default_header_bg_colour,
+            }
+        else:
+            logger.warning("Template '%s' not found in registry, using default", template_id)
+
+    template = env.get_template(template_file)
 
     html_content = template.render(
         invoice=invoice_dict,
@@ -3356,6 +3388,7 @@ async def generate_invoice_pdf(
         gst_percentage=gst_percentage,
         payment_terms=payment_terms,
         terms_and_conditions=terms_and_conditions,
+        colours=colour_context,
         **i18n_ctx,
     )
 

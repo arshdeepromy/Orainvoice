@@ -195,6 +195,14 @@ class OrgSettingsResponse(BaseModel):
         None, description="Sidebar branding display: icon_and_name, icon_only, or name_only"
     )
 
+    # Invoice template selection
+    invoice_template_id: Optional[str] = Field(
+        None, description="Selected invoice PDF template ID"
+    )
+    invoice_template_colours: Optional[dict] = Field(
+        None, description="Colour overrides for the selected template"
+    )
+
     # Trade info (for trade-specific UI gating)
     trade_family: Optional[str] = Field(
         None, description="Trade family slug (e.g. 'automotive-transport', 'plumbing-gas')"
@@ -301,6 +309,17 @@ class OrgSettingsUpdateRequest(BaseModel):
         None,
         pattern=r"^(icon_and_name|icon_only|name_only)$",
         description="Sidebar branding display: icon_and_name, icon_only, or name_only",
+    )
+
+    # Invoice template selection
+    invoice_template_id: Optional[str] = Field(
+        None,
+        max_length=50,
+        description="Invoice PDF template ID from the template registry",
+    )
+    invoice_template_colours: Optional[dict] = Field(
+        None,
+        description="Colour overrides: {primary_colour, accent_colour, header_bg_colour}",
     )
 
     # Trade category

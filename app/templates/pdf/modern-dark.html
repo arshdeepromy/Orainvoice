@@ -1,0 +1,116 @@
+{% extends "_invoice_base.html" %}
+
+{# Modern Dark — Full-width dark header band, white text, dark footer band #}
+{# Layout: standard | Logo: left | Primary: #6366f1 | Accent: #4f46e5 | Header BG: #1e1b4b #}
+
+{% block page_styles %}
+<style>
+  /* Modern Dark — dark indigo full-width header and footer bands */
+  .items-table thead th {
+    background: var(--header-bg);
+    color: #fff;
+    font-weight: 800;
+    letter-spacing: 1px;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .items-table tbody td { border-bottom: 1px solid #e5e7eb; padding: 10px 12px; }
+  .items-table tbody tr:nth-child(even) td { background: transparent; }
+  .bill-to-label { color: var(--primary); }
+  .balance-bar { background: var(--accent); }
+  .vehicle-bar { background: #f5f3ff; border: 1px solid #ddd6fe; }
+  .section-title { color: var(--primary); border-bottom-color: #ddd6fe; }
+</style>
+{% endblock %}
+
+{% block header %}
+<div style="background:var(--header-bg); margin:-18mm -14mm 18px -14mm; padding:20mm 14mm 16px 14mm; -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important;">
+  <table style="width:100%;" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="vertical-align:top; width:50%;">
+        {% if org.logo_url %}
+        <img src="{{ org.logo_url }}" alt="{{ org.name }}" class="logo" style="margin-bottom:8px;">
+        {% endif %}
+        <div style="font-size:16pt; font-weight:800; color:#fff;">{{ org.name }}</div>
+        <div style="font-size:8.5pt; color:#c7d2fe; margin-top:3px; line-height:1.5;">
+          {% if org.address_unit %}{{ org.address_unit }}<br>{% endif %}
+          {% if org.address_street %}{{ org.address_street }}<br>{% endif %}
+          {% if org.address_city or org.address_state or org.address_postcode %}
+            {{ org.address_city or '' }}{% if org.address_city and (org.address_state or org.address_postcode) %}, {% endif %}{{ org.address_state or '' }}{% if org.address_state and org.address_postcode %}, {% endif %}{{ org.address_postcode or '' }}<br>
+          {% elif org.address %}{{ org.address }}<br>{% endif %}
+          {% if org.address_country %}{{ org.address_country }}<br>{% endif %}
+          {% if org.phone %}{{ org.phone }}<br>{% endif %}
+          {% if org.email %}{{ org.email }}<br>{% endif %}
+          {% if org.website %}{{ org.website }}{% endif %}
+        </div>
+      </td>
+      <td style="vertical-align:top; text-align:right; width:50%;">
+        <div style="font-size:24pt; font-weight:900; color:#fff; letter-spacing:-1px;">INVOICE</div>
+        <div style="font-size:10pt; color:#a5b4fc; margin-top:2px;"># {{ invoice.invoice_number or 'DRAFT' }}</div>
+        <div style="margin-top:10px; padding:8px 16px; background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); border-radius:8px; text-align:center;">
+          <div style="font-size:8pt; color:#c7d2fe; text-transform:uppercase; letter-spacing:0.5px;">Balance Due</div>
+          <div style="font-size:17pt; font-weight:800; color:#fff;">NZD{{ "%.2f" | format(invoice.balance_due | float) }}</div>
+        </div>
+      </td>
+    </tr>
+  </table>
+</div>
+{% endblock %}
+
+{% block bill_to %}
+<table style="width:100%; margin-bottom:16px;" cellpadding="0" cellspacing="0">
+  <tr>
+    <td style="vertical-align:top; width:55%; padding-right:20px;">
+      <div style="background:#eef2ff; border:1px solid #c7d2fe; border-radius:8px; padding:12px 16px;">
+        <div class="bill-to-label">Bill To</div>
+        <div class="bill-to-name">{{ customer.display_name or (customer.first_name ~ ' ' ~ customer.last_name) }}</div>
+        {% if customer.company_name %}<div class="bill-to-detail" style="font-weight:600;">{{ customer.company_name }}</div>{% endif %}
+        {% if customer.address %}<div class="bill-to-detail">{{ customer.address }}</div>{% endif %}
+        {% if customer.email %}<div class="bill-to-detail">{{ customer.email }}</div>{% endif %}
+        {% if customer.phone %}<div class="bill-to-detail">{{ customer.phone }}</div>{% endif %}
+      </div>
+    </td>
+    <td style="vertical-align:top; width:45%;">
+      <table class="meta-table" style="margin-left:auto;">
+        {% if invoice.issue_date %}
+        <tr><td class="lbl">Invoice Date :</td><td class="val">{{ invoice.issue_date }}</td></tr>
+        {% endif %}
+        <tr>
+          <td class="lbl">Terms :</td>
+          <td class="val">
+            {% if invoice.payment_terms %}
+              {{ invoice.payment_terms | replace('_', ' ') | title }}
+            {% else %}
+              Due on Receipt
+            {% endif %}
+          </td>
+        </tr>
+        {% if invoice.due_date %}
+        <tr><td class="lbl">Due Date :</td><td class="val">{{ invoice.due_date }}</td></tr>
+        {% endif %}
+        {% if org.gst_number %}
+        <tr><td class="lbl">GST No :</td><td class="val">{{ org.gst_number }}</td></tr>
+        {% endif %}
+      </table>
+    </td>
+  </tr>
+</table>
+{% endblock %}
+
+{% block footer %}
+<div style="background:var(--header-bg); margin:24px -14mm -22mm -14mm; padding:14px 14mm 22mm 14mm; -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important;">
+  <table style="width:100%;" cellpadding="0" cellspacing="0">
+    <tr>
+      <td style="width:50%; vertical-align:top;">
+        {% if org.invoice_footer %}<p style="font-size:8pt; color:#c7d2fe; line-height:1.6;">{{ org.invoice_footer }}</p>{% endif %}
+      </td>
+      <td style="width:50%; vertical-align:top; text-align:right;">
+        <p style="font-size:8pt; color:#fff; font-weight:600; line-height:1.6;">Thank you for your business.</p>
+        {% if org.gst_number %}
+        <p style="font-size:8pt; color:#a5b4fc; line-height:1.6;">Please use Invoice # as bank transfer reference.</p>
+        {% endif %}
+      </td>
+    </tr>
+  </table>
+</div>
+{% endblock %}

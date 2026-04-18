@@ -407,25 +407,25 @@ async def reset_sms_counters_task() -> dict:
     # This prevents container restarts from zeroing out counters mid-month.
     try:
         async with async_session_factory() as session:
-            # Check the most recent reset timestamp across all orgs
-            result = await session.execute(
-                sa_select(Organisation.sms_sent_reset_at)
-                .where(Organisation.sms_sent_reset_at.is_not(None))
-                .order_by(Organisation.sms_sent_reset_at.desc())
-                .limit(1)
-            )
-            last_reset = result.scalar_one_or_none()
-
-            if last_reset is not None:
-                # If the last reset was in the current month, skip
-                if last_reset.year == now.year and last_reset.month == now.month:
-                    logger.debug(
-                        "SMS counter reset skipped — already reset this month (%s)",
-                        last_reset.isoformat(),
-                    )
-                    return {"reset": 0, "skipped": True, "reason": "already_reset_this_month"}
-
             async with session.begin():
+                # Check the most recent reset timestamp across all orgs
+                result = await session.execute(
+                    sa_select(Organisation.sms_sent_reset_at)
+                    .where(Organisation.sms_sent_reset_at.is_not(None))
+                    .order_by(Organisation.sms_sent_reset_at.desc())
+                    .limit(1)
+                )
+                last_reset = result.scalar_one_or_none()
+
+                if last_reset is not None:
+                    # If the last reset was in the current month, skip
+                    if last_reset.year == now.year and last_reset.month == now.month:
+                        logger.debug(
+                            "SMS counter reset skipped — already reset this month (%s)",
+                            last_reset.isoformat(),
+                        )
+                        return {"reset": 0, "skipped": True, "reason": "already_reset_this_month"}
+
                 stmt = update(Organisation).values(sms_sent_this_month=0, sms_sent_reset_at=now)
                 result = await session.execute(stmt)
                 reset_count = result.rowcount

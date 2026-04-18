@@ -16,6 +16,7 @@ import NotificationsPage from '../notifications/NotificationsPage'
 import { Profile } from './Profile'
 import { SecuritySettings } from './SecuritySettings'
 import OnlinePaymentsSettings from './OnlinePaymentsSettings'
+import { InvoiceTemplateTab } from './InvoiceTemplateTab'
 
 type SettingsSection =
   | 'profile'
@@ -28,6 +29,7 @@ type SettingsSection =
   | 'currency'
   | 'language'
   | 'printer'
+  | 'invoice-template'
   | 'webhooks'
   | 'modules'
   | 'notifications'
@@ -45,6 +47,7 @@ const NAV_ITEMS: { id: SettingsSection; label: string; icon: string; adminOnly?:
   { id: 'currency', label: 'Currency', icon: '💱', adminOnly: true },
   { id: 'language', label: 'Language', icon: '🌐', adminOnly: true },
   { id: 'printer', label: 'Printer', icon: '🖨', adminOnly: true },
+  { id: 'invoice-template', label: 'Invoice Template', icon: '📄', adminOnly: true },
   { id: 'webhooks', label: 'Webhooks', icon: '🔗', adminOnly: true },
   { id: 'modules', label: 'Modules', icon: '🧩', adminOnly: true },
   { id: 'notifications', label: 'Notifications', icon: '🔔', adminOnly: true },
@@ -61,6 +64,7 @@ const SECTION_COMPONENTS: Record<SettingsSection, React.FC> = {
   currency: CurrencySettings,
   language: LanguageSwitcher,
   printer: PrinterSettings,
+  'invoice-template': InvoiceTemplateTab,
   webhooks: WebhookManagement,
   modules: ModuleConfiguration,
   notifications: NotificationsPage,
