@@ -72,6 +72,11 @@ class HAConfig(Base):
         String(20), nullable=True, default="disable",
     )
 
+    # Heartbeat HMAC shared secret (encrypted at rest, replaces env var)
+    heartbeat_secret: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True,
+    )
+
     # Failover settings
     auto_promote_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False,

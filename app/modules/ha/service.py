@@ -44,7 +44,31 @@ def get_heartbeat_service() -> HeartbeatService | None:
 
 
 def _get_heartbeat_secret() -> str:
-    """Retrieve the HMAC shared secret from the environment."""
+    """Retrieve the HMAC shared secret from the environment.
+
+    .. warning::
+       Logs a warning at startup if the secret is empty — HMAC verification
+       becomes trivially forgeable with an empty key.
+    """
+    secret = os.environ.get("HA_HEARTBEAT_SECRET", "")
+    if not secret:
+        logger.warning(
+            "HA_HEARTBEAT_SECRET is empty — heartbeat HMAC verification is effectively disabled. "
+            "Set it via the GUI (Node Configuration → Heartbeat Secret) or the HA_HEARTBEAT_SECRET env var."
+        )
+    return secret
+
+
+def _get_heartbeat_secret_from_config(cfg: HAConfig | None) -> str:
+    """Retrieve the HMAC shared secret, preferring DB-stored value over env var.
+
+    Priority: encrypted DB column > HA_HEARTBEAT_SECRET env var > empty string.
+    """
+    if cfg is not None and cfg.heartbeat_secret:
+        try:
+            return envelope_decrypt_str(cfg.heartbeat_secret)
+        except Exception:
+            logger.error("Failed to decrypt heartbeat_secret from DB — falling back to env var")
     return os.environ.get("HA_HEARTBEAT_SECRET", "")
 
 
@@ -69,6 +93,7 @@ def _config_to_response(cfg: HAConfig) -> HAConfigResponse:
         peer_db_user=cfg.peer_db_user,
         peer_db_configured=cfg.peer_db_password is not None and len(cfg.peer_db_password) > 0,
         peer_db_sslmode=cfg.peer_db_sslmode,
+        heartbeat_secret_configured=cfg.heartbeat_secret is not None and len(cfg.heartbeat_secret) > 0,
     )
 
 
@@ -172,6 +197,9 @@ class HAService:
                 cfg.peer_db_sslmode = config.peer_db_sslmode or "disable"
                 if config.peer_db_password:
                     cfg.peer_db_password = envelope_encrypt(config.peer_db_password)
+            # Heartbeat secret — only store if provided
+            if config.heartbeat_secret:
+                cfg.heartbeat_secret = envelope_encrypt(config.heartbeat_secret)
             db.add(cfg)
         else:
             # Update existing config
@@ -191,6 +219,9 @@ class HAService:
                 cfg.peer_db_sslmode = config.peer_db_sslmode or "disable"
                 if config.peer_db_password:
                     cfg.peer_db_password = envelope_encrypt(config.peer_db_password)
+            # Heartbeat secret — only update if provided
+            if config.heartbeat_secret:
+                cfg.heartbeat_secret = envelope_encrypt(config.heartbeat_secret)
 
         await db.flush()
         await db.refresh(cfg)
@@ -216,7 +247,7 @@ class HAService:
         await db.commit()
 
         # Hot-reload heartbeat service if peer endpoint changed
-        secret = _get_heartbeat_secret()
+        secret = _get_heartbeat_secret_from_config(cfg)
         if cfg.peer_endpoint and (old_peer != cfg.peer_endpoint or _heartbeat_service is None):
             if _heartbeat_service is not None:
                 await _heartbeat_service.stop()
@@ -224,6 +255,7 @@ class HAService:
                 peer_endpoint=cfg.peer_endpoint,
                 interval=cfg.heartbeat_interval_seconds,
                 secret=secret,
+                local_role=cfg.role,
             )
             await _heartbeat_service.start()
             logger.info("Heartbeat service (re)started for peer %s", cfg.peer_endpoint)

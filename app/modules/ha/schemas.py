@@ -35,6 +35,9 @@ class HAConfigRequest(BaseModel):
     peer_db_password: str | None = Field(default=None, description="Peer database password (stored encrypted)")
     peer_db_sslmode: str | None = Field(default="disable", description="SSL mode: disable, require, verify-ca, verify-full")
 
+    # Heartbeat HMAC secret (optional — falls back to HA_HEARTBEAT_SECRET env var)
+    heartbeat_secret: str | None = Field(default=None, description="HMAC shared secret for heartbeat signing (stored encrypted)")
+
 
 class HAConfigResponse(BaseModel):
     """Response for GET /api/v1/ha/identity and PUT /api/v1/ha/configure."""
@@ -58,6 +61,7 @@ class HAConfigResponse(BaseModel):
     peer_db_user: str | None = None
     peer_db_configured: bool = Field(default=False, description="True when peer DB credentials are stored")
     peer_db_sslmode: str | None = Field(default="disable", description="SSL mode for peer DB connection")
+    heartbeat_secret_configured: bool = Field(default=False, description="True when heartbeat HMAC secret is stored in DB")
 
 
 # ---------------------------------------------------------------------------

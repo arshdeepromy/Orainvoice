@@ -45,6 +45,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _start_time = time.monotonic()
 
+# ---------------------------------------------------------------------------
+# Heartbeat config cache — avoids hitting the DB on every 10-second ping.
+# Stores the raw HAConfig ORM-like snapshot and the decrypted HMAC secret.
+# TTL: 10 seconds (matches default heartbeat interval).
+# ---------------------------------------------------------------------------
+_hb_cache: dict = {"config": None, "secret": "", "ts": 0.0}
+_HB_CACHE_TTL = 10.0  # seconds
+
 
 # ---------------------------------------------------------------------------
 # Host LAN IP detection helper
@@ -111,11 +119,46 @@ async def heartbeat(db: AsyncSession = Depends(get_db_session)):
 
     The peer node calls this endpoint every heartbeat interval to verify
     this node is alive.  The response payload is signed with the shared
-    ``HA_HEARTBEAT_SECRET`` so the caller can verify authenticity.
+    heartbeat secret so the caller can verify authenticity.
+
+    Uses an in-memory cache (TTL 10s) to avoid querying the database on
+    every ping — the config rarely changes.
     """
     try:
-        config = await HAService.get_config(db)
-        if config is None:
+        now_mono = time.monotonic()
+
+        # --- Cached config lookup (avoids DB hit on every ping) ---
+        cfg_row = None
+        secret = ""
+        if now_mono - _hb_cache["ts"] < _HB_CACHE_TTL and _hb_cache["config"] is not None:
+            # Cache hit — use cached values
+            cfg_row = _hb_cache["config"]
+            secret = _hb_cache["secret"]
+        else:
+            # Cache miss — query DB and refresh cache
+            from app.modules.ha.models import HAConfig
+            from sqlalchemy import select
+
+            result = await db.execute(select(HAConfig).limit(1))
+            cfg_row = result.scalars().first()
+
+            # Decrypt secret from DB, fall back to env var
+            secret = ""
+            if cfg_row and cfg_row.heartbeat_secret:
+                try:
+                    from app.core.encryption import envelope_decrypt_str as _decrypt
+                    secret = _decrypt(cfg_row.heartbeat_secret)
+                except Exception:
+                    pass
+            if not secret:
+                secret = os.environ.get("HA_HEARTBEAT_SECRET", "")
+
+            # Store snapshot in cache (detached from session)
+            _hb_cache["config"] = cfg_row
+            _hb_cache["secret"] = secret
+            _hb_cache["ts"] = now_mono
+
+        if cfg_row is None:
             # Not configured — return minimal healthy response
             payload = {
                 "node_id": "",
@@ -125,65 +168,49 @@ async def heartbeat(db: AsyncSession = Depends(get_db_session)):
                 "database_status": "connected",
                 "replication_lag_seconds": None,
                 "sync_status": "not_configured",
-                "uptime_seconds": round(time.monotonic() - _start_time, 1),
+                "uptime_seconds": round(now_mono - _start_time, 1),
                 "maintenance": False,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         else:
-            # Fetch maintenance mode from DB
-            from app.modules.ha.models import HAConfig
-            from sqlalchemy import select
-
-            result = await db.execute(select(HAConfig).limit(1))
-            cfg_row = result.scalars().first()
             maintenance = cfg_row.maintenance_mode if cfg_row else False
             sync_status = cfg_row.sync_status if cfg_row else "not_configured"
 
             # Get replication lag if standby
             lag: float | None = None
-            if config.role == "standby":
+            if cfg_row.role == "standby":
                 try:
                     lag = await ReplicationManager.get_replication_lag(db)
                 except Exception:
                     pass
 
             payload = {
-                "node_id": config.node_id,
-                "node_name": config.node_name,
-                "role": config.role,
+                "node_id": str(cfg_row.node_id),
+                "node_name": cfg_row.node_name,
+                "role": cfg_row.role,
                 "status": "healthy",
                 "database_status": "connected",
                 "replication_lag_seconds": lag,
                 "sync_status": sync_status,
-                "uptime_seconds": round(time.monotonic() - _start_time, 1),
+                "uptime_seconds": round(now_mono - _start_time, 1),
                 "maintenance": maintenance,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
-        # Sign the payload using the canonical JSON form.
-        # We compute the HMAC on the exact JSON string, then embed the
-        # signature into the response.  The caller strips hmac_signature,
-        # re-serialises with the same sort_keys + compact separators, and
-        # verifies.
+        # Sign the payload
         import json as _json
         import hashlib as _hashlib
         import hmac as _hmac
 
-        secret = os.environ.get("HA_HEARTBEAT_SECRET", "")
         canonical = _json.dumps(payload, sort_keys=True, separators=(",", ":"))
         signature = _hmac.new(
             secret.encode(), canonical.encode(), _hashlib.sha256,
         ).hexdigest()
 
-        # Return the response using the same canonical JSON + signature.
-        # We build the final JSON string manually to guarantee byte-level
-        # consistency with what the caller will re-compute.
         response_data = _json.loads(canonical)
         response_data["hmac_signature"] = signature
 
-        # Use Response with the exact JSON we control
         from starlette.responses import Response
-
         final_json = _json.dumps(response_data, sort_keys=True, separators=(",", ":"))
         return Response(content=final_json, media_type="application/json")
 
@@ -707,24 +734,28 @@ async def create_replication_user(
                 )
 
             if exists:
-                # DDL doesn't support $1 params for PASSWORD — use quote_literal via PG
+                # Use PostgreSQL's quote_literal for safe password escaping
+                escaped_pw = await conn.fetchval("SELECT quote_literal($1)", payload.password)
+                escaped_user = await conn.fetchval("SELECT quote_ident($1)", payload.username)
                 await conn.execute(
-                    f"ALTER USER {payload.username} WITH REPLICATION BYPASSRLS LOGIN PASSWORD '{payload.password.replace(chr(39), chr(39)+chr(39))}'"
+                    f"ALTER USER {escaped_user} WITH REPLICATION BYPASSRLS LOGIN PASSWORD {escaped_pw}"
                 )
                 msg = f"User '{payload.username}' already exists — password updated"
             else:
+                escaped_pw = await conn.fetchval("SELECT quote_literal($1)", payload.password)
+                escaped_user = await conn.fetchval("SELECT quote_ident($1)", payload.username)
                 await conn.execute(
-                    f"CREATE USER {payload.username} WITH REPLICATION BYPASSRLS LOGIN PASSWORD '{payload.password.replace(chr(39), chr(39)+chr(39))}'"
+                    f"CREATE USER {escaped_user} WITH REPLICATION BYPASSRLS LOGIN PASSWORD {escaped_pw}"
                 )
                 msg = f"User '{payload.username}' created with REPLICATION + BYPASSRLS privilege"
 
-            # Grant SELECT on all tables
-            await conn.execute(f"GRANT USAGE ON SCHEMA public TO {payload.username}")
+            # Grant SELECT on all tables (username already validated by regex above)
+            await conn.execute(f"GRANT USAGE ON SCHEMA public TO {escaped_user}")
             await conn.execute(
-                f"GRANT SELECT ON ALL TABLES IN SCHEMA public TO {payload.username}"
+                f"GRANT SELECT ON ALL TABLES IN SCHEMA public TO {escaped_user}"
             )
             await conn.execute(
-                f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO {payload.username}"
+                f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO {escaped_user}"
             )
 
             # Audit log

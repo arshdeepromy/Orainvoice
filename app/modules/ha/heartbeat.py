@@ -18,7 +18,7 @@ import httpx
 
 from app.modules.ha.hmac_utils import verify_hmac
 from app.modules.ha.schemas import HeartbeatHistoryEntry
-from app.modules.ha.utils import classify_peer_health
+from app.modules.ha.utils import classify_peer_health, detect_split_brain
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +37,14 @@ class HeartbeatService:
     5. Logs transitions between health states.
     """
 
-    def __init__(self, peer_endpoint: str, interval: int, secret: str) -> None:
+    def __init__(self, peer_endpoint: str, interval: int, secret: str, local_role: str = "standalone") -> None:
         self.peer_endpoint = peer_endpoint.rstrip("/")
         self.interval = interval
         self.secret = secret
+        self.local_role = local_role
         self.history: deque[HeartbeatHistoryEntry] = deque(maxlen=100)
         self.peer_health: str = "unknown"
+        self.split_brain_detected: bool = False
         self._task: asyncio.Task | None = None
         self._last_successful_heartbeat: float | None = None
 
@@ -139,6 +141,20 @@ class HeartbeatService:
 
             # Successful heartbeat
             self._last_successful_heartbeat = time.monotonic()
+
+            # Split-brain detection: warn if both nodes claim primary
+            peer_role = data.get("role", "")
+            if detect_split_brain(self.local_role, peer_role):
+                self.split_brain_detected = True
+                logger.critical(
+                    "SPLIT-BRAIN DETECTED: both local (%s) and peer (%s) "
+                    "claim role 'primary'. Manual intervention required!",
+                    self.local_role,
+                    peer_role,
+                )
+            else:
+                self.split_brain_detected = False
+
             return HeartbeatHistoryEntry(
                 timestamp=now_iso,
                 peer_status=data.get("status", "healthy"),

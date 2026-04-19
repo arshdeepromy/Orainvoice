@@ -28,6 +28,7 @@ interface HAConfig {
   peer_db_user: string | null
   peer_db_configured: boolean
   peer_db_sslmode: string | null
+  heartbeat_secret_configured: boolean
 }
 
 interface HeartbeatHistoryEntry {
@@ -113,7 +114,7 @@ function SetupGuide({ configured }: { configured: boolean }) {
               <li>Both nodes must be reachable via LAN IPs through VPN (or <code className="bg-blue-100 px-1 rounded">host.docker.internal</code> for local dev)</li>
               <li>PostgreSQL port must be accessible from the peer node — verify with <code className="bg-blue-100 px-1 rounded">pg_isready</code> or a test connection</li>
               <li>Both nodes must have <code className="bg-blue-100 px-1 rounded">wal_level=logical</code> set in PostgreSQL</li>
-              <li><code className="bg-blue-100 px-1 rounded">HA_HEARTBEAT_SECRET</code> must be identical on both nodes</li>
+              <li>The <strong>Heartbeat Secret</strong> field in Node Configuration must be identical on both nodes</li>
               <li><code className="bg-blue-100 px-1 rounded">JWT_SECRET</code> and <code className="bg-blue-100 px-1 rounded">ENCRYPTION_MASTER_KEY</code> must be identical so tokens work across nodes</li>
               <li>The standby database must have the schema (migrations) but <span className="font-semibold">no seed data</span> — all data comes from replication</li>
             </ul>
@@ -154,7 +155,7 @@ function SetupGuide({ configured }: { configured: boolean }) {
               <li>In production, create a dedicated replication user via the "Replication User" section below (not the superuser)</li>
               <li>Restrict <code className="bg-amber-100 px-1 rounded">pg_hba.conf</code> to only allow the peer's specific IP address</li>
               <li>The peer DB password is encrypted at rest — but protect your <code className="bg-amber-100 px-1 rounded">.env</code> files too</li>
-              <li>Rotate <code className="bg-amber-100 px-1 rounded">HA_HEARTBEAT_SECRET</code> periodically by updating both nodes simultaneously</li>
+              <li>Rotate the <strong>Heartbeat Secret</strong> periodically by updating both nodes simultaneously via the GUI</li>
             </ul>
           </div>
 
@@ -201,6 +202,7 @@ export function HAReplication() {
   const [formPeerDbUser, setFormPeerDbUser] = useState('')
   const [formPeerDbPassword, setFormPeerDbPassword] = useState('')
   const [formPeerDbSslmode, setFormPeerDbSslmode] = useState('disable')
+  const [formHeartbeatSecret, setFormHeartbeatSecret] = useState('')
   const [testingConnection, setTestingConnection] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
 
@@ -279,6 +281,7 @@ export function HAReplication() {
         peer_db_user: formPeerDbUser || null,
         peer_db_password: formPeerDbPassword || null,
         peer_db_sslmode: formPeerDbSslmode,
+        heartbeat_secret: formHeartbeatSecret || null,
       })
       setSaveSuccess(true)
       // Re-sync form from server after save
@@ -573,6 +576,18 @@ export function HAReplication() {
             />
             Enable auto-promote (standby auto-promotes when primary is unreachable)
           </label>
+          <div className="sm:col-span-2">
+            <Input
+              label="Heartbeat Secret"
+              type="password"
+              placeholder={config?.heartbeat_secret_configured ? '••••••••  (leave blank to keep existing)' : 'Shared HMAC secret for heartbeat signing'}
+              value={formHeartbeatSecret}
+              onChange={(e) => setFormHeartbeatSecret(e.target.value)}
+              helperText={config?.heartbeat_secret_configured
+                ? '✓ Secret stored — leave blank to keep existing value. Must be identical on both nodes.'
+                : 'Required for secure heartbeat signing. Must be identical on both nodes.'}
+            />
+          </div>
         </div>
 
         <div className="flex justify-end pt-2">
