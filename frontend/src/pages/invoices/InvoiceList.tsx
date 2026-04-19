@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Spinner, Modal, Badge } from '../../components/ui'
@@ -18,6 +18,7 @@ import {
 } from '../../components/invoices/refund-credit-note.utils'
 import POSReceiptPreview from '../../components/pos/POSReceiptPreview'
 import { invoiceToReceiptData } from '../../utils/invoiceReceiptMapper'
+import { resolveTemplateStyles } from '@/utils/invoiceTemplateStyles'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -159,6 +160,8 @@ interface InvoiceDetailData {
   org_phone?: string
   org_email?: string
   org_website?: string
+  invoice_template_id?: string | null
+  invoice_template_colours?: { primary_colour?: string; accent_colour?: string; header_bg_colour?: string } | null
   org_gst_number?: string
   payment_terms?: string
   salesperson_name?: string
@@ -513,6 +516,19 @@ export default function InvoiceList() {
     const t = setTimeout(() => setActionMessage(null), 4000)
     return () => clearTimeout(t)
   }, [actionMessage])
+
+  /* ---------------------------------------------------------------- */
+  /*  Resolved template styles                                         */
+  /* ---------------------------------------------------------------- */
+
+  const templateStyles = useMemo(
+    () => resolveTemplateStyles(
+      invoice?.invoice_template_id,
+      invoice?.invoice_template_colours,
+    ),
+    [invoice?.invoice_template_id, invoice?.invoice_template_colours],
+  )
+  // templateStyles is consumed by tasks 4.2–4.5 (colour/layout application)
 
   /* ---------------------------------------------------------------- */
   /*  Actions                                                          */
@@ -1269,21 +1285,21 @@ export default function InvoiceList() {
                   )}
 
                   {/* Invoice header */}
-                  <div className="relative z-10 px-8 pt-8 pb-6">
-                    <div className="flex items-start justify-between">
+                  <div className={`relative z-10 ${templateStyles.layoutType === 'compact' ? 'px-6 pt-6 pb-4' : 'px-8 pt-8 pb-6'}`} style={{ backgroundColor: templateStyles.headerBgColour }}>
+                    <div className={`flex ${templateStyles.logoPosition === 'center' ? 'flex-col items-center text-center' : 'items-start justify-between'}`}>
                       {/* Org info */}
-                      <div>
+                      <div style={templateStyles.logoPosition === 'side' ? { order: 2 } : undefined}>
                         {invoice.org_logo_url ? (
                           <img src={invoice.org_logo_url} alt={invoice.org_name || 'Company'} className="h-12 mb-3" />
                         ) : (
                           <div className="flex items-center gap-2 mb-3">
-                            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white font-bold text-lg">
+                            <div className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold text-lg" style={{ background: templateStyles.primaryColour }}>
                               {(invoice.org_name || 'O')[0]}
                             </div>
-                            <span className="text-lg font-bold text-gray-900">{invoice.org_name || 'Your Company'}</span>
+                            <span className={`text-lg font-bold ${templateStyles.isHeaderDark ? 'text-white' : 'text-gray-900'}`}>{invoice.org_name || 'Your Company'}</span>
                           </div>
                         )}
-                        <div className="text-xs text-gray-500 space-y-0.5">
+                        <div className={`text-xs ${templateStyles.isHeaderDark ? 'text-gray-200' : 'text-gray-500'} space-y-0.5`}>
                           {(invoice.org_address_street || invoice.org_address) && (
                             <>
                               {invoice.org_address_unit && <p>{invoice.org_address_unit}</p>}
@@ -1305,12 +1321,12 @@ export default function InvoiceList() {
                       </div>
 
                       {/* Invoice title + balance */}
-                      <div className="text-right">
-                        <h1 className="text-2xl font-bold tracking-tight text-gray-900">INVOICE</h1>
-                        <p className="text-sm text-gray-500 mt-0.5"># {invoice.invoice_number || 'DRAFT'}</p>
-                        <div className="mt-3 bg-gray-50 rounded-lg px-4 py-2 border border-gray-100">
-                          <p className="text-xs text-gray-500">Balance Due</p>
-                          <p className={`text-xl font-bold tabular-nums ${(invoice.balance_due ?? 0) > 0 ? 'text-gray-900' : 'text-emerald-600'}`}>
+                      <div className={templateStyles.logoPosition === 'left' ? 'text-right' : ''} style={templateStyles.logoPosition === 'side' ? { order: 1 } : undefined}>
+                        <h1 className={`text-2xl font-bold tracking-tight ${templateStyles.isHeaderDark ? 'text-white' : 'text-gray-900'}`}>INVOICE</h1>
+                        <p className={`text-sm ${templateStyles.isHeaderDark ? 'text-gray-200' : 'text-gray-500'} mt-0.5`}># {invoice.invoice_number || 'DRAFT'}</p>
+                        <div className={`mt-3 rounded-lg px-4 py-2 border ${templateStyles.isHeaderDark ? 'bg-white/10 border-white/20' : 'bg-gray-50 border-gray-100'}`}>
+                          <p className={`text-xs ${templateStyles.isHeaderDark ? 'text-gray-200' : 'text-gray-500'}`}>Balance Due</p>
+                          <p className={`text-xl font-bold tabular-nums ${templateStyles.isHeaderDark ? 'text-white' : (invoice.balance_due ?? 0) > 0 ? 'text-gray-900' : 'text-emerald-600'}`}>
                             {formatNZD(invoice.balance_due)}
                           </p>
                         </div>
@@ -1319,13 +1335,13 @@ export default function InvoiceList() {
                   </div>
 
                   {/* Bill To + Invoice Meta */}
-                  <div className="relative z-10 px-8 pb-6">
+                  <div className={`relative z-10 ${templateStyles.layoutType === 'compact' ? 'px-6 pb-4' : 'px-8 pb-6'}`}>
                     <div className="flex items-start justify-between gap-8">
                       {/* Bill To */}
                       <div className="flex-1">
                         {invoice.customer ? (
-                          <div className="bg-blue-50/50 rounded-lg p-4 border border-blue-100">
-                            <p className="text-xs font-semibold text-blue-600 uppercase tracking-wider mb-1.5">Bill To</p>
+                          <div className="rounded-lg p-4 border" style={{ backgroundColor: templateStyles.accentColour + '10', borderColor: templateStyles.accentColour + '30' }}>
+                            <p className="text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: templateStyles.accentColour }}>Bill To</p>
                             <p className="font-semibold text-gray-900">
                               {invoice.customer.display_name || `${invoice.customer.first_name} ${invoice.customer.last_name}`}
                             </p>
@@ -1444,10 +1460,10 @@ export default function InvoiceList() {
                   )}
 
                   {/* Line items table */}
-                  <div className="relative z-10 px-8 pb-6">
+                  <div className={`relative z-10 ${templateStyles.layoutType === 'compact' ? 'px-6 pb-4' : 'px-8 pb-6'}`}>
                     <table className="w-full">
                       <thead>
-                        <tr className="print-table-header" style={{ background: '#3b5bdb', color: '#fff', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } as React.CSSProperties}>
+                        <tr className="print-table-header" style={{ background: templateStyles.primaryColour, color: '#fff', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } as React.CSSProperties}>
                           <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider rounded-tl-lg" style={{ color: '#fff' }}>#</th>
                           <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: '#fff' }}>Description</th>
                           <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider" style={{ color: '#fff' }}>Qty</th>
@@ -1458,8 +1474,8 @@ export default function InvoiceList() {
                       <tbody>
                         {(invoice.line_items || []).map((item, idx) => (
                           <tr key={item.id} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
-                            <td className="px-4 py-3 text-sm text-gray-500">{idx + 1}</td>
-                            <td className="px-4 py-3 text-sm text-gray-900">
+                            <td className={`px-4 ${templateStyles.layoutType === 'compact' ? 'py-1.5' : 'py-3'} text-sm text-gray-500`}>{idx + 1}</td>
+                            <td className={`px-4 ${templateStyles.layoutType === 'compact' ? 'py-1.5' : 'py-3'} text-sm text-gray-900`}>
                               <div>{item.description?.split('\n')[0]}</div>
                               {item.description?.includes('\n') && (
                                 <div className="text-xs text-gray-500 mt-0.5 whitespace-pre-line">{item.description.split('\n').slice(1).join('\n')}</div>
@@ -1469,13 +1485,13 @@ export default function InvoiceList() {
                                 <p className="text-xs text-blue-500 mt-0.5">Warranty: {item.warranty_note}</p>
                               )}
                             </td>
-                            <td className="px-4 py-3 text-sm text-gray-900 text-right tabular-nums">
+                            <td className={`px-4 ${templateStyles.layoutType === 'compact' ? 'py-1.5' : 'py-3'} text-sm text-gray-900 text-right tabular-nums`}>
                               {(item.item_type || item.type) === 'labour' ? Number(item.hours ?? 0).toFixed(2) : Number(item.quantity).toFixed(2)}
                             </td>
-                            <td className="px-4 py-3 text-sm text-gray-900 text-right tabular-nums">
+                            <td className={`px-4 ${templateStyles.layoutType === 'compact' ? 'py-1.5' : 'py-3'} text-sm text-gray-900 text-right tabular-nums`}>
                               {Number((item.item_type || item.type) === 'labour' ? (item.hourly_rate ?? 0) : item.unit_price).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </td>
-                            <td className="px-4 py-3 text-sm font-medium text-gray-900 text-right tabular-nums">
+                            <td className={`px-4 ${templateStyles.layoutType === 'compact' ? 'py-1.5' : 'py-3'} text-sm font-medium text-gray-900 text-right tabular-nums`}>
                               {Number(item.line_total).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </td>
                           </tr>
@@ -1490,7 +1506,7 @@ export default function InvoiceList() {
                   </div>
 
                   {/* Totals */}
-                  <div className="relative z-10 px-8 pb-6">
+                  <div className={`relative z-10 ${templateStyles.layoutType === 'compact' ? 'px-6 pb-4' : 'px-8 pb-6'}`}>
                     <div className="flex justify-end">
                       <div className="w-72">
                         <dl className="space-y-1.5 text-sm">
@@ -1559,7 +1575,7 @@ export default function InvoiceList() {
                               </div>
                             )
                           })()}
-                          <div className="flex justify-between py-2.5 rounded-lg px-4 -mx-4 font-bold print-balance-bar" style={{ background: '#3b5bdb', color: '#fff', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } as React.CSSProperties}>
+                          <div className="flex justify-between py-2.5 rounded-lg px-4 -mx-4 font-bold print-balance-bar" style={{ background: templateStyles.primaryColour, color: '#fff', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' } as React.CSSProperties}>
                             <dt style={{ color: '#fff' }}>Balance Due</dt>
                             <dd className="tabular-nums" style={{ color: '#fff' }}>{formatNZD(invoice.balance_due)}</dd>
                           </div>

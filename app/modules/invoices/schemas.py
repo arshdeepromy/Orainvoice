@@ -269,6 +269,8 @@ class InvoiceResponse(BaseModel):
     org_logo_url: str | None = None
     org_gst_number: str | None = None
     org_website: str | None = None
+    invoice_template_id: str | None = None
+    invoice_template_colours: dict | None = None
     vehicle: dict | None = None
     additional_vehicles: list[dict] = Field(default_factory=list)
     fluid_usage: list[dict] = Field(default_factory=list)

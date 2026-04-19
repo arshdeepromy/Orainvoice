@@ -1212,6 +1212,8 @@ async def get_invoice(
         result["org_logo_url"] = settings.get("logo_url")
         result["org_gst_number"] = settings.get("gst_number") or settings.get("tax_number")
         result["org_website"] = settings.get("website")
+        result["invoice_template_id"] = settings.get("invoice_template_id")
+        result["invoice_template_colours"] = settings.get("invoice_template_colours")
 
     # Include customer details
     if invoice.customer_id:
