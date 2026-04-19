@@ -60,6 +60,51 @@ def _hash_invite_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def _format_discount_value(value: float) -> str:
+    """Format a numeric discount value for display.
+
+    Returns an integer string when the value is a whole number,
+    otherwise a string with up to 2 decimal places.
+    """
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.2f}"
+
+
+def generate_coupon_benefit_description(
+    discount_type: str,
+    discount_value: float,
+    duration_months: int | None = None,
+) -> str:
+    """Return a human-readable description of a coupon benefit.
+
+    Pure function — no DB access, no side effects.
+
+    Examples:
+        >>> generate_coupon_benefit_description("percentage", 20, 3)
+        '20% discount on your subscription for 3 months'
+        >>> generate_coupon_benefit_description("fixed_amount", 50.0, None)
+        '$50 off per billing cycle ongoing'
+        >>> generate_coupon_benefit_description("trial_extension", 14, None)
+        'Trial extended by 14 days'
+    """
+    if discount_type == "percentage":
+        formatted = _format_discount_value(discount_value)
+        duration = f"for {duration_months} months" if duration_months else "ongoing"
+        return f"{formatted}% discount on your subscription {duration}"
+
+    if discount_type == "fixed_amount":
+        formatted = _format_discount_value(discount_value)
+        duration = f"for {duration_months} months" if duration_months else "ongoing"
+        return f"${formatted} off per billing cycle {duration}"
+
+    if discount_type == "trial_extension":
+        days = _format_discount_value(discount_value)
+        return f"Trial extended by {days} days"
+
+    return f"Coupon applied (type: {discount_type})"
+
+
 async def provision_organisation(
     db: AsyncSession,
     *,
@@ -5279,6 +5324,140 @@ async def redeem_coupon(
     return {
         "message": "Coupon redeemed successfully",
         "organisation_coupon_id": str(org_coupon.id),
+    }
+
+
+
+async def admin_apply_coupon_to_org(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    coupon_id: uuid.UUID,
+    applied_by: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Apply a coupon to an organisation from the Global Admin console.
+
+    Validates the coupon and organisation, creates an OrganisationCoupon
+    record, increments usage, extends trial if applicable, writes an
+    audit log entry, and sends an in-app notification.
+
+    Requirements 3.1–3.9, 4.1–4.5.
+    """
+    from app.modules.admin.notifications_service import PlatformNotificationService
+
+    # Lock the coupon row for atomic update
+    result = await db.execute(
+        select(Coupon).where(Coupon.id == coupon_id).with_for_update()
+    )
+    coupon = result.scalar_one_or_none()
+
+    if coupon is None or not coupon.is_active:
+        raise ValueError("Coupon not found")
+
+    now = datetime.now(timezone.utc)
+
+    if coupon.expires_at is not None and now > coupon.expires_at:
+        raise ValueError("Coupon has expired")
+
+    if coupon.starts_at is not None and now < coupon.starts_at:
+        raise ValueError("Coupon is not yet active")
+
+    if coupon.usage_limit is not None and coupon.times_redeemed >= coupon.usage_limit:
+        raise ValueError("Coupon usage limit reached")
+
+    # Validate organisation exists and is not deleted
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org is None or org.status == "deleted":
+        raise ValueError("Organisation not found")
+
+    # Check for duplicate application
+    existing = await db.execute(
+        select(OrganisationCoupon).where(
+            OrganisationCoupon.org_id == org_id,
+            OrganisationCoupon.coupon_id == coupon.id,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise ValueError("Coupon already applied to this organisation")
+
+    # Create OrganisationCoupon record
+    org_coupon = OrganisationCoupon(
+        org_id=org_id,
+        coupon_id=coupon.id,
+        applied_at=now,
+        billing_months_used=0,
+        is_expired=False,
+    )
+    db.add(org_coupon)
+
+    # Increment times_redeemed
+    coupon.times_redeemed = coupon.times_redeemed + 1
+
+    # If trial_extension, extend the organisation's trial
+    if coupon.discount_type == "trial_extension":
+        if org.trial_ends_at is not None:
+            org.trial_ends_at = org.trial_ends_at + timedelta(days=float(coupon.discount_value))
+        else:
+            org.trial_ends_at = now + timedelta(days=float(coupon.discount_value))
+
+    await db.flush()
+    await db.refresh(org_coupon)
+
+    # Generate benefit description
+    benefit_description = generate_coupon_benefit_description(
+        discount_type=coupon.discount_type,
+        discount_value=float(coupon.discount_value),
+        duration_months=coupon.duration_months,
+    )
+
+    # Write audit log
+    await write_audit_log(
+        session=db,
+        action="coupon.admin_applied",
+        entity_type="organisation_coupon",
+        org_id=org_id,
+        user_id=applied_by,
+        entity_id=org_coupon.id,
+        after_value={
+            "coupon_id": str(coupon.id),
+            "coupon_code": coupon.code,
+            "org_id": str(org_id),
+            "discount_type": coupon.discount_type,
+            "discount_value": float(coupon.discount_value),
+            "benefit_description": benefit_description,
+        },
+        ip_address=ip_address,
+    )
+
+    # Send in-app notification (non-blocking — do not roll back on failure)
+    try:
+        notification_service = PlatformNotificationService(db)
+        await notification_service.create_notification(
+            notification_type="info",
+            title="Coupon Applied by Oraflows Limited",
+            message=benefit_description,
+            severity="info",
+            target_type="specific_orgs",
+            target_value=json.dumps([str(org_id)]),
+            created_by=applied_by,
+        )
+    except Exception:
+        logger.error(
+            "Failed to create notification for coupon %s applied to org %s",
+            coupon.id,
+            org_id,
+            exc_info=True,
+        )
+
+    return {
+        "organisation_coupon_id": str(org_coupon.id),
+        "coupon_code": coupon.code,
+        "benefit_description": benefit_description,
+        "message": "Coupon applied successfully",
     }
 
 

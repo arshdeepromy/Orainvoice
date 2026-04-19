@@ -1213,3 +1213,23 @@ class StoragePackageListResponse(BaseModel):
 
     packages: list[StoragePackageResponse]
     total: int
+
+
+# ---------------------------------------------------------------------------
+# Admin Coupon Application (Req 7.2, 7.4)
+# ---------------------------------------------------------------------------
+
+
+class AdminApplyCouponRequest(BaseModel):
+    """POST /api/v1/admin/organisations/{org_id}/apply-coupon request body."""
+
+    coupon_id: str = Field(..., description="UUID of the coupon to apply")
+
+
+class AdminApplyCouponResponse(BaseModel):
+    """Response after applying a coupon to an organisation."""
+
+    message: str
+    organisation_coupon_id: str
+    coupon_code: str
+    benefit_description: str

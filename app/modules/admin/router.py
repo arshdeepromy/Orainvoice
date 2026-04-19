@@ -14,6 +14,8 @@ from sqlalchemy import text, select
 
 from app.core.database import get_db_session
 from app.modules.admin.schemas import (
+    AdminApplyCouponRequest,
+    AdminApplyCouponResponse,
     AdminCarjamUsageResponse,
     AdminSmsUsageResponse,
     CarjamConfigRequest,
@@ -77,6 +79,7 @@ from app.modules.admin.schemas import (
     VehicleDbStatsResponse,
 )
 from app.modules.admin.service import (
+    admin_apply_coupon_to_org,
     archive_plan,
     create_coupon,
     create_plan,
@@ -316,6 +319,76 @@ async def update_org(
         )
 
     return OrgUpdateResponse(**result)
+
+
+@router.post(
+    "/organisations/{org_id}/apply-coupon",
+    response_model=AdminApplyCouponResponse,
+    responses={
+        400: {"description": "Coupon expired, usage limit reached, or invalid format"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "Coupon or organisation not found"},
+        409: {"description": "Coupon already applied to this organisation"},
+    },
+    summary="Apply a coupon to an organisation",
+    dependencies=[require_role("global_admin")],
+)
+async def apply_coupon_to_org(
+    org_id: str,
+    payload: AdminApplyCouponRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Apply a coupon to an organisation on behalf of a Global Admin.
+
+    Validates the coupon (active, not expired, within usage limit, not already applied),
+    creates an OrganisationCoupon record, increments usage, writes an audit log,
+    and sends an in-app notification to the target organisation.
+
+    Only Global_Admin users can access this endpoint.
+    Requirements 7.1, 7.2, 7.3, 7.4, 7.5, 3.7, 3.8, 3.9.
+    """
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+
+    # Validate org_id UUID format
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
+
+    # Validate coupon_id UUID format
+    try:
+        coupon_uuid = uuid.UUID(payload.coupon_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid coupon_id format"})
+
+    user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+
+    try:
+        result = await admin_apply_coupon_to_org(
+            db,
+            org_id=org_uuid,
+            coupon_id=coupon_uuid,
+            applied_by=user_uuid,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "not found" in msg.lower():
+            return JSONResponse(status_code=404, content={"detail": msg})
+        if "already applied" in msg.lower():
+            return JSONResponse(status_code=409, content={"detail": msg})
+        return JSONResponse(status_code=400, content={"detail": msg})
+    except Exception:
+        logger.exception("Unexpected error applying coupon")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "An error occurred while applying the coupon"},
+        )
+
+    return AdminApplyCouponResponse(**result)
 
 
 @router.delete(
