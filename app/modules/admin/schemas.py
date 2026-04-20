@@ -1233,3 +1233,155 @@ class AdminApplyCouponResponse(BaseModel):
     organisation_coupon_id: str
     coupon_code: str
     benefit_description: str
+
+
+# ---------------------------------------------------------------------------
+# Organisation Detail Dashboard (Req 9.1, 9.3, 9.4, 9.5, 3.3, 3.4, 8.2, 8.3)
+# ---------------------------------------------------------------------------
+
+
+class OrgDetailPaymentMethod(BaseModel):
+    """Masked payment method — PCI DSS compliant (no stripe_payment_method_id)."""
+
+    brand: str
+    last4: str
+    exp_month: int
+    exp_year: int
+
+
+class OrgDetailCoupon(BaseModel):
+    """Active coupon applied to an organisation."""
+
+    coupon_code: str
+    discount_type: str
+    discount_value: float
+    duration_months: int | None = None
+    billing_months_used: int
+    is_expired: bool
+
+
+class OrgDetailStorageAddon(BaseModel):
+    """Storage add-on details for an organisation."""
+
+    package_name: str | None = None
+    quantity_gb: int
+    price_nzd_per_month: float
+    is_custom: bool
+
+
+class OrgDetailBilling(BaseModel):
+    """Billing section of the organisation detail dashboard."""
+
+    plan_name: str
+    monthly_price_nzd: float
+    billing_interval: str
+    next_billing_date: str | None = None
+    payment_method: OrgDetailPaymentMethod | None = None
+    coupons: list[OrgDetailCoupon] = []
+    storage_addon: OrgDetailStorageAddon | None = None
+    receipts_success_90d: int = 0
+    receipts_failed_90d: int = 0
+    last_failure_date: str | None = None
+
+
+class OrgDetailUsage(BaseModel):
+    """Usage metrics section — aggregate counts only, no PII."""
+
+    invoice_count: int = 0
+    quote_count: int = 0
+    customer_count: int = 0
+    vehicle_count: int = 0
+    storage_used_bytes: int = 0
+    storage_quota_gb: int = 0
+    carjam_lookups_this_month: int = 0
+    carjam_lookups_included: int = 0
+    sms_sent_this_month: int = 0
+    sms_included_quota: int = 0
+
+
+class OrgDetailUser(BaseModel):
+    """Single user in the organisation detail user section."""
+
+    id: str
+    name: str
+    email: str
+    role: str
+    is_active: bool
+    last_login_at: str | None = None
+    mfa_enabled: bool
+
+
+class OrgDetailUserSection(BaseModel):
+    """User management section of the organisation detail dashboard."""
+
+    users: list[OrgDetailUser] = []
+    active_count: int = 0
+    seat_limit: int = 0
+
+
+class OrgDetailLoginAttempt(BaseModel):
+    """Single login attempt entry for the security section."""
+
+    user_email: str
+    success: bool
+    ip_address: str | None = None
+    device_info: str | None = None
+    timestamp: str
+
+
+class OrgDetailAdminAction(BaseModel):
+    """Single admin action entry for the security section."""
+
+    action: str
+    admin_email: str | None = None
+    ip_address: str | None = None
+    timestamp: str
+
+
+class OrgDetailSecurity(BaseModel):
+    """Security and audit section of the organisation detail dashboard."""
+
+    login_attempts: list[OrgDetailLoginAttempt] = []
+    admin_actions: list[OrgDetailAdminAction] = []
+    mfa_enrolled_count: int = 0
+    mfa_total_users: int = 0
+    failed_payments_90d: int = 0
+
+
+class OrgDetailHealth(BaseModel):
+    """Health indicators for the organisation detail dashboard."""
+
+    billing_ok: bool = True
+    storage_ok: bool = True
+    storage_warning: bool = False
+    seats_ok: bool = True
+    mfa_ok: bool = True
+    status_ok: bool = True
+
+
+class OrgDetailOverview(BaseModel):
+    """Overview section of the organisation detail dashboard."""
+
+    id: str
+    name: str
+    status: str
+    plan_name: str
+    plan_id: str
+    signup_date: str
+    business_type: str | None = None
+    trade_category_name: str | None = None
+    billing_interval: str
+    trial_ends_at: str | None = None
+    timezone: str
+    locale: str
+
+
+class OrgDetailResponse(BaseModel):
+    """GET /admin/organisations/{org_id}/detail — full organisation detail response."""
+
+    overview: OrgDetailOverview
+    billing: OrgDetailBilling
+    usage: OrgDetailUsage
+    users: OrgDetailUserSection
+    security: OrgDetailSecurity
+    health: OrgDetailHealth

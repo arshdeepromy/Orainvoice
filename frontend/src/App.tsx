@@ -44,6 +44,7 @@ import { FeatureFlags } from '@/pages/admin/FeatureFlags'
 import { GlobalAdminProfile } from '@/pages/admin/GlobalAdminProfile'
 import TradeFamilies from '@/pages/admin/TradeFamilies'
 import { AdminSecurityPage } from '@/pages/admin/AdminSecurityPage'
+import { OrganisationDetail } from '@/pages/admin/OrganisationDetail'
 
 /* ── Org pages (lazy loaded) ── */
 const CustomerList = lazy(() => import('@/pages/customers/CustomerList'))
@@ -293,6 +294,7 @@ function AppRoutes() {
         <Route element={<RequireGlobalAdmin />}>
           <Route path="/admin" element={<AdminLayout />}>
             <Route path="dashboard" element={<SafePage name="admin-dashboard"><Dashboard /></SafePage>} />
+            <Route path="organisations/:orgId" element={<SafePage name="admin-org-detail"><OrganisationDetail /></SafePage>} />
             <Route path="organisations" element={<SafePage name="admin-organisations"><Organisations /></SafePage>} />
             <Route path="users" element={<SafePage name="admin-users"><UserManagement /></SafePage>} />
             <Route path="plans" element={<SafePage name="admin-plans"><SubscriptionPlans /></SafePage>} />

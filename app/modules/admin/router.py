@@ -7,7 +7,7 @@ import logging
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select
@@ -47,6 +47,7 @@ from app.modules.admin.schemas import (
     OrgDeleteRequest,
     OrgDeleteRequestResponse,
     OrgDeleteResponse,
+    OrgDetailResponse,
     OrgHardDeleteRequest,
     OrgHardDeleteResponse,
     OrgListItem,
@@ -94,6 +95,7 @@ from app.modules.admin.service import (
     get_all_orgs_carjam_usage,
     get_all_orgs_sms_usage,
     get_carjam_cost_report,
+    get_org_detail,
     get_churn_report,
     get_integration_config,
     get_mrr_report,
@@ -238,6 +240,56 @@ async def list_orgs(
         page=data["page"],
         page_size=data["page_size"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Organisation Detail Dashboard (Req 9.1, 9.2, 9.6, 9.7, 8.1, 8.4)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/organisations/{org_id}/detail",
+    response_model=OrgDetailResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "Organisation not found"},
+    },
+    summary="Get organisation detail dashboard data",
+    dependencies=[require_role("global_admin")],
+)
+async def get_organisation_detail(
+    org_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> OrgDetailResponse:
+    """Return aggregated organisation detail data for the admin dashboard.
+
+    Includes overview, billing, usage metrics, users, security/audit
+    information, and health indicators — all in a single response.
+
+    Payment method data is masked server-side (brand + last4 + expiry only).
+    Only aggregate counts are returned for invoices, quotes, customers,
+    and vehicles — never the actual records.
+
+    An audit log entry is recorded for every access.
+
+    Only Global_Admin users can access this endpoint.
+    Requirements 9.1, 9.2, 9.6, 9.7, 8.1, 8.4.
+    """
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+
+    data = await get_org_detail(
+        db,
+        org_id=org_id,
+        admin_user_id=uuid.UUID(user_id) if user_id else uuid.uuid4(),
+        ip_address=ip_address,
+        device_info=request.headers.get("user-agent"),
+    )
+    if data is None:
+        raise HTTPException(status_code=404, detail="Organisation not found")
+    return data
 
 
 @router.put(

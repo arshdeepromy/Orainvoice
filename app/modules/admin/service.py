@@ -429,6 +429,42 @@ def compute_sms_overage(total_sent: int, included_quota: int) -> int:
     return max(0, total_sent - included_quota)
 
 
+def compute_health_indicators(
+    *,
+    status: str,
+    receipts_failed_90d: int,
+    storage_used_bytes: int,
+    storage_quota_gb: int,
+    active_user_count: int,
+    seat_limit: int,
+    mfa_enrolled_count: int,
+    total_users: int,
+) -> dict:
+    """Derive organisation health indicator flags from aggregate metrics.
+
+    This is a pure function (no DB access) so it can be property-tested
+    independently.
+
+    Returns a dict with boolean flags:
+        billing_ok      – True when no failed receipts in last 90 days
+        storage_ok      – True when storage ratio <= 0.9
+        storage_warning – True when 0.8 < storage ratio <= 0.9
+        seats_ok        – True when active users < seat limit
+        mfa_ok          – True when >= 50% of users have MFA enrolled
+        status_ok       – True when status is not suspended/payment_pending
+    """
+    storage_ratio = storage_used_bytes / max(storage_quota_gb * 1_073_741_824, 1)
+    mfa_ratio = mfa_enrolled_count / max(total_users, 1)
+    return {
+        "billing_ok": receipts_failed_90d == 0,
+        "storage_ok": storage_ratio <= 0.9,
+        "storage_warning": 0.8 < storage_ratio <= 0.9,
+        "seats_ok": active_user_count < seat_limit,
+        "mfa_ok": mfa_ratio >= 0.5,
+        "status_ok": status not in ("suspended", "payment_pending"),
+    }
+
+
 async def get_effective_sms_quota(db: AsyncSession, org_id: uuid.UUID) -> int:
     """Return the effective SMS quota for an organisation.
 
@@ -5928,3 +5964,385 @@ async def import_integration_settings(
     )
 
     return restored
+
+
+# ---------------------------------------------------------------------------
+# Organisation Detail Dashboard (Req 9.1, 9.3, 9.4, 9.5, 8.1)
+# ---------------------------------------------------------------------------
+
+
+async def get_org_detail(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    admin_user_id: uuid.UUID,
+    ip_address: str | None = None,
+    device_info: str | None = None,
+) -> dict | None:
+    """Aggregate all organisation detail data for the admin dashboard.
+
+    Returns a dict matching the ``OrgDetailResponse`` schema, or ``None``
+    if the organisation does not exist.
+
+    Each sub-query section is wrapped in try/except so a failure in one
+    section does not block the others — the section falls back to safe
+    defaults and the error is logged.
+
+    Requirements: 9.1, 9.3, 9.4, 9.5, 8.1, 8.2, 8.3, 3.3, 3.4,
+    4.1–4.4, 4.10, 5.1–5.3, 6.1–6.5, 6.7.
+    """
+    from sqlalchemy import text as sa_text
+    from app.modules.billing.models import BillingReceipt, OrgPaymentMethod
+    from app.modules.trade_categories.models import TradeCategory
+    from app.modules.auth.models import UserMfaMethod
+
+    # ------------------------------------------------------------------
+    # 1. Core organisation + plan + trade category
+    # ------------------------------------------------------------------
+    org_stmt = (
+        select(
+            Organisation,
+            SubscriptionPlan,
+            TradeCategory.display_name.label("trade_category_name"),
+        )
+        .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
+        .outerjoin(TradeCategory, Organisation.trade_category_id == TradeCategory.id)
+        .where(Organisation.id == org_id)
+    )
+    org_result = await db.execute(org_stmt)
+    org_row = org_result.one_or_none()
+    if org_row is None:
+        return None
+
+    org, plan, trade_category_name = org_row
+
+    # ------------------------------------------------------------------
+    # 2. Default payment method (masked — never select stripe_payment_method_id)
+    # ------------------------------------------------------------------
+    payment_method_data: dict | None = None
+    try:
+        pm_stmt = (
+            select(
+                OrgPaymentMethod.brand,
+                OrgPaymentMethod.last4,
+                OrgPaymentMethod.exp_month,
+                OrgPaymentMethod.exp_year,
+            )
+            .where(OrgPaymentMethod.org_id == org_id)
+            .where(OrgPaymentMethod.is_default.is_(True))
+            .limit(1)
+        )
+        pm_result = await db.execute(pm_stmt)
+        pm_row = pm_result.one_or_none()
+        if pm_row is not None:
+            payment_method_data = {
+                "brand": pm_row.brand,
+                "last4": pm_row.last4,
+                "exp_month": pm_row.exp_month,
+                "exp_year": pm_row.exp_year,
+            }
+    except Exception:
+        logger.exception("get_org_detail: payment method query failed for org %s", org_id)
+
+    # ------------------------------------------------------------------
+    # 3. Aggregate counts (raw SQL with bound params — bypasses RLS)
+    # ------------------------------------------------------------------
+    invoice_count = 0
+    quote_count = 0
+    customer_count = 0
+    vehicle_count = 0
+    try:
+        counts_sql = sa_text(
+            "SELECT "
+            "(SELECT COUNT(*) FROM invoices WHERE org_id = :oid) AS invoice_count, "
+            "(SELECT COUNT(*) FROM quotes WHERE org_id = :oid) AS quote_count, "
+            "(SELECT COUNT(*) FROM customers WHERE org_id = :oid) AS customer_count, "
+            "(SELECT COUNT(*) FROM org_vehicles WHERE org_id = :oid) AS vehicle_count"
+        )
+        counts_result = await db.execute(counts_sql, {"oid": str(org_id)})
+        counts_row = counts_result.one()
+        invoice_count = counts_row.invoice_count or 0
+        quote_count = counts_row.quote_count or 0
+        customer_count = counts_row.customer_count or 0
+        vehicle_count = counts_row.vehicle_count or 0
+    except Exception:
+        logger.exception("get_org_detail: aggregate counts query failed for org %s", org_id)
+
+    # ------------------------------------------------------------------
+    # 4. Users with MFA enrollment status
+    # ------------------------------------------------------------------
+    users_list: list[dict] = []
+    active_user_count = 0
+    mfa_enrolled_count = 0
+    total_users = 0
+    try:
+        mfa_sq = (
+            select(func.count())
+            .where(UserMfaMethod.user_id == User.id)
+            .where(UserMfaMethod.verified.is_(True))
+            .correlate(User)
+            .scalar_subquery()
+        )
+        users_stmt = (
+            select(User, mfa_sq.label("mfa_count"))
+            .where(User.org_id == org_id)
+            .order_by(User.created_at)
+        )
+        users_result = await db.execute(users_stmt)
+        user_rows = users_result.all()
+        total_users = len(user_rows)
+
+        for u, mfa_count in user_rows:
+            has_mfa = (mfa_count or 0) > 0
+            if has_mfa:
+                mfa_enrolled_count += 1
+            if u.is_active:
+                active_user_count += 1
+
+            name_parts = []
+            if u.first_name:
+                name_parts.append(u.first_name)
+            if u.last_name:
+                name_parts.append(u.last_name)
+            display_name = " ".join(name_parts) if name_parts else u.email
+
+            users_list.append({
+                "id": str(u.id),
+                "name": display_name,
+                "email": u.email,
+                "role": u.role,
+                "is_active": u.is_active,
+                "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+                "mfa_enabled": has_mfa,
+            })
+    except Exception:
+        logger.exception("get_org_detail: users query failed for org %s", org_id)
+
+    # ------------------------------------------------------------------
+    # 5. Billing receipts (last 90 days) — paid vs failed counts
+    # ------------------------------------------------------------------
+    receipts_success_90d = 0
+    receipts_failed_90d = 0
+    last_failure_date: str | None = None
+    try:
+        ninety_days_ago = datetime.now(timezone.utc) - timedelta(days=90)
+        receipts_sql = sa_text(
+            "SELECT "
+            "  COUNT(*) FILTER (WHERE status = 'paid') AS success_count, "
+            "  COUNT(*) FILTER (WHERE status = 'failed') AS failed_count, "
+            "  MAX(billing_date) FILTER (WHERE status = 'failed') AS last_failure "
+            "FROM billing_receipts "
+            "WHERE org_id = :oid AND billing_date >= :cutoff"
+        )
+        receipts_result = await db.execute(
+            receipts_sql, {"oid": str(org_id), "cutoff": ninety_days_ago}
+        )
+        r_row = receipts_result.one()
+        receipts_success_90d = r_row.success_count or 0
+        receipts_failed_90d = r_row.failed_count or 0
+        if r_row.last_failure is not None:
+            last_failure_date = r_row.last_failure.isoformat() if hasattr(r_row.last_failure, "isoformat") else str(r_row.last_failure)
+    except Exception:
+        logger.exception("get_org_detail: billing receipts query failed for org %s", org_id)
+
+    # ------------------------------------------------------------------
+    # 6. Active organisation coupons with coupon details
+    # ------------------------------------------------------------------
+    coupons_list: list[dict] = []
+    try:
+        coupons_stmt = (
+            select(OrganisationCoupon, Coupon)
+            .join(Coupon, OrganisationCoupon.coupon_id == Coupon.id)
+            .where(OrganisationCoupon.org_id == org_id)
+            .where(OrganisationCoupon.is_expired.is_(False))
+        )
+        coupons_result = await db.execute(coupons_stmt)
+        coupon_rows = coupons_result.all()
+        for oc, coupon in coupon_rows:
+            coupons_list.append({
+                "coupon_code": coupon.code,
+                "discount_type": coupon.discount_type,
+                "discount_value": float(coupon.discount_value),
+                "duration_months": coupon.duration_months,
+                "billing_months_used": oc.billing_months_used,
+                "is_expired": oc.is_expired,
+            })
+    except Exception:
+        logger.exception("get_org_detail: coupons query failed for org %s", org_id)
+
+    # ------------------------------------------------------------------
+    # 7. Storage add-on
+    # ------------------------------------------------------------------
+    storage_addon_data: dict | None = None
+    try:
+        addon_stmt = (
+            select(OrgStorageAddon, StoragePackage.name.label("package_name"))
+            .outerjoin(StoragePackage, OrgStorageAddon.storage_package_id == StoragePackage.id)
+            .where(OrgStorageAddon.org_id == org_id)
+        )
+        addon_result = await db.execute(addon_stmt)
+        addon_row = addon_result.one_or_none()
+        if addon_row is not None:
+            addon, package_name = addon_row
+            storage_addon_data = {
+                "package_name": package_name,
+                "quantity_gb": addon.quantity_gb,
+                "price_nzd_per_month": float(addon.price_nzd_per_month),
+                "is_custom": addon.is_custom,
+            }
+    except Exception:
+        logger.exception("get_org_detail: storage addon query failed for org %s", org_id)
+
+    # ------------------------------------------------------------------
+    # 8. Login attempts from audit_log (last 30 days, limit 50)
+    # ------------------------------------------------------------------
+    login_attempts: list[dict] = []
+    try:
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+        login_sql = sa_text(
+            "SELECT al.action, al.ip_address, al.device_info, al.created_at, "
+            "  u.email AS user_email "
+            "FROM audit_log al "
+            "LEFT JOIN users u ON al.user_id = u.id "
+            "WHERE al.org_id = :oid "
+            "  AND al.action IN ('login_success', 'login_failed') "
+            "  AND al.created_at >= :cutoff "
+            "ORDER BY al.created_at DESC "
+            "LIMIT 50"
+        )
+        login_result = await db.execute(
+            login_sql, {"oid": str(org_id), "cutoff": thirty_days_ago}
+        )
+        for row in login_result:
+            login_attempts.append({
+                "user_email": row.user_email or "unknown",
+                "success": row.action == "login_success",
+                "ip_address": str(row.ip_address) if row.ip_address else None,
+                "device_info": row.device_info,
+                "timestamp": row.created_at.isoformat() if row.created_at else "",
+            })
+    except Exception:
+        logger.exception("get_org_detail: login attempts query failed for org %s", org_id)
+
+    # ------------------------------------------------------------------
+    # 9. Admin actions on this org from audit_log (last 90 days, limit 50)
+    # ------------------------------------------------------------------
+    admin_actions: list[dict] = []
+    try:
+        ninety_days_ago_actions = datetime.now(timezone.utc) - timedelta(days=90)
+        admin_sql = sa_text(
+            "SELECT al.action, al.ip_address, al.created_at, "
+            "  u.email AS admin_email "
+            "FROM audit_log al "
+            "LEFT JOIN users u ON al.user_id = u.id "
+            "WHERE al.entity_type = 'organisation' "
+            "  AND al.entity_id = :oid "
+            "  AND al.action IN ("
+            "    'org_suspended', 'org_reinstated', 'org_plan_changed', "
+            "    'org_coupon_applied', 'org_deleted', 'org_detail_viewed'"
+            "  ) "
+            "  AND al.created_at >= :cutoff "
+            "ORDER BY al.created_at DESC "
+            "LIMIT 50"
+        )
+        admin_result = await db.execute(
+            admin_sql, {"oid": str(org_id), "cutoff": ninety_days_ago_actions}
+        )
+        for row in admin_result:
+            admin_actions.append({
+                "action": row.action,
+                "admin_email": row.admin_email,
+                "ip_address": str(row.ip_address) if row.ip_address else None,
+                "timestamp": row.created_at.isoformat() if row.created_at else "",
+            })
+    except Exception:
+        logger.exception("get_org_detail: admin actions query failed for org %s", org_id)
+
+    # ------------------------------------------------------------------
+    # 10. Insert audit log entry for this view action
+    # ------------------------------------------------------------------
+    try:
+        await write_audit_log(
+            session=db,
+            org_id=org_id,
+            user_id=admin_user_id,
+            action="org_detail_viewed",
+            entity_type="organisation",
+            entity_id=org_id,
+            ip_address=ip_address,
+            device_info=device_info,
+        )
+        await db.flush()
+    except Exception:
+        logger.exception("get_org_detail: audit log insert failed for org %s", org_id)
+
+    # ------------------------------------------------------------------
+    # 11. Compute health indicators
+    # ------------------------------------------------------------------
+    health = compute_health_indicators(
+        status=org.status,
+        receipts_failed_90d=receipts_failed_90d,
+        storage_used_bytes=org.storage_used_bytes,
+        storage_quota_gb=org.storage_quota_gb,
+        active_user_count=active_user_count,
+        seat_limit=plan.user_seats,
+        mfa_enrolled_count=mfa_enrolled_count,
+        total_users=total_users,
+    )
+
+    # ------------------------------------------------------------------
+    # 12. Assemble response dict matching OrgDetailResponse schema
+    # ------------------------------------------------------------------
+    return {
+        "overview": {
+            "id": str(org.id),
+            "name": org.name,
+            "status": org.status,
+            "plan_name": plan.name,
+            "plan_id": str(plan.id),
+            "signup_date": org.created_at.isoformat() if org.created_at else "",
+            "business_type": org.business_type,
+            "trade_category_name": trade_category_name,
+            "billing_interval": org.billing_interval or "monthly",
+            "trial_ends_at": org.trial_ends_at.isoformat() if org.trial_ends_at else None,
+            "timezone": org.timezone,
+            "locale": org.locale,
+        },
+        "billing": {
+            "plan_name": plan.name,
+            "monthly_price_nzd": float(plan.monthly_price_nzd),
+            "billing_interval": org.billing_interval or "monthly",
+            "next_billing_date": org.next_billing_date.isoformat() if org.next_billing_date else None,
+            "payment_method": payment_method_data,
+            "coupons": coupons_list,
+            "storage_addon": storage_addon_data,
+            "receipts_success_90d": receipts_success_90d,
+            "receipts_failed_90d": receipts_failed_90d,
+            "last_failure_date": last_failure_date,
+        },
+        "usage": {
+            "invoice_count": invoice_count,
+            "quote_count": quote_count,
+            "customer_count": customer_count,
+            "vehicle_count": vehicle_count,
+            "storage_used_bytes": org.storage_used_bytes,
+            "storage_quota_gb": org.storage_quota_gb,
+            "carjam_lookups_this_month": org.carjam_lookups_this_month,
+            "carjam_lookups_included": plan.carjam_lookups_included,
+            "sms_sent_this_month": org.sms_sent_this_month,
+            "sms_included_quota": plan.sms_included_quota,
+        },
+        "users": {
+            "users": users_list,
+            "active_count": active_user_count,
+            "seat_limit": plan.user_seats,
+        },
+        "security": {
+            "login_attempts": login_attempts,
+            "admin_actions": admin_actions,
+            "mfa_enrolled_count": mfa_enrolled_count,
+            "mfa_total_users": total_users,
+            "failed_payments_90d": receipts_failed_90d,
+        },
+        "health": health,
+    }
