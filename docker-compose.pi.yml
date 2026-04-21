@@ -61,7 +61,7 @@ services:
       - "-c"
       - "max_wal_senders=10"
       - "-c"
-      - "max_replication_slots=30"
+      - "max_replication_slots=150"
       - "-c"
       - "app.current_org_id="
       - "-c"
