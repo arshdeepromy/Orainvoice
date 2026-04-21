@@ -246,19 +246,34 @@ class HAService:
 
         await db.commit()
 
-        # Hot-reload heartbeat service if peer endpoint changed
+        # Hot-reload heartbeat service when config changes
         secret = _get_heartbeat_secret_from_config(cfg)
-        if cfg.peer_endpoint and (old_peer != cfg.peer_endpoint or _heartbeat_service is None):
-            if _heartbeat_service is not None:
-                await _heartbeat_service.stop()
-            _heartbeat_service = HeartbeatService(
-                peer_endpoint=cfg.peer_endpoint,
-                interval=cfg.heartbeat_interval_seconds,
-                secret=secret,
-                local_role=cfg.role,
+        if cfg.peer_endpoint:
+            needs_restart = (
+                _heartbeat_service is None
+                or old_peer != cfg.peer_endpoint
+                or (config.heartbeat_secret and _heartbeat_service is not None)
+                or (_heartbeat_service is not None and _heartbeat_service.secret != secret)
             )
-            await _heartbeat_service.start()
-            logger.info("Heartbeat service (re)started for peer %s", cfg.peer_endpoint)
+            if needs_restart:
+                if _heartbeat_service is not None:
+                    await _heartbeat_service.stop()
+                _heartbeat_service = HeartbeatService(
+                    peer_endpoint=cfg.peer_endpoint,
+                    interval=cfg.heartbeat_interval_seconds,
+                    secret=secret,
+                    local_role=cfg.role,
+                )
+                await _heartbeat_service.start()
+                logger.info("Heartbeat service (re)started for peer %s", cfg.peer_endpoint)
+
+        # Also invalidate the heartbeat response cache so the responding
+        # side picks up the new secret immediately
+        try:
+            from app.modules.ha import router as _ha_router
+            _ha_router._hb_cache["ts"] = 0
+        except Exception:
+            pass  # Non-critical — cache will expire naturally in 10s
 
         return _config_to_response(cfg)
 
