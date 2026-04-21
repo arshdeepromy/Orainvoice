@@ -36,6 +36,9 @@ class PlatformBranding(Base):
     logo_url: Mapped[str | None] = mapped_column(
         String(500), nullable=True,
     )
+    favicon_url: Mapped[str | None] = mapped_column(
+        String(500), nullable=True,
+    )
     primary_colour: Mapped[str] = mapped_column(
         String(7), server_default="#2563EB", nullable=False,
     )

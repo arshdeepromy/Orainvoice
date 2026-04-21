@@ -2569,6 +2569,17 @@ async def confirm_signup_payment(
     db.add(admin_user)
     await db.flush()
 
+    # Link coupon to org so it appears in admin dashboard & billing
+    _pending_coupon_code = pending.get("coupon_code")
+    if _pending_coupon_code:
+        from app.modules.organisations.service import _create_organisation_coupon
+        await _create_organisation_coupon(
+            db,
+            org_id=org.id,
+            coupon_code=_pending_coupon_code,
+            now=datetime.now(timezone.utc),
+        )
+
     # 5. Link payment to Stripe customer and save payment method
     try:
         pm_id = intent.payment_method
@@ -2588,14 +2599,14 @@ async def confirm_signup_payment(
             )
 
             pm_obj = stripe_lib.PaymentMethod.retrieve(pm_id)
-            card = pm_obj.get("card") or {}
+            _card = getattr(pm_obj, "card", None)
             payment_method_record = OrgPaymentMethod(
                 org_id=org.id,
                 stripe_payment_method_id=pm_id,
-                brand=card.get("brand", "unknown"),
-                last4=card.get("last4", "0000"),
-                exp_month=card.get("exp_month", 0),
-                exp_year=card.get("exp_year", 0),
+                brand=getattr(_card, "brand", "unknown") if _card else "unknown",
+                last4=getattr(_card, "last4", "0000") if _card else "0000",
+                exp_month=getattr(_card, "exp_month", 0) if _card else 0,
+                exp_year=getattr(_card, "exp_year", 0) if _card else 0,
                 is_default=True,
                 is_verified=True,
             )

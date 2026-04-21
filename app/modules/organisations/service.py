@@ -17,7 +17,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
-from app.modules.admin.models import Organisation, SubscriptionPlan
+from app.modules.admin.models import Coupon, Organisation, OrganisationCoupon, SubscriptionPlan
 from app.modules.auth.models import User
 from app.modules.organisations.models import Branch
 
@@ -1531,6 +1531,47 @@ def _compute_billing_breakdown(
     }
 
 
+async def _create_organisation_coupon(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    coupon_code: str,
+    now: datetime,
+) -> None:
+    """Create an OrganisationCoupon record and increment the coupon's
+    times_redeemed counter.  Called during signup flows so the coupon
+    shows up on the admin org-detail page and is applied during billing.
+
+    Silently skips if the coupon is not found (defensive — validation
+    already passed earlier in the signup flow).
+    """
+    from sqlalchemy import func as sa_func
+
+    result = await db.execute(
+        select(Coupon).where(
+            sa_func.upper(Coupon.code) == coupon_code.strip().upper()
+        )
+    )
+    coupon = result.scalar_one_or_none()
+    if coupon is None:
+        logger.warning(
+            "_create_organisation_coupon: coupon %r not found for org %s",
+            coupon_code, org_id,
+        )
+        return
+
+    org_coupon = OrganisationCoupon(
+        org_id=org_id,
+        coupon_id=coupon.id,
+        applied_at=now,
+        billing_months_used=0,
+        is_expired=False,
+    )
+    db.add(org_coupon)
+    coupon.times_redeemed = coupon.times_redeemed + 1
+    await db.flush()
+
+
 async def public_signup(
     db: AsyncSession,
     *,
@@ -1807,6 +1848,12 @@ async def public_signup(
             db.add(admin_user)
             await db.flush()
 
+            # Link coupon to org so it appears in admin dashboard & billing
+            if coupon_code:
+                await _create_organisation_coupon(
+                    db, org_id=org.id, coupon_code=coupon_code, now=now,
+                )
+
             signup_token = secrets.token_urlsafe(48)
             token_hash = _hash_token(signup_token)
             token_data = json.dumps({
@@ -1992,6 +2039,12 @@ async def public_signup(
     )
     db.add(admin_user)
     await db.flush()
+
+    # Link coupon to org so it appears in admin dashboard & billing
+    if coupon_code:
+        await _create_organisation_coupon(
+            db, org_id=org.id, coupon_code=coupon_code, now=now,
+        )
 
     # Generate signup token (stored in Redis, 48h TTL)
     signup_token = secrets.token_urlsafe(48)

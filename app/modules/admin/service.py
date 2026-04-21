@@ -1674,7 +1674,7 @@ async def test_stripe_connection(
 
         account = stripe_lib.Account.retrieve(platform_account_id)
 
-        if account and account.get("id"):
+        if account and getattr(account, "id", None):
             config_row.is_verified = True
             await db.flush()
 

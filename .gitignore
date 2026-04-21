@@ -55,3 +55,7 @@ Thumbs.db
 # Deploy
 backups/
 deploy-*.log
+
+# Deployment temp files
+frontend_dist_export/
+deploy.tar

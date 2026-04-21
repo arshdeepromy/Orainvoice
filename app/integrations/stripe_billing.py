@@ -547,7 +547,7 @@ async def create_invoice_item(
     )
     return {
         "invoice_item_id": item.id,
-        "amount": item.get("amount", 0),
+        "amount": getattr(item, "amount", 0),
         "description": description,
     }
 
@@ -568,9 +568,12 @@ async def report_metered_usage(
     await _ensure_stripe_key()
     subscription = stripe.Subscription.retrieve(subscription_id)
     metered_item = None
-    for item in subscription["items"]["data"]:
-        price = item.get("price", {})
-        if price.get("recurring", {}).get("usage_type") == "metered":
+    _items = getattr(subscription, "items", None)
+    _items_data = getattr(_items, "data", []) if _items else []
+    for item in _items_data:
+        price = getattr(item, "price", None)
+        recurring = getattr(price, "recurring", None) if price else None
+        if recurring and getattr(recurring, "usage_type", None) == "metered":
             metered_item = item
             break
 
@@ -589,18 +592,18 @@ async def report_metered_usage(
         params["timestamp"] = timestamp
 
     usage_record = stripe.SubscriptionItem.create_usage_record(
-        metered_item["id"],
+        metered_item.id,
         **params,
     )
     logger.info(
         "Reported %d metered usage for subscription %s (item %s)",
         quantity,
         subscription_id,
-        metered_item["id"],
+        metered_item.id,
     )
     return {
         "reported": True,
-        "usage_record_id": usage_record.get("id"),
+        "usage_record_id": getattr(usage_record, "id", None),
         "quantity": quantity,
     }
 
