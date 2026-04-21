@@ -885,3 +885,56 @@ async def history():
 router = APIRouter()
 router.include_router(public_router)
 router.include_router(admin_router)
+
+# ---------------------------------------------------------------------------
+# Replication Slots Management
+# ---------------------------------------------------------------------------
+
+
+@admin_router.get(
+    "/replication/slots",
+    summary="List all replication slots on this node",
+    dependencies=[require_role("global_admin")],
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+)
+async def list_replication_slots(db: AsyncSession = Depends(get_db_session)):
+    """List all PostgreSQL replication slots on this node.
+
+    Shows slot name, type, active status, retained WAL size, and idle time.
+    Useful for identifying orphaned slots that need cleanup.
+    """
+    slots = await ReplicationManager.list_replication_slots(db)
+    return {"slots": slots}
+
+
+@admin_router.delete(
+    "/replication/slots/{slot_name}",
+    summary="Drop a replication slot",
+    dependencies=[require_role("global_admin")],
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        400: {"description": "Slot is active or invalid name"},
+        404: {"description": "Slot not found"},
+    },
+)
+async def drop_replication_slot(slot_name: str):
+    """Drop an inactive replication slot.
+
+    Only inactive (orphaned) slots can be dropped. Active slots must be
+    disconnected first by stopping the subscription on the standby.
+    """
+    try:
+        result = await ReplicationManager.drop_replication_slot(None, slot_name)
+        if result["status"] == "not_found":
+            return JSONResponse(status_code=404, content={"detail": result["message"]})
+        if result["status"] == "error":
+            return JSONResponse(status_code=400, content={"detail": result["message"]})
+        return result
+    except RuntimeError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})

@@ -160,6 +160,17 @@ class ReplicationStatusResponse(BaseModel):
     is_healthy: bool
 
 
+class ReplicationSlot(BaseModel):
+    """A single replication slot from pg_replication_slots."""
+
+    slot_name: str
+    slot_type: str
+    active: bool
+    retained_wal: str | None = None
+    active_pid: int | None = None
+    idle_seconds: float | None = None
+
+
 class ResyncProgressResponse(BaseModel):
     """Response for re-sync progress tracking."""
 

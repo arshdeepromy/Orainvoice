@@ -174,11 +174,15 @@ class ReplicationManager:
               CONNECTION '<primary_conn_str>'
               PUBLICATION orainvoice_ha_pub
 
+        If the subscription fails because the replication slot already exists
+        on the primary (orphaned from a previous failed attempt), this method
+        automatically cleans up the orphaned slot and retries once.
+
         The initial ``copy_data=true`` (default) triggers a full data sync.
 
         Returns a dict with the operation result.
         """
-        try:
+        async def _try_create() -> dict:
             sql = (
                 f"CREATE SUBSCRIPTION {ReplicationManager.SUBSCRIPTION_NAME} "
                 f"CONNECTION '{primary_conn_str}' "
@@ -194,9 +198,14 @@ class ReplicationManager:
                 "subscription": ReplicationManager.SUBSCRIPTION_NAME,
                 "message": "Subscription created, initial data sync in progress",
             }
+
+        try:
+            return await _try_create()
         except Exception as exc:
             error_msg = str(exc)
+
             if "already exists" in error_msg.lower():
+                # Subscription already exists locally
                 logger.info(
                     "Subscription '%s' already exists",
                     ReplicationManager.SUBSCRIPTION_NAME,
@@ -206,6 +215,31 @@ class ReplicationManager:
                     "subscription": ReplicationManager.SUBSCRIPTION_NAME,
                     "message": "Subscription already exists",
                 }
+
+            if "replication slot" in error_msg.lower() and "already exists" in error_msg.lower():
+                # Orphaned slot on primary — auto-cleanup and retry
+                logger.warning(
+                    "Orphaned replication slot detected on primary — attempting cleanup"
+                )
+                cleaned = await ReplicationManager._cleanup_orphaned_slot_on_peer(
+                    primary_conn_str
+                )
+                if cleaned:
+                    try:
+                        return await _try_create()
+                    except Exception as retry_exc:
+                        logger.error("Retry after slot cleanup failed: %s", retry_exc)
+                        raise RuntimeError(
+                            f"Failed to create subscription after cleaning up orphaned slot: {retry_exc}"
+                        ) from retry_exc
+                else:
+                    raise RuntimeError(
+                        "An orphaned replication slot exists on the primary but could not be "
+                        "cleaned up automatically. Go to the primary node's HA page → "
+                        "Replication Slots section and drop the inactive slot manually, "
+                        "then retry Initialize Replication."
+                    ) from exc
+
             logger.error("Failed to create subscription: %s", error_msg)
             raise RuntimeError(f"Failed to create subscription: {error_msg}") from exc
 
@@ -438,3 +472,109 @@ class ReplicationManager:
         except Exception as exc:
             logger.debug("Could not query replication lag: %s", exc)
         return None
+
+    # ------------------------------------------------------------------
+    # Replication Slots Management
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def list_replication_slots(db: AsyncSession) -> list[dict]:
+        """List all replication slots on this PostgreSQL instance.
+
+        Returns a list of dicts with slot details from ``pg_replication_slots``.
+        """
+        try:
+            result = await db.execute(
+                text(
+                    "SELECT slot_name, slot_type, active, "
+                    "  pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained_wal, "
+                    "  active_pid, "
+                    "  EXTRACT(EPOCH FROM (now() - COALESCE("
+                    "    (SELECT last_msg_send_time FROM pg_stat_subscription WHERE subname = slot_name), "
+                    "    (SELECT stat_reset FROM pg_stat_replication_slots WHERE slot_name = rs.slot_name)"
+                    "  ))) AS idle_seconds "
+                    "FROM pg_replication_slots rs "
+                    "ORDER BY slot_name"
+                )
+            )
+            rows = result.fetchall()
+            return [
+                {
+                    "slot_name": r[0],
+                    "slot_type": r[1],
+                    "active": r[2],
+                    "retained_wal": r[3],
+                    "active_pid": r[4],
+                    "idle_seconds": float(r[5]) if r[5] is not None else None,
+                }
+                for r in rows
+            ]
+        except Exception as exc:
+            logger.error("Failed to list replication slots: %s", exc)
+            return []
+
+    @staticmethod
+    async def drop_replication_slot(db: AsyncSession, slot_name: str) -> dict:
+        """Drop a replication slot by name.
+
+        Only drops inactive slots. Returns a result dict.
+        """
+        # Validate slot_name to prevent SQL injection (alphanumeric + underscore only)
+        import re
+        if not re.match(r"^[a-zA-Z0-9_]+$", slot_name):
+            raise ValueError(f"Invalid slot name: {slot_name}")
+
+        try:
+            # Check if slot exists and is inactive
+            result = await db.execute(
+                text("SELECT active FROM pg_replication_slots WHERE slot_name = :name"),
+                {"name": slot_name},
+            )
+            row = result.fetchone()
+            if row is None:
+                return {"status": "not_found", "message": f"Slot '{slot_name}' does not exist"}
+            if row[0]:
+                return {"status": "error", "message": f"Slot '{slot_name}' is active — cannot drop while in use"}
+
+            await ReplicationManager._exec_autocommit(
+                db,
+                f"SELECT pg_drop_replication_slot('{slot_name}')",
+            )
+            logger.info("Dropped replication slot '%s'", slot_name)
+            return {"status": "ok", "message": f"Slot '{slot_name}' dropped successfully"}
+        except Exception as exc:
+            logger.error("Failed to drop replication slot '%s': %s", slot_name, exc)
+            raise RuntimeError(f"Failed to drop slot: {exc}") from exc
+
+    @staticmethod
+    async def _cleanup_orphaned_slot_on_peer(primary_conn_str: str) -> bool:
+        """Attempt to drop the orphaned replication slot on the primary.
+
+        Connects directly to the primary using the provided connection string
+        and drops the slot if it exists and is inactive. Returns True if
+        cleanup was performed or slot didn't exist, False on failure.
+        """
+        import asyncpg
+
+        slot_name = ReplicationManager.SUBSCRIPTION_NAME
+        try:
+            conn = await asyncpg.connect(primary_conn_str)
+            try:
+                row = await conn.fetchrow(
+                    "SELECT active FROM pg_replication_slots WHERE slot_name = $1",
+                    slot_name,
+                )
+                if row is None:
+                    logger.info("No orphaned slot '%s' found on primary", slot_name)
+                    return True
+                if row["active"]:
+                    logger.warning("Slot '%s' is active on primary — cannot clean up", slot_name)
+                    return False
+                await conn.execute(f"SELECT pg_drop_replication_slot('{slot_name}')")
+                logger.info("Cleaned up orphaned slot '%s' on primary", slot_name)
+                return True
+            finally:
+                await conn.close()
+        except Exception as exc:
+            logger.error("Failed to clean up orphaned slot on primary: %s", exc)
+            return False

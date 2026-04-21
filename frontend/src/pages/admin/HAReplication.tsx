@@ -226,18 +226,24 @@ export function HAReplication() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
 
+  // Replication slots state
+  const [slots, setSlots] = useState<{ slot_name: string; slot_type: string; active: boolean; retained_wal: string | null; active_pid: number | null; idle_seconds: number | null }[]>([])
+  const [droppingSlot, setDroppingSlot] = useState<string | null>(null)
+
   // Track whether initial form state has been populated
   const [formInitialized, setFormInitialized] = useState(false)
 
   const fetchData = useCallback(async () => {
-    const [cfg, hist, repl] = await Promise.all([
+    const [cfg, hist, repl, slotsData] = await Promise.all([
       safeFetch<HAConfig | null>('/ha/identity', null),
       safeFetch<HeartbeatHistoryEntry[]>('/ha/history', []),
       safeFetch<ReplicationStatus | null>('/ha/replication/status', null),
+      safeFetch<{ slots: typeof slots }>('/ha/replication/slots', { slots: [] }),
     ])
     setConfig(cfg)
     setHistory(hist)
     setReplication(repl)
+    setSlots(slotsData?.slots ?? [])
     // Only populate form fields on initial load — not on polling refreshes
     if (cfg && !formInitialized) {
       setFormNodeName(cfg.node_name)
@@ -380,6 +386,24 @@ export function HAReplication() {
       setTestResult({ ok: false, message: msg })
     } finally {
       setTestingConnection(false)
+    }
+  }
+
+  /* ---- Drop replication slot ---- */
+  const handleDropSlot = async (slotName: string) => {
+    if (!confirm(`Drop replication slot "${slotName}"? This cannot be undone.`)) return
+    setDroppingSlot(slotName)
+    try {
+      await apiClient.delete(`/ha/replication/slots/${slotName}`)
+      setActionSuccess(`Slot "${slotName}" dropped successfully`)
+      setTimeout(() => setActionSuccess(null), 4000)
+      await fetchData()
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to drop slot'
+      setActionError(msg)
+      setTimeout(() => setActionError(null), 5000)
+    } finally {
+      setDroppingSlot(null)
     }
   }
 
@@ -839,6 +863,76 @@ export function HAReplication() {
                   <dd>{formatTime(replication.last_replicated_at)}</dd>
                 </div>
               </dl>
+            </section>
+          )}
+
+          {/* Replication Slots */}
+          {slots.length > 0 && (
+            <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-medium text-gray-900">Replication Slots</h2>
+                <span className="text-xs text-gray-400">{slots.length} slot{slots.length !== 1 ? 's' : ''}</span>
+              </div>
+              <p className="text-sm text-gray-500">
+                Replication slots track where each subscriber has read up to. Inactive (orphaned) slots can accumulate WAL and should be dropped.
+              </p>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-gray-500">
+                      <th className="pb-2 pr-4">Slot Name</th>
+                      <th className="pb-2 pr-4">Type</th>
+                      <th className="pb-2 pr-4">Status</th>
+                      <th className="pb-2 pr-4">Retained WAL</th>
+                      <th className="pb-2 pr-4">Idle</th>
+                      <th className="pb-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {slots.map((slot) => (
+                      <tr key={slot.slot_name} className="border-b border-gray-100">
+                        <td className="py-2 pr-4 font-mono text-xs">{slot.slot_name}</td>
+                        <td className="py-2 pr-4">{slot.slot_type}</td>
+                        <td className="py-2 pr-4">
+                          {slot.active ? (
+                            <span className="inline-flex items-center gap-1 text-green-600">
+                              <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+                              Active
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-amber-600">
+                              <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
+                              Inactive
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 text-gray-600">{slot.retained_wal ?? '—'}</td>
+                        <td className="py-2 pr-4 text-gray-600">
+                          {slot.idle_seconds != null
+                            ? slot.idle_seconds < 60
+                              ? `${Math.round(slot.idle_seconds)}s`
+                              : slot.idle_seconds < 3600
+                                ? `${Math.round(slot.idle_seconds / 60)}m`
+                                : `${Math.round(slot.idle_seconds / 3600)}h`
+                            : '—'}
+                        </td>
+                        <td className="py-2 text-right">
+                          {!slot.active && (
+                            <Button
+                              variant="danger"
+                              size="sm"
+                              onClick={() => handleDropSlot(slot.slot_name)}
+                              loading={droppingSlot === slot.slot_name}
+                            >
+                              Drop
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
           )}
 
