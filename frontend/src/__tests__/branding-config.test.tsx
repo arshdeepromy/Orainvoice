@@ -24,6 +24,7 @@ function makeBranding(overrides: Partial<PlatformBranding> = {}): PlatformBrandi
     id: 'branding-001',
     platform_name: 'OraInvoice',
     logo_url: '/assets/logo/orainvoice-logo.svg',
+    favicon_url: null,
     primary_colour: '#2563EB',
     secondary_colour: '#1E40AF',
     website_url: 'https://orainvoice.com',

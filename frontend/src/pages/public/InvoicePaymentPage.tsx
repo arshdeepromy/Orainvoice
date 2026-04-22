@@ -211,7 +211,7 @@ interface PaymentFormProps {
   surchargeRates: Record<string, SurchargeRateInfo>
 }
 
-function PaymentForm({ balanceDue: rawBalanceDue, currency, invoiceNumber, clientSecret, token, surchargeEnabled, surchargeRates }: PaymentFormProps) {
+function PaymentForm({ balanceDue: rawBalanceDue, currency, invoiceNumber, clientSecret: _clientSecret, token, surchargeEnabled, surchargeRates }: PaymentFormProps) {
   const balanceDue = Number(rawBalanceDue) || 0
   const stripe = useStripe()
   const elements = useElements()
