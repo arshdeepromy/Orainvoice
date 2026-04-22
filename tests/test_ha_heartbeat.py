@@ -222,3 +222,188 @@ def test_history_bounded_at_100():
         )
     assert len(svc.history) == 100
     assert len(svc.get_history()) == 100
+
+
+# ── Crash recovery (Task 15) ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ping_loop_continues_after_exception():
+    """15.1/15.2: An exception in the loop body does not kill the task."""
+    svc = HeartbeatService(PEER, interval=0, secret=SECRET)
+
+    call_count = 0
+
+    async def _failing_ping():
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            raise RuntimeError("transient DB error")
+        # Third call succeeds — then we cancel to exit the loop
+        svc._task.cancel()
+        return HeartbeatHistoryEntry(
+            timestamp="2025-01-01T00:00:00+00:00",
+            peer_status="healthy",
+        )
+
+    with patch.object(svc, "_ping_peer", side_effect=_failing_ping):
+        with patch.object(svc, "_classify_health", return_value="unknown"):
+            with patch("app.modules.ha.heartbeat.asyncio.sleep", new_callable=AsyncMock):
+                with patch("app.modules.ha.middleware.set_split_brain_blocked"):
+                    svc._task = asyncio.current_task()  # so cancel works
+                    task = asyncio.create_task(svc._ping_loop())
+                    svc._task = task
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+    # The loop survived 2 failures and reached the 3rd call
+    assert call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_ping_loop_logs_consecutive_failures(caplog):
+    """15.3: After 5 consecutive failures, a degraded warning is logged."""
+    svc = HeartbeatService(PEER, interval=0, secret=SECRET)
+
+    call_count = 0
+
+    async def _always_fail():
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 6:
+            # Stop after 6 failures so we can check logs
+            raise asyncio.CancelledError
+        raise RuntimeError(f"error #{call_count}")
+
+    with patch.object(svc, "_ping_peer", side_effect=_always_fail):
+        with patch("app.modules.ha.heartbeat.asyncio.sleep", new_callable=AsyncMock):
+            import logging
+            with caplog.at_level(logging.WARNING, logger="app.modules.ha.heartbeat"):
+                task = asyncio.create_task(svc._ping_loop())
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    # 5 failures should trigger the degraded warning
+    assert any("5+ consecutive failures" in msg for msg in caplog.messages)
+
+
+@pytest.mark.asyncio
+async def test_ping_loop_resets_failures_on_success():
+    """15.3: Consecutive failure counter resets after a successful cycle."""
+    svc = HeartbeatService(PEER, interval=0, secret=SECRET)
+
+    call_count = 0
+
+    async def _fail_then_succeed():
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 3:
+            raise RuntimeError("transient error")
+        if call_count == 4:
+            # Success — this resets the counter
+            return HeartbeatHistoryEntry(
+                timestamp="2025-01-01T00:00:00+00:00",
+                peer_status="healthy",
+            )
+        # 5th call: fail again, then cancel
+        if call_count == 5:
+            raise RuntimeError("another error")
+        raise asyncio.CancelledError
+
+    with patch.object(svc, "_ping_peer", side_effect=_fail_then_succeed):
+        with patch.object(svc, "_classify_health", return_value="unknown"):
+            with patch("app.modules.ha.heartbeat.asyncio.sleep", new_callable=AsyncMock):
+                with patch("app.modules.ha.middleware.set_split_brain_blocked"):
+                    task = asyncio.create_task(svc._ping_loop())
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+    # After 3 failures + 1 success + 1 failure + cancel = 6 calls
+    assert call_count == 6
+
+
+@pytest.mark.asyncio
+async def test_ping_loop_cancelled_error_propagates():
+    """15.1: asyncio.CancelledError is always re-raised, never swallowed."""
+    svc = HeartbeatService(PEER, interval=0, secret=SECRET)
+
+    async def _raise_cancelled():
+        raise asyncio.CancelledError
+
+    with patch.object(svc, "_ping_peer", side_effect=_raise_cancelled):
+        with pytest.raises(asyncio.CancelledError):
+            await svc._ping_loop()
+
+
+@pytest.mark.asyncio
+async def test_ping_loop_auto_promote_error_does_not_crash_loop():
+    """15.4: A failed auto-promote doesn't crash the heartbeat loop."""
+    svc = HeartbeatService(PEER, interval=0, secret=SECRET, local_role="standby")
+    svc._peer_unreachable_since = 0.0  # pretend peer has been unreachable
+
+    call_count = 0
+
+    async def _success_ping():
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 3:
+            raise asyncio.CancelledError
+        return HeartbeatHistoryEntry(
+            timestamp="2025-01-01T00:00:00+00:00",
+            peer_status="error",
+            error="Connection refused",
+        )
+
+    # Make _classify_health return "unreachable" to trigger auto-promote path
+    with patch.object(svc, "_ping_peer", side_effect=_success_ping):
+        with patch.object(svc, "_classify_health", return_value="unreachable"):
+            with patch("app.modules.ha.heartbeat.asyncio.sleep", new_callable=AsyncMock):
+                with patch("app.modules.ha.middleware.set_split_brain_blocked"):
+                    # Mock the auto-promote DB check to raise an error
+                    with patch("app.modules.ha.heartbeat.should_auto_promote", return_value=True):
+                        with patch("app.core.database.async_session_factory", side_effect=RuntimeError("DB down")):
+                            task = asyncio.create_task(svc._ping_loop())
+                            try:
+                                await task
+                            except asyncio.CancelledError:
+                                pass
+
+    # Loop survived the auto-promote error and continued
+    assert call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_ping_loop_sleep_outside_inner_try():
+    """15.2: asyncio.sleep is called even after an exception in the cycle body."""
+    svc = HeartbeatService(PEER, interval=5, secret=SECRET)
+
+    call_count = 0
+    sleep_calls = []
+
+    async def _fail_once():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("boom")
+        raise asyncio.CancelledError
+
+    async def _mock_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    with patch.object(svc, "_ping_peer", side_effect=_fail_once):
+        with patch("app.modules.ha.heartbeat.asyncio.sleep", side_effect=_mock_sleep):
+            task = asyncio.create_task(svc._ping_loop())
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    # Sleep should have been called after the failed cycle
+    assert len(sleep_calls) >= 1
+    assert sleep_calls[0] == 5

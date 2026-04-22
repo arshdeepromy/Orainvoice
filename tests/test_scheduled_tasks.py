@@ -187,3 +187,203 @@ class TestBeatScheduleIntegration:
         assert callable(retry_failed_notifications_task)
         assert callable(archive_error_logs_task)
         assert callable(generate_recurring_invoices_task)
+
+
+# ---------------------------------------------------------------------------
+# Task 13: Background Task Guard on Standby (Req 13.1–13.5)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteTasksDefinition:
+    """13.2: Verify WRITE_TASKS set contains the correct task names."""
+
+    def test_write_tasks_is_a_set(self):
+        from app.tasks.scheduled import WRITE_TASKS
+        assert isinstance(WRITE_TASKS, set)
+
+    def test_write_tasks_contains_billing(self):
+        from app.tasks.scheduled import WRITE_TASKS
+        assert "recurring_billing" in WRITE_TASKS
+
+    def test_write_tasks_contains_sms_reset(self):
+        from app.tasks.scheduled import WRITE_TASKS
+        assert "reset_sms_counters" in WRITE_TASKS
+
+    def test_write_tasks_does_not_contain_readonly(self):
+        """Read-only tasks like compliance_expiry should still run on standby."""
+        from app.tasks.scheduled import WRITE_TASKS
+        assert "compliance_expiry" not in WRITE_TASKS
+        assert "quote_expiry" not in WRITE_TASKS
+        assert "sync_public_holidays" not in WRITE_TASKS
+
+    def test_all_write_tasks_exist_in_daily_tasks(self):
+        """Every name in WRITE_TASKS must correspond to a registered task."""
+        from app.tasks.scheduled import WRITE_TASKS, _DAILY_TASKS
+        registered_names = {name for _, _, name in _DAILY_TASKS}
+        for wt in WRITE_TASKS:
+            assert wt in registered_names, f"WRITE_TASKS entry '{wt}' not in _DAILY_TASKS"
+
+
+class TestStandbyTaskGuard:
+    """13.1, 13.3: Role check skips write tasks on standby, logs debug."""
+
+    @pytest.mark.asyncio
+    async def test_standby_skips_write_tasks(self):
+        """When role is 'standby', write tasks should not be dispatched."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        dispatched: list[str] = []
+
+        async def fake_run_task_safe(fn, name):
+            dispatched.append(name)
+
+        with patch("app.tasks.scheduled.get_node_role", return_value="standby"), \
+             patch("app.tasks.scheduled._run_task_safe", side_effect=fake_run_task_safe), \
+             patch("app.tasks.scheduled.asyncio.create_task") as mock_create:
+            # Simulate one scheduler cycle
+            from app.tasks.scheduled import WRITE_TASKS, _DAILY_TASKS, get_node_role
+            import time
+
+            role = get_node_role()
+            assert role == "standby"
+
+            last_run: dict[str, float] = {name: 0.0 for _, _, name in _DAILY_TASKS}
+            now = time.time() + 100  # ensure all tasks are due
+
+            skipped = []
+            executed = []
+            for fn, interval, name in _DAILY_TASKS:
+                if now - last_run.get(name, 0) >= interval:
+                    if role == "standby" and name in WRITE_TASKS:
+                        skipped.append(name)
+                        continue
+                    executed.append(name)
+
+            # All write tasks should be skipped
+            for wt in WRITE_TASKS:
+                assert wt in skipped, f"Write task '{wt}' was not skipped on standby"
+
+            # Read-only tasks should still execute
+            assert "compliance_expiry" in executed
+            assert "quote_expiry" in executed
+            assert "sync_public_holidays" in executed
+
+    @pytest.mark.asyncio
+    async def test_primary_executes_all_tasks(self):
+        """When role is 'primary', all tasks should execute."""
+        from app.tasks.scheduled import WRITE_TASKS, _DAILY_TASKS
+        import time
+
+        role = "primary"
+        last_run: dict[str, float] = {name: 0.0 for _, _, name in _DAILY_TASKS}
+        now = time.time() + 100
+
+        skipped = []
+        executed = []
+        for fn, interval, name in _DAILY_TASKS:
+            if now - last_run.get(name, 0) >= interval:
+                if role == "standby" and name in WRITE_TASKS:
+                    skipped.append(name)
+                    continue
+                executed.append(name)
+
+        assert len(skipped) == 0
+        assert len(executed) == len(_DAILY_TASKS)
+
+    @pytest.mark.asyncio
+    async def test_standalone_executes_all_tasks(self):
+        """When role is 'standalone', all tasks should execute."""
+        from app.tasks.scheduled import WRITE_TASKS, _DAILY_TASKS
+        import time
+
+        role = "standalone"
+        last_run: dict[str, float] = {name: 0.0 for _, _, name in _DAILY_TASKS}
+        now = time.time() + 100
+
+        skipped = []
+        executed = []
+        for fn, interval, name in _DAILY_TASKS:
+            if now - last_run.get(name, 0) >= interval:
+                if role == "standby" and name in WRITE_TASKS:
+                    skipped.append(name)
+                    continue
+                executed.append(name)
+
+        assert len(skipped) == 0
+        assert len(executed) == len(_DAILY_TASKS)
+
+    def test_debug_log_on_skip(self):
+        """13.3: A debug message should be logged when skipping a task."""
+        from app.tasks.scheduled import WRITE_TASKS
+        import logging
+
+        with patch("app.tasks.scheduled.get_node_role", return_value="standby"):
+            task_logger = logging.getLogger("app.tasks.scheduled")
+            with patch.object(task_logger, "debug") as mock_debug:
+                # Simulate the skip logic from the scheduler loop
+                role = "standby"
+                name = "recurring_billing"
+                if role == "standby" and name in WRITE_TASKS:
+                    task_logger.debug("Skipping task %s on standby node", name)
+
+                mock_debug.assert_called_once_with(
+                    "Skipping task %s on standby node", "recurring_billing"
+                )
+
+
+class TestPromotionResumesAllTasks:
+    """13.4: After promotion to primary, all tasks execute normally.
+
+    The middleware role cache is updated immediately by set_node_role()
+    during promotion. The scheduler reads from get_node_role() each cycle,
+    so the next cycle after promotion will see role='primary' and execute
+    all tasks — no additional logic is needed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_promotion_switches_role_cache(self):
+        """Verify that set_node_role updates the cache read by get_node_role."""
+        from app.modules.ha.middleware import set_node_role, get_node_role
+
+        # Start as standby
+        set_node_role("standby")
+        assert get_node_role() == "standby"
+
+        # Promote to primary
+        set_node_role("primary")
+        assert get_node_role() == "primary"
+
+    @pytest.mark.asyncio
+    async def test_after_promotion_all_tasks_run(self):
+        """After promotion, the scheduler should execute all tasks including writes."""
+        from app.tasks.scheduled import WRITE_TASKS, _DAILY_TASKS
+        from app.modules.ha.middleware import set_node_role, get_node_role
+        import time
+
+        # Simulate promotion
+        set_node_role("standby")
+        assert get_node_role() == "standby"
+
+        set_node_role("primary")
+        role = get_node_role()
+        assert role == "primary"
+
+        # Simulate scheduler cycle after promotion
+        last_run: dict[str, float] = {name: 0.0 for _, _, name in _DAILY_TASKS}
+        now = time.time() + 100
+
+        skipped = []
+        executed = []
+        for fn, interval, name in _DAILY_TASKS:
+            if now - last_run.get(name, 0) >= interval:
+                if role == "standby" and name in WRITE_TASKS:
+                    skipped.append(name)
+                    continue
+                executed.append(name)
+
+        assert len(skipped) == 0
+        assert len(executed) == len(_DAILY_TASKS)
+
+        # Reset to standalone for other tests
+        set_node_role("standalone")

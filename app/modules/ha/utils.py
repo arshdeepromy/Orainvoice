@@ -6,6 +6,8 @@ with no side effects or database dependencies.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 
 def classify_peer_health(delta_seconds: float) -> str:
     """Classify peer health based on seconds since last successful heartbeat.
@@ -89,17 +91,25 @@ _STANDBY_ALLOWED_PREFIXES: tuple[str, ...] = (
 )
 
 
-def should_block_request(method: str, path: str, role: str) -> bool:
-    """Decide whether a request should be blocked by standby write protection.
+def should_block_request(
+    method: str,
+    path: str,
+    role: str,
+    is_split_brain_blocked: bool = False,
+) -> bool:
+    """Decide whether a request should be blocked by write protection.
 
-    Returns ``True`` when **all** of the following are true:
-    - *role* is ``"standby"``
-    - *method* is **not** a read-only method (GET, HEAD, OPTIONS)
-    - *path* does **not** match any standby-allowed prefix
+    Returns ``True`` when the request is a write to a non-exempt path **and**
+    either the node is in standby mode or split-brain blocking is active.
 
-    Requirements: 9.1, 9.3, 9.4
+    Exemptions (never blocked):
+    - Read-only methods: GET, HEAD, OPTIONS
+    - Standby-allowed prefixes: ``/api/v1/ha/*``, auth endpoints
+
+    Requirements: 8.1, 8.3, 8.4, 9.1, 9.3, 9.4
     """
-    if role != "standby":
+    is_standby = role == "standby"
+    if not is_standby and not is_split_brain_blocked:
         return False
     if method.upper() in _READ_ONLY_METHODS:
         return False
@@ -148,3 +158,31 @@ def detect_split_brain(local_role: str, peer_role: str) -> bool:
     Requirements: 5.5
     """
     return local_role == "primary" and peer_role == "primary"
+
+
+def determine_stale_primary(
+    local_promoted_at: datetime | None,
+    peer_promoted_at: datetime | None,
+) -> str:
+    """Compare two promoted_at timestamps and return which node is stale.
+
+    Returns:
+        ``"local"``    — local is stale (local is None and peer is not, or local < peer)
+        ``"peer"``     — peer is stale (peer is None and local is not, or peer < local)
+        ``"neither"``  — both have equal timestamps (manual resolution needed)
+        ``"both_null"`` — both are None (manual resolution needed)
+
+    Requirements: 6.2, 6.3
+    """
+    if local_promoted_at is None and peer_promoted_at is None:
+        return "both_null"
+    if local_promoted_at is None and peer_promoted_at is not None:
+        return "local"
+    if peer_promoted_at is None and local_promoted_at is not None:
+        return "peer"
+    # Both are not None
+    if local_promoted_at < peer_promoted_at:  # type: ignore[operator]
+        return "local"
+    if local_promoted_at > peer_promoted_at:  # type: ignore[operator]
+        return "peer"
+    return "neither"

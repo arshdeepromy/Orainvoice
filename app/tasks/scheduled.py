@@ -741,7 +741,32 @@ async def cleanup_stale_sessions_task() -> dict:
 
 import asyncio
 
+from app.modules.ha.middleware import get_node_role
 from app.tasks.subscriptions import process_recurring_billing_task
+
+# Tasks that write to the database and must be skipped on standby nodes.
+# Read-only tasks (e.g. compliance_expiry, sync_public_holidays) still run
+# on standby because they don't produce writes that would conflict with
+# replication.
+#
+# NOTE on promotion: when a standby is promoted to primary, the middleware
+# role cache is updated immediately by set_node_role(). The next scheduler
+# cycle will read "primary" from get_node_role() and execute all tasks
+# normally — no additional logic is needed here.
+WRITE_TASKS: set[str] = {
+    "recurring_billing",           # process_recurring_billing_task — charges orgs
+    "overdue_invoices",            # check_overdue_invoices_task — marks invoices overdue
+    "retry_notifications",         # retry_failed_notifications_task — re-sends notifications
+    "archive_error_logs",          # archive_error_logs_task — deletes old error logs
+    "recurring_invoices",          # generate_recurring_invoices_task — creates invoices
+    "schedule_reminders",          # send_schedule_reminders_task — sends reminder emails
+    "publish_notifications",       # publish_scheduled_notifications — publishes notifications
+    "reset_sms_counters",         # reset_sms_counters_task — resets monthly SMS counters
+    "customer_reminders",          # process_customer_reminders_scheduled — enqueues reminders
+    "reminder_queue_worker",       # process_reminder_queue_scheduled — sends queued reminders
+    "check_card_expiry",           # check_card_expiry_task — sends expiry notifications
+    "cleanup_sessions",            # cleanup_stale_sessions_task — deletes stale sessions
+}
 
 # (task_fn, interval_seconds, name)
 _DAILY_TASKS: list[tuple] = [
@@ -789,8 +814,12 @@ async def _scheduler_loop() -> None:
 
     while not _stop_event.is_set():
         now = time.time()
+        role = get_node_role()
         for fn, interval, name in _DAILY_TASKS:
             if now - last_run.get(name, 0) >= interval:
+                if role == "standby" and name in WRITE_TASKS:
+                    logger.debug("Skipping task %s on standby node", name)
+                    continue
                 last_run[name] = now
                 asyncio.create_task(_run_task_safe(fn, name))
 

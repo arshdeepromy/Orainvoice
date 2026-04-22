@@ -62,6 +62,7 @@ class HAConfigResponse(BaseModel):
     peer_db_configured: bool = Field(default=False, description="True when peer DB credentials are stored")
     peer_db_sslmode: str | None = Field(default="disable", description="SSL mode for peer DB connection")
     heartbeat_secret_configured: bool = Field(default=False, description="True when heartbeat HMAC secret is stored in DB")
+    promoted_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +200,36 @@ class CreateReplicationUserRequest(BaseModel):
 
     username: str = Field(default="replicator", description="Replication user name")
     password: str = Field(description="Password for the replication user")
+
+
+# ---------------------------------------------------------------------------
+# Failover / Split-Brain
+# ---------------------------------------------------------------------------
+
+
+class FailoverStatusResponse(BaseModel):
+    """Response for GET /api/v1/ha/failover-status.
+
+    Requirements: 5.5, 12.1, 12.2
+    """
+
+    auto_promote_enabled: bool
+    peer_unreachable_seconds: float | None = None
+    failover_timeout_seconds: int
+    seconds_until_auto_promote: float | None = None
+    split_brain_detected: bool = False
+    is_stale_primary: bool = False
+    promoted_at: str | None = None  # ISO 8601
+
+
+class DemoteAndSyncRequest(BaseModel):
+    """Request body for POST /api/v1/ha/demote-and-sync.
+
+    Requirements: 7.3, 7.4
+    """
+
+    confirmation_text: str = Field(description="Must be exactly 'CONFIRM'")
+    reason: str
 
 
 # ---------------------------------------------------------------------------

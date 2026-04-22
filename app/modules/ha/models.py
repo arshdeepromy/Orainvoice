@@ -101,6 +101,11 @@ class HAConfig(Base):
         DateTime(timezone=True), nullable=True,
     )
 
+    # Promotion tracking (split-brain resolution)
+    promoted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None,
+    )
+
     # Replication state
     sync_status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="not_configured",

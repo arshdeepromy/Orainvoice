@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 
@@ -18,7 +19,7 @@ import httpx
 
 from app.modules.ha.hmac_utils import verify_hmac
 from app.modules.ha.schemas import HeartbeatHistoryEntry
-from app.modules.ha.utils import classify_peer_health, detect_split_brain
+from app.modules.ha.utils import classify_peer_health, detect_split_brain, should_auto_promote
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,13 @@ class HeartbeatService:
         self.split_brain_detected: bool = False
         self._task: asyncio.Task | None = None
         self._last_successful_heartbeat: float | None = None
+        # Failover state tracking (Task 4)
+        self._peer_unreachable_since: float | None = None  # monotonic timestamp
+        self._auto_promote_attempted: bool = False
+        self._auto_promote_failed_permanently: bool = False
+        self._peer_promoted_at: datetime | None = None
+        # Sync status DB update throttle (Task 16.4)
+        self._last_sync_status_update: float = 0.0  # monotonic timestamp
 
     async def start(self) -> None:
         """Start the background heartbeat ping loop."""
@@ -77,28 +85,140 @@ class HeartbeatService:
     # ------------------------------------------------------------------
 
     async def _ping_loop(self) -> None:
-        """Continuously ping the peer at the configured interval."""
+        """Continuously ping the peer at the configured interval.
+
+        The loop body is wrapped in a try/except so that transient errors
+        (network issues, DNS failures, JSON parse errors, DB errors) do not
+        kill the background task.  ``asyncio.CancelledError`` is always
+        re-raised so that ``stop()`` can cleanly cancel the task.
+
+        A local ``_consecutive_failures`` counter tracks how many cycles in
+        a row have failed.  After 5 consecutive failures a warning is logged
+        to flag potential service degradation.
+
+        Requirements: 15.1, 15.2, 15.3, 15.4
+        """
+        _consecutive_failures = 0
         try:
             while True:
-                entry = await self._ping_peer()
-                self.history.append(entry)
+                try:
+                    entry = await self._ping_peer()
+                    self.history.append(entry)
 
-                previous_health = self.peer_health
-                self.peer_health = self._classify_health()
+                    previous_health = self.peer_health
+                    self.peer_health = self._classify_health()
 
-                # Log health transitions (Req 2.5, 2.6)
-                if previous_health != "unreachable" and self.peer_health == "unreachable":
-                    logger.warning(
-                        "Peer %s transitioned to UNREACHABLE (was %s)",
-                        self.peer_endpoint,
-                        previous_health,
+                    # Log health transitions (Req 2.5, 2.6)
+                    if previous_health != "unreachable" and self.peer_health == "unreachable":
+                        logger.warning(
+                            "Peer %s transitioned to UNREACHABLE (was %s)",
+                            self.peer_endpoint,
+                            previous_health,
+                        )
+                        # Record when peer became unreachable (Req 3.2)
+                        self._peer_unreachable_since = time.monotonic()
+                    elif previous_health == "unreachable" and self.peer_health != "unreachable":
+                        logger.info(
+                            "Peer %s is reachable again (now %s)",
+                            self.peer_endpoint,
+                            self.peer_health,
+                        )
+                        # Reset unreachable tracking when peer comes back (Req 3.5)
+                        self._peer_unreachable_since = None
+
+                    # --- Split-brain write protection (Req 8.1) ---
+                    if self.split_brain_detected:
+                        try:
+                            from app.core.database import async_session_factory
+                            from app.modules.ha.models import HAConfig
+                            from app.modules.ha.middleware import set_split_brain_blocked
+                            from sqlalchemy import select
+
+                            async with async_session_factory() as sb_session:
+                                async with sb_session.begin():
+                                    result = await sb_session.execute(select(HAConfig).limit(1))
+                                    cfg = result.scalars().first()
+                                    local_promoted_at = cfg.promoted_at if cfg else None
+
+                            if self.is_stale_primary(local_promoted_at):
+                                set_split_brain_blocked(True)
+                            # If not stale, don't block — the other node is stale
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            logger.error("Error checking split-brain stale primary: %s", exc)
+                    else:
+                        from app.modules.ha.middleware import set_split_brain_blocked
+                        set_split_brain_blocked(False)
+
+                    # --- Auto-promote trigger (Req 4.1) ---
+                    if (
+                        self.peer_health == "unreachable"
+                        and self._peer_unreachable_since is not None
+                        and not self._auto_promote_attempted
+                        and not self._auto_promote_failed_permanently
+                    ):
+                        elapsed = time.monotonic() - self._peer_unreachable_since
+                        try:
+                            from app.core.database import async_session_factory
+                            from app.modules.ha.models import HAConfig
+                            from sqlalchemy import select
+
+                            async with async_session_factory() as check_session:
+                                async with check_session.begin():
+                                    result = await check_session.execute(select(HAConfig).limit(1))
+                                    cfg = result.scalars().first()
+                                    if cfg and should_auto_promote(
+                                        cfg.auto_promote_enabled, elapsed, cfg.failover_timeout_seconds
+                                    ):
+                                        self._auto_promote_attempted = True
+                                        logger.info(
+                                            "Auto-promote conditions met: peer unreachable %.1fs > timeout %ds",
+                                            elapsed,
+                                            cfg.failover_timeout_seconds,
+                                        )
+                                        await self._execute_auto_promote()
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            logger.error("Error checking auto-promote conditions: %s", exc)
+
+                    # --- Sync status DB update (Req 16.1–16.4) ---
+                    now_mono = time.monotonic()
+                    if now_mono - self._last_sync_status_update > 30:
+                        self._last_sync_status_update = now_mono
+                        try:
+                            from app.core.database import async_session_factory
+                            from app.modules.ha.models import HAConfig
+                            from sqlalchemy import select
+
+                            async with async_session_factory() as sync_session:
+                                async with sync_session.begin():
+                                    result = await sync_session.execute(select(HAConfig).limit(1))
+                                    cfg = result.scalars().first()
+                                    if cfg:
+                                        cfg.sync_status = self._determine_sync_status()
+                                        cfg.last_peer_health = self.peer_health
+                                        cfg.last_peer_heartbeat = datetime.now(timezone.utc)
+                        except Exception:
+                            pass  # Non-critical — don't crash heartbeat for status updates
+
+                    # Successful cycle — reset consecutive failure counter
+                    _consecutive_failures = 0
+
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    _consecutive_failures += 1
+                    logger.error(
+                        "Heartbeat ping cycle error (%d consecutive): %s",
+                        _consecutive_failures,
+                        exc,
                     )
-                elif previous_health == "unreachable" and self.peer_health != "unreachable":
-                    logger.info(
-                        "Peer %s is reachable again (now %s)",
-                        self.peer_endpoint,
-                        self.peer_health,
-                    )
+                    if _consecutive_failures >= 5:
+                        logger.warning(
+                            "HeartbeatService: 5+ consecutive failures — service may be degraded"
+                        )
 
                 await asyncio.sleep(self.interval)
         except asyncio.CancelledError:
@@ -141,6 +261,16 @@ class HeartbeatService:
 
             # Successful heartbeat
             self._last_successful_heartbeat = time.monotonic()
+
+            # Parse promoted_at from peer heartbeat response (Req 11.3)
+            raw_promoted_at = data.get("promoted_at")
+            if raw_promoted_at:
+                try:
+                    self._peer_promoted_at = datetime.fromisoformat(raw_promoted_at)
+                except (ValueError, TypeError):
+                    self._peer_promoted_at = None
+            else:
+                self._peer_promoted_at = None
 
             # Split-brain detection: warn if both nodes claim primary
             peer_role = data.get("role", "")
@@ -192,3 +322,179 @@ class HeartbeatService:
     def get_history(self) -> list[HeartbeatHistoryEntry]:
         """Return the heartbeat history as a plain list (most recent last)."""
         return list(self.history)
+
+    # ------------------------------------------------------------------
+    # Failover state queries (Task 4)
+    # ------------------------------------------------------------------
+
+    def get_peer_unreachable_seconds(self) -> float | None:
+        """Return seconds since peer became unreachable, or None if reachable."""
+        if self._peer_unreachable_since is None:
+            return None
+        return time.monotonic() - self._peer_unreachable_since
+
+    def get_seconds_until_auto_promote(self, failover_timeout: int) -> float | None:
+        """Return seconds until auto-promote triggers, or None if peer is reachable."""
+        elapsed = self.get_peer_unreachable_seconds()
+        if elapsed is None:
+            return None
+        return max(0.0, failover_timeout - elapsed)
+
+    def is_stale_primary(self, local_promoted_at: datetime | None) -> bool:
+        """Compare local vs peer promoted_at timestamps.
+
+        Returns True (stale) when:
+        - local is None and peer is not None → stale
+        - both are not None and local < peer → stale
+        Otherwise → not stale
+        """
+        if self._peer_promoted_at is None:
+            return False
+        if local_promoted_at is None:
+            return True
+        return local_promoted_at < self._peer_promoted_at
+
+    # ------------------------------------------------------------------
+    # Sync status determination (Task 16.2)
+    # ------------------------------------------------------------------
+
+    def _determine_sync_status(self) -> str:
+        """Determine the current sync status based on replication state.
+
+        Checks the latest heartbeat entry's replication_lag_seconds and
+        peer_status to classify the sync status:
+        - "healthy": subscription active + lag < 60s
+        - "lagging": subscription active + lag >= 60s
+        - "disconnected": subscription disabled or peer unreachable
+        - "not_configured": no subscription/publication (no successful heartbeat data)
+
+        Requirements: 16.2
+        """
+        # Look at the most recent heartbeat entry for replication data
+        if not self.history:
+            return "not_configured"
+
+        latest = self.history[-1]
+
+        # If peer is unreachable, the subscription is effectively disconnected
+        if self.peer_health == "unreachable":
+            return "disconnected"
+
+        # If the latest heartbeat had an error (peer_status == "error"),
+        # treat as disconnected
+        if latest.peer_status == "error":
+            return "disconnected"
+
+        # If we have replication lag data, the subscription is active
+        if latest.replication_lag_seconds is not None:
+            if latest.replication_lag_seconds < 60:
+                return "healthy"
+            else:
+                return "lagging"
+
+        # No lag data available — could mean no subscription/publication exists
+        # If peer is reachable but no lag data, subscription may not be configured
+        if self.peer_health in ("healthy", "degraded"):
+            # Peer is reachable but no replication lag reported — not configured
+            return "not_configured"
+
+        return "not_configured"
+
+    # ------------------------------------------------------------------
+    # Auto-promote execution (Task 5)
+    # ------------------------------------------------------------------
+
+    async def _execute_auto_promote(self) -> None:
+        """Promote this node to primary automatically.
+
+        Uses a dedicated short-lived DB session via ``async_session_factory()``
+        to avoid transaction timeout issues with the heartbeat loop.
+
+        On failure: logs error, waits 10 seconds, retries once.
+        On second failure: sets ``_auto_promote_failed_permanently = True``.
+
+        Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.7, 4.8
+        """
+        for attempt in range(2):
+            try:
+                from app.core.database import async_session_factory
+                from app.core.audit import write_audit_log
+                from app.modules.ha.middleware import set_node_role
+                from app.modules.ha.models import HAConfig
+                from app.modules.ha.replication import ReplicationManager
+                from sqlalchemy import select
+
+                async with async_session_factory() as session:
+                    async with session.begin():
+                        result = await session.execute(select(HAConfig).limit(1))
+                        cfg = result.scalars().first()
+
+                        if cfg is None:
+                            logger.error("Auto-promote aborted: no HAConfig found")
+                            return
+
+                        # Verify role is still standby (guard against race)
+                        if cfg.role != "standby":
+                            logger.info(
+                                "Auto-promote skipped: role is already '%s'", cfg.role
+                            )
+                            return
+
+                        # Stop the replication subscription
+                        try:
+                            await ReplicationManager.stop_subscription(session)
+                        except Exception as sub_exc:
+                            logger.warning(
+                                "Could not stop subscription during auto-promote: %s",
+                                sub_exc,
+                            )
+
+                        # Update role to primary and set promoted_at
+                        now = datetime.now(timezone.utc)
+                        cfg.role = "primary"
+                        cfg.promoted_at = now
+                        cfg.updated_at = now
+
+                        # Update middleware cache so node starts accepting writes
+                        set_node_role("primary", cfg.peer_endpoint)
+                        self.local_role = "primary"
+
+                        # Write audit log with system UUID (no user session active)
+                        system_user_id = uuid.uuid4()
+                        unreachable_secs = self.get_peer_unreachable_seconds()
+                        await write_audit_log(
+                            session=session,
+                            action="ha.auto_promoted",
+                            entity_type="ha_config",
+                            user_id=system_user_id,
+                            entity_id=cfg.id,
+                            after_value={
+                                "role": "primary",
+                                "promoted_at": now.isoformat(),
+                                "peer_unreachable_seconds": unreachable_secs,
+                                "failover_timeout_seconds": cfg.failover_timeout_seconds,
+                            },
+                        )
+
+                logger.info(
+                    "Auto-promote SUCCEEDED: node is now PRIMARY (attempt %d)",
+                    attempt + 1,
+                )
+                return  # Success — exit retry loop
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Auto-promote FAILED (attempt %d/2): %s", attempt + 1, exc
+                )
+                if attempt == 0:
+                    # Wait 10 seconds before retry
+                    await asyncio.sleep(10)
+                else:
+                    # Second failure — give up permanently
+                    self._auto_promote_failed_permanently = True
+                    logger.critical(
+                        "Auto-promote failed permanently after 2 attempts. "
+                        "Manual promotion required."
+                    )

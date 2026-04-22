@@ -592,6 +592,11 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def _sync_demo_org() -> None:
+        from app.modules.ha.middleware import get_node_role
+        role = get_node_role()
+        if role == "standby":
+            logger.info("Standby node — skipping sync_demo_org_modules()")
+            return
         from app.core.demo_org_sync import sync_demo_org_modules
         await sync_demo_org_modules()
 

@@ -49,7 +49,17 @@ interface ReplicationStatus {
   is_healthy: boolean
 }
 
-type ModalAction = 'promote' | 'demote' | 'init-replication' | 'stop-replication' | 'resync' | 'maintenance-enter' | 'maintenance-exit' | null
+interface FailoverStatus {
+  auto_promote_enabled: boolean
+  peer_unreachable_seconds: number | null
+  failover_timeout_seconds: number
+  seconds_until_auto_promote: number | null
+  split_brain_detected: boolean
+  is_stale_primary: boolean
+  promoted_at: string | null
+}
+
+type ModalAction = 'promote' | 'demote' | 'init-replication' | 'stop-replication' | 'resync' | 'maintenance-enter' | 'maintenance-exit' | 'demote-and-sync' | null
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -182,6 +192,7 @@ export function HAReplication() {
   const [config, setConfig] = useState<HAConfig | null>(null)
   const [history, setHistory] = useState<HeartbeatHistoryEntry[]>([])
   const [replication, setReplication] = useState<ReplicationStatus | null>(null)
+  const [failoverStatus, setFailoverStatus] = useState<FailoverStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -230,20 +241,35 @@ export function HAReplication() {
   const [slots, setSlots] = useState<{ slot_name: string; slot_type: string; active: boolean; retained_wal: string | null; active_pid: number | null; idle_seconds: number | null }[]>([])
   const [droppingSlot, setDroppingSlot] = useState<string | null>(null)
 
+  // New Standby Setup Wizard state
+  const [wizardOpen, setWizardOpen] = useState(false)
+  const [wizardStep, setWizardStep] = useState(0) // 0-3
+  const [wizardStepComplete, setWizardStepComplete] = useState([false, false, false, false])
+  const [wizardSaving, setWizardSaving] = useState(false)
+  const [wizardSaveError, setWizardSaveError] = useState<string | null>(null)
+  const [wizardTestResult, setWizardTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [wizardTestingConnection, setWizardTestingConnection] = useState(false)
+  const [wizardReplUserName, setWizardReplUserName] = useState('replicator')
+  const [wizardReplUserPassword, setWizardReplUserPassword] = useState('')
+  const [wizardCreatingReplUser, setWizardCreatingReplUser] = useState(false)
+  const [wizardReplUserResult, setWizardReplUserResult] = useState<{ ok: boolean; message: string } | null>(null)
+
   // Track whether initial form state has been populated
   const [formInitialized, setFormInitialized] = useState(false)
 
   const fetchData = useCallback(async () => {
-    const [cfg, hist, repl, slotsData] = await Promise.all([
+    const [cfg, hist, repl, slotsData, failover] = await Promise.all([
       safeFetch<HAConfig | null>('/ha/identity', null),
       safeFetch<HeartbeatHistoryEntry[]>('/ha/history', []),
       safeFetch<ReplicationStatus | null>('/ha/replication/status', null),
       safeFetch<{ slots: typeof slots }>('/ha/replication/slots', { slots: [] }),
+      safeFetch<FailoverStatus | null>('/ha/failover-status', null),
     ])
     setConfig(cfg)
     setHistory(hist)
     setReplication(repl)
     setSlots(slotsData?.slots ?? [])
+    setFailoverStatus(failover)
     // Only populate form fields on initial load — not on polling refreshes
     if (cfg && !formInitialized) {
       setFormNodeName(cfg.node_name)
@@ -319,7 +345,8 @@ export function HAReplication() {
 
   const handleAction = async () => {
     if (!modalAction) return
-    const needsConfirm = ['promote', 'demote', 'resync', 'stop-replication'].includes(modalAction)
+    const needsConfirm = ['promote', 'demote', 'resync', 'stop-replication', 'demote-and-sync'].includes(modalAction)
+      || (modalAction === 'init-replication' && config?.role === 'standby')
     if (needsConfirm && confirmText !== 'CONFIRM') return
 
     setActionLoading(true)
@@ -333,7 +360,11 @@ export function HAReplication() {
           await apiClient.post('/ha/demote', { confirmation_text: 'CONFIRM', reason })
           break
         case 'init-replication':
-          await apiClient.post('/ha/replication/init')
+          if (config?.role === 'standby') {
+            await apiClient.post('/ha/replication/init', null, { params: { truncate_first: true } })
+          } else {
+            await apiClient.post('/ha/replication/init')
+          }
           break
         case 'stop-replication':
           await apiClient.post('/ha/replication/stop')
@@ -346,6 +377,9 @@ export function HAReplication() {
           break
         case 'maintenance-exit':
           await apiClient.post('/ha/ready')
+          break
+        case 'demote-and-sync':
+          await apiClient.post('/ha/demote-and-sync', { confirmation_text: 'CONFIRM', reason })
           break
       }
       closeModal()
@@ -488,10 +522,120 @@ export function HAReplication() {
     }
   }
 
+  /* ---- Wizard handlers ---- */
+  const handleWizardSaveConfig = async () => {
+    setWizardSaving(true)
+    setWizardSaveError(null)
+    try {
+      await apiClient.put('/ha/configure', {
+        node_name: formNodeName,
+        role: formRole,
+        peer_endpoint: formPeerEndpoint,
+        auto_promote_enabled: formAutoPromote,
+        heartbeat_interval_seconds: formHeartbeatInterval,
+        failover_timeout_seconds: formFailoverTimeout,
+        peer_db_host: formPeerDbHost || null,
+        peer_db_port: formPeerDbPort,
+        peer_db_name: formPeerDbName || null,
+        peer_db_user: formPeerDbUser || null,
+        peer_db_password: formPeerDbPassword || null,
+        peer_db_sslmode: formPeerDbSslmode,
+        heartbeat_secret: formHeartbeatSecret || null,
+      })
+      setWizardStepComplete(prev => {
+        const next = [...prev]
+        next[0] = true
+        return next
+      })
+      setWizardStep(1)
+      setFormInitialized(false)
+      await fetchData()
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to save configuration'
+      setWizardSaveError(msg)
+    } finally {
+      setWizardSaving(false)
+    }
+  }
+
+  const handleWizardTestConnection = async () => {
+    if (!formPeerDbHost || !formPeerDbName || !formPeerDbUser || !formPeerDbPassword) return
+    setWizardTestingConnection(true)
+    setWizardTestResult(null)
+    try {
+      const res = await apiClient.post('/ha/test-db-connection', {
+        host: formPeerDbHost,
+        port: formPeerDbPort,
+        dbname: formPeerDbName,
+        user: formPeerDbUser,
+        password: formPeerDbPassword,
+        sslmode: formPeerDbSslmode,
+      })
+      const data = res.data as { message?: string; wal_level?: string; replication_ready?: boolean; ssl_active?: boolean }
+      let msg = data?.replication_ready
+        ? `${data?.message ?? 'Connected'} (wal_level=${data?.wal_level ?? 'unknown'})`
+        : `${data?.message ?? 'Connected'} — WARNING: wal_level=${data?.wal_level ?? 'unknown'} (needs "logical" for replication)`
+      if (data?.ssl_active) msg += ' — SSL active ✓'
+      else if (formPeerDbSslmode !== 'disable') msg += ' — SSL not active ✗'
+      setWizardTestResult({ ok: true, message: msg })
+      setWizardStepComplete(prev => {
+        const next = [...prev]
+        next[1] = true
+        return next
+      })
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Connection test failed'
+      setWizardTestResult({ ok: false, message: msg })
+    } finally {
+      setWizardTestingConnection(false)
+    }
+  }
+
+  const handleWizardCreateReplUser = async () => {
+    if (!wizardReplUserPassword) return
+    setWizardCreatingReplUser(true)
+    setWizardReplUserResult(null)
+    try {
+      const res = await apiClient.post('/ha/create-replication-user', {
+        username: wizardReplUserName,
+        password: wizardReplUserPassword,
+      })
+      const data = res.data as { message?: string }
+      setWizardReplUserResult({ ok: true, message: data?.message ?? 'User created' })
+      setWizardStepComplete(prev => {
+        const next = [...prev]
+        next[2] = true
+        return next
+      })
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to create user'
+      setWizardReplUserResult({ ok: false, message: msg })
+    } finally {
+      setWizardCreatingReplUser(false)
+    }
+  }
+
+  const handleWizardDone = () => {
+    setWizardOpen(false)
+    setWizardStep(0)
+    setWizardStepComplete([false, false, false, false])
+    setWizardSaveError(null)
+    setWizardTestResult(null)
+    setWizardReplUserResult(null)
+    setWizardReplUserPassword('')
+  }
+
+  // Determine if the suggestion banner should show
+  const peerPermanentlyUnreachable =
+    config?.role === 'primary' &&
+    (failoverStatus?.peer_unreachable_seconds ?? 0) > 300
+
   /* ---- Derived state ---- */
   const peerHealth = history.length > 0 ? history[0].peer_status : 'unknown'
   const lagSeconds = replication?.replication_lag_seconds ?? null
-  const needsConfirmText = modalAction && ['promote', 'demote', 'resync'].includes(modalAction)
+  const isStandbyInit = modalAction === 'init-replication' && config?.role === 'standby'
+  const isDemoteAndSync = modalAction === 'demote-and-sync'
+  const needsConfirmText = modalAction && (['promote', 'demote', 'resync', 'demote-and-sync'].includes(modalAction) || isStandbyInit)
   const showForceCheckbox = modalAction === 'promote' && lagSeconds != null && lagSeconds > 5
 
   const modalTitles: Record<string, string> = {
@@ -502,16 +646,20 @@ export function HAReplication() {
     resync: 'Trigger Full Re-sync',
     'maintenance-enter': 'Enter Maintenance Mode',
     'maintenance-exit': 'Exit Maintenance Mode',
+    'demote-and-sync': 'Role Conflict Detected',
   }
 
   const modalDescriptions: Record<string, string> = {
     promote: 'This will promote this standby node to primary. It will begin accepting writes.',
     demote: 'This will demote this primary node to standby. It will stop accepting writes.',
-    'init-replication': 'This will initialize PostgreSQL logical replication. Run this after configuring both nodes.',
+    'init-replication': config?.role === 'standby'
+      ? 'This will replace ALL local data with data from the primary. Local users, organisations, and all business data will be overwritten. You will not be able to log in with local credentials after this.'
+      : 'This will initialize PostgreSQL logical replication. Run this after configuring both nodes.',
     'stop-replication': 'This will stop replication by dropping the publication (primary) or subscription (standby). You can re-initialize later.',
     resync: 'This will drop and re-create the replication subscription with a full data copy. Use when replication is broken.',
     'maintenance-enter': 'This will put the node in maintenance mode. Heartbeat checks will report maintenance status.',
     'maintenance-exit': 'This will take the node out of maintenance mode and resume normal operation.',
+    'demote-and-sync': 'This node was previously primary but another node has been promoted more recently. To restore the cluster to a healthy state, this node will be demoted to standby and will sync all data from the new primary.',
   }
 
   if (loading) {
@@ -539,6 +687,311 @@ export function HAReplication() {
 
       {/* ── Setup Guide (collapsible) ── */}
       <SetupGuide configured={!!config} />
+
+      {/* ── New Standby Setup Wizard — Suggestion Banner ── */}
+      {peerPermanentlyUnreachable && !wizardOpen && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-5 py-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-amber-900">
+                Peer node appears permanently unreachable. Would you like to set up a new standby?
+              </p>
+              <p className="mt-1 text-xs text-amber-700">
+                The peer has been unreachable for {Math.round(failoverStatus?.peer_unreachable_seconds ?? 0)} seconds ({Math.round((failoverStatus?.peer_unreachable_seconds ?? 0) / 60)} minutes).
+              </p>
+            </div>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setWizardOpen(true)}
+            >
+              Set Up New Standby
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* ── New Standby Setup Wizard ── */}
+      {wizardOpen && (
+        <section className="rounded-lg border-2 border-blue-300 bg-white p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-medium text-gray-900">New Standby Setup Wizard</h2>
+            <button
+              type="button"
+              onClick={handleWizardDone}
+              className="rounded p-1 text-gray-400 hover:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              aria-label="Close wizard"
+            >
+              <span aria-hidden="true" className="text-xl leading-none">×</span>
+            </button>
+          </div>
+
+          {/* Step indicator */}
+          <div className="flex items-center gap-2">
+            {['Peer DB Config', 'Test Connection', 'Replication User', 'Summary'].map((label, i) => (
+              <div key={label} className="flex items-center gap-2">
+                {i > 0 && (
+                  <div className={`h-px w-6 ${i <= wizardStep ? 'bg-blue-400' : 'bg-gray-200'}`} />
+                )}
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium ${
+                      wizardStepComplete[i]
+                        ? 'bg-green-100 text-green-700'
+                        : i === wizardStep
+                          ? 'bg-blue-100 text-blue-700'
+                          : 'bg-gray-100 text-gray-500'
+                    }`}
+                  >
+                    {wizardStepComplete[i] ? '✓' : i + 1}
+                  </span>
+                  <span className={`text-xs ${i === wizardStep ? 'font-medium text-gray-900' : 'text-gray-500'}`}>
+                    {label}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Step 0: Configure peer database connection */}
+          {wizardStep === 0 && (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600">
+                Enter the new standby node's PostgreSQL connection details. These will be saved to your configuration.
+              </p>
+
+              {wizardSaveError && (
+                <AlertBanner variant="error">{wizardSaveError}</AlertBanner>
+              )}
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Input
+                  label="Host"
+                  placeholder="e.g. host.docker.internal or 192.168.1.x"
+                  value={formPeerDbHost}
+                  onChange={(e) => setFormPeerDbHost(e.target.value)}
+                />
+                <Input
+                  label="Port"
+                  type="number"
+                  value={String(formPeerDbPort)}
+                  onChange={(e) => setFormPeerDbPort(Number(e.target.value) || 5432)}
+                />
+                <Input
+                  label="Database Name"
+                  placeholder="e.g. workshoppro"
+                  value={formPeerDbName}
+                  onChange={(e) => setFormPeerDbName(e.target.value)}
+                />
+                <Input
+                  label="User"
+                  placeholder="e.g. postgres"
+                  value={formPeerDbUser}
+                  onChange={(e) => setFormPeerDbUser(e.target.value)}
+                />
+                <Input
+                  label="Password"
+                  type="password"
+                  placeholder="Enter password"
+                  value={formPeerDbPassword}
+                  onChange={(e) => setFormPeerDbPassword(e.target.value)}
+                />
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">SSL Mode</label>
+                  <select
+                    value={formPeerDbSslmode}
+                    onChange={(e) => setFormPeerDbSslmode(e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="disable">Disable (no SSL)</option>
+                    <option value="require">Require (encrypted, no cert verification)</option>
+                    <option value="verify-ca">Verify CA (encrypted + verify server cert)</option>
+                    <option value="verify-full">Verify Full (encrypted + verify cert + hostname)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={async () => {
+                    await handleWizardSaveConfig()
+                  }}
+                  loading={wizardSaving}
+                  disabled={!formPeerDbHost || !formPeerDbName || !formPeerDbUser || !formPeerDbPassword}
+                >
+                  Save & Next
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 1: Test connection */}
+          {wizardStep === 1 && (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600">
+                Test the connection to the peer database. The connection must succeed before you can proceed.
+              </p>
+
+              {wizardTestResult && (
+                <AlertBanner variant={wizardTestResult.ok ? 'success' : 'error'}>
+                  {wizardTestResult.message}
+                </AlertBanner>
+              )}
+
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 space-y-1">
+                <p><span className="font-medium">Host:</span> {formPeerDbHost}:{formPeerDbPort}</p>
+                <p><span className="font-medium">Database:</span> {formPeerDbName}</p>
+                <p><span className="font-medium">User:</span> {formPeerDbUser}</p>
+                <p><span className="font-medium">SSL Mode:</span> {formPeerDbSslmode}</p>
+              </div>
+
+              <div className="flex justify-between gap-3 pt-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setWizardStep(0)
+                    setWizardTestResult(null)
+                  }}
+                >
+                  Back
+                </Button>
+                <div className="flex gap-3">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleWizardTestConnection}
+                    loading={wizardTestingConnection}
+                  >
+                    Test Connection
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => setWizardStep(2)}
+                    disabled={!wizardStepComplete[1]}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 2: Create replication user */}
+          {wizardStep === 2 && (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600">
+                Create a dedicated PostgreSQL user with replication privileges on this node's database.
+                The new standby will use these credentials to connect.
+              </p>
+
+              {wizardReplUserResult && (
+                <AlertBanner variant={wizardReplUserResult.ok ? 'success' : 'error'}>
+                  {wizardReplUserResult.message}
+                </AlertBanner>
+              )}
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Input
+                  label="Username"
+                  placeholder="replicator"
+                  value={wizardReplUserName}
+                  onChange={(e) => setWizardReplUserName(e.target.value)}
+                />
+                <Input
+                  label="Password"
+                  type="password"
+                  placeholder="Strong password for replication user"
+                  value={wizardReplUserPassword}
+                  onChange={(e) => setWizardReplUserPassword(e.target.value)}
+                />
+              </div>
+
+              <div className="flex justify-between gap-3 pt-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setWizardStep(1)
+                    setWizardReplUserResult(null)
+                  }}
+                >
+                  Back
+                </Button>
+                <div className="flex gap-3">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleWizardCreateReplUser}
+                    loading={wizardCreatingReplUser}
+                    disabled={!wizardReplUserName.trim() || !wizardReplUserPassword}
+                  >
+                    Create User
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => {
+                      setWizardStepComplete(prev => {
+                        const next = [...prev]
+                        next[3] = true
+                        return next
+                      })
+                      setWizardStep(3)
+                    }}
+                    disabled={!wizardStepComplete[2]}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Summary */}
+          {wizardStep === 3 && (
+            <div className="space-y-4">
+              <div className="rounded-md border border-green-200 bg-green-50 p-4">
+                <p className="text-sm font-medium text-green-800 mb-2">Setup Complete — Next Steps</p>
+                <ol className="list-decimal pl-5 space-y-2 text-sm text-green-800">
+                  <li>Go to the new standby node's HA page</li>
+                  <li>Configure it as <span className="font-semibold">Standby</span> with this node as the peer</li>
+                  <li>Enter the replication user credentials in the Peer Database Settings</li>
+                  <li>Click <span className="font-semibold">Initialize Replication</span></li>
+                </ol>
+              </div>
+
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 space-y-1">
+                <p className="font-medium text-gray-900 mb-2">Connection Details for the New Standby</p>
+                <p><span className="font-medium">Peer Endpoint:</span> {formPeerEndpoint || '(configure in Node Configuration above)'}</p>
+                <p><span className="font-medium">Replication User:</span> {wizardReplUserName}</p>
+                <p><span className="font-medium">Database Host:</span> {formPeerDbHost}:{formPeerDbPort}</p>
+                <p><span className="font-medium">Database Name:</span> {formPeerDbName}</p>
+              </div>
+
+              <div className="flex justify-between gap-3 pt-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setWizardStep(2)}
+                >
+                  Back
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleWizardDone}
+                >
+                  Done
+                </Button>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* ── Configuration Form ── */}
       <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
@@ -761,6 +1214,52 @@ export function HAReplication() {
       {/* ── Status & Actions (only when configured) ── */}
       {config && config.role !== 'standalone' && (
         <>
+          {/* Split-Brain Critical Alert Banner */}
+          {failoverStatus?.split_brain_detected && (
+            <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm font-medium text-red-800">
+                  🚨 SPLIT-BRAIN DETECTED: This node's data may be stale. Writes are blocked until the conflict is resolved.
+                </p>
+                {failoverStatus?.is_stale_primary && (
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => openModal('demote-and-sync')}
+                  >
+                    Demote and Sync
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Auto-Promote Countdown / Status Banner */}
+          {failoverStatus?.promoted_at && config.role === 'primary' && (
+            <div className="rounded-lg border border-green-300 bg-green-50 px-4 py-3">
+              <p className="text-sm font-medium text-green-800">
+                ✓ This node has been automatically promoted to primary
+              </p>
+            </div>
+          )}
+          {failoverStatus?.auto_promote_enabled &&
+            failoverStatus?.seconds_until_auto_promote != null &&
+            failoverStatus?.peer_unreachable_seconds != null && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+              <p className="text-sm font-medium text-amber-800">
+                ⚠ Primary unreachable for {Math.round(failoverStatus?.peer_unreachable_seconds ?? 0)} seconds, auto-promote in {Math.round(failoverStatus?.seconds_until_auto_promote ?? 0)} seconds
+              </p>
+            </div>
+          )}
+          {!failoverStatus?.auto_promote_enabled &&
+            failoverStatus?.peer_unreachable_seconds != null && (
+            <div className="rounded-lg border border-gray-300 bg-gray-50 px-4 py-3">
+              <p className="text-sm font-medium text-gray-700">
+                Primary unreachable for {Math.round(failoverStatus?.peer_unreachable_seconds ?? 0)} seconds. Auto-promote is disabled.
+              </p>
+            </div>
+          )}
+
           {/* Cluster Status */}
           <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
             <h2 className="text-lg font-medium text-gray-900">Cluster Status</h2>
@@ -1026,9 +1525,25 @@ export function HAReplication() {
         title={modalAction ? modalTitles[modalAction] : ''}
       >
         <div className="space-y-4">
-          <p className="text-sm text-gray-600">
-            {modalAction ? modalDescriptions[modalAction] : ''}
-          </p>
+          {isStandbyInit || isDemoteAndSync ? (
+            <div className="rounded-md border border-red-200 bg-red-50 p-3">
+              <p className="text-sm font-medium text-red-800">
+                ⚠️ {isDemoteAndSync ? 'Warning — Data Loss' : 'Warning — Data Replacement'}
+              </p>
+              <p className="mt-1 text-sm text-red-700">
+                {modalAction ? modalDescriptions[modalAction] : ''}
+              </p>
+              {isDemoteAndSync && (
+                <p className="mt-2 text-sm font-semibold text-red-800">
+                  Any data written to this node after the failover will be lost. The new primary's data will replace all local data.
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-gray-600">
+              {modalAction ? modalDescriptions[modalAction] : ''}
+            </p>
+          )}
 
           {actionError && <AlertBanner variant="error">{actionError}</AlertBanner>}
 
@@ -1061,15 +1576,17 @@ export function HAReplication() {
           )}
 
           <div className="flex justify-end gap-3 pt-2">
-            <Button variant="secondary" size="sm" onClick={closeModal}>Cancel</Button>
+            <Button variant="secondary" size="sm" onClick={closeModal}>
+              {isDemoteAndSync ? 'Dismiss' : 'Cancel'}
+            </Button>
             <Button
-              variant={modalAction === 'demote' || modalAction === 'resync' || modalAction === 'stop-replication' ? 'danger' : 'primary'}
+              variant={modalAction === 'demote' || modalAction === 'resync' || modalAction === 'stop-replication' || modalAction === 'demote-and-sync' ? 'danger' : 'primary'}
               size="sm"
               disabled={needsConfirmText ? (confirmText !== 'CONFIRM' || !reason.trim()) : false}
               loading={actionLoading}
               onClick={handleAction}
             >
-              Confirm
+              {isDemoteAndSync ? 'Demote and Sync' : 'Confirm'}
             </Button>
           </div>
         </div>

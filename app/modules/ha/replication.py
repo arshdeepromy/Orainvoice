@@ -22,6 +22,17 @@ from app.modules.ha.schemas import ReplicationStatusResponse
 logger = logging.getLogger(__name__)
 
 
+def filter_tables_for_truncation(all_table_names: list[str]) -> list[str]:
+    """Return the subset of table names that should be truncated.
+
+    Excludes ``ha_config`` — it stores per-node HA state and must survive
+    truncation so the node can still identify itself after a data wipe.
+
+    This is a pure function extracted for testability.
+    """
+    return [t for t in all_table_names if t != "ha_config"]
+
+
 class ReplicationManager:
     """Manage PostgreSQL logical replication between HA nodes."""
 
@@ -75,6 +86,48 @@ class ReplicationManager:
             await conn.close()
 
 
+
+    # ------------------------------------------------------------------
+    # Truncation (standby initialization)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def truncate_all_tables() -> dict:
+        """Truncate all public tables except ha_config.
+
+        Uses a raw asyncpg connection with a single transaction.
+        Returns dict with status and count of truncated tables.
+
+        Validates: Requirement 2.1, 2.2, 2.3
+        """
+        conn = await ReplicationManager._get_raw_conn()
+        try:
+            # Query all public schema tables
+            rows = await conn.fetch(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+            )
+            all_names = [r["tablename"] for r in rows]
+            to_truncate = filter_tables_for_truncation(all_names)
+
+            if not to_truncate:
+                logger.info("No tables to truncate (only ha_config found)")
+                return {"status": "ok", "tables_truncated": 0}
+
+            table_list = ", ".join(to_truncate)
+            async with conn.transaction():
+                await conn.execute(f"TRUNCATE {table_list} CASCADE")
+
+            logger.info(
+                "Truncated %d tables before standby init (ha_config preserved)",
+                len(to_truncate),
+            )
+            return {"status": "ok", "tables_truncated": len(to_truncate)}
+        except Exception as exc:
+            error_msg = str(exc)
+            logger.error("Failed to truncate tables: %s", error_msg)
+            raise RuntimeError(f"Failed to truncate tables: {error_msg}") from exc
+        finally:
+            await conn.close()
 
     # ------------------------------------------------------------------
     # Publication (primary node)
@@ -165,8 +218,12 @@ class ReplicationManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def init_standby(db: AsyncSession, primary_conn_str: str) -> dict:
+    async def init_standby(db: AsyncSession, primary_conn_str: str, truncate_first: bool = False) -> dict:
         """Create a subscription on the standby node to replicate from the primary.
+
+        When ``truncate_first`` is True, truncates all tables except ha_config
+        before creating the subscription to avoid duplicate key conflicts
+        during the initial data sync.
 
         Executes::
 
@@ -182,6 +239,13 @@ class ReplicationManager:
 
         Returns a dict with the operation result.
         """
+        # --- Truncate tables before subscription if requested ---
+        if truncate_first:
+            truncate_result = await ReplicationManager.truncate_all_tables()
+            logger.info(
+                "Pre-subscription truncation complete: %d tables truncated",
+                truncate_result.get("tables_truncated", 0),
+            )
         async def _try_create() -> dict:
             sql = (
                 f"CREATE SUBSCRIPTION {ReplicationManager.SUBSCRIPTION_NAME} "

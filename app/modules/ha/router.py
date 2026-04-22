@@ -25,7 +25,9 @@ from app.modules.ha.hmac_utils import compute_hmac
 from app.modules.ha.replication import ReplicationManager
 from app.modules.ha.schemas import (
     CreateReplicationUserRequest,
+    DemoteAndSyncRequest,
     DemoteRequest,
+    FailoverStatusResponse,
     HAConfigRequest,
     HAConfigResponse,
     HeartbeatHistoryEntry,
@@ -195,6 +197,7 @@ async def heartbeat(db: AsyncSession = Depends(get_db_session)):
                 "uptime_seconds": round(now_mono - _start_time, 1),
                 "maintenance": maintenance,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "promoted_at": cfg_row.promoted_at.isoformat() if cfg_row.promoted_at else None,
             }
 
         # Sign the payload
@@ -442,7 +445,7 @@ async def replication_init(
         if role == "primary":
             result = await ReplicationManager.init_primary(None)
         elif role == "standby":
-            result = await ReplicationManager.init_standby(None, peer_db_url)
+            result = await ReplicationManager.init_standby(None, peer_db_url, truncate_first=True)
         else:
             return JSONResponse(
                 status_code=400,
@@ -876,6 +879,109 @@ async def history():
     if hb_service is None:
         return []
     return hb_service.get_history()
+
+
+@admin_router.get(
+    "/failover-status",
+    response_model=FailoverStatusResponse,
+    summary="Auto-promote countdown and split-brain status",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "HA not configured"},
+    },
+)
+async def failover_status(db: AsyncSession = Depends(get_db_session)):
+    """Return the current failover state for the frontend to poll.
+
+    Includes auto-promote countdown, split-brain detection, and stale
+    primary determination.
+
+    Requirements: 5.5, 12.1, 12.2
+    """
+    from app.modules.ha.models import HAConfig
+    from sqlalchemy import select
+
+    result = await db.execute(select(HAConfig).limit(1))
+    cfg = result.scalars().first()
+    if cfg is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "HA is not configured."},
+        )
+
+    hb_service = get_heartbeat_service()
+
+    peer_unreachable_seconds: float | None = None
+    split_brain_detected = False
+    is_stale = False
+    seconds_until_auto_promote: float | None = None
+
+    if hb_service is not None:
+        peer_unreachable_seconds = hb_service.get_peer_unreachable_seconds()
+        split_brain_detected = hb_service.split_brain_detected
+        is_stale = hb_service.is_stale_primary(cfg.promoted_at)
+
+        if (
+            peer_unreachable_seconds is not None
+            and cfg.auto_promote_enabled
+        ):
+            seconds_until_auto_promote = hb_service.get_seconds_until_auto_promote(
+                cfg.failover_timeout_seconds,
+            )
+
+    return FailoverStatusResponse(
+        auto_promote_enabled=cfg.auto_promote_enabled,
+        peer_unreachable_seconds=peer_unreachable_seconds,
+        failover_timeout_seconds=cfg.failover_timeout_seconds,
+        seconds_until_auto_promote=seconds_until_auto_promote,
+        split_brain_detected=split_brain_detected,
+        is_stale_primary=is_stale,
+        promoted_at=cfg.promoted_at.isoformat() if cfg.promoted_at else None,
+    )
+
+
+@admin_router.post(
+    "/demote-and-sync",
+    summary="Demote stale primary to standby and re-sync from new primary",
+    responses={
+        200: {"description": "Role reversal completed"},
+        400: {"description": "Invalid state or confirmation"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+        404: {"description": "HA not configured"},
+    },
+)
+async def demote_and_sync(
+    payload: DemoteAndSyncRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Demote this node to standby, truncate local data, and subscribe to the new primary.
+
+    Used during the guided role-reversal recovery flow after a split-brain
+    condition is detected and this node is the stale primary.
+
+    Requirements: 7.3, 7.4, 7.5, 7.6
+    """
+    if not validate_confirmation_text(payload.confirmation_text):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Confirmation text must be exactly 'CONFIRM'"},
+        )
+
+    user_id = uuid.UUID(request.state.user_id)
+    try:
+        result = await HAService.demote_and_sync(db, user_id=user_id, reason=payload.reason)
+        return result
+    except ValueError as exc:
+        msg = str(exc)
+        if "not configured" in msg.lower():
+            return JSONResponse(status_code=404, content={"detail": msg})
+        return JSONResponse(status_code=400, content={"detail": msg})
+    except Exception as exc:
+        logger.error("Demote-and-sync error: %s", exc)
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
 # ---------------------------------------------------------------------------

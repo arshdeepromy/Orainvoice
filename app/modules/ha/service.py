@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit_log
 from app.core.encryption import envelope_decrypt_str, envelope_encrypt
 from app.modules.ha.heartbeat import HeartbeatService
-from app.modules.ha.middleware import set_node_role
+from app.modules.ha.middleware import set_node_role, set_split_brain_blocked
 from app.modules.ha.models import HAConfig
 from app.modules.ha.replication import ReplicationManager
 from app.modules.ha.schemas import (
@@ -336,6 +336,7 @@ class HAService:
 
         # Update role
         cfg.role = "primary"
+        cfg.promoted_at = datetime.now(timezone.utc)
         cfg.updated_at = datetime.now(timezone.utc)
         await db.flush()
 
@@ -391,6 +392,7 @@ class HAService:
 
         # Update role
         cfg.role = "standby"
+        cfg.promoted_at = None
         cfg.updated_at = datetime.now(timezone.utc)
         await db.flush()
 
@@ -425,6 +427,97 @@ class HAService:
             "status": "ok",
             "role": "standby",
             "reason": reason,
+        }
+
+    # ------------------------------------------------------------------
+    # Demote and Sync (role reversal guided flow)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def demote_and_sync(
+        db: AsyncSession,
+        user_id: UUID,
+        reason: str,
+    ) -> dict:
+        """Demote this primary to standby, truncate data, and subscribe to the new primary.
+
+        Used during the guided role-reversal recovery flow after a split-brain
+        condition is detected and this node is the stale primary.
+
+        Steps:
+        1. Load config, verify role is "primary".
+        2. Update role to "standby", clear ``promoted_at``.
+        3. Flush to DB.
+        4. Truncate all tables except ha_config.
+        5. Create subscription to peer (using stored peer DB URL).
+        6. Update middleware cache.
+        7. Clear split-brain flags.
+        8. Write audit log with action "ha.role_reversal_completed".
+
+        Requirements: 7.3, 7.4, 7.5, 7.6
+        """
+        cfg = await _load_config(db)
+        if cfg is None:
+            raise ValueError("HA is not configured.")
+
+        if cfg.role != "primary":
+            raise ValueError(
+                f"Cannot demote-and-sync: node is currently '{cfg.role}', must be 'primary'."
+            )
+
+        # Update role to standby and clear promoted_at
+        cfg.role = "standby"
+        cfg.promoted_at = None
+        cfg.updated_at = datetime.now(timezone.utc)
+        await db.flush()
+        await db.refresh(cfg)
+
+        # Truncate all tables except ha_config
+        try:
+            await ReplicationManager.truncate_all_tables()
+        except Exception as exc:
+            logger.error("Truncation failed during demote-and-sync: %s", exc)
+            raise ValueError(f"Truncation failed: {exc}") from exc
+
+        # Create subscription to peer
+        peer_db_url = await get_peer_db_url(db)
+        if peer_db_url:
+            try:
+                await ReplicationManager.init_standby(None, peer_db_url, truncate_first=False)
+            except Exception as exc:
+                logger.warning("Could not create subscription during demote-and-sync: %s", exc)
+        else:
+            logger.warning(
+                "No peer DB URL configured — subscription not created. "
+                "Configure peer DB settings and run Initialize Replication manually."
+            )
+
+        # Update middleware cache
+        set_node_role("standby", cfg.peer_endpoint)
+
+        # Clear split-brain flags
+        set_split_brain_blocked(False)
+
+        # Audit log
+        await write_audit_log(
+            session=db,
+            action="ha.role_reversal_completed",
+            entity_type="ha_config",
+            user_id=user_id,
+            entity_id=cfg.id,
+            after_value={
+                "role": "standby",
+                "reason": reason,
+                "peer_endpoint": cfg.peer_endpoint,
+            },
+        )
+
+        logger.info("Demote-and-sync completed: node is now STANDBY (reason: %s)", reason)
+        return {
+            "status": "ok",
+            "role": "standby",
+            "reason": reason,
+            "message": "Node demoted to standby and re-syncing from new primary.",
         }
 
     # ------------------------------------------------------------------
