@@ -1459,6 +1459,9 @@ async def regenerate_payment_link_endpoint(
             billing = cust.billing_address or {}
             cust_name = " ".join(filter(None, [cust.first_name, cust.last_name])) or cust.company_name or org.name
             if billing.get("country") or billing.get("street"):
+                # Stripe requires ISO 3166-1 alpha-2 country codes
+                from app.modules.invoices.service import _to_iso_country_code
+                raw_country = billing.get("country") or "NZ"
                 shipping_data = {
                     "name": cust_name,
                     "address": {
@@ -1466,7 +1469,7 @@ async def regenerate_payment_link_endpoint(
                         "city": billing.get("city") or "",
                         "state": billing.get("state") or "",
                         "postal_code": billing.get("postal_code") or "",
-                        "country": billing.get("country") or "NZ",
+                        "country": _to_iso_country_code(raw_country),
                     },
                 }
     except Exception:

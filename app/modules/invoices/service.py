@@ -32,6 +32,30 @@ logger = logging.getLogger(__name__)
 TWO_PLACES = Decimal("0.01")
 SIX_PLACES = Decimal("0.000001")
 
+# ISO 3166-1 alpha-2 country code mapping for Stripe shipping address
+_COUNTRY_NAME_TO_CODE: dict[str, str] = {
+    "new zealand": "NZ", "australia": "AU", "united states": "US",
+    "united kingdom": "GB", "canada": "CA", "ireland": "IE",
+    "singapore": "SG", "south africa": "ZA", "india": "IN",
+    "philippines": "PH", "fiji": "FJ", "samoa": "WS", "tonga": "TO",
+    "france": "FR", "germany": "DE", "italy": "IT", "spain": "ES",
+    "netherlands": "NL", "belgium": "BE", "austria": "AT",
+    "switzerland": "CH", "sweden": "SE", "norway": "NO", "denmark": "DK",
+    "finland": "FI", "poland": "PL", "czech republic": "CZ",
+    "czechia": "CZ", "romania": "RO", "greece": "GR", "portugal": "PT",
+    "japan": "JP", "china": "CN", "south korea": "KR",
+}
+
+
+def _to_iso_country_code(value: str) -> str:
+    """Convert a country name or code to ISO 3166-1 alpha-2."""
+    if not value:
+        return "NZ"
+    stripped = value.strip()
+    if len(stripped) == 2:
+        return stripped.upper()
+    return _COUNTRY_NAME_TO_CODE.get(stripped.lower(), stripped)
+
 
 def validate_invoice_currency(
     currency: str,
@@ -289,6 +313,9 @@ async def _maybe_create_stripe_payment_intent(
                 ) or customer.company_name or org.name
                 # Only include shipping if we have at least a country
                 if billing.get("country") or billing.get("street"):
+                    # Stripe requires ISO 3166-1 alpha-2 country codes
+                    raw_country = billing.get("country") or "NZ"
+                    country_code = _to_iso_country_code(raw_country)
                     shipping_data = {
                         "name": customer_name,
                         "address": {
@@ -296,7 +323,7 @@ async def _maybe_create_stripe_payment_intent(
                             "city": billing.get("city") or "",
                             "state": billing.get("state") or "",
                             "postal_code": billing.get("postal_code") or "",
-                            "country": billing.get("country") or "NZ",
+                            "country": country_code,
                         },
                     }
         except Exception:
