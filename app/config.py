@@ -34,7 +34,6 @@ class Settings(BaseSettings):
     stripe_publishable_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_connect_client_id: str = ""
-    stripe_connect_redirect_uri: str = "http://localhost/settings/online-payments"
 
     # --- Frontend ---
     frontend_base_url: str = "http://localhost:5173"

@@ -30,12 +30,20 @@ async def generate_payment_token(
     *,
     org_id: uuid.UUID,
     invoice_id: uuid.UUID,
+    base_url: str | None = None,
 ) -> tuple[str, str]:
     """Generate a payment token and payment page URL for an invoice.
 
     Invalidates any existing active tokens for the same invoice,
     creates a new token with a 72-hour expiry, and returns the
     token string and the full payment page URL.
+
+    Parameters
+    ----------
+    base_url:
+        The origin of the incoming request (e.g. ``https://one.oraflows.com``).
+        When provided, the payment URL uses this domain so it matches the
+        domain the browser is actually on.  Falls back to FRONTEND_BASE_URL.
 
     Returns
     -------
@@ -71,7 +79,7 @@ async def generate_payment_token(
     await db.refresh(payment_token)
 
     # 5. Build the public payment page URL
-    frontend_base = (settings.frontend_base_url or "http://localhost:5173").rstrip("/")
+    frontend_base = (base_url or settings.frontend_base_url or "http://localhost:5173").rstrip("/")
     url = f"{frontend_base}/pay/{token}"
 
     return token, url

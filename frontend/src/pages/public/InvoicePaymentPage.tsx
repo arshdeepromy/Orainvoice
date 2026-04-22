@@ -514,7 +514,7 @@ export default function InvoicePaymentPage() {
   /* ── Loading state ── */
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50">
+      <div className="flex items-center justify-center bg-gray-50 overflow-y-auto" style={{ height: '100vh' }}>
         <Spinner size="lg" label="Loading payment page" />
       </div>
     )
@@ -531,7 +531,7 @@ export default function InvoicePaymentPage() {
           : 'Error'
 
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+      <div className="flex items-center justify-center bg-gray-50 px-4 overflow-y-auto" style={{ height: '100vh' }}>
         <div className="w-full max-w-md">
           <AlertBanner variant={variant} title={title}>
             {errorState.message}
@@ -544,7 +544,7 @@ export default function InvoicePaymentPage() {
   /* ── Redirect result from Klarna/Afterpay/etc. ── */
   if (redirectResult === 'succeeded') {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+      <div className="flex items-center justify-center bg-gray-50 px-4 overflow-y-auto" style={{ height: '100vh' }}>
         <div className="w-full max-w-md">
           <div className="rounded-lg border border-green-200 bg-green-50 p-6 text-center">
             <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
@@ -573,7 +573,7 @@ export default function InvoicePaymentPage() {
   /* ── Invoice already paid ── */
   if (data?.is_paid) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+      <div className="flex items-center justify-center bg-gray-50 px-4 overflow-y-auto" style={{ height: '100vh' }}>
         <div className="w-full max-w-md">
           <div className="rounded-lg border border-green-200 bg-green-50 p-6 text-center">
             <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
@@ -594,7 +594,7 @@ export default function InvoicePaymentPage() {
   /* ── Invoice not payable (voided, draft, etc.) ── */
   if (!data?.is_payable) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+      <div className="flex items-center justify-center bg-gray-50 px-4 overflow-y-auto" style={{ height: '100vh' }}>
         <div className="w-full max-w-md">
           <AlertBanner variant="warning" title="Invoice Not Payable">
             {data?.error_message ?? 'This invoice is not currently available for payment.'}
@@ -608,7 +608,7 @@ export default function InvoicePaymentPage() {
   const primaryColour = data?.org_primary_colour ?? '#2563eb'
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 overflow-y-auto" style={{ height: '100vh' }}>
       {/* Top bar with org branding */}
       <header
         className="border-b px-4 py-3"

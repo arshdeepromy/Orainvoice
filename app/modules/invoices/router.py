@@ -210,6 +210,7 @@ async def create_invoice_endpoint(
     email_status = None
     if should_email:
         import asyncio as _asyncio
+        _origin = request.headers.get("origin") or None
         async def _send_email_bg():
             try:
                 from app.core.database import async_session_factory, _set_rls_org_id
@@ -218,7 +219,7 @@ async def create_invoice_endpoint(
                 async with async_session_factory() as email_db:
                     async with email_db.begin():
                         await _set_rls_org_id(email_db, str(org_uuid))
-                        await email_invoice(email_db, org_id=org_uuid, invoice_id=invoice_uuid)
+                        await email_invoice(email_db, org_id=org_uuid, invoice_id=invoice_uuid, base_url=_origin)
             except Exception as exc:
                 import logging
                 logging.getLogger(__name__).exception("Auto-email failed for invoice %s: %s", result.get("id"), exc)
@@ -637,6 +638,7 @@ async def update_invoice_endpoint(
 
         # Send email in background (fire-and-forget)
         import asyncio as _asyncio
+        _origin2 = request.headers.get("origin") or None
         async def _send_update_email():
             try:
                 from app.core.database import async_session_factory, _set_rls_org_id
@@ -644,7 +646,7 @@ async def update_invoice_endpoint(
                 async with async_session_factory() as email_db:
                     async with email_db.begin():
                         await _set_rls_org_id(email_db, str(org_uuid))
-                        await email_invoice(email_db, org_id=org_uuid, invoice_id=invoice_id)
+                        await email_invoice(email_db, org_id=org_uuid, invoice_id=invoice_id, base_url=_origin2)
             except Exception as exc:
                 import logging
                 logging.getLogger(__name__).exception("Auto-email failed for invoice %s: %s", invoice_id, exc)
@@ -1549,6 +1551,7 @@ async def email_invoice_endpoint(
             org_id=org_uuid,
             invoice_id=invoice_id,
             recipient_email=recipient,
+            base_url=request.headers.get("origin") or None,
         )
     except ValueError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})

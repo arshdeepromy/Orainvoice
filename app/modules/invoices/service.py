@@ -223,6 +223,8 @@ async def _maybe_create_stripe_payment_intent(
     db: AsyncSession,
     invoice: "Invoice",
     org: "Organisation",
+    *,
+    base_url: str | None = None,
 ) -> None:
     """Auto-generate a Stripe PaymentIntent and payment token when applicable.
 
@@ -273,6 +275,33 @@ async def _maybe_create_stripe_payment_intent(
         if fee_percent and fee_percent > 0:
             application_fee_amount = int(amount_cents * fee_percent / 100)
 
+        # Build shipping/billing address from customer data for Afterpay eligibility
+        shipping_data: dict | None = None
+        try:
+            customer_result = await db.execute(
+                select(Customer).where(Customer.id == invoice.customer_id)
+            )
+            customer = customer_result.scalar_one_or_none()
+            if customer:
+                billing = customer.billing_address or {}
+                customer_name = " ".join(
+                    filter(None, [customer.first_name, customer.last_name])
+                ) or customer.company_name or org.name
+                # Only include shipping if we have at least a country
+                if billing.get("country") or billing.get("street"):
+                    shipping_data = {
+                        "name": customer_name,
+                        "address": {
+                            "line1": billing.get("street") or "N/A",
+                            "city": billing.get("city") or "",
+                            "state": billing.get("state") or "",
+                            "postal_code": billing.get("postal_code") or "",
+                            "country": billing.get("country") or "NZ",
+                        },
+                    }
+        except Exception:
+            logger.debug("Could not fetch customer address for shipping — continuing without it")
+
         # Create PaymentIntent on Connected Account
         pi_result = await create_payment_intent(
             amount=amount_cents,
@@ -280,6 +309,7 @@ async def _maybe_create_stripe_payment_intent(
             invoice_id=str(invoice.id),
             stripe_account_id=stripe_account_id,
             application_fee_amount=application_fee_amount,
+            shipping=shipping_data,
         )
 
         # Generate payment token + URL
@@ -287,6 +317,7 @@ async def _maybe_create_stripe_payment_intent(
             db,
             org_id=invoice.org_id,
             invoice_id=invoice.id,
+            base_url=base_url,
         )
 
         # Store on invoice record
@@ -3305,16 +3336,19 @@ async def generate_invoice_pdf(
     customer = cust_result.scalar_one_or_none()
     # Build address: prefer plain text, fall back to structured billing_address
     _cust_addr = customer.address if customer else None
-    if not _cust_addr and customer:
+    _cust_billing_addr = None
+    if customer:
         _ba = getattr(customer, "billing_address", None) or {}
         if isinstance(_ba, dict) and any(_ba.values()):
-            _cust_addr = ", ".join(filter(None, [
+            _cust_billing_addr = ", ".join(filter(None, [
                 _ba.get("street"),
                 _ba.get("city"),
                 _ba.get("state"),
                 _ba.get("postal_code"),
                 _ba.get("country"),
             ]))
+            if not _cust_addr:
+                _cust_addr = _cust_billing_addr
     customer_context = {
         "first_name": customer.first_name if customer else "Unknown",
         "last_name": customer.last_name if customer else "",
@@ -3323,6 +3357,7 @@ async def generate_invoice_pdf(
         "email": customer.email if customer else None,
         "phone": customer.phone if customer else None,
         "address": _cust_addr or None,
+        "billing_address": _cust_billing_addr or None,
     }
 
     # I18n labels for PDF --------------------------------------------------
@@ -3405,6 +3440,7 @@ async def email_invoice(
     org_id: uuid.UUID,
     invoice_id: uuid.UUID,
     recipient_email: str | None = None,
+    base_url: str | None = None,
 ) -> dict:
     """Generate the invoice PDF and send an email to the customer.
 
@@ -3462,7 +3498,7 @@ async def email_invoice(
         and float(balance_due) > 0
     ):
         from app.config import settings as app_settings
-        frontend_base = (app_settings.frontend_base_url or "http://localhost").rstrip("/")
+        frontend_base = (base_url or app_settings.frontend_base_url or "http://localhost").rstrip("/")
         needs_regen = (
             not payment_page_url
             or not payment_page_url.startswith(frontend_base)
@@ -3481,7 +3517,8 @@ async def email_invoice(
                 org_for_regen = org_regen_result.scalar_one_or_none()
                 if inv_obj_for_regen and org_for_regen:
                     await _maybe_create_stripe_payment_intent(
-                        db, inv_obj_for_regen, org_for_regen
+                        db, inv_obj_for_regen, org_for_regen,
+                        base_url=base_url,
                     )
                     await db.refresh(inv_obj_for_regen)
                     payment_page_url = inv_obj_for_regen.payment_page_url

@@ -37,6 +37,13 @@
   @page {
     margin: 15mm;
     size: A4;
+    /* Suppress browser-added headers/footers (date, URL, page number) */
+    @top-left { content: none; }
+    @top-center { content: none; }
+    @top-right { content: none; }
+    @bottom-left { content: none; }
+    @bottom-center { content: none; }
+    @bottom-right { content: none; }
   }
 
   /* ------------------------------------------------------------------ */

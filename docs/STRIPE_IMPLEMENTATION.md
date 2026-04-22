@@ -30,16 +30,20 @@ Status: **Pending full implementation** — Stripe features are disabled in the 
 - `create_credit_note(db, invoice_id, ...)` — has `process_stripe_refund` flag for triggering Stripe refund from credit note
 
 ### Config (`app/config.py`)
-- `stripe_secret_key` — Stripe API secret key
-- `stripe_connect_client_id` — Stripe Connect platform client ID
-- `stripe_connect_redirect_uri` — OAuth callback URL
-- `stripe_webhook_secret` — webhook signing secret
+- `stripe_secret_key` — Stripe API secret key (env fallback only; use DB helper)
+- `stripe_connect_client_id` — Stripe Connect platform client ID (env fallback only; use DB helper)
+- `stripe_webhook_secret` — webhook signing secret (env fallback only; use DB helper)
+
+### Redirect URI
+The Stripe Connect OAuth redirect URI is built dynamically from `FRONTEND_BASE_URL`:
+`{FRONTEND_BASE_URL}/settings/online-payments`
+
+This must match one of the URIs registered in Stripe Dashboard → Settings → Connect → OAuth → Redirects.
 
 ### Environment Variables (`.env`)
-- `STRIPE_SECRET_KEY`
-- `STRIPE_CONNECT_CLIENT_ID`
-- `STRIPE_CONNECT_REDIRECT_URI`
-- `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_SECRET_KEY` — fallback only; credentials should be configured via Global Admin > Integrations
+- `STRIPE_CONNECT_CLIENT_ID` — fallback only
+- `STRIPE_WEBHOOK_SECRET` — fallback only
 
 ---
 

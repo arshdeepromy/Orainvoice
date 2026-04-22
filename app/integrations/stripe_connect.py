@@ -26,13 +26,17 @@ STRIPE_CONNECT_AUTHORIZE_URL = "https://connect.stripe.com/oauth/authorize"
 STRIPE_CONNECT_TOKEN_URL = "https://connect.stripe.com/oauth/token"
 
 
-async def generate_connect_url(org_id: uuid.UUID) -> tuple[str, str]:
+async def generate_connect_url(org_id: uuid.UUID, *, base_url: str | None = None) -> tuple[str, str]:
     """Generate a Stripe Connect OAuth authorisation URL.
 
     Parameters
     ----------
     org_id:
         The organisation initiating the connection.
+    base_url:
+        The origin of the incoming request (e.g. ``https://one.oraflows.com``).
+        When provided, the redirect URI is built from this so it matches the
+        domain the browser is actually on.  Falls back to FRONTEND_BASE_URL.
 
     Returns
     -------
@@ -46,11 +50,19 @@ async def generate_connect_url(org_id: uuid.UUID) -> tuple[str, str]:
 
     client_id = await get_stripe_connect_client_id()
 
+    # Build redirect URI from the request origin so it matches the domain
+    # the browser is actually on (e.g. https://one.oraflows.com), not the
+    # internal FRONTEND_BASE_URL (e.g. http://192.168.1.90:8999).
+    # This must match one of the URIs registered in Stripe Dashboard →
+    # Settings → Connect → OAuth → Redirects.
+    frontend_base = (base_url or settings.frontend_base_url or "http://localhost").rstrip("/")
+    redirect_uri = f"{frontend_base}/settings/online-payments"
+
     params = {
         "response_type": "code",
         "client_id": client_id,
         "scope": "read_write",
-        "redirect_uri": settings.stripe_connect_redirect_uri,
+        "redirect_uri": redirect_uri,
         "state": state,
         "stripe_landing": "login",
     }
@@ -214,6 +226,7 @@ async def create_payment_intent(
     invoice_id: str,
     stripe_account_id: str,
     application_fee_amount: int | None = None,
+    shipping: dict | None = None,
 ) -> dict:
     """Create a Stripe PaymentIntent on a Connected Account.
 
@@ -235,6 +248,11 @@ async def create_payment_intent(
         Optional platform application fee in the smallest currency unit.
         When provided and > 0, included as ``application_fee_amount`` on
         the PaymentIntent so Stripe splits the fee to the platform.
+    shipping:
+        Optional shipping/billing address dict with keys ``name``,
+        ``address.line1``, ``address.city``, ``address.state``,
+        ``address.postal_code``, ``address.country``.  When provided,
+        enables Afterpay/Clearpay and improves acceptance rates.
 
     Returns
     -------
@@ -258,6 +276,22 @@ async def create_payment_intent(
 
     if application_fee_amount and application_fee_amount > 0:
         payload["application_fee_amount"] = str(application_fee_amount)
+
+    # Add shipping/billing address for Afterpay/Clearpay eligibility
+    if shipping:
+        if shipping.get("name"):
+            payload["shipping[name]"] = shipping["name"]
+        addr = shipping.get("address", {})
+        if addr.get("line1"):
+            payload["shipping[address][line1]"] = addr["line1"]
+        if addr.get("city"):
+            payload["shipping[address][city]"] = addr["city"]
+        if addr.get("state"):
+            payload["shipping[address][state]"] = addr["state"]
+        if addr.get("postal_code"):
+            payload["shipping[address][postal_code]"] = addr["postal_code"]
+        if addr.get("country"):
+            payload["shipping[address][country]"] = addr["country"]
 
     from app.integrations.stripe_billing import get_stripe_secret_key
 

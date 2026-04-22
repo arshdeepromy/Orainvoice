@@ -1575,7 +1575,12 @@ async def initiate_stripe_connect(
             content={"detail": "Organisation context required"},
         )
 
-    authorize_url, state = await generate_connect_url(org_uuid)
+    # Derive the base URL from the request origin so the redirect URI
+    # matches the domain the browser is actually on (e.g. https://one.oraflows.com).
+    origin = request.headers.get("origin") or ""
+    base_url = origin or None
+
+    authorize_url, state = await generate_connect_url(org_uuid, base_url=base_url)
 
     # Audit the initiation
     await write_audit_log(

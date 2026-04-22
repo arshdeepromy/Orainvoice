@@ -765,7 +765,7 @@ async def manage_payouts(
             content={"detail": "Stripe secret key not configured."},
         )
 
-    frontend_base = (settings.frontend_base_url or "http://localhost:5173").rstrip("/")
+    frontend_base = (request.headers.get("origin") or settings.frontend_base_url or "http://localhost:5173").rstrip("/")
     return_url = f"{frontend_base}/settings?tab=online-payments"
     refresh_url = f"{frontend_base}/settings?tab=online-payments"
 
@@ -1447,6 +1447,31 @@ async def regenerate_payment_link_endpoint(
     if fee_percent and fee_percent > 0:
         application_fee_amount = int(amount_cents * fee_percent / 100)
 
+    # Build shipping/billing address from customer data for Afterpay eligibility
+    from app.modules.customers.models import Customer as _Customer
+    shipping_data: dict | None = None
+    try:
+        cust_result = await db.execute(
+            select(_Customer).where(_Customer.id == invoice.customer_id)
+        )
+        cust = cust_result.scalar_one_or_none()
+        if cust:
+            billing = cust.billing_address or {}
+            cust_name = " ".join(filter(None, [cust.first_name, cust.last_name])) or cust.company_name or org.name
+            if billing.get("country") or billing.get("street"):
+                shipping_data = {
+                    "name": cust_name,
+                    "address": {
+                        "line1": billing.get("street") or "N/A",
+                        "city": billing.get("city") or "",
+                        "state": billing.get("state") or "",
+                        "postal_code": billing.get("postal_code") or "",
+                        "country": billing.get("country") or "NZ",
+                    },
+                }
+    except Exception:
+        pass  # Non-critical — continue without shipping
+
     # Create new PaymentIntent on Connected Account
     pi_result = await create_payment_intent(
         amount=amount_cents,
@@ -1454,13 +1479,16 @@ async def regenerate_payment_link_endpoint(
         invoice_id=str(invoice.id),
         stripe_account_id=stripe_account_id,
         application_fee_amount=application_fee_amount,
+        shipping=shipping_data,
     )
 
     # Generate new payment token + URL (invalidates old tokens)
+    origin = request.headers.get("origin") or ""
     _token, payment_url = await generate_payment_token(
         db,
         org_id=org_uuid,
         invoice_id=invoice.id,
+        base_url=origin or None,
     )
 
     # Update invoice record

@@ -139,12 +139,18 @@
       {% endif %}
       <div class="org-name">{{ org.name }}</div>
       <div class="org-details">
-        {% if org.address_unit %}{{ org.address_unit }}<br>{% endif %}
-        {% if org.address_street %}{{ org.address_street }}<br>{% endif %}
-        {% if org.address_city or org.address_state or org.address_postcode %}
-          {{ org.address_city or '' }}{% if org.address_city and (org.address_state or org.address_postcode) %}, {% endif %}{{ org.address_state or '' }}{% if org.address_state and org.address_postcode %}, {% endif %}{{ org.address_postcode or '' }}<br>
-        {% elif org.address %}{{ org.address }}<br>{% endif %}
-        {% if org.address_country %}{{ org.address_country }}<br>{% endif %}
+        {% if org.address_street or org.address_city %}
+          {# Structured address fields — render individually #}
+          {% if org.address_unit %}{{ org.address_unit }}<br>{% endif %}
+          {% if org.address_street %}{{ org.address_street }}<br>{% endif %}
+          {% if org.address_city or org.address_state or org.address_postcode %}
+            {{ org.address_city or '' }}{% if org.address_city and (org.address_state or org.address_postcode) %}, {% endif %}{{ org.address_state or '' }}{% if org.address_state and org.address_postcode %}, {% endif %}{{ org.address_postcode or '' }}<br>
+          {% endif %}
+          {% if org.address_country %}{{ org.address_country }}<br>{% endif %}
+        {% elif org.address %}
+          {# Fallback: plain-text address (legacy) #}
+          {{ org.address }}<br>
+        {% endif %}
         {% if org.phone %}{{ org.phone }}<br>{% endif %}
         {% if org.email %}{{ org.email }}<br>{% endif %}
         {% if org.website %}{{ org.website }}{% endif %}
@@ -173,7 +179,11 @@
         <div class="bill-to-label">Bill To</div>
         <div class="bill-to-name">{{ customer.display_name or (customer.first_name ~ ' ' ~ customer.last_name) }}</div>
         {% if customer.company_name %}<div class="bill-to-detail" style="font-weight:600;">{{ customer.company_name }}</div>{% endif %}
-        {% if customer.address %}<div class="bill-to-detail">{{ customer.address }}</div>{% endif %}
+        {% if customer.billing_address %}
+          <div class="bill-to-detail">{{ customer.billing_address }}</div>
+        {% elif customer.address %}
+          <div class="bill-to-detail">{{ customer.address }}</div>
+        {% endif %}
         {% if customer.email %}<div class="bill-to-detail">{{ customer.email }}</div>{% endif %}
         {% if customer.phone %}<div class="bill-to-detail">{{ customer.phone }}</div>{% endif %}
       </div>

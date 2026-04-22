@@ -112,7 +112,7 @@ async def akahu_callback(
 
     # Build masked response
     from app.config import settings
-    frontend_url = settings.frontend_base_url
+    frontend_url = request.headers.get("origin") or settings.frontend_base_url
     return RedirectResponse(
         url=f"{frontend_url}/banking/accounts?connected=true",
         status_code=302,
