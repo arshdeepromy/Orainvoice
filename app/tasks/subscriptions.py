@@ -343,6 +343,11 @@ async def process_recurring_billing_task() -> dict:
                         exc,
                     )
 
+                    try:
+                        await send_dunning_email_task(org_id=str(org.id), attempt_count=retry_count)
+                    except Exception as email_exc:
+                        logger.warning(f"Failed to send dunning email for org {org.id}: {email_exc}")
+
                     if retry_count >= MAX_BILLING_RETRIES:
                         org.status = "grace_period"
                         org_settings["grace_period_started_at"] = now.isoformat()
@@ -362,6 +367,11 @@ async def process_recurring_billing_task() -> dict:
                                 "billing_retry_count": retry_count,
                             },
                         )
+
+                        try:
+                            await send_suspension_email_task(org_id=str(org.id), email_type="grace_period")
+                        except Exception as email_exc:
+                            logger.warning(f"Failed to send grace period email for org {org.id}: {email_exc}")
 
                     await session.flush()
                     failed += 1
@@ -868,6 +878,11 @@ async def check_suspension_retention_task() -> dict:
                         warnings_sent += 1
 
                     if days_suspended >= 90:
+                        try:
+                            await send_suspension_email_task(org_id=str(org.id), email_type="data_deleted")
+                        except Exception as email_exc:
+                            logger.warning(f"Failed to send data deletion email for org {org.id}: {email_exc}")
+
                         org.status = "deleted"
                         org_settings["deleted_at"] = now.isoformat()
                         org.settings = org_settings
@@ -892,8 +907,8 @@ async def send_suspension_email_task(org_id: str, email_type: str = "suspended")
     from app.modules.notifications.service import log_email_sent
     from app.tasks.notifications import send_email_task
 
-    subjects = {"suspended": "Your WorkshopPro NZ account has been suspended", "retention_30_day": "Your WorkshopPro NZ data will be deleted in 30 days", "retention_7_day": "URGENT: Your WorkshopPro NZ data will be deleted in 7 days"}
-    bodies = {"suspended": "<p>Your account for <strong>{org_name}</strong> has been suspended due to non-payment.</p>", "retention_30_day": "<p>Your data will be permanently deleted in <strong>30 days</strong> unless payment is recovered.</p>", "retention_7_day": "<p>URGENT: Your data will be permanently deleted in <strong>7 days</strong>.</p>"}
+    subjects = {"suspended": "Your WorkshopPro NZ account has been suspended", "retention_30_day": "Your WorkshopPro NZ data will be deleted in 30 days", "retention_7_day": "URGENT: Your WorkshopPro NZ data will be deleted in 7 days", "grace_period": "Your OraInvoice account needs attention — payment issue", "data_deleted": "Your OraInvoice data has been permanently deleted"}
+    bodies = {"suspended": "<p>Your account for <strong>{org_name}</strong> has been suspended due to non-payment.</p>", "retention_30_day": "<p>Your data will be permanently deleted in <strong>30 days</strong> unless payment is recovered.</p>", "retention_7_day": "<p>URGENT: Your data will be permanently deleted in <strong>7 days</strong>.</p>", "grace_period": "<p>Your account for <strong>{org_name}</strong> has a payment issue. Please resolve your payment method within <strong>7 days</strong> to avoid suspension of your account.</p>", "data_deleted": "<p>Your data for <strong>{org_name}</strong> has been permanently deleted following a 90-day suspension period. This action cannot be undone.</p>"}
 
     async with async_session_factory() as session:
         async with session.begin():

@@ -1,0 +1,163 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Bug Condition** - Lifecycle Tasks Not Scheduled and Emails Not Sent
+  - **CRITICAL**: This test MUST FAIL on unfixed code — failure confirms the bug exists
+  - **DO NOT attempt to fix the test or the code when it fails**
+  - **NOTE**: This test encodes the expected behavior — it will validate the fix when it passes after implementation
+  - **GOAL**: Surface counterexamples that demonstrate the bug exists in both task registration and email notification gaps
+  - **Scoped PBT Approach**: Scope the property to the concrete failing cases identified in the design
+  - **Part A — Task Registration (deterministic)**:
+    - Import `_DAILY_TASKS` and `WRITE_TASKS` from `app.tasks.scheduled`
+    - Extract task names from `_DAILY_TASKS`: `[name for (_, _, name) in _DAILY_TASKS]`
+    - Assert `"check_trial_expiry"` is in the task names list (from Bug Condition in design: task NOT IN `_DAILY_TASKS`)
+    - Assert `"check_grace_period"` is in the task names list
+    - Assert `"check_suspension_retention"` is in the task names list
+    - Assert `"check_trial_expiry"` is in `WRITE_TASKS`
+    - Assert `"check_grace_period"` is in `WRITE_TASKS`
+    - Assert `"check_suspension_retention"` is in `WRITE_TASKS`
+  - **Part B — Grace Period Entry Email (mock-based)**:
+    - Mock `charge_org_payment_method` to raise `PaymentFailedError` 3 times
+    - Set up an org with `status='active'`, `billing_retry_count=2` (so next failure triggers grace period)
+    - Run `process_recurring_billing_task` and assert `send_suspension_email_task` is called with `email_type="grace_period"`
+  - **Part C — Fallback Dunning Email (mock-based)**:
+    - Mock `charge_org_payment_method` to raise `PaymentFailedError`
+    - Run `process_recurring_billing_task` and assert `send_dunning_email_task` is called with the current retry count
+  - **Part D — Deletion Confirmation Email (mock-based)**:
+    - Set up an org with `status='suspended'`, `suspended_at` = 91 days ago
+    - Run `check_suspension_retention_task` and assert `send_suspension_email_task` is called with `email_type="data_deleted"`
+  - Run test on UNFIXED code
+  - **EXPECTED OUTCOME**: Test FAILS (this is correct — it proves the bug exists)
+  - Document counterexamples found:
+    - `_DAILY_TASKS` does not contain entries for the three lifecycle tasks
+    - `WRITE_TASKS` does not contain the three task names
+    - No grace period email call in the payment failure except block
+    - No dunning email call in the payment failure except block
+    - No deletion confirmation email call in the 90-day deletion block
+  - Mark task complete when test is written, run, and failure is documented
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7_
+
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** - Existing Billing and Scheduler Behavior Unchanged
+  - **IMPORTANT**: Follow observation-first methodology — observe behavior on UNFIXED code first
+  - **Part A — Existing `_DAILY_TASKS` entries preserved**:
+    - Observe: record all current `_DAILY_TASKS` entries (function, interval, name) on unfixed code
+    - Observe: record all current `WRITE_TASKS` entries on unfixed code
+    - Write property: for all existing task entries in `_DAILY_TASKS` before fix, those same entries (same function reference, same interval, same name) must still be present after fix
+    - Write property: for all existing entries in `WRITE_TASKS` before fix, those same entries must still be present after fix
+  - **Part B — Successful payment flow preserved (Hypothesis)**:
+    - Observe: `process_recurring_billing_task` with a successful charge advances `next_billing_date`, resets `billing_retry_count` to 0, creates a `BillingReceipt`, and calls `_send_billing_receipt_email` on unfixed code
+    - Use Hypothesis to generate random valid org states (`status='active'`, random `next_billing_date` in the past, random plan prices, random billing intervals from `['monthly', 'quarterly', 'yearly']`)
+    - Write property: for all generated successful-payment orgs, the task advances `next_billing_date` by the correct interval duration, resets retry count, and creates a receipt
+  - **Part C — Skipped org preservation (Hypothesis)**:
+    - Observe: orgs with no default payment method return `skipped += 1` on unfixed code
+    - Observe: orgs with no `stripe_customer_id` return `skipped += 1` on unfixed code
+    - Use Hypothesis to generate orgs missing payment method or Stripe customer ID
+    - Write property: for all such orgs, the task skips them without error and increments the skipped count
+  - **Part D — Standby node skip preservation**:
+    - Observe: when `get_node_role()` returns `"standby"`, all tasks in `WRITE_TASKS` are skipped in `_scheduler_loop`
+    - Write property: for all task names in `WRITE_TASKS` (including newly added ones), the scheduler skips them when role is `"standby"`
+  - **Part E — Non-buggy lifecycle states preserved (Hypothesis)**:
+    - Observe: `check_trial_expiry_task` skips trial orgs with > 3 days remaining on unfixed code
+    - Observe: `check_grace_period_task` skips grace period orgs with < 7 days elapsed on unfixed code
+    - Observe: `check_suspension_retention_task` skips suspended orgs with < 30 days elapsed on unfixed code
+    - Use Hypothesis to generate random org states with dates that fall outside the bug condition thresholds
+    - Write property: for all such orgs, the tasks skip them without taking action
+  - **Part F — Email failure resilience preserved**:
+    - Observe: `_send_billing_receipt_email` failures are caught and logged without crashing `process_recurring_billing_task` on unfixed code
+    - Write property: for all email-sending failures in new notification points, the parent task continues without crashing
+  - Run tests on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests PASS (this confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8_
+
+- [x] 3. Fix for billing lifecycle task scheduling gaps and missing email notifications
+
+  - [x] 3.1 Register three lifecycle tasks in `_DAILY_TASKS` in `app/tasks/scheduled.py`
+    - Add import: `from app.tasks.subscriptions import check_trial_expiry_task, check_grace_period_task, check_suspension_retention_task`
+    - Add `(check_trial_expiry_task, 86400, "check_trial_expiry")` to `_DAILY_TASKS` — daily cadence
+    - Add `(check_grace_period_task, 900, "check_grace_period")` to `_DAILY_TASKS` — every 15 minutes (matches billing cadence)
+    - Add `(check_suspension_retention_task, 86400, "check_suspension_retention")` to `_DAILY_TASKS` — daily cadence
+    - _Bug_Condition: isBugCondition(input) where input.taskName IN ['check_trial_expiry', 'check_grace_period', 'check_suspension_retention'] AND input.taskName NOT IN _DAILY_TASKS_
+    - _Expected_Behavior: All three tasks present in `_DAILY_TASKS` with correct intervals (86400, 900, 86400)_
+    - _Preservation: All existing `_DAILY_TASKS` entries unchanged — same function refs, intervals, and names_
+    - _Requirements: 2.1, 2.2, 2.3_
+
+  - [x] 3.2 Add three task names to `WRITE_TASKS` in `app/tasks/scheduled.py`
+    - Add `"check_trial_expiry"` to `WRITE_TASKS` (writes: status transitions, audit logs, email logs)
+    - Add `"check_grace_period"` to `WRITE_TASKS` (writes: status transitions, audit logs, email sends)
+    - Add `"check_suspension_retention"` to `WRITE_TASKS` (writes: status transitions, audit logs, settings updates, email sends)
+    - _Bug_Condition: Three task names NOT IN WRITE_TASKS, risking write conflicts on standby nodes_
+    - _Expected_Behavior: All three task names present in `WRITE_TASKS`, skipped on standby nodes_
+    - _Preservation: All existing `WRITE_TASKS` entries unchanged_
+    - _Requirements: 2.4_
+
+  - [x] 3.3 Extend `send_suspension_email_task` with `"grace_period"` and `"data_deleted"` email types in `app/tasks/subscriptions.py`
+    - Add `"grace_period"` to the `subjects` dict: `"Your OraInvoice account needs attention — payment issue"`
+    - Add `"grace_period"` to the `bodies` dict: message about account in trouble, 7 days to resolve payment before suspension
+    - Add `"data_deleted"` to the `subjects` dict: `"Your OraInvoice data has been permanently deleted"`
+    - Add `"data_deleted"` to the `bodies` dict: message confirming data has been permanently deleted after 90-day suspension
+    - _Bug_Condition: `send_suspension_email_task` only handles "suspended", "retention_30_day", "retention_7_day" — no "grace_period" or "data_deleted" types_
+    - _Expected_Behavior: Function handles all 5 email types with appropriate subject lines and body templates_
+    - _Preservation: Existing "suspended", "retention_30_day", "retention_7_day" email types unchanged_
+    - _Requirements: 2.5, 2.7_
+
+  - [x] 3.4 Send grace period entry email in `process_recurring_billing_task` in `app/tasks/subscriptions.py`
+    - In the `PaymentFailedError`/`PaymentActionRequiredError` except block, after the `if retry_count >= MAX_BILLING_RETRIES:` block that sets `org.status = "grace_period"` and writes the audit log
+    - Add fire-and-forget call: `try: await send_suspension_email_task(org_id=str(org.id), email_type="grace_period") except Exception as email_exc: logger.warning(...)`
+    - Must follow the existing non-blocking email pattern used by `_send_billing_receipt_email`
+    - _Bug_Condition: No email sent when org transitions from active to grace_period after MAX_BILLING_RETRIES_
+    - _Expected_Behavior: Grace period notification email sent to org admin on transition_
+    - _Preservation: Existing audit log write, status transition, and retry count logic unchanged_
+    - _Requirements: 2.5_
+
+  - [x] 3.5 Send fallback dunning email on every payment failure in `process_recurring_billing_task` in `app/tasks/subscriptions.py`
+    - In the same `PaymentFailedError`/`PaymentActionRequiredError` except block, after incrementing `billing_retry_count` and flushing
+    - Add fire-and-forget call: `try: await send_dunning_email_task(org_id=str(org.id), attempt_count=retry_count) except Exception as email_exc: logger.warning(...)`
+    - Place BEFORE the `if retry_count >= MAX_BILLING_RETRIES:` check so dunning email is sent on every failure (attempts 1, 2, and 3)
+    - _Bug_Condition: No fallback dunning email sent from billing task — relies entirely on Stripe webhooks_
+    - _Expected_Behavior: `send_dunning_email_task` called with current retry count on every payment failure_
+    - _Preservation: Existing retry count increment, grace period transition, and audit log logic unchanged_
+    - _Requirements: 2.6_
+
+  - [x] 3.6 Send data deletion confirmation email in `check_suspension_retention_task` in `app/tasks/subscriptions.py`
+    - In the `if days_suspended >= 90:` block, before setting `org.status = "deleted"` (so the org admin lookup still finds the org with status "suspended")
+    - Add fire-and-forget call: `try: await send_suspension_email_task(org_id=str(org.id), email_type="data_deleted") except Exception as email_exc: logger.warning(...)`
+    - _Bug_Condition: No email sent when org transitions from suspended to deleted after 90 days_
+    - _Expected_Behavior: Data deletion confirmation email sent to org admin before status change_
+    - _Preservation: Existing deletion logic, audit log write, and settings update unchanged_
+    - _Requirements: 2.7_
+
+  - [x] 3.7 Verify bug condition exploration test now passes
+    - **Property 1: Expected Behavior** - Lifecycle Tasks Scheduled and Emails Sent
+    - **IMPORTANT**: Re-run the SAME test from task 1 — do NOT write a new test
+    - The test from task 1 encodes the expected behavior
+    - When this test passes, it confirms the expected behavior is satisfied:
+      - All three tasks present in `_DAILY_TASKS` with correct intervals
+      - All three task names present in `WRITE_TASKS`
+      - Grace period email sent on transition
+      - Dunning email sent on payment failure
+      - Deletion confirmation email sent on 90-day deletion
+    - Run bug condition exploration test from step 1
+    - **EXPECTED OUTCOME**: Test PASSES (confirms bug is fixed)
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7_
+
+  - [x] 3.8 Verify preservation tests still pass
+    - **Property 2: Preservation** - Existing Billing and Scheduler Behavior Unchanged
+    - **IMPORTANT**: Re-run the SAME tests from task 2 — do NOT write new tests
+    - Run preservation property tests from step 2
+    - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions)
+    - Confirm all tests still pass after fix:
+      - Existing `_DAILY_TASKS` entries unchanged
+      - Successful payment flow unchanged
+      - Skipped org behavior unchanged
+      - Standby node skip behavior unchanged
+      - Non-buggy lifecycle state handling unchanged
+      - Email failure resilience unchanged
+
+- [x] 4. Checkpoint — Ensure all tests pass
+  - Run full test suite: `python -m pytest tests/ -x -q`
+  - Ensure all bug condition exploration tests pass (task 1 tests now green)
+  - Ensure all preservation property tests pass (task 2 tests still green)
+  - Ensure no regressions in existing test suite
+  - Ask the user if questions arise

@@ -742,7 +742,12 @@ async def cleanup_stale_sessions_task() -> dict:
 import asyncio
 
 from app.modules.ha.middleware import get_node_role
-from app.tasks.subscriptions import process_recurring_billing_task
+from app.tasks.subscriptions import (
+    check_grace_period_task,
+    check_suspension_retention_task,
+    check_trial_expiry_task,
+    process_recurring_billing_task,
+)
 
 # Tasks that write to the database and must be skipped on standby nodes.
 # Read-only tasks (e.g. compliance_expiry, sync_public_holidays) still run
@@ -766,6 +771,9 @@ WRITE_TASKS: set[str] = {
     "reminder_queue_worker",       # process_reminder_queue_scheduled — sends queued reminders
     "check_card_expiry",           # check_card_expiry_task — sends expiry notifications
     "cleanup_sessions",            # cleanup_stale_sessions_task — deletes stale sessions
+    "check_trial_expiry",          # check_trial_expiry_task — status transitions, audit logs, email logs
+    "check_grace_period",          # check_grace_period_task — status transitions, audit logs, email sends
+    "check_suspension_retention",  # check_suspension_retention_task — status transitions, audit logs, settings updates, email sends
 }
 
 # (task_fn, interval_seconds, name)
@@ -785,6 +793,9 @@ _DAILY_TASKS: list[tuple] = [
     (cleanup_stale_sessions_task, 3600, "cleanup_sessions"),  # every hour
     (check_card_expiry_task, 86400, "check_card_expiry"),  # daily
     (process_recurring_billing_task, 900, "recurring_billing"),  # every 15 minutes
+    (check_trial_expiry_task, 86400, "check_trial_expiry"),  # daily
+    (check_grace_period_task, 900, "check_grace_period"),  # every 15 minutes (matches billing cadence)
+    (check_suspension_retention_task, 86400, "check_suspension_retention"),  # daily
 ]
 
 _stop_event: asyncio.Event | None = None
