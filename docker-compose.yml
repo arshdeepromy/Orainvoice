@@ -124,6 +124,8 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-workshoppro}
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      - compliance_files:/app/compliance_files
     depends_on:
       postgres:
         condition: service_healthy
@@ -165,3 +167,4 @@ volumes:
   pgdata:
   redisdata:
   frontend_dist:
+  compliance_files:

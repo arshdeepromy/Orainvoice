@@ -15,6 +15,7 @@ import { useModuleGuard } from '@/hooks/useModuleGuard'
 import { useTerm } from '@/contexts/TerminologyContext'
 import { ToastContainer } from '@/components/ui/Toast'
 import { calculateJobProfitability } from '@/utils/jobCalcs'
+import LinkedComplianceDocs from '@/pages/compliance/LinkedComplianceDocs'
 
 interface JobData {
   id: string
@@ -442,6 +443,9 @@ export default function JobDetail({ jobId }: Props) {
           )}
         </div>
       )}
+
+      {/* ---- Linked Compliance Documents ---- */}
+      <LinkedComplianceDocs jobId={job.id} />
 
       {/* Convert to invoice button */}
       {job.status === 'completed' && !job.converted_invoice_id && (

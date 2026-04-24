@@ -110,6 +110,8 @@ services:
       --max-requests-jitter 500
       --access-logfile -
       --error-logfile -
+    volumes:
+      - compliance_files:/app/compliance_files
     deploy:
       resources:
         limits:

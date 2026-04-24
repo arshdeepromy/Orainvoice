@@ -20,6 +20,7 @@ import { printInvoiceReceipt, browserPrintReceipt, NoPrinterError, setFallbackMo
 import { invoiceToReceiptData } from '../../utils/invoiceReceiptMapper'
 import POSReceiptPreview from '../../components/pos/POSReceiptPreview'
 import PrinterErrorModal from '../../components/pos/PrinterErrorModal'
+import LinkedComplianceDocs from '../compliance/LinkedComplianceDocs'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -1209,6 +1210,9 @@ export default function InvoiceDetail() {
           </div>
         )}
       </section>
+
+      {/* ---- Linked Compliance Documents ---- */}
+      <LinkedComplianceDocs invoiceId={invoice.id} />
 
       {/* ---- Void Modal ---- */}
       <Modal open={voidModalOpen} onClose={() => { setVoidModalOpen(false); setVoidError('') }} title="Void Invoice">

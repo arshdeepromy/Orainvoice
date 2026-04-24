@@ -236,36 +236,45 @@ async def send_schedule_reminders_task() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 7. Check compliance document expiry
+# 7. Check compliance document expiry (Req 7.7)
 # ---------------------------------------------------------------------------
 
 async def check_compliance_expiry_task() -> dict:
-    from app.core.database import async_session_factory
-    from app.modules.compliance_docs.models import ComplianceDocument
-    from sqlalchemy import and_, select
+    """Daily task: send expiry notifications for compliance documents.
 
-    today = date.today()
-    thirty_day_mark = today + timedelta(days=30)
-    seven_day_mark = today + timedelta(days=7)
+    Checks three thresholds — 30-day, 7-day, and day-of — using the
+    ComplianceNotificationService which handles deduplication, email
+    dispatch, and per-document error isolation.
+
+    Requirements: 7.1, 7.2, 7.3, 7.7
+    """
+    from app.core.database import async_session_factory
+    from app.modules.compliance_docs.notification_service import (
+        ComplianceNotificationService,
+    )
+
     reminders_sent = 0
     errors = 0
+    dashboard_url = "/compliance"
 
     try:
-        async with async_session_factory() as session:
-            result_30 = await session.execute(select(ComplianceDocument).where(ComplianceDocument.expiry_date == thirty_day_mark))
-            docs_30 = list(result_30.scalars().all())
-            result_7 = await session.execute(select(ComplianceDocument).where(ComplianceDocument.expiry_date == seven_day_mark))
-            docs_7 = list(result_7.scalars().all())
+        for threshold_days in (30, 7, 0):
+            async with async_session_factory() as session:
+                async with session.begin():
+                    svc = ComplianceNotificationService(session)
+                    result = await svc.send_expiry_notifications(
+                        threshold_days=threshold_days,
+                        dashboard_url=dashboard_url,
+                    )
+            reminders_sent += result.get("sent", 0)
+            errors += result.get("errors", 0)
 
-            for doc in docs_30:
-                logger.info("30-day expiry reminder: doc=%s org=%s type=%s expires=%s", doc.id, doc.org_id, doc.document_type, doc.expiry_date)
-                reminders_sent += 1
-            for doc in docs_7:
-                logger.info("7-day expiry reminder: doc=%s org=%s type=%s expires=%s", doc.id, doc.org_id, doc.document_type, doc.expiry_date)
-                reminders_sent += 1
-
-        if reminders_sent > 0:
-            logger.info("Sent %d compliance expiry reminder(s)", reminders_sent)
+        if reminders_sent > 0 or errors > 0:
+            logger.info(
+                "Compliance expiry check: %d notified, %d errors",
+                reminders_sent,
+                errors,
+            )
         return {"reminders_sent": reminders_sent, "errors": errors}
     except Exception as exc:
         logger.exception("Failed to check compliance expiry: %s", exc)
@@ -750,9 +759,8 @@ from app.tasks.subscriptions import (
 )
 
 # Tasks that write to the database and must be skipped on standby nodes.
-# Read-only tasks (e.g. compliance_expiry, sync_public_holidays) still run
-# on standby because they don't produce writes that would conflict with
-# replication.
+# Read-only tasks (e.g. sync_public_holidays) still run on standby
+# because they don't produce writes that would conflict with replication.
 #
 # NOTE on promotion: when a standby is promoted to primary, the middleware
 # role cache is updated immediately by set_node_role(). The next scheduler
@@ -774,6 +782,7 @@ WRITE_TASKS: set[str] = {
     "check_trial_expiry",          # check_trial_expiry_task — status transitions, audit logs, email logs
     "check_grace_period",          # check_grace_period_task — status transitions, audit logs, email sends
     "check_suspension_retention",  # check_suspension_retention_task — status transitions, audit logs, settings updates, email sends
+    "compliance_expiry",           # check_compliance_expiry_task — sends expiry emails, writes notification log
 }
 
 # (task_fn, interval_seconds, name)

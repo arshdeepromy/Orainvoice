@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { Outlet, NavLink, useNavigate } from 'react-router-dom'
+import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useTenant } from '@/contexts/TenantContext'
 import { useModules } from '@/contexts/ModuleContext'
 import { useAuth } from '@/contexts/AuthContext'
@@ -11,6 +11,7 @@ import { getActiveBranchIndicatorState } from '@/pages/settings/branch-staff-hel
 import { usePaymentMethodEnforcement } from '@/hooks/usePaymentMethodEnforcement'
 import { BlockingPaymentModal } from '@/components/billing/BlockingPaymentModal'
 import { ExpiringPaymentWarningModal } from '@/components/billing/ExpiringPaymentWarningModal'
+import NotificationBadge from '@/pages/compliance/NotificationBadge'
 
 interface QuickAction {
   label: string
@@ -98,7 +99,16 @@ export function OrgLayout() {
   const { isGlobalAdmin, isBranchAdmin, user, logout } = useAuth()
   const { flags } = useFeatureFlags()
   const navigate = useNavigate()
+  const location = useLocation()
   const branding = settings?.branding
+
+  // Refresh the compliance badge count whenever the user navigates to /compliance.
+  const [badgeRefreshKey, setBadgeRefreshKey] = useState(0)
+  useEffect(() => {
+    if (location.pathname.startsWith('/compliance')) {
+      setBadgeRefreshKey((k) => k + 1)
+    }
+  }, [location.pathname])
 
   // Payment method enforcement — blocking/warning modals for org_admin
   const {
@@ -275,6 +285,9 @@ export function OrgLayout() {
                 >
                   <item.icon />
                   {item.label}
+                  {item.to === '/compliance' && (
+                    <NotificationBadge refreshKey={badgeRefreshKey} />
+                  )}
                 </NavLink>
               </li>
             ))}
