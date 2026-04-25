@@ -18,6 +18,12 @@ RUN pip install --no-cache-dir --upgrade pip setuptools && pip install --no-cach
 
 COPY . .
 
+# Build metadata — injected by update script or CI
+ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+ENV GIT_SHA=$GIT_SHA
+ENV BUILD_DATE=$BUILD_DATE
+
 # Entrypoint runs migrations + optional dev seeding before starting the app
 COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh

@@ -582,7 +582,31 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health_check():
-        return {"status": "ok"}
+        import os
+        version = "unknown"
+        try:
+            version_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "VERSION")
+            if os.path.exists(version_file):
+                with open(version_file) as f:
+                    version = f.read().strip()
+        except Exception:
+            pass
+        return {"status": "ok", "version": version}
+
+    @app.get("/api/v1/version")
+    async def get_version():
+        import os
+        version = "unknown"
+        git_sha = os.environ.get("GIT_SHA", "unknown")
+        build_date = os.environ.get("BUILD_DATE", "unknown")
+        try:
+            version_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "VERSION")
+            if os.path.exists(version_file):
+                with open(version_file) as f:
+                    version = f.read().strip()
+        except Exception:
+            pass
+        return {"version": version, "git_sha": git_sha, "build_date": build_date}
 
     # --- Startup event: warm Redis caches ---
     @app.on_event("startup")

@@ -293,6 +293,10 @@ export function OrgLayout() {
             ))}
           </ul>
         </nav>
+        {/* Version footer */}
+        <div className="mt-auto px-4 py-2 text-xs" style={{ color: 'var(--sidebar-text)', opacity: 0.4 }}>
+          v{__APP_VERSION__}
+        </div>
       </aside>
 
       {/* Main content area */}

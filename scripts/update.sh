@@ -234,9 +234,27 @@ build_images() {
 
     log "Building fresh Docker images (no cache)..."
 
-    # Build app image — this runs while old containers are still serving
+    # Get git SHA from the downloaded code (VERSION file or git log from GitHub API)
+    local git_sha="unknown"
+    local build_date
+    build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+    # Try to get the latest commit SHA from GitHub API
+    git_sha=$(curl -sf "https://api.github.com/repos/arshdeepromy/Orainvoice/commits/main" 2>/dev/null | grep -m1 '"sha"' | cut -d'"' -f4 | head -c 8) || true
+    if [ -z "$git_sha" ]; then
+        git_sha="unknown"
+    fi
+
+    local version="unknown"
+    if [ -f "$PROJECT_DIR/VERSION" ]; then
+        version=$(cat "$PROJECT_DIR/VERSION" | tr -d '[:space:]')
+    fi
+
+    log "  Version: $version | SHA: $git_sha | Date: $build_date"
+
+    # Build app image
     log "  Building app image..."
-    if $COMPOSE_CMD build --no-cache app 2>&1 | tail -5; then
+    if $COMPOSE_CMD build --no-cache --build-arg GIT_SHA="$git_sha" --build-arg BUILD_DATE="$build_date" app 2>&1 | tail -5; then
         ok "App image built"
     else
         fail "App image build FAILED"
