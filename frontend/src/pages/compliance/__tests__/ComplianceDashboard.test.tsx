@@ -23,8 +23,8 @@ import apiClient from '@/api/client'
 import ComplianceDashboard from '../ComplianceDashboard'
 
 const mockGet = vi.mocked(apiClient.get)
-const mockPost = vi.mocked(apiClient.post)
-const mockDelete = vi.mocked(apiClient.delete)
+const _mockPost = vi.mocked(apiClient.post)
+const _mockDelete = vi.mocked(apiClient.delete)
 
 /* ── Mock data ── */
 
