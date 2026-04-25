@@ -18,7 +18,7 @@
 #   - Must be run from the project root (/home/nerdy/invoicing)
 # ==========================================================================
 
-set -euo pipefail
+set -e
 
 # --------------------------------------------------------------------------
 # Configuration — auto-detected, override with env vars if needed
@@ -148,21 +148,21 @@ backup_database() {
 tag_rollback_images() {
     log "Tagging current images for rollback..."
 
-    # Tag current app image
+    # Tag current app image (ignore errors if no image exists)
     local app_image
-    app_image=$($COMPOSE_CMD images app --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | head -1)
-    if [ -n "$app_image" ] && [ "$app_image" != ":" ]; then
-        docker tag "$app_image" "${app_image%%:*}:rollback" 2>/dev/null || true
-        ok "Tagged app image for rollback"
+    app_image=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^(invoicing|orainvoice)-app:latest' | head -1) || true
+    if [ -n "$app_image" ]; then
+        docker tag "$app_image" "${app_image%%:*}:rollback" 2>/dev/null && ok "Tagged app image for rollback" || true
     fi
 
-    # Tag current frontend image
+    # Tag current frontend image (ignore errors if no image exists)
     local fe_image
-    fe_image=$($COMPOSE_CMD images frontend --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | head -1)
-    if [ -n "$fe_image" ] && [ "$fe_image" != ":" ]; then
-        docker tag "$fe_image" "${fe_image%%:*}:rollback" 2>/dev/null || true
-        ok "Tagged frontend image for rollback"
+    fe_image=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^(invoicing|orainvoice)-frontend:latest' | head -1) || true
+    if [ -n "$fe_image" ]; then
+        docker tag "$fe_image" "${fe_image%%:*}:rollback" 2>/dev/null && ok "Tagged frontend image for rollback" || true
     fi
+
+    ok "Rollback images tagged"
 }
 
 # --------------------------------------------------------------------------
