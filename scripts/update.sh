@@ -106,7 +106,19 @@ backup_database() {
     fi
 
     log "Backing up database to $BACKUP_FILE ..."
-    mkdir -p "$BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR" 2>/dev/null || true
+
+    # Fix ownership if directory was created by root (e.g. from a previous Docker operation)
+    if [ ! -w "$BACKUP_DIR" ]; then
+        sudo chown "$(whoami):$(whoami)" "$BACKUP_DIR" 2>/dev/null || true
+    fi
+
+    if [ ! -w "$BACKUP_DIR" ]; then
+        # Fallback to home directory if backups dir is still not writable
+        BACKUP_DIR="$HOME"
+        BACKUP_FILE="$BACKUP_DIR/${DB_NAME}_${TIMESTAMP}.sql.gz"
+        warn "Cannot write to backups dir — using $BACKUP_DIR instead"
+    fi
 
     if docker exec "$DB_CONTAINER" pg_dump -U "$DB_USER" "$DB_NAME" | gzip > "$BACKUP_FILE"; then
         local size
