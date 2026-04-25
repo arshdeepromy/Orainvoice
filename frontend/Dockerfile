@@ -12,12 +12,8 @@ COPY . .
 ARG VITE_STRIPE_PUBLISHABLE_KEY=""
 ENV VITE_STRIPE_PUBLISHABLE_KEY=$VITE_STRIPE_PUBLISHABLE_KEY
 
-# Use pre-built dist on ARM64 (Pi), build on x86
-RUN if [ -d dist ] && [ "$(ls -A dist 2>/dev/null)" ]; then \
-      echo "Using pre-built dist/"; \
-    else \
-      npx vite build; \
-    fi
+# Always build fresh — never use pre-existing dist
+RUN rm -rf dist && npx vite build
 
 # Default: just keep the container alive (nginx serves the files)
 CMD ["node", "-e", "setInterval(()=>{},60000)"]

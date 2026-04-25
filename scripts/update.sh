@@ -385,8 +385,8 @@ cleanup() {
     # Remove dangling images (old builds)
     docker image prune -f >/dev/null 2>&1 || true
 
-    # Remove unused build cache
-    docker builder prune -f >/dev/null 2>&1 || true
+    # Remove unused build cache (with timeout to prevent hanging)
+    timeout 30 docker builder prune -f >/dev/null 2>&1 || true
 
     ok "Cleanup complete"
 }
