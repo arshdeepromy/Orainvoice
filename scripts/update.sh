@@ -30,7 +30,6 @@ DB_CONTAINER="${DB_CONTAINER:-$(docker ps --format '{{.Names}}' | grep postgres 
 DB_USER="${POSTGRES_USER:-postgres}"
 DB_NAME="${POSTGRES_DB:-workshoppro}"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-BACKUP_FILE="$BACKUP_DIR/${DB_NAME}_${TIMESTAMP}.sql.gz"
 MAX_BACKUPS=10  # Keep last N backups, delete older ones
 
 # Auto-detect compose files
@@ -105,8 +104,17 @@ backup_database() {
         return 0
     fi
 
-    log "Backing up database to $BACKUP_FILE ..."
+    log "Backing up database..."
     mkdir -p "$BACKUP_DIR" 2>/dev/null || true
+
+    # If backup dir isn't writable, fall back to /tmp
+    if [ ! -w "$BACKUP_DIR" ]; then
+        BACKUP_DIR="/tmp"
+        warn "Cannot write to $BACKUP_DIR — using /tmp"
+    fi
+
+    BACKUP_FILE="$BACKUP_DIR/${DB_NAME}_${TIMESTAMP}.sql.gz"
+    log "  Target: $BACKUP_FILE"
 
     if docker exec "$DB_CONTAINER" pg_dump -U "$DB_USER" "$DB_NAME" | gzip > "$BACKUP_FILE"; then
         local size
