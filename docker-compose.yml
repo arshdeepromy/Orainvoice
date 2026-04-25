@@ -150,6 +150,17 @@ services:
     depends_on:
       - app
 
+  # --- Mobile App (builds static files, nginx serves them) ---
+  mobile:
+    build:
+      context: .
+      dockerfile: mobile/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - mobile_dist:/app/dist
+    depends_on:
+      - app
+
   # --- Nginx gateway (single entry point) ---
   nginx:
     image: nginx:alpine
@@ -159,12 +170,15 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - frontend_dist:/usr/share/nginx/frontend:ro
+      - mobile_dist:/usr/share/nginx/mobile:ro
     depends_on:
       - app
       - frontend
+      - mobile
 
 volumes:
   pgdata:
   redisdata:
   frontend_dist:
+  mobile_dist:
   compliance_files:

@@ -1,0 +1,60 @@
+@import 'tailwindcss';
+
+/* Mobile base styles */
+
+html {
+  /* Prevent double-tap zoom on iOS — improves tap responsiveness */
+  touch-action: manipulation;
+}
+
+/* Safe area insets for notched devices (iPhone X+, Android punch-hole) */
+body {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Minimum 44x44 CSS pixel touch targets (Apple HIG + WCAG 2.5.8) */
+button,
+a,
+[role='button'],
+[role='tab'],
+[role='menuitem'],
+input[type='checkbox'],
+input[type='radio'],
+select {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* Prevent text selection on interactive elements for native feel */
+button,
+[role='button'],
+[role='tab'] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Prevent iOS rubber-band overscroll on the body */
+html,
+body {
+  overscroll-behavior: none;
+}
+
+/* Smooth scrolling for scroll containers */
+.scroll-container {
+  -webkit-overflow-scrolling: touch;
+  overflow-y: auto;
+}
+
+/* Hide scrollbar but keep scrolling functional */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

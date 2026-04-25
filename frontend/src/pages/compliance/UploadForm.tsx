@@ -72,8 +72,6 @@ export default function UploadForm({
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false)
   const [description, setDescription] = useState('')
   const [expiryDate, setExpiryDate] = useState('')
-  const [invoiceId, setInvoiceId] = useState('')
-  const [jobId, setJobId] = useState('')
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [submitError, setSubmitError] = useState('')
@@ -225,8 +223,6 @@ export default function UploadForm({
       formData.append('document_type', categoryName)
       if (description.trim()) formData.append('description', description.trim())
       if (expiryDate) formData.append('expiry_date', expiryDate)
-      if (invoiceId.trim()) formData.append('invoice_id', invoiceId.trim())
-      if (jobId.trim()) formData.append('job_id', jobId.trim())
 
       setUploading(true)
       setUploadProgress(0)
@@ -262,8 +258,6 @@ export default function UploadForm({
       categories,
       description,
       expiryDate,
-      invoiceId,
-      jobId,
       onSuccess,
       onCategoriesChange,
     ],
@@ -500,36 +494,6 @@ export default function UploadForm({
             onChange={(e) => setExpiryDate(e.target.value)}
             className="h-[44px] w-full sm:w-64 rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:border-blue-500"
           />
-        </div>
-
-        {/* Optional linking fields */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-          <div>
-            <label htmlFor="upload-invoice" className="text-sm font-medium text-gray-700 mb-1 block">
-              Link to Invoice (ID)
-            </label>
-            <input
-              id="upload-invoice"
-              type="text"
-              placeholder="Invoice UUID (optional)"
-              value={invoiceId}
-              onChange={(e) => setInvoiceId(e.target.value)}
-              className="h-[44px] w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm placeholder:text-gray-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:border-blue-500"
-            />
-          </div>
-          <div>
-            <label htmlFor="upload-job" className="text-sm font-medium text-gray-700 mb-1 block">
-              Link to Job (ID)
-            </label>
-            <input
-              id="upload-job"
-              type="text"
-              placeholder="Job UUID (optional)"
-              value={jobId}
-              onChange={(e) => setJobId(e.target.value)}
-              className="h-[44px] w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm placeholder:text-gray-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:border-blue-500"
-            />
-          </div>
         </div>
 
         {/* Upload progress */}
