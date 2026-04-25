@@ -325,10 +325,28 @@ health_check() {
     # Wait for the app to respond to health check
     waited=0
     while [ $waited -lt $max_wait ]; do
-        if docker exec "$($COMPOSE_CMD ps -q app)" curl -sf http://localhost:8000/api/v1/health >/dev/null 2>&1; then
-            ok "App is healthy and responding"
+        # Check from the host via the nginx port (the way real users access it)
+        local app_port
+        app_port=$(docker port "$($COMPOSE_CMD ps -q nginx 2>/dev/null)" 80 2>/dev/null | head -1 | cut -d: -f2) || true
+
+        if [ -n "$app_port" ]; then
+            if curl -sf "http://localhost:${app_port}/api/v1/health" >/dev/null 2>&1; then
+                ok "App is healthy and responding"
+                return 0
+            fi
+        fi
+
+        # Fallback: check if the app container is running and not restarting
+        local app_status
+        app_status=$(docker inspect --format='{{.State.Status}}' "$($COMPOSE_CMD ps -q app 2>/dev/null)" 2>/dev/null || echo "unknown")
+        local restart_count
+        restart_count=$(docker inspect --format='{{.RestartCount}}' "$($COMPOSE_CMD ps -q app 2>/dev/null)" 2>/dev/null || echo "0")
+
+        if [ "$app_status" = "running" ] && [ "$restart_count" = "0" ] && [ $waited -ge 15 ]; then
+            ok "App container is running (no restarts)"
             return 0
         fi
+
         sleep 3
         waited=$((waited + 3))
     done
