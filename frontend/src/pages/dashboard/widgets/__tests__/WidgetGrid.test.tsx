@@ -75,22 +75,6 @@ vi.mock('@dnd-kit/utilities', () => ({
 import { WidgetGrid } from '../WidgetGrid'
 
 /* ------------------------------------------------------------------ */
-/*  Constants — expected default order (all modules enabled)           */
-/* ------------------------------------------------------------------ */
-
-const _DEFAULT_ORDER = [
-  'recent-customers',
-  'todays-bookings',
-  'public-holidays',
-  'inventory-overview',
-  'cash-flow',
-  'recent-claims',
-  'active-staff',
-  'expiry-reminders',
-  'reminder-config',
-]
-
-/* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
