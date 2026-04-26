@@ -105,6 +105,11 @@ const JobCardDetailScreen = lazy(() =>
     default: () => <ScreenPlaceholder name="Job Card Detail" />,
   })),
 )
+const JobCardCreateScreen = lazy(() =>
+  import('@/screens/jobs/JobCardCreateScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="New Job Card" />,
+  })),
+)
 
 // More menu
 const MoreMenuScreen = lazy(() =>
@@ -488,6 +493,7 @@ export function StackRoutes() {
         <Route path="/jobs/board" element={<JobBoardScreen />} />
         <Route path="/jobs/:id" element={<JobDetailScreen />} />
         <Route path="/jobs/cards" element={<JobCardListScreen />} />
+        <Route path="/jobs/cards/new" element={<JobCardCreateScreen />} />
         <Route path="/jobs/cards/:id" element={<JobCardDetailScreen />} />
 
         {/* More menu */}

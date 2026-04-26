@@ -152,7 +152,10 @@ export function MobileModal({
         </div>
 
         {/* Content */}
-        <div className="max-h-[70vh] overflow-y-auto px-4 pb-[env(safe-area-inset-bottom)] pb-6">
+        <div
+          className="max-h-[70vh] overflow-y-auto px-4"
+          style={{ paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))' }}
+        >
           {children}
         </div>
       </div>

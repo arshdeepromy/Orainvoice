@@ -1,5 +1,15 @@
 import type { ReactNode } from 'react'
+import { useCallback } from 'react'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
+
+async function triggerHaptic(style: 'light' | 'medium' = 'light') {
+  try {
+    const { Haptics, ImpactStyle } = await import('@capacitor/haptics')
+    await Haptics.impact({ style: style === 'medium' ? ImpactStyle.Medium : ImpactStyle.Light })
+  } catch {
+    // Not available in browser
+  }
+}
 
 export interface SwipeActionConfig {
   /** Button label text */
@@ -40,7 +50,10 @@ export function SwipeAction({
   rightActions = [],
   threshold = 80,
 }: SwipeActionProps) {
-  const { state, close, handlers } = useSwipeActions({ threshold })
+  const { state, close, handlers } = useSwipeActions({
+    threshold,
+    onOpen: () => { void triggerHaptic('light') },
+  })
   const { offsetX, isDragging } = state
 
   const hasLeft = leftActions.length > 0
@@ -54,10 +67,11 @@ export function SwipeAction({
     return val
   })()
 
-  const handleActionClick = (action: SwipeActionConfig) => {
+  const handleActionClick = useCallback((action: SwipeActionConfig) => {
+    void triggerHaptic('medium')
     action.onAction()
     close()
-  }
+  }, [close])
 
   return (
     <div className="relative overflow-hidden" role="group" aria-label="Swipeable item">

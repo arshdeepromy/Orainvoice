@@ -2,7 +2,7 @@
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import type { Invoice, InvoiceLineItem } from '@shared/types/invoice'
 import { useApiDetail } from '@/hooks/useApiDetail'
-import { MobileButton, MobileBadge, MobileSpinner, MobileCard, MobileInput } from '@/components/ui'
+import { MobileButton, MobileBadge, MobileSpinner, MobileCard, MobileInput, MobileToast } from '@/components/ui'
 import type { BadgeVariant } from '@/components/ui'
 import apiClient from '@/api/client'
 
@@ -182,17 +182,24 @@ export default function InvoiceDetailScreen() {
   const [showPaymentForm, setShowPaymentForm] = useState(
     searchParams.get('action') === 'record-payment',
   )
+  const [toast, setToast] = useState<{ message: string; variant: 'success' | 'error' } | null>(null)
 
   const handleSend = useCallback(async () => {
     if (!id) return
     setIsSending(true)
-    await sendInvoice(id)
+    const ok = await sendInvoice(id)
     setIsSending(false)
-    await refetch()
+    if (ok) {
+      setToast({ message: 'Invoice sent', variant: 'success' })
+      await refetch()
+    } else {
+      setToast({ message: 'Failed to send invoice', variant: 'error' })
+    }
   }, [id, refetch])
 
   const handlePaymentSuccess = useCallback(async () => {
     setShowPaymentForm(false)
+    setToast({ message: 'Payment recorded', variant: 'success' })
     await refetch()
   }, [refetch])
 
@@ -217,6 +224,12 @@ export default function InvoiceDetailScreen() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
+      <MobileToast
+        message={toast?.message ?? ''}
+        variant={toast?.variant ?? 'info'}
+        isVisible={toast !== null}
+        onDismiss={() => setToast(null)}
+      />
       {/* Back button */}
       <button
         type="button"

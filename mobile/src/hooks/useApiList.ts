@@ -118,7 +118,7 @@ export function useApiList<T>(
 
       try {
         const params: Record<string, string | number> = {
-          skip: (currentPage - 1) * pageSize,
+          offset: (currentPage - 1) * pageSize,
           limit: pageSize,
           ...filters,
         }

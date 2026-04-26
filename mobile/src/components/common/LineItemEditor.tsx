@@ -160,6 +160,7 @@ export function LineItemEditor({
               type="number"
               min="0"
               step="0.01"
+              prefix="$"
               value={String(item.unit_price)}
               onChange={(e) =>
                 updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)
@@ -229,15 +230,16 @@ export function LineItemEditor({
           {onDiscountChange !== undefined && (
             <div className="flex items-center justify-between">
               <span className="text-gray-500 dark:text-gray-400">Discount</span>
-              <input
+              <MobileInput
                 type="number"
                 min="0"
                 step="0.01"
+                prefix="$"
                 value={String(discount)}
                 onChange={(e) =>
                   onDiscountChange?.(parseFloat(e.target.value) || 0)
                 }
-                className="w-24 rounded border border-gray-300 px-2 py-1 text-right text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                className="w-28"
                 aria-label="Discount amount"
               />
             </div>

@@ -216,7 +216,7 @@ function SettingsContent() {
  */
 export default function SettingsScreen() {
   return (
-    <ModuleGate moduleSlug="*" roles={['org_admin', 'owner', 'global_admin', 'admin']}>
+    <ModuleGate moduleSlug="*" roles={['org_admin', 'owner', 'admin']}>
       <SettingsContent />
     </ModuleGate>
   )

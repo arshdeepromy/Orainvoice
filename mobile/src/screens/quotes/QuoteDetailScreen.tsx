@@ -2,7 +2,7 @@
 import { useNavigate, useParams } from 'react-router-dom'
 import type { Quote, QuoteLineItem } from '@shared/types/quote'
 import { useApiDetail } from '@/hooks/useApiDetail'
-import { MobileButton, MobileBadge, MobileSpinner, MobileCard } from '@/components/ui'
+import { MobileButton, MobileBadge, MobileSpinner, MobileCard, MobileToast } from '@/components/ui'
 import type { BadgeVariant } from '@/components/ui'
 import apiClient from '@/api/client'
 
@@ -19,7 +19,7 @@ const statusVariantMap: Record<Quote['status'], BadgeVariant> = {
 }
 
 function formatCurrency(amount: number): string {
-  return `${Number(amount ?? 0).toFixed(2)}`
+  return `$${Number(amount ?? 0).toFixed(2)}`
 }
 
 function formatDate(dateStr: string): string {
@@ -105,13 +105,19 @@ export default function QuoteDetailScreen() {
   const [isSending, setIsSending] = useState(false)
   const [isConverting, setIsConverting] = useState(false)
   const [convertError, setConvertError] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ message: string; variant: 'success' | 'error' } | null>(null)
 
   const handleSend = useCallback(async () => {
     if (!id) return
     setIsSending(true)
-    await sendQuote(id)
+    const ok = await sendQuote(id)
     setIsSending(false)
-    await refetch()
+    if (ok) {
+      setToast({ message: 'Quote sent', variant: 'success' })
+      await refetch()
+    } else {
+      setToast({ message: 'Failed to send quote', variant: 'error' })
+    }
   }, [id, refetch])
 
   const handleConvertToInvoice = useCallback(async () => {
@@ -148,6 +154,12 @@ export default function QuoteDetailScreen() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
+      <MobileToast
+        message={toast?.message ?? ''}
+        variant={toast?.variant ?? 'info'}
+        isVisible={toast !== null}
+        onDismiss={() => setToast(null)}
+      />
       {/* Back button */}
       <button
         type="button"

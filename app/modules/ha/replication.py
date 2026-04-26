@@ -449,7 +449,8 @@ class ReplicationManager:
             sql = (
                 f"CREATE SUBSCRIPTION {ReplicationManager.SUBSCRIPTION_NAME} "
                 f"CONNECTION '{primary_conn_str}' "
-                f"PUBLICATION {ReplicationManager.PUBLICATION_NAME}"
+                f"PUBLICATION {ReplicationManager.PUBLICATION_NAME} "
+                f"WITH (copy_data = false)"
             )
             await ReplicationManager._exec_autocommit(db, sql)
             logger.info(
@@ -473,6 +474,9 @@ class ReplicationManager:
         await ReplicationManager.truncate_all_tables()
         # Step 2: drop existing subscription
         await ReplicationManager.drop_subscription(db)
+        # Step 3: clean up orphaned slot left on primary by SET (slot_name = NONE)
+        await ReplicationManager._cleanup_orphaned_slot_on_peer(primary_conn_str)
+        # Step 4: re-create subscription with full data copy
         sql = (
             f"CREATE SUBSCRIPTION {ReplicationManager.SUBSCRIPTION_NAME} "
             f"CONNECTION '{primary_conn_str}' "

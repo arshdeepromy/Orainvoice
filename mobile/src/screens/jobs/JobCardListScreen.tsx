@@ -52,7 +52,7 @@ export default function JobCardListScreen() {
 
   const handleTap = useCallback(
     (card: JobCard) => {
-      navigate(`/job-cards/${card.id}`)
+      navigate(`/jobs/cards/${card.id}`)
     },
     [navigate],
   )
@@ -90,7 +90,7 @@ export default function JobCardListScreen() {
             <MobileButton
               variant="primary"
               size="sm"
-              onClick={() => navigate('/job-cards/new')}
+              onClick={() => navigate('/jobs/cards/new')}
               icon={
                 <svg
                   className="h-4 w-4"

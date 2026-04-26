@@ -50,6 +50,10 @@ services:
       - "ssl_key_file=/var/lib/postgresql/ssl/server.key"
       - "-c"
       - "ssl_ca_file=/var/lib/postgresql/ssl/ca.crt"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
     deploy:
       resources:
         limits:
