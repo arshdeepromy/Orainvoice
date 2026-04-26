@@ -52,17 +52,7 @@ docker compose exec postgres psql -U postgres -d workshoppro
 ```
 
 ### Fresh Database Setup Note
-When starting with a completely fresh database (no tables), the `alembic_version` table must be pre-created with a wider `version_num` column because some migration revision IDs exceed the default 32-char limit:
-
-```bash
-docker compose exec postgres psql -U postgres -d workshoppro -c \
-  "CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(128) NOT NULL, CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num));"
-```
-
-Then restart the app container to run migrations:
-```bash
-docker compose restart app
-```
+On a completely fresh database, the docker entrypoint automatically creates the `alembic_version` table with a wide `version_num` column (VARCHAR(128)) before running migrations. No manual intervention needed — just start the containers and migrations will run.
 
 ### Data Volumes — Never Delete These
 - `invoicing_pgdata` — PostgreSQL database (all org/customer/invoice data)
