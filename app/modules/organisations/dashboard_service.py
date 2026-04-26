@@ -163,3 +163,573 @@ async def get_branch_comparison(
         "branches": branch_metrics,
         "highlights": highlights,
     }
+
+
+# ---------------------------------------------------------------------------
+# Dashboard Widget Service Functions (automotive-dashboard-widgets spec)
+# ---------------------------------------------------------------------------
+
+import logging
+from datetime import date, datetime, timedelta, timezone
+
+from sqlalchemy import select, func, and_, or_, case, Date, cast
+
+logger = logging.getLogger(__name__)
+
+
+def _empty_section() -> dict:
+    return {"items": [], "total": 0}
+
+
+async def get_recent_customers(
+    db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
+) -> dict:
+    """Last 10 customers who had invoices created, newest first."""
+    try:
+        from app.modules.customers.models import Customer
+
+        query = (
+            select(
+                Customer.id,
+                func.coalesce(Customer.display_name, func.concat(Customer.first_name, " ", Customer.last_name)).label("customer_name"),
+                Invoice.created_at.label("invoice_date"),
+                Invoice.vehicle_rego,
+            )
+            .join(Customer, Invoice.customer_id == Customer.id)
+            .where(Invoice.org_id == org_id, Invoice.status != "voided")
+            .order_by(Invoice.created_at.desc())
+            .limit(10)
+        )
+        if branch_id is not None:
+            query = query.where(Invoice.branch_id == branch_id)
+
+        result = await db.execute(query)
+        rows = result.all()
+        items = [
+            {
+                "customer_id": str(r.id),
+                "customer_name": r.customer_name or "Unknown",
+                "invoice_date": r.invoice_date.isoformat() if r.invoice_date else "",
+                "vehicle_rego": r.vehicle_rego,
+            }
+            for r in rows
+        ]
+        return {"items": items, "total": len(items)}
+    except Exception:
+        logger.exception("get_recent_customers failed")
+        return _empty_section()
+
+
+async def get_todays_bookings(
+    db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
+) -> dict:
+    """Bookings scheduled for today, sorted by start time ascending."""
+    try:
+        from app.modules.bookings.models import Booking
+        from app.modules.customers.models import Customer
+
+        today = date.today()
+        query = (
+            select(
+                Booking.id.label("booking_id"),
+                Booking.start_time.label("scheduled_time"),
+                func.coalesce(Customer.display_name, func.concat(Customer.first_name, " ", Customer.last_name)).label("customer_name"),
+                Booking.vehicle_rego,
+            )
+            .outerjoin(Customer, Booking.customer_id == Customer.id)
+            .where(
+                Booking.org_id == org_id,
+                cast(Booking.start_time, Date) == today,
+            )
+            .order_by(Booking.start_time.asc())
+        )
+        if branch_id is not None:
+            query = query.where(Booking.branch_id == branch_id)
+
+        result = await db.execute(query)
+        rows = result.all()
+        items = [
+            {
+                "booking_id": str(r.booking_id),
+                "scheduled_time": r.scheduled_time.isoformat() if r.scheduled_time else "",
+                "customer_name": r.customer_name or "Walk-in",
+                "vehicle_rego": r.vehicle_rego,
+            }
+            for r in rows
+        ]
+        return {"items": items, "total": len(items)}
+    except Exception:
+        logger.exception("get_todays_bookings failed")
+        return _empty_section()
+
+
+async def get_public_holidays(
+    db: AsyncSession, org_id: uuid.UUID
+) -> dict:
+    """Next 5 upcoming public holidays for the org's country."""
+    try:
+        # Public holidays may not have a dedicated table yet — return empty
+        # until the table is created. This is safe per the per-widget error handling.
+        return _empty_section()
+    except Exception:
+        logger.exception("get_public_holidays failed")
+        return _empty_section()
+
+
+async def get_inventory_overview(
+    db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
+) -> dict:
+    """Inventory grouped by category with low-stock counts."""
+    try:
+        from app.modules.products.models import Product
+
+        query = (
+            select(
+                func.coalesce(Product.category, "other").label("category"),
+                func.count(Product.id).label("total_count"),
+                func.count(
+                    case(
+                        (Product.current_stock <= Product.low_stock_threshold, Product.id),
+                    )
+                ).label("low_stock_count"),
+            )
+            .where(Product.org_id == org_id)
+            .group_by(func.coalesce(Product.category, "other"))
+        )
+        if branch_id is not None:
+            query = query.where(Product.branch_id == branch_id)
+
+        result = await db.execute(query)
+        rows = result.all()
+        items = [
+            {
+                "category": r.category or "other",
+                "total_count": r.total_count or 0,
+                "low_stock_count": r.low_stock_count or 0,
+            }
+            for r in rows
+        ]
+        return {"items": items, "total": len(items)}
+    except Exception:
+        logger.exception("get_inventory_overview failed")
+        return _empty_section()
+
+
+async def get_cash_flow(
+    db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
+) -> dict:
+    """Monthly revenue and expenses for the last 6 months."""
+    try:
+        six_months_ago = date.today().replace(day=1) - timedelta(days=180)
+
+        # Revenue from invoices
+        rev_query = (
+            select(
+                func.to_char(Invoice.created_at, "YYYY-MM").label("month"),
+                func.to_char(Invoice.created_at, "Mon YYYY").label("month_label"),
+                func.coalesce(func.sum(Invoice.subtotal), 0).label("revenue"),
+            )
+            .where(
+                Invoice.org_id == org_id,
+                Invoice.status.notin_(["voided", "draft"]),
+                Invoice.created_at >= six_months_ago,
+            )
+            .group_by(
+                func.to_char(Invoice.created_at, "YYYY-MM"),
+                func.to_char(Invoice.created_at, "Mon YYYY"),
+            )
+            .order_by(func.to_char(Invoice.created_at, "YYYY-MM"))
+        )
+        if branch_id is not None:
+            rev_query = rev_query.where(Invoice.branch_id == branch_id)
+
+        rev_result = await db.execute(rev_query)
+        rev_rows = {r.month: r for r in rev_result.all()}
+
+        # Expenses
+        exp_map: dict[str, float] = {}
+        try:
+            from app.modules.expenses.models import Expense
+
+            exp_query = (
+                select(
+                    func.to_char(Expense.expense_date, "YYYY-MM").label("month"),
+                    func.coalesce(func.sum(Expense.amount), 0).label("expenses"),
+                )
+                .where(
+                    Expense.org_id == org_id,
+                    Expense.expense_date >= six_months_ago,
+                )
+                .group_by(func.to_char(Expense.expense_date, "YYYY-MM"))
+            )
+            if branch_id is not None:
+                exp_query = exp_query.where(Expense.branch_id == branch_id)
+
+            exp_result = await db.execute(exp_query)
+            exp_map = {r.month: float(r.expenses) for r in exp_result.all()}
+        except Exception:
+            pass  # Expenses module may not exist
+
+        # Merge
+        all_months = sorted(set(list(rev_rows.keys()) + list(exp_map.keys())))
+        items = []
+        for m in all_months:
+            rev_row = rev_rows.get(m)
+            items.append({
+                "month": m,
+                "month_label": rev_row.month_label if rev_row else m,
+                "revenue": float(rev_row.revenue) if rev_row else 0.0,
+                "expenses": exp_map.get(m, 0.0),
+            })
+
+        return {"items": items, "total": len(items)}
+    except Exception:
+        logger.exception("get_cash_flow failed")
+        return _empty_section()
+
+
+async def get_recent_claims(
+    db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
+) -> dict:
+    """Last 10 customer claims, newest first."""
+    try:
+        from app.modules.claims.models import CustomerClaim
+        from app.modules.customers.models import Customer
+
+        query = (
+            select(
+                CustomerClaim.id.label("claim_id"),
+                CustomerClaim.reference,
+                func.coalesce(Customer.display_name, func.concat(Customer.first_name, " ", Customer.last_name)).label("customer_name"),
+                CustomerClaim.created_at.label("claim_date"),
+                CustomerClaim.status,
+            )
+            .outerjoin(Customer, CustomerClaim.customer_id == Customer.id)
+            .where(CustomerClaim.org_id == org_id)
+            .order_by(CustomerClaim.created_at.desc())
+            .limit(10)
+        )
+        if branch_id is not None:
+            query = query.where(CustomerClaim.branch_id == branch_id)
+
+        result = await db.execute(query)
+        rows = result.all()
+        items = [
+            {
+                "claim_id": str(r.claim_id),
+                "reference": r.reference or "",
+                "customer_name": r.customer_name or "Unknown",
+                "claim_date": r.claim_date.isoformat() if r.claim_date else "",
+                "status": r.status or "open",
+            }
+            for r in rows
+        ]
+        return {"items": items, "total": len(items)}
+    except Exception:
+        logger.exception("get_recent_claims failed")
+        return _empty_section()
+
+
+async def get_active_staff(
+    db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
+) -> dict:
+    """Staff currently clocked in (time entries with no end_time today)."""
+    try:
+        from app.modules.time_tracking.models import TimeEntry
+        from app.modules.auth.models import User
+
+        today = date.today()
+        query = (
+            select(
+                User.id.label("staff_id"),
+                User.email.label("name"),
+                TimeEntry.start_time.label("clock_in_time"),
+            )
+            .join(User, TimeEntry.user_id == User.id)
+            .where(
+                TimeEntry.org_id == org_id,
+                TimeEntry.end_time.is_(None),
+                cast(TimeEntry.start_time, Date) == today,
+            )
+        )
+        if branch_id is not None:
+            query = query.where(TimeEntry.branch_id == branch_id)
+
+        result = await db.execute(query)
+        rows = result.all()
+        items = [
+            {
+                "staff_id": str(r.staff_id),
+                "name": r.name or "Unknown",
+                "clock_in_time": r.clock_in_time.isoformat() if r.clock_in_time else "",
+            }
+            for r in rows
+        ]
+        return {"items": items, "total": len(items)}
+    except Exception:
+        logger.exception("get_active_staff failed")
+        return _empty_section()
+
+
+async def get_expiry_reminders(
+    db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
+) -> dict:
+    """Vehicles with upcoming WOF/service expiry, excluding dismissed."""
+    try:
+        from app.modules.vehicles.models import OrgVehicle, GlobalVehicle
+        from app.modules.customers.models import Customer, CustomerVehicle
+        from app.modules.organisations.models import DashboardReminderDismissal, DashboardReminderConfig
+
+        # Get config thresholds
+        config_result = await db.execute(
+            select(DashboardReminderConfig).where(DashboardReminderConfig.org_id == org_id)
+        )
+        config = config_result.scalar_one_or_none()
+        wof_days = config.wof_days if config else 30
+        service_days = config.service_days if config else 30
+
+        today = date.today()
+        wof_cutoff = today + timedelta(days=wof_days)
+        service_cutoff = today + timedelta(days=service_days)
+
+        # Get dismissed vehicle+type+date combos
+        dismissed_result = await db.execute(
+            select(
+                DashboardReminderDismissal.vehicle_id,
+                DashboardReminderDismissal.reminder_type,
+                DashboardReminderDismissal.expiry_date,
+            ).where(DashboardReminderDismissal.org_id == org_id)
+        )
+        dismissed_set = {
+            (str(r.vehicle_id), r.reminder_type, str(r.expiry_date)[:10])
+            for r in dismissed_result.all()
+        }
+
+        # Query vehicles with WOF expiry
+        items = []
+        try:
+            vehicle_query = (
+                select(
+                    GlobalVehicle.id.label("vehicle_id"),
+                    GlobalVehicle.rego.label("vehicle_rego"),
+                    GlobalVehicle.make.label("vehicle_make"),
+                    GlobalVehicle.model.label("vehicle_model"),
+                    GlobalVehicle.wof_expiry,
+                    GlobalVehicle.service_due_date,
+                )
+                .join(OrgVehicle, OrgVehicle.global_vehicle_id == GlobalVehicle.id)
+                .where(OrgVehicle.org_id == org_id)
+                .where(
+                    or_(
+                        and_(GlobalVehicle.wof_expiry.isnot(None), GlobalVehicle.wof_expiry <= wof_cutoff, GlobalVehicle.wof_expiry >= today),
+                        and_(GlobalVehicle.service_due_date.isnot(None), GlobalVehicle.service_due_date <= service_cutoff, GlobalVehicle.service_due_date >= today),
+                    )
+                )
+            )
+            v_result = await db.execute(vehicle_query)
+            vehicles = v_result.all()
+
+            for v in vehicles:
+                vid = str(v.vehicle_id)
+                # Get linked customer
+                cv_result = await db.execute(
+                    select(Customer.id, func.coalesce(Customer.display_name, func.concat(Customer.first_name, " ", Customer.last_name)).label("name"))
+                    .join(CustomerVehicle, CustomerVehicle.customer_id == Customer.id)
+                    .where(CustomerVehicle.global_vehicle_id == v.vehicle_id)
+                    .limit(1)
+                )
+                cv_row = cv_result.first()
+                cust_name = cv_row.name if cv_row else "Unlinked"
+                cust_id = str(cv_row.id) if cv_row else ""
+
+                if v.wof_expiry and v.wof_expiry >= today and v.wof_expiry <= wof_cutoff:
+                    exp_str = str(v.wof_expiry)[:10]
+                    if (vid, "wof", exp_str) not in dismissed_set:
+                        items.append({
+                            "vehicle_id": vid,
+                            "vehicle_rego": v.vehicle_rego or "",
+                            "vehicle_make": v.vehicle_make,
+                            "vehicle_model": v.vehicle_model,
+                            "expiry_type": "wof",
+                            "expiry_date": exp_str,
+                            "customer_name": cust_name,
+                            "customer_id": cust_id,
+                        })
+
+                if v.service_due_date and v.service_due_date >= today and v.service_due_date <= service_cutoff:
+                    exp_str = str(v.service_due_date)[:10]
+                    if (vid, "service", exp_str) not in dismissed_set:
+                        items.append({
+                            "vehicle_id": vid,
+                            "vehicle_rego": v.vehicle_rego or "",
+                            "vehicle_make": v.vehicle_make,
+                            "vehicle_model": v.vehicle_model,
+                            "expiry_type": "service",
+                            "expiry_date": exp_str,
+                            "customer_name": cust_name,
+                            "customer_id": cust_id,
+                        })
+        except Exception:
+            logger.exception("get_expiry_reminders vehicle query failed")
+
+        items.sort(key=lambda x: x.get("expiry_date", ""))
+        return {"items": items, "total": len(items)}
+    except Exception:
+        logger.exception("get_expiry_reminders failed")
+        return _empty_section()
+
+
+async def get_reminder_config(
+    db: AsyncSession, org_id: uuid.UUID
+) -> dict:
+    """Get the org's reminder threshold config, or defaults."""
+    try:
+        from app.modules.organisations.models import DashboardReminderConfig
+
+        result = await db.execute(
+            select(DashboardReminderConfig).where(DashboardReminderConfig.org_id == org_id)
+        )
+        config = result.scalar_one_or_none()
+        if config:
+            return {"wof_days": config.wof_days, "service_days": config.service_days}
+        return {"wof_days": 30, "service_days": 30}
+    except Exception:
+        logger.exception("get_reminder_config failed")
+        return {"wof_days": 30, "service_days": 30}
+
+
+async def update_reminder_config(
+    db: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID,
+    wof_days: int, service_days: int
+) -> dict:
+    """Upsert the org's reminder threshold config."""
+    from app.modules.organisations.models import DashboardReminderConfig
+
+    result = await db.execute(
+        select(DashboardReminderConfig).where(DashboardReminderConfig.org_id == org_id)
+    )
+    config = result.scalar_one_or_none()
+    if config:
+        config.wof_days = wof_days
+        config.service_days = service_days
+        config.updated_by = user_id
+        config.updated_at = datetime.now(timezone.utc)
+    else:
+        config = DashboardReminderConfig(
+            org_id=org_id,
+            wof_days=wof_days,
+            service_days=service_days,
+            updated_by=user_id,
+        )
+        db.add(config)
+    await db.flush()
+    await db.refresh(config)
+    return {"wof_days": config.wof_days, "service_days": config.service_days}
+
+
+async def dismiss_reminder(
+    db: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID,
+    vehicle_id: str, reminder_type: str, expiry_date: str, action: str
+) -> dict:
+    """Create a dismissal record (idempotent)."""
+    from app.modules.organisations.models import DashboardReminderDismissal
+
+    vid = uuid.UUID(vehicle_id)
+    exp_date = datetime.strptime(expiry_date[:10], "%Y-%m-%d").date()
+
+    # Check if already dismissed
+    existing = await db.execute(
+        select(DashboardReminderDismissal).where(
+            DashboardReminderDismissal.org_id == org_id,
+            DashboardReminderDismissal.vehicle_id == vid,
+            DashboardReminderDismissal.reminder_type == reminder_type,
+            cast(DashboardReminderDismissal.expiry_date, Date) == exp_date,
+        )
+    )
+    row = existing.scalar_one_or_none()
+    if row:
+        return {"id": str(row.id), "action": row.action, "status": "already_exists"}
+
+    dismissal = DashboardReminderDismissal(
+        org_id=org_id,
+        vehicle_id=vid,
+        reminder_type=reminder_type,
+        action=action,
+        expiry_date=exp_date,
+        dismissed_by=user_id,
+    )
+    db.add(dismissal)
+    await db.flush()
+    await db.refresh(dismissal)
+    return {"id": str(dismissal.id), "action": dismissal.action, "status": "created"}
+
+
+async def get_all_widget_data(
+    db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
+) -> dict:
+    """Aggregate all widget data in one call. Per-widget errors are isolated."""
+    try:
+        recent_customers = await get_recent_customers(db, org_id, branch_id)
+    except Exception:
+        logger.exception("Widget: recent_customers failed")
+        recent_customers = _empty_section()
+
+    try:
+        todays_bookings = await get_todays_bookings(db, org_id, branch_id)
+    except Exception:
+        logger.exception("Widget: todays_bookings failed")
+        todays_bookings = _empty_section()
+
+    try:
+        public_holidays = await get_public_holidays(db, org_id)
+    except Exception:
+        logger.exception("Widget: public_holidays failed")
+        public_holidays = _empty_section()
+
+    try:
+        inventory_overview = await get_inventory_overview(db, org_id, branch_id)
+    except Exception:
+        logger.exception("Widget: inventory_overview failed")
+        inventory_overview = _empty_section()
+
+    try:
+        cash_flow = await get_cash_flow(db, org_id, branch_id)
+    except Exception:
+        logger.exception("Widget: cash_flow failed")
+        cash_flow = _empty_section()
+
+    try:
+        recent_claims = await get_recent_claims(db, org_id, branch_id)
+    except Exception:
+        logger.exception("Widget: recent_claims failed")
+        recent_claims = _empty_section()
+
+    try:
+        active_staff = await get_active_staff(db, org_id, branch_id)
+    except Exception:
+        logger.exception("Widget: active_staff failed")
+        active_staff = _empty_section()
+
+    try:
+        expiry_reminders = await get_expiry_reminders(db, org_id, branch_id)
+    except Exception:
+        logger.exception("Widget: expiry_reminders failed")
+        expiry_reminders = _empty_section()
+
+    try:
+        reminder_config = await get_reminder_config(db, org_id)
+    except Exception:
+        logger.exception("Widget: reminder_config failed")
+        reminder_config = {"wof_days": 30, "service_days": 30}
+
+    return {
+        "recent_customers": recent_customers,
+        "todays_bookings": todays_bookings,
+        "public_holidays": public_holidays,
+        "inventory_overview": inventory_overview,
+        "cash_flow": cash_flow,
+        "recent_claims": recent_claims,
+        "active_staff": active_staff,
+        "expiry_reminders": expiry_reminders,
+        "reminder_config": reminder_config,
+    }

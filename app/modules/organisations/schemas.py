@@ -763,3 +763,98 @@ class BusinessTypeResponse(BaseModel):
     income_tax_year_end: _date | None = None
     provisional_tax_method: str | None = None
     message: str = "Business type updated"
+
+
+# ---------------------------------------------------------------------------
+# Dashboard Widget Schemas (automotive-dashboard-widgets spec)
+# ---------------------------------------------------------------------------
+
+
+class RecentCustomerItem(BaseModel):
+    customer_id: str
+    customer_name: str
+    invoice_date: str
+    vehicle_rego: Optional[str] = None
+
+
+class TodayBookingItem(BaseModel):
+    booking_id: str
+    scheduled_time: str
+    customer_name: str
+    vehicle_rego: Optional[str] = None
+
+
+class PublicHolidayItem(BaseModel):
+    name: str
+    holiday_date: str
+
+
+class InventoryCategoryItem(BaseModel):
+    category: str
+    total_count: int = 0
+    low_stock_count: int = 0
+
+
+class CashFlowMonthItem(BaseModel):
+    month: str
+    month_label: str
+    revenue: float = 0.0
+    expenses: float = 0.0
+
+
+class RecentClaimItem(BaseModel):
+    claim_id: str
+    reference: str
+    customer_name: str
+    claim_date: str
+    status: str
+
+
+class ActiveStaffItem(BaseModel):
+    staff_id: str
+    name: str
+    clock_in_time: str
+
+
+class ExpiryReminderItem(BaseModel):
+    vehicle_id: str
+    vehicle_rego: str
+    vehicle_make: Optional[str] = None
+    vehicle_model: Optional[str] = None
+    expiry_type: str  # 'wof' or 'service'
+    expiry_date: str
+    customer_name: str
+    customer_id: str
+
+
+class ReminderConfigResponse(BaseModel):
+    wof_days: int = 30
+    service_days: int = 30
+
+
+class WidgetDataSection(BaseModel):
+    items: list = Field(default_factory=list)
+    total: int = 0
+
+
+class DashboardWidgetsResponse(BaseModel):
+    recent_customers: WidgetDataSection = Field(default_factory=WidgetDataSection)
+    todays_bookings: WidgetDataSection = Field(default_factory=WidgetDataSection)
+    public_holidays: WidgetDataSection = Field(default_factory=WidgetDataSection)
+    inventory_overview: WidgetDataSection = Field(default_factory=WidgetDataSection)
+    cash_flow: WidgetDataSection = Field(default_factory=WidgetDataSection)
+    recent_claims: WidgetDataSection = Field(default_factory=WidgetDataSection)
+    active_staff: WidgetDataSection = Field(default_factory=WidgetDataSection)
+    expiry_reminders: WidgetDataSection = Field(default_factory=WidgetDataSection)
+    reminder_config: ReminderConfigResponse = Field(default_factory=ReminderConfigResponse)
+
+
+class ReminderDismissRequest(BaseModel):
+    vehicle_id: str
+    expiry_date: str
+    action: str = "dismissed"  # 'dismissed' or 'reminder_sent'
+
+
+class ReminderConfigUpdate(BaseModel):
+    wof_days: int = Field(ge=1, le=365)
+    service_days: int = Field(ge=1, le=365)

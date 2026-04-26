@@ -5,6 +5,8 @@ import { useBranch } from '@/contexts/BranchContext'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
 import { Button } from '@/components/ui/Button'
+import { WidgetGrid } from './widgets/WidgetGrid'
+import { useAuth } from '@/contexts/AuthContext'
 
 interface OrgAdminData {
   revenue_summary?: {
@@ -56,7 +58,8 @@ interface BranchComparisonData {
 }
 
 export function OrgAdminDashboard() {
-  const { settings } = useTenant()
+  const { settings, tradeFamily } = useTenant()
+  const { user } = useAuth()
   const { selectedBranchId, branches } = useBranch()
   const [data, setData] = useState<OrgAdminData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -337,6 +340,11 @@ export function OrgAdminDashboard() {
             </div>
           )}
         </section>
+      )}
+
+      {/* Automotive Dashboard Widgets — only for automotive-transport orgs */}
+      {(tradeFamily ?? 'automotive-transport') === 'automotive-transport' && user?.id && (
+        <WidgetGrid userId={user.id} branchId={selectedBranchId ?? null} />
       )}
     </div>
   )

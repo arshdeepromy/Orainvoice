@@ -72,3 +72,65 @@ class Branch(Base):
 
     # Relationships
     organisation = relationship("Organisation", backref="branches")
+
+
+class DashboardReminderDismissal(Base):
+    """Tracks dismissed or 'reminder sent' WOF/service expiry reminders."""
+
+    __tablename__ = "dashboard_reminder_dismissals"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False
+    )
+    vehicle_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    reminder_type: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # 'wof' or 'service'
+    action: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # 'dismissed' or 'reminder_sent'
+    expiry_date = mapped_column(
+        DateTime(timezone=False), nullable=False
+    )
+    dismissed_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    dismissed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DashboardReminderConfig(Base):
+    """Per-org reminder threshold configuration for WOF/service expiry."""
+
+    __tablename__ = "dashboard_reminder_config"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False, unique=True
+    )
+    wof_days: Mapped[int] = mapped_column(
+        nullable=False, server_default="30"
+    )
+    service_days: Mapped[int] = mapped_column(
+        nullable=False, server_default="30"
+    )
+    updated_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
