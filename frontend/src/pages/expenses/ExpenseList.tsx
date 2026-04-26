@@ -340,9 +340,10 @@ function RecordExpenseTab({ onSaved }: { onSaved: () => void }) {
             placeholder="Max. 500 characters"
             className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
         </FieldRow>
-        <FieldRow label="Customer Name">
+        {/* Customer Name — disabled until feature is complete */}
+        {/* <FieldRow label="Customer Name">
           <CustomerSearch value={form.customer_id} onChange={(id) => setForm(p => ({ ...p, customer_id: id }))} />
-        </FieldRow>
+        </FieldRow> */}
         {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
         {success && <p className="mt-2 text-sm text-green-600">✓ Expense saved successfully.</p>}
         <div className="mt-4 flex gap-2">
@@ -505,9 +506,10 @@ function RecordMileageTab({ onSaved }: { onSaved: () => void }) {
               placeholder="Max. 500 characters"
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
           </FieldRow>
-          <FieldRow label="Customer Name">
+          {/* Customer Name — disabled until feature is complete */}
+          {/* <FieldRow label="Customer Name">
             <CustomerSearch value={form.customer_id} onChange={(id) => setForm(p => ({ ...p, customer_id: id }))} />
-          </FieldRow>
+          </FieldRow> */}
           {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
           {success && <p className="mt-2 text-sm text-green-600">✓ Mileage expense saved.</p>}
           <div className="mt-4 flex gap-2">
@@ -639,9 +641,7 @@ function BulkAddTab({ onSaved }: { onSaved: () => void }) {
               <th className="px-2 py-2 text-left text-xs font-semibold text-red-500 uppercase w-40">Category Name *</th>
               <th className="px-2 py-2 text-left text-xs font-semibold text-red-500 uppercase w-36">Amount *</th>
               <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase w-40">Tax</th>
-              <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase w-40">Customer Name</th>
-              <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase w-36">Projects</th>
-              <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase w-16">Billable</th>
+              {/* Customer Name, Projects, Billable — disabled until features complete */}
               <th className="w-8"></th>
             </tr>
           </thead>
@@ -680,19 +680,7 @@ function BulkAddTab({ onSaved }: { onSaved: () => void }) {
                     </label>
                   </div>
                 </td>
-                <td className="px-2 py-1.5">
-                  <select className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-                    <option value="">—</option>
-                  </select>
-                </td>
-                <td className="px-2 py-1.5">
-                  <select className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-                    <option value="">—</option>
-                  </select>
-                </td>
-                <td className="px-2 py-1.5 text-center">
-                  <input type="checkbox" checked={row.is_billable} onChange={e => updateRow(i, { is_billable: e.target.checked })} className="rounded border-gray-300" />
-                </td>
+                {/* Customer Name, Projects, Billable — disabled until features complete */}
                 <td className="px-2 py-1.5">
                   <button type="button" onClick={() => removeRow(i)} className="text-gray-400 hover:text-gray-600 p-1">
                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -876,7 +864,7 @@ export default function ExpenseList() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         title="Record Expense"
-        size="lg"
+        className="max-w-3xl"
       >
         {/* Tabs inside modal */}
         <div className="flex border-b border-gray-200 mb-4 -mx-6 px-6">
