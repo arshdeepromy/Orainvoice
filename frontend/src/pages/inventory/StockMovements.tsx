@@ -184,7 +184,7 @@ export default function StockMovements() {
     setAdjustSaving(true)
     setAdjustError('')
     try {
-      await apiClient.post('/v2/stock-movements/batch', {
+      await apiClient.post('/api/v2/stock-movements/batch', {
         reason,
         notes: adjustNotes.trim() || undefined,
         adjustments: validLines.map((l) => ({

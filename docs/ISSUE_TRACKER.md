@@ -3726,3 +3726,56 @@ This provides a synchronous confirmation path alongside the async webhook path, 
 - `app/modules/catalogue/schemas.py` — added `LabourRateUpdateRequest`
 - `app/modules/catalogue/service.py` — added `update_labour_rate()`
 - `app/modules/catalogue/router.py` — added PUT endpoint + imported new schema
+
+
+---
+
+### ISSUE-113: Setup wizard v2 API calls double-prefixed — /api/v1/v2/... → 404
+
+- **Date**: 2026-04-26
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: ISSUE-006 (same bug pattern reintroduced in setup wizard files)
+
+**Symptoms**: Setup wizard Step 1 (Country) and Step 2 (Trade) fail with 404 errors. Browser console shows requests to `/api/v1/v2/setup-wizard/progress`, `/api/v1/v2/setup-wizard/step/1`, `/api/v1/v2/trade-families`, `/api/v1/v2/trade-categories`. The Next button shows a loading spinner indefinitely.
+
+**Root Cause**: The `apiClient` has `baseURL: '/api/v1'`. The interceptor in `api/client.ts` strips the baseURL when the URL starts with `/api/` (ISSUE-006 fix). However, the setup wizard files used `/v2/...` paths (e.g., `apiClient.get('/v2/setup-wizard/progress')`) which don't start with `/api/`, so the interceptor doesn't catch them. The result is double-prefixed URLs: `/api/v1/v2/setup-wizard/progress` → 404.
+
+Additionally, the `_apply_country_defaults` function in `app/modules/setup_wizard/service.py` crashed with `TypeError: string indices must be integers, not 'str'` because `compliance_profiles.default_tax_rates` was stored as a double-encoded JSON string in the database (a JSON string wrapping a JSON array).
+
+**Fix Applied**:
+
+1. **Setup wizard API calls**: Changed all `/v2/...` paths to `/api/v2/...` so the interceptor correctly strips the baseURL:
+   - `SetupWizard.tsx`: `/v2/setup-wizard/progress` → `/api/v2/setup-wizard/progress`
+   - `SetupWizard.tsx`: `/v2/setup-wizard/step/${n}` → `/api/v2/setup-wizard/step/${n}`
+   - `TradeStep.tsx`: `/v2/trade-families` → `/api/v2/trade-families`
+   - `TradeStep.tsx`: `/v2/trade-categories` → `/api/v2/trade-categories`
+   - `ModulesStep.tsx`: `/v2/modules` → `/api/v2/modules`
+
+2. **OrgLayout wizard check**: `/v2/setup-wizard/progress` → `/api/v2/setup-wizard/progress`
+
+3. **Country defaults crash**: Added `isinstance(tax_rates, str)` check with `json.loads()` fallback in `_apply_country_defaults` to handle double-encoded JSONB data.
+
+4. **Full codebase scan**: Found and fixed 11 additional `/v2/...` calls in inventory pages:
+   - `StockMovements.tsx`: `/v2/stock-movements/batch`
+   - `ProductList.tsx`: `/v2/purchase-orders`
+   - `ProductDetail.tsx`: `/v2/products/${id}`
+   - `PricingRules.tsx`: 4 calls to `/v2/pricing-rules/...`
+   - `CategoryTree.tsx`: 4 calls to `/v2/product-categories/...`
+
+**Files Changed**:
+- `frontend/src/pages/setup/SetupWizard.tsx`
+- `frontend/src/pages/setup/steps/TradeStep.tsx`
+- `frontend/src/pages/setup/steps/ModulesStep.tsx`
+- `frontend/src/layouts/OrgLayout.tsx`
+- `frontend/src/pages/inventory/StockMovements.tsx`
+- `frontend/src/pages/inventory/ProductList.tsx`
+- `frontend/src/pages/inventory/ProductDetail.tsx`
+- `frontend/src/pages/inventory/PricingRules.tsx`
+- `frontend/src/pages/inventory/CategoryTree.tsx`
+- `app/modules/setup_wizard/service.py`
+
+**Similar Bugs Found & Fixed**: 11 additional instances of the same `/v2/...` pattern in inventory pages — all fixed in this pass. Full scan confirmed zero remaining instances.
+
+**Related Issues**: ISSUE-006 (original systemic v2 double-prefix fix)

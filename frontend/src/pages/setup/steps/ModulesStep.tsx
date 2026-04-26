@@ -20,7 +20,7 @@ export function ModulesStep({ data, onChange }: ModulesStepProps) {
       setLoading(true)
       setError(false)
       try {
-        const res = await apiClient.get('/v2/modules')
+        const res = await apiClient.get('/api/v2/modules')
         const mods: ModuleInfo[] = res.data?.modules ?? res.data ?? []
         setModules(mods)
       } catch {

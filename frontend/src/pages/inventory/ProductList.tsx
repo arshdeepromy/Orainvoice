@@ -189,7 +189,7 @@ export default function ProductList() {
   const handleCreatePO = async (product: Product) => {
     setCreatingPO(product.id)
     try {
-      await apiClient.post('/v2/purchase-orders', {
+      await apiClient.post('/api/v2/purchase-orders', {
         supplier_id: product.supplier_id,
         lines: [{
           product_id: product.id,

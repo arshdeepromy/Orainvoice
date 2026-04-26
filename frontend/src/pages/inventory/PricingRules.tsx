@@ -210,9 +210,9 @@ export default function PricingRules() {
       if (form.discount_percent) body.discount_percent = parseFloat(form.discount_percent)
 
       if (editingId) {
-        await apiClient.put(`/v2/pricing-rules/${editingId}`, body)
+        await apiClient.put(`/api/v2/pricing-rules/${editingId}`, body)
       } else {
-        await apiClient.post('/v2/pricing-rules', body)
+        await apiClient.post('/api/v2/pricing-rules', body)
       }
       setModalOpen(false)
       fetchRules()
@@ -226,7 +226,7 @@ export default function PricingRules() {
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this pricing rule?')) return
     try {
-      await apiClient.delete(`/v2/pricing-rules/${id}`)
+      await apiClient.delete(`/api/v2/pricing-rules/${id}`)
       fetchRules()
     } catch {
       setError('Failed to delete pricing rule.')
@@ -235,7 +235,7 @@ export default function PricingRules() {
 
   const handleToggle = async (rule: PricingRule) => {
     try {
-      await apiClient.put(`/v2/pricing-rules/${rule.id}`, { is_active: !rule.is_active })
+      await apiClient.put(`/api/v2/pricing-rules/${rule.id}`, { is_active: !rule.is_active })
       fetchRules()
     } catch {
       setError('Failed to toggle rule.')

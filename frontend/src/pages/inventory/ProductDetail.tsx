@@ -245,7 +245,7 @@ export default function ProductDetail({ productId }: { productId?: string }) {
       if (form.supplier_sku.trim()) body.supplier_sku = form.supplier_sku.trim()
 
       if (productId) {
-        await apiClient.put(`/v2/products/${productId}`, body)
+        await apiClient.put(`/api/v2/products/${productId}`, body)
         setSuccess(`${productLabel} updated successfully.`)
         fetchProduct()
       } else {

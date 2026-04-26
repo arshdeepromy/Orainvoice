@@ -32,9 +32,25 @@ interface Vehicle {
   registration_expiry: string | null
 }
 
-interface WorkItem {
+interface CatalogueItem {
+  id: string
+  name: string
+  description?: string
+  default_price: number
+  gst_applicable: boolean
+  gst_inclusive?: boolean
+  category?: string
+  sku?: string
+}
+
+interface LineItem {
   key: string
+  catalogue_item_id: string | null
+  item_type: 'service' | 'part' | 'labour'
   description: string
+  quantity: number
+  unit_price: number
+  is_gst_exempt: boolean
 }
 
 interface FormErrors {
@@ -43,6 +59,29 @@ interface FormErrors {
   items?: string
   submit?: string
   [key: string]: string | undefined
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function newLineItem(): LineItem {
+  return {
+    key: crypto.randomUUID(),
+    catalogue_item_id: null,
+    item_type: 'service',
+    description: '',
+    quantity: 1,
+    unit_price: 0,
+    is_gst_exempt: false,
+  }
+}
+
+function formatNZD(amount: number): string {
+  return new Intl.NumberFormat('en-NZ', {
+    style: 'currency',
+    currency: 'NZD',
+  }).format(amount)
 }
 
 /* ------------------------------------------------------------------ */
@@ -308,6 +347,142 @@ function VehicleRegoLookup({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Line Item Row                                                      */
+/* ------------------------------------------------------------------ */
+
+function LineItemRow({
+  item,
+  index,
+  catalogueItems,
+  onChange,
+  onRemove,
+}: {
+  item: LineItem
+  index: number
+  catalogueItems: CatalogueItem[]
+  onChange: (index: number, updated: LineItem) => void
+  onRemove: (index: number) => void
+}) {
+  const [showItemDropdown, setShowItemDropdown] = useState(false)
+  const [itemSearch, setItemSearch] = useState('')
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setShowItemDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const update = (patch: Partial<LineItem>) => {
+    const updated = { ...item, ...patch }
+    onChange(index, updated)
+  }
+
+  const handleItemSelect = (catalogueItem: CatalogueItem) => {
+    const isGstExempt = !catalogueItem.gst_applicable
+    update({
+      catalogue_item_id: catalogueItem.id,
+      description: catalogueItem.name,
+      unit_price: catalogueItem.default_price,
+      is_gst_exempt: isGstExempt,
+    })
+    setShowItemDropdown(false)
+    setItemSearch('')
+  }
+
+  const filteredItems = (Array.isArray(catalogueItems) ? catalogueItems : []).filter(ci =>
+    ci.name.toLowerCase().includes(itemSearch.toLowerCase())
+  )
+
+  const lineAmount = Math.round(item.quantity * item.unit_price * 100) / 100
+
+  return (
+    <tr className="border-b border-gray-100 hover:bg-gray-50 align-top">
+      {/* Item Details */}
+      <td className="py-3 px-2">
+        <div ref={containerRef} className="relative">
+          <input
+            type="text"
+            value={item.description}
+            onChange={(e) => {
+              update({ description: e.target.value, catalogue_item_id: null })
+              setItemSearch(e.target.value)
+            }}
+            onFocus={() => setShowItemDropdown(true)}
+            placeholder="Type or search catalogue items"
+            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            aria-label={`Line item ${index + 1} description`}
+          />
+          {showItemDropdown && (
+            <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+              {filteredItems.slice(0, 10).map((ci) => (
+                <button
+                  key={ci.id}
+                  type="button"
+                  onClick={() => handleItemSelect(ci)}
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50"
+                >
+                  <div className="font-medium text-gray-900">{ci.name}</div>
+                  <div className="text-xs text-gray-500">{formatNZD(ci.default_price)}</div>
+                </button>
+              ))}
+              {filteredItems.length === 0 && (
+                <div className="px-3 py-2 text-sm text-gray-500">No items found</div>
+              )}
+            </div>
+          )}
+        </div>
+      </td>
+      {/* Quantity */}
+      <td className="py-3 px-2 w-24">
+        <input
+          type="number"
+          min="1"
+          step="1"
+          value={item.quantity}
+          onChange={(e) => update({ quantity: Math.max(1, Number(e.target.value) || 1) })}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+          aria-label={`Line item ${index + 1} quantity`}
+        />
+      </td>
+      {/* Rate */}
+      <td className="py-3 px-2 w-32">
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={item.unit_price}
+          onChange={(e) => update({ unit_price: Math.max(0, Number(e.target.value) || 0) })}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+          aria-label={`Line item ${index + 1} rate`}
+        />
+      </td>
+      {/* Amount (read-only) */}
+      <td className="py-3 px-2 w-28 text-right text-sm font-medium text-gray-900">
+        {formatNZD(lineAmount)}
+      </td>
+      {/* Remove */}
+      <td className="py-3 px-2 w-12">
+        <button
+          type="button"
+          onClick={() => onRemove(index)}
+          className="rounded p-1 text-gray-400 hover:text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 min-h-[44px] min-w-[44px] flex items-center justify-center"
+          aria-label={`Remove line item ${index + 1}`}
+        >
+          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
+      </td>
+    </tr>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main Component                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -319,36 +494,81 @@ export default function JobCardCreate() {
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [vehicle, setVehicle] = useState<Vehicle | null>(null)
   const [description, setDescription] = useState('')
-  const [workItems, setWorkItems] = useState<WorkItem[]>([
-    { key: crypto.randomUUID(), description: '' },
-  ])
+  const [lineItems, setLineItems] = useState<LineItem[]>([newLineItem()])
   const [notes, setNotes] = useState('')
 
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<FormErrors>({})
 
-  /* --- Work item management --- */
-  const addWorkItem = () => {
-    setWorkItems((prev) => [...prev, { key: crypto.randomUUID(), description: '' }])
+  /* --- Catalogue data --- */
+  const [catalogueItems, setCatalogueItems] = useState<CatalogueItem[]>([])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    apiClient
+      .get<CatalogueItem[] | { items: CatalogueItem[] }>('/catalogue/items', {
+        params: { active_only: true },
+        signal: controller.signal,
+      })
+      .then((res) => {
+        const items = res.data
+        const rawItems = Array.isArray(items) ? items : (items?.items ?? [])
+        setCatalogueItems(
+          rawItems.map((item: CatalogueItem & { default_price?: number | string; is_gst_exempt?: boolean }) => ({
+            id: item.id,
+            name: item.name,
+            description: item.description ?? undefined,
+            default_price:
+              typeof item.default_price === 'string'
+                ? parseFloat(item.default_price)
+                : (item.default_price ?? 0),
+            gst_applicable: item.gst_applicable ?? (item.is_gst_exempt === false),
+            gst_inclusive: item.gst_inclusive ?? false,
+            category: item.category ?? undefined,
+            sku: item.sku ?? undefined,
+          }))
+        )
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setCatalogueItems([])
+      })
+    return () => controller.abort()
+  }, [])
+
+  /* --- Line item management --- */
+  const addLineItem = () => {
+    setLineItems((prev) => [...prev, newLineItem()])
     if (errors.items) {
-      setErrors((prev) => { const { items: _, ...rest } = prev; return rest })
+      setErrors((prev) => {
+        const { items: _, ...rest } = prev
+        return rest
+      })
     }
   }
 
-  const updateWorkItem = (index: number, desc: string) => {
-    setWorkItems((prev) => prev.map((item, i) => (i === index ? { ...item, description: desc } : item)))
+  const updateLineItem = (index: number, updated: LineItem) => {
+    setLineItems((prev) => prev.map((item, i) => (i === index ? updated : item)))
   }
 
-  const removeWorkItem = (index: number) => {
-    setWorkItems((prev) => prev.filter((_, i) => i !== index))
+  const removeLineItem = (index: number) => {
+    setLineItems((prev) => {
+      const next = prev.filter((_, i) => i !== index)
+      return next.length === 0 ? [newLineItem()] : next
+    })
   }
+
+  /* --- Subtotal --- */
+  const subtotal = lineItems.reduce(
+    (sum, li) => sum + Math.round(li.quantity * li.unit_price * 100) / 100,
+    0
+  )
 
   /* --- Validation --- */
   const validate = (): boolean => {
     const errs: FormErrors = {}
     if (!customer) errs.customer = 'Please select or create a customer'
-    const filledItems = workItems.filter((w) => w.description.trim())
-    if (filledItems.length === 0) errs.items = 'Add at least one work item'
+    const filledItems = lineItems.filter((li) => li.description.trim())
+    if (filledItems.length === 0) errs.items = 'Add at least one line item with a description'
     setErrors(errs)
     return Object.keys(errs).length === 0
   }
@@ -358,15 +578,25 @@ export default function JobCardCreate() {
     if (!validate()) return
     setSaving(true)
     try {
+      const line_items = lineItems
+        .filter((li) => li.description.trim())
+        .map((li, i) => ({
+          item_type: li.item_type,
+          description: li.description.trim(),
+          quantity: li.quantity,
+          unit_price: li.unit_price,
+          is_gst_exempt: li.is_gst_exempt,
+          sort_order: i,
+          ...(li.catalogue_item_id ? { catalogue_item_id: li.catalogue_item_id } : {}),
+        }))
+
       await apiClient.post('/job-cards', {
         customer_id: customer?.id,
         branch_id: selectedBranchId || undefined,
         ...(isAutomotive && vehicle?.id ? { vehicle_id: vehicle.id } : {}),
         description: description.trim(),
         notes: notes.trim() || undefined,
-        items: workItems
-          .filter((w) => w.description.trim())
-          .map((w) => ({ description: w.description.trim() })),
+        line_items,
       })
       window.location.href = '/job-cards'
     } catch {
@@ -406,35 +636,46 @@ export default function JobCardCreate() {
             onChange={(e) => setDescription(e.target.value)} />
         </div>
 
-        {/* Work Items */}
-        <section aria-labelledby="section-work-items">
-          <h2 id="section-work-items" className="text-lg font-medium text-gray-900 mb-3">Work to be Performed</h2>
+        {/* Line Items */}
+        <section aria-labelledby="section-line-items">
+          <h2 id="section-line-items" className="text-lg font-medium text-gray-900 mb-3">Line Items</h2>
 
           {errors.items && <p className="text-sm text-red-600 mb-3" role="alert">{errors.items}</p>}
 
-          <div className="space-y-3">
-            {workItems.map((item, index) => (
-              <div key={item.key} className="flex items-start gap-2">
-                <div className="flex-1">
-                  <Input
-                    label={`Work item ${index + 1}`}
-                    placeholder="Describe the work…"
-                    value={item.description}
-                    onChange={(e) => updateWorkItem(index, e.target.value)}
+          <div className="overflow-visible">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                  <th className="py-2 px-2">Item Details</th>
+                  <th className="py-2 px-2 w-24 text-right">Qty</th>
+                  <th className="py-2 px-2 w-32 text-right">Rate</th>
+                  <th className="py-2 px-2 w-28 text-right">Amount</th>
+                  <th className="py-2 px-2 w-12"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {lineItems.map((item, index) => (
+                  <LineItemRow
+                    key={item.key}
+                    item={item}
+                    index={index}
+                    catalogueItems={catalogueItems}
+                    onChange={updateLineItem}
+                    onRemove={removeLineItem}
                   />
-                </div>
-                {workItems.length > 1 && (
-                  <button type="button" onClick={() => removeWorkItem(index)}
-                    className="mt-7 rounded p-2 text-gray-400 hover:text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 min-h-[44px] min-w-[44px] flex items-center justify-center"
-                    aria-label={`Remove work item ${index + 1}`}>✕</button>
-                )}
-              </div>
-            ))}
+                ))}
+              </tbody>
+            </table>
           </div>
 
-          <Button size="sm" variant="secondary" className="mt-3" onClick={addWorkItem}>
-            + Add work item
-          </Button>
+          <div className="flex items-center justify-between mt-3">
+            <Button size="sm" variant="secondary" onClick={addLineItem}>
+              + Add Row
+            </Button>
+            <div className="text-sm font-medium text-gray-700">
+              Subtotal: <span className="text-gray-900">{formatNZD(subtotal)}</span>
+            </div>
+          </div>
         </section>
 
         {/* Notes */}

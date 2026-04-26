@@ -18,7 +18,7 @@ vi.mock('@/api/client', () => {
 import apiClient from '@/api/client'
 import ServiceCatalogue from '../pages/catalogue/ServiceCatalogue'
 import PartsCatalogue from '../pages/catalogue/PartsCatalogue'
-import LabourRates from '../pages/catalogue/LabourRates'
+import LabourRates from '../pages/items/LabourRates
 import CataloguePage from '../pages/catalogue/CataloguePage'
 
 /* ------------------------------------------------------------------ */
@@ -295,7 +295,7 @@ describe('LabourRates', () => {
 describe('CataloguePage', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  it('renders heading and tabs for services, parts, labour rates', async () => {
+  it('renders heading and tabs for services and parts', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { services: [], total: 0 },
     })
@@ -303,7 +303,6 @@ describe('CataloguePage', () => {
     expect(screen.getByRole('heading', { name: 'Catalogue' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Services' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Parts' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Labour Rates' })).toBeInTheDocument()
   })
 
   it('defaults to services tab', async () => {

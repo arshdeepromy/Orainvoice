@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Spinner } from '@/components/ui/Spinner'
@@ -402,6 +403,7 @@ export function ModuleConfiguration() {
   void useFlag('module_management')
   const { refetch: refetchModuleContext } = useModules()
   const modulesLabel = useTerm('module', 'Module')
+  const navigate = useNavigate()
 
   const [modules, setModules] = useState<ModuleDefinition[]>([])
   const [loading, setLoading] = useState(true)
@@ -617,17 +619,27 @@ export function ModuleConfiguration() {
     <div data-testid="module-configuration">
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <h1 className="text-2xl font-semibold text-gray-900">{modulesLabel} Configuration</h1>
-        <Button
-          variant="secondary"
-          onClick={() => {
-            setLoading(true)
-            fetchModules().finally(() => setLoading(false))
-          }}
-          style={{ minHeight: 44, minWidth: 44 }}
-          data-testid="module-refresh-btn"
-        >
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="primary"
+            onClick={() => navigate('/setup-guide?rerun=true')}
+            style={{ minHeight: 44, minWidth: 44 }}
+            data-testid="rerun-setup-guide-btn"
+          >
+            Re-run Setup Guide
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setLoading(true)
+              fetchModules().finally(() => setLoading(false))
+            }}
+            style={{ minHeight: 44, minWidth: 44 }}
+            data-testid="module-refresh-btn"
+          >
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* Tab bar */}

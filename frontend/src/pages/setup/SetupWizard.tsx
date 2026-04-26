@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/Button'
 import { Spinner } from '@/components/ui/Spinner'
 import apiClient from '@/api/client'
@@ -33,7 +34,11 @@ function buildStepPayload(step: number, data: WizardData): Record<string, unknow
         registration_number: data.registrationNumber || null,
         tax_number: data.taxNumber || null,
         phone: data.phone || null,
-        address: data.address || null,
+        address_unit: data.addressUnit || null,
+        address_street: data.addressStreet || null,
+        address_city: data.addressCity || null,
+        address_state: data.addressState || null,
+        address_postcode: data.addressPostcode || null,
         website: data.website || null,
       }
     case 3:
@@ -62,6 +67,7 @@ function buildStepPayload(step: number, data: WizardData): Record<string, unknow
 }
 
 export function SetupWizard() {
+  const navigate = useNavigate()
   const [currentStep, setCurrentStep] = useState(0)
   const [wizardData, setWizardData] = useState<WizardData>({ ...INITIAL_WIZARD_DATA })
   const [stepStates, setStepStates] = useState<StepInfo[]>(
@@ -76,12 +82,12 @@ export function SetupWizard() {
   useEffect(() => {
     const loadProgress = async () => {
       try {
-        const res = await apiClient.get('/v2/setup-wizard/progress')
+        const res = await apiClient.get('/api/v2/setup-wizard/progress')
         const progress = res.data
         if (progress?.steps) {
           const newStates = [...stepStates]
           for (let i = 0; i < TOTAL_STEPS; i++) {
-            const key = `step_${i + 1}_complete`
+            const key = `step_${i + 1}`
             if (progress.steps[key]) {
               newStates[i] = { ...newStates[i], completed: true }
             }
@@ -103,6 +109,13 @@ export function SetupWizard() {
     }
     loadProgress()
   }, [])
+
+  // Redirect to setup guide when wizard reaches Step 5 (Modules)
+  useEffect(() => {
+    if (!loadingProgress && currentStep === 4) {
+      navigate('/setup-guide')
+    }
+  }, [currentStep, loadingProgress, navigate])
 
   const updateWizardData = useCallback((updates: Partial<WizardData>) => {
     setWizardData((prev) => ({ ...prev, ...updates }))
@@ -128,7 +141,7 @@ export function SetupWizard() {
     }
 
     try {
-      await apiClient.post(`/v2/setup-wizard/step/${apiStepNumber(currentStep)}`, {
+      await apiClient.post(`/api/v2/setup-wizard/step/${apiStepNumber(currentStep)}`, {
         data: skip ? {} : buildStepPayload(currentStep, wizardData),
         skip,
       })

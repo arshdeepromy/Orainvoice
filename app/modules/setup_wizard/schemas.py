@@ -45,7 +45,11 @@ class BusinessStepData(BaseModel):
     registration_number: str | None = Field(None, max_length=100)
     tax_number: str | None = Field(None, max_length=100)
     phone: str | None = Field(None, max_length=50)
-    address: str | None = None
+    address_unit: str | None = Field(None, max_length=100)
+    address_street: str | None = Field(None, max_length=255)
+    address_city: str | None = Field(None, max_length=100)
+    address_state: str | None = Field(None, max_length=100)
+    address_postcode: str | None = Field(None, max_length=20)
     website: str | None = Field(None, max_length=255)
 
 

@@ -95,9 +95,9 @@ export default function CategoryTree() {
       if (form.parent_id) body.parent_id = form.parent_id
 
       if (editingId) {
-        await apiClient.put(`/v2/product-categories/${editingId}`, body)
+        await apiClient.put(`/api/v2/product-categories/${editingId}`, body)
       } else {
-        await apiClient.post('/v2/product-categories', body)
+        await apiClient.post('/api/v2/product-categories', body)
       }
       setModalOpen(false)
       fetchTree()
@@ -111,7 +111,7 @@ export default function CategoryTree() {
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this category? Products in this category will become uncategorised.')) return
     try {
-      await apiClient.delete(`/v2/product-categories/${id}`)
+      await apiClient.delete(`/api/v2/product-categories/${id}`)
       fetchTree()
     } catch {
       setError('Failed to delete category.')
@@ -130,7 +130,7 @@ export default function CategoryTree() {
   const handleDrop = async () => {
     if (!dragItem.current || !dragOverItem.current || dragItem.current === dragOverItem.current) return
     try {
-      await apiClient.put(`/v2/product-categories/${dragItem.current}`, {
+      await apiClient.put(`/api/v2/product-categories/${dragItem.current}`, {
         parent_id: dragOverItem.current,
       })
       fetchTree()

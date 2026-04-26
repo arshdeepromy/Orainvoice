@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { Input } from '@/components/ui/Input'
 import type { WizardData } from '../types'
 
@@ -8,12 +8,42 @@ interface BusinessStepProps {
   errors: Record<string, string>
 }
 
+/**
+ * Auto-format NZ IRD number as user types: XX-XXX-XXX or XXX-XXX-XXX.
+ * Strips non-digits, then inserts dashes at the right positions.
+ */
+function formatNzIrd(raw: string): string {
+  const digits = raw.replace(/\D/g, '').slice(0, 9)
+  if (digits.length <= 2) return digits
+  if (digits.length <= 5) return `${digits.slice(0, digits.length <= 3 ? 2 : (digits.length > 5 ? 3 : 2))}-${digits.slice(digits.length <= 3 ? 2 : (digits.length > 5 ? 3 : 2))}`
+  // 8 digits: XX-XXX-XXX, 9 digits: XXX-XXX-XXX
+  if (digits.length <= 8) {
+    return `${digits.slice(0, 2)}-${digits.slice(2, 5)}-${digits.slice(5)}`
+  }
+  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`
+}
+
+/**
+ * Auto-format AU ABN as user types: XX XXX XXX XXX.
+ */
+function formatAuAbn(raw: string): string {
+  const digits = raw.replace(/\D/g, '').slice(0, 11)
+  const parts: string[] = []
+  if (digits.length > 0) parts.push(digits.slice(0, 2))
+  if (digits.length > 2) parts.push(digits.slice(2, 5))
+  if (digits.length > 5) parts.push(digits.slice(5, 8))
+  if (digits.length > 8) parts.push(digits.slice(8, 11))
+  return parts.join(' ')
+}
+
 export function BusinessStep({ data, onChange, errors }: BusinessStepProps) {
   const taxValidation = useMemo(() => {
     if (!data.taxNumber || !data.taxNumberRegex) return ''
     try {
       const regex = new RegExp(data.taxNumberRegex)
-      if (!regex.test(data.taxNumber)) {
+      // Test against digits-only version for flexibility
+      const digitsOnly = data.taxNumber.replace(/\D/g, '')
+      if (!regex.test(data.taxNumber) && !regex.test(digitsOnly)) {
         return `Invalid ${data.taxNumberLabel} format`
       }
     } catch {
@@ -21,6 +51,20 @@ export function BusinessStep({ data, onChange, errors }: BusinessStepProps) {
     }
     return ''
   }, [data.taxNumber, data.taxNumberRegex, data.taxNumberLabel])
+
+  const handleTaxNumberChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const raw = e.target.value
+      if (data.countryCode === 'NZ') {
+        onChange({ taxNumber: formatNzIrd(raw) })
+      } else if (data.countryCode === 'AU') {
+        onChange({ taxNumber: formatAuAbn(raw) })
+      } else {
+        onChange({ taxNumber: raw })
+      }
+    },
+    [data.countryCode, onChange],
+  )
 
   return (
     <div className="space-y-4">
@@ -56,14 +100,20 @@ export function BusinessStep({ data, onChange, errors }: BusinessStepProps) {
         <Input
           label={data.taxNumberLabel || 'Tax number'}
           value={data.taxNumber}
-          onChange={(e) => onChange({ taxNumber: e.target.value })}
-          placeholder={`Enter your ${data.taxNumberLabel || 'tax number'}`}
+          onChange={handleTaxNumberChange}
+          placeholder={
+            data.countryCode === 'NZ'
+              ? '123-456-789'
+              : data.countryCode === 'AU'
+                ? '12 345 678 901'
+                : `Enter your ${data.taxNumberLabel || 'tax number'}`
+          }
           error={taxValidation || errors.taxNumber}
           helperText={
             data.countryCode === 'NZ'
-              ? '8 or 9 digit IRD number'
+              ? '8 or 9 digit IRD number (dashes added automatically)'
               : data.countryCode === 'AU'
-                ? '11 digit ABN'
+                ? '11 digit ABN (spaces added automatically)'
                 : data.countryCode === 'GB'
                   ? 'Format: GB123456789'
                   : undefined
@@ -80,19 +130,39 @@ export function BusinessStep({ data, onChange, errors }: BusinessStepProps) {
         error={errors.phone}
       />
 
-      <div className="flex flex-col gap-1">
-        <label htmlFor="business-address" className="text-sm font-medium text-gray-700">
-          Address
-        </label>
-        <textarea
-          id="business-address"
-          value={data.address}
-          onChange={(e) => onChange({ address: e.target.value })}
-          placeholder="123 Main Street, City, Region"
-          rows={2}
-          className="rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm
-            placeholder:text-gray-400 focus-visible:outline-none focus-visible:ring-2
-            focus-visible:ring-blue-500 focus-visible:border-blue-500"
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Input
+          label="Unit / Suite"
+          value={data.addressUnit}
+          onChange={(e) => onChange({ addressUnit: e.target.value })}
+          placeholder="e.g. Unit 3"
+        />
+        <Input
+          label="Street Number & Name"
+          value={data.addressStreet}
+          onChange={(e) => onChange({ addressStreet: e.target.value })}
+          placeholder="e.g. 34 Wai Iti Place"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <Input
+          label="City / Town"
+          value={data.addressCity}
+          onChange={(e) => onChange({ addressCity: e.target.value })}
+          placeholder="e.g. Auckland"
+        />
+        <Input
+          label="State / Region"
+          value={data.addressState}
+          onChange={(e) => onChange({ addressState: e.target.value })}
+          placeholder="e.g. Auckland"
+        />
+        <Input
+          label="Postcode"
+          value={data.addressPostcode}
+          onChange={(e) => onChange({ addressPostcode: e.target.value })}
+          placeholder="e.g. 0600"
         />
       </div>
 

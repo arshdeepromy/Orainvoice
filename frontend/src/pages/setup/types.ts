@@ -70,7 +70,11 @@ export interface WizardData {
   registrationNumber: string
   taxNumber: string
   phone: string
-  address: string
+  addressUnit: string
+  addressStreet: string
+  addressCity: string
+  addressState: string
+  addressPostcode: string
   website: string
 
   // Step 4: Branding
@@ -105,7 +109,11 @@ export const INITIAL_WIZARD_DATA: WizardData = {
   registrationNumber: '',
   taxNumber: '',
   phone: '',
-  address: '',
+  addressUnit: '',
+  addressStreet: '',
+  addressCity: '',
+  addressState: '',
+  addressPostcode: '',
   website: '',
 
   logoUrl: '',

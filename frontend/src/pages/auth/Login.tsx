@@ -38,8 +38,21 @@ export function Login() {
     setSubmitting(true)
     try {
       const { mfaRequired } = await login({ email, password, remember })
-      if (!mfaRequired) navigate('/')
-      else setShowMfaModal(true)
+      if (mfaRequired) {
+        setShowMfaModal(true)
+      } else {
+        // Check if this org needs the setup wizard
+        try {
+          const progressRes = await apiClient.get('/api/v2/setup-wizard/progress')
+          if (progressRes.data && !progressRes.data.wizard_completed) {
+            navigate('/setup')
+            return
+          }
+        } catch {
+          // If progress check fails, just go to dashboard
+        }
+        navigate('/')
+      }
     } catch (err: unknown) {
       const msg =
         err instanceof Error ? err.message : 'Invalid email or password'

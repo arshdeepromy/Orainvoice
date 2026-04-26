@@ -14,7 +14,7 @@ vi.mock('@/api/client', () => ({
 }))
 
 import apiClient from '@/api/client'
-import ItemsPage from '@/pages/items/ItemsPage'
+import ItemsPage from '@/pages/items/ItemsCatalogue'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */

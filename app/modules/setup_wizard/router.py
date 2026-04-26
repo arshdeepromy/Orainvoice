@@ -56,22 +56,44 @@ async def submit_wizard_step(
             return await svc.skip_step(org_id, step_number)
         return await svc.process_step(org_id, step_number, payload.data)
     except ValueError as exc:
+        import logging
+        logging.getLogger(__name__).error(
+            "Wizard step %s ValueError for org %s: %s", step_number, org_id, exc, exc_info=True,
+        )
         raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error(
+            "Wizard step %s unexpected error for org %s: %s", step_number, org_id, exc, exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get(
     "/progress",
-    response_model=WizardProgressResponse,
+    response_model=WizardProgressResponse | None,
     summary="Get wizard completion state",
 )
 async def get_wizard_progress(
     request: Request,
+    create: bool = True,
     db: AsyncSession = Depends(get_db_session),
-) -> WizardProgressResponse:
-    """Return the current wizard progress for the authenticated org."""
+):
+    """Return the current wizard progress for the authenticated org.
+
+    If ``create=false``, returns 404 when no progress record exists
+    instead of auto-creating one. Useful for checking whether the org
+    has ever interacted with the wizard.
+    """
     org_id = _get_org_id(request)
     svc = SetupWizardService(db)
-    progress = await svc.get_or_create_progress(org_id)
+
+    if not create:
+        progress = await svc.get_progress(org_id)
+        if progress is None:
+            raise HTTPException(status_code=404, detail="No wizard progress found")
+    else:
+        progress = await svc.get_or_create_progress(org_id)
 
     return WizardProgressResponse(
         org_id=progress.org_id,

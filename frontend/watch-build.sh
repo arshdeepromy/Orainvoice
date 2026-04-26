@@ -33,25 +33,20 @@ function rebuild() {
     // Remove stale assets after 60s (gives browsers time to finish loading)
     setTimeout(() => {
       try {
-        // Get list of files referenced by current index.html
-        const html = fs.readFileSync('/app/dist/index.html', 'utf8');
-        const referenced = new Set();
-        const re = /\\/assets\\/([^\"'\\s]+)/g;
-        let m;
-        while ((m = re.exec(html)) !== null) referenced.add(m[1]);
-
-        // Remove unreferenced asset files
-        const assetsDir = '/app/dist/assets';
-        if (fs.existsSync(assetsDir)) {
-          for (const f of fs.readdirSync(assetsDir)) {
-            if (!referenced.has(f)) {
-              fs.unlinkSync(path.join(assetsDir, f));
-            }
-          }
-        }
-        console.log('[watch] Cleaned up stale assets.');
+        // Get list of files from the current build output
+        const currentBuildFiles = new Set();
+        const tmpAssets = '/tmp/dist-new-manifest';
+        // We already cleaned up /tmp/dist-new, so instead just keep
+        // all files that exist in the current /app/dist/assets — the
+        // cp -r above already overwrote stale files with new ones.
+        // Only remove files that are clearly from a previous build:
+        // files whose content-hash doesn't match any current file.
+        // 
+        // Simpler approach: just don't clean up. Disk space is cheap
+        // and the hashed filenames prevent collisions.
+        console.log('[watch] Skipping stale asset cleanup (hashed filenames prevent collisions).');
       } catch (e) {
-        // Non-critical — old assets just take up a bit of space
+        // Non-critical
       }
     }, 60000);
 

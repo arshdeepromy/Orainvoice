@@ -101,6 +101,7 @@ const ComplianceDashboard = lazy(() => import('@/pages/compliance/ComplianceDash
 const LoyaltyConfig = lazy(() => import('@/pages/loyalty/LoyaltyConfig'))
 const WooCommerceSetup = lazy(() => import('@/pages/ecommerce/WooCommerceSetup'))
 const SetupWizard = lazy(() => import('@/pages/setup/SetupWizard').then(m => ({ default: m.SetupWizard })))
+const SetupGuide = lazy(() => import('@/pages/setup-guide/SetupGuide'))
 
 /* Jobs v2 pages */
 const JobDetail = lazy(() => import('@/pages/jobs/JobDetail'))
@@ -117,7 +118,7 @@ const InvoicePaymentPage = lazy(() => import('@/pages/public/InvoicePaymentPage'
 const CataloguePage = lazy(() => import('@/pages/catalogue/CataloguePage'))
 
 /* Items page */
-const ItemsPage = lazy(() => import('@/pages/items/ItemsPage'))
+const ItemsPage = lazy(() => import('@/pages/items/ItemsCatalogue'))
 
 /* Onboarding */
 const OnboardingWizard = lazy(() => import('@/pages/onboarding/OnboardingWizard').then(m => ({ default: m.OnboardingWizard })))
@@ -465,6 +466,9 @@ function AppRoutes() {
 
           {/* Setup Wizard */}
           <Route path="/setup" element={<SafePage name="setup"><SetupWizard /></SafePage>} />
+
+          {/* Setup Guide */}
+          <Route path="/setup-guide" element={<SafePage name="setup-guide"><SetupGuide /></SafePage>} />
 
           {/* Jobs v2 */}
           <Route path="/jobs" element={<SafePage name="jobs"><ModuleRoute moduleSlug="jobs"><JobsPage /></ModuleRoute></SafePage>} />

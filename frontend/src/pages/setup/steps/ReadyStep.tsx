@@ -1,11 +1,32 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
+import { Spinner } from '@/components/ui/Spinner'
+import apiClient from '@/api/client'
 import type { WizardData } from '../types'
 import { COUNTRIES } from '../types'
 
 interface ReadyStepProps {
   data: WizardData
   onGoToStep: (step: number) => void
+}
+
+interface OrgSummary {
+  name: string
+  country_code: string | null
+  trade_category_name: string | null
+  trade_family_name: string | null
+  phone: string | null
+  address: string | null
+  website: string | null
+  trading_name: string | null
+  tax_number: string | null
+  tax_label: string | null
+  tax_rate: number | null
+  currency: string | null
+  logo_url: string | null
+  primary_colour: string | null
+  secondary_colour: string | null
+  enabled_modules: string[]
 }
 
 function SummarySection({
@@ -37,7 +58,83 @@ function SummarySection({
 }
 
 export function ReadyStep({ data, onGoToStep }: ReadyStepProps) {
-  const country = COUNTRIES.find((c) => c.code === data.countryCode)
+  const [orgData, setOrgData] = useState<OrgSummary | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchOrgData = async () => {
+      try {
+        // Fetch org settings to get the real saved data
+        const res = await apiClient.get('/org/settings', { signal: controller.signal })
+        const d = res.data
+        setOrgData({
+          name: d?.org_name ?? d?.name ?? '',
+          country_code: d?.country_code ?? null,
+          trade_category_name: d?.trade_category ?? null,
+          trade_family_name: d?.trade_family ?? null,
+          phone: d?.phone ?? null,
+          address: d?.address ?? null,
+          website: d?.website ?? null,
+          trading_name: d?.trading_name ?? null,
+          tax_number: d?.gst_number ?? d?.tax_number ?? null,
+          tax_label: d?.tax_label ?? null,
+          tax_rate: d?.gst_percentage ?? null,
+          currency: d?.base_currency ?? null,
+          logo_url: d?.logo_url ?? null,
+          primary_colour: d?.primary_colour ?? '#2563eb',
+          secondary_colour: d?.secondary_colour ?? '#1e40af',
+          enabled_modules: [],
+        })
+      } catch {
+        // Fall back to local wizard data if fetch fails
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    // Also fetch enabled modules
+    const fetchModules = async () => {
+      try {
+        const res = await apiClient.get('/modules', { baseURL: '/api/v2', signal: controller.signal })
+        const mods = res.data?.modules ?? []
+        const enabled = mods.filter((m: { is_enabled: boolean; is_core: boolean }) => m.is_enabled && !m.is_core)
+        setOrgData(prev => prev ? { ...prev, enabled_modules: enabled.map((m: { slug: string }) => m.slug) } : prev)
+      } catch {
+        // Non-critical
+      }
+    }
+
+    fetchOrgData()
+    fetchModules()
+    return () => controller.abort()
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="flex justify-center py-8">
+        <Spinner label="Loading summary" />
+      </div>
+    )
+  }
+
+  // Use fetched org data, fall back to local wizard data
+  const countryCode = orgData?.country_code ?? data.countryCode
+  const country = COUNTRIES.find((c) => c.code === countryCode)
+  const businessName = orgData?.name ?? data.businessName
+  const tradeName = orgData?.trading_name ?? data.tradingName
+  const phone = orgData?.phone ?? data.phone
+  const address = orgData?.address ?? data.address
+  const taxNumber = orgData?.tax_number ?? data.taxNumber
+  const taxLabel = orgData?.tax_label ?? data.taxNumberLabel ?? 'Tax'
+  const taxRate = orgData?.tax_rate ?? data.taxRate
+  const currency = orgData?.currency ?? data.currency
+  const logoUrl = orgData?.logo_url ?? data.logoUrl
+  const primaryColour = orgData?.primary_colour ?? data.primaryColour
+  const secondaryColour = orgData?.secondary_colour ?? data.secondaryColour
+  const tradeCategoryName = orgData?.trade_category_name
+  const tradeFamilyName = orgData?.trade_family_name
+  const enabledModules = orgData?.enabled_modules ?? data.enabledModules
 
   return (
     <div className="space-y-4">
@@ -52,8 +149,8 @@ export function ReadyStep({ data, onGoToStep }: ReadyStepProps) {
           {country ? (
             <div className="flex flex-wrap gap-2">
               <Badge variant="info">{country.name}</Badge>
-              <Badge variant="neutral">{data.currency}</Badge>
-              <Badge variant="neutral">{data.taxLabel} {data.taxRate}%</Badge>
+              {currency && <Badge variant="neutral">{currency}</Badge>}
+              {taxRate != null && <Badge variant="neutral">{taxLabel} {taxRate}%</Badge>}
             </div>
           ) : (
             <p className="text-gray-400 italic">Not configured</p>
@@ -62,7 +159,12 @@ export function ReadyStep({ data, onGoToStep }: ReadyStepProps) {
 
         {/* Trade */}
         <SummarySection title="Trade Area" stepIndex={1} onEdit={onGoToStep}>
-          {data.selectedTradeCategories.length > 0 ? (
+          {tradeCategoryName || tradeFamilyName ? (
+            <div className="flex flex-wrap gap-2">
+              {tradeFamilyName && <Badge variant="info">{tradeFamilyName}</Badge>}
+              {tradeCategoryName && <Badge variant="neutral">{tradeCategoryName}</Badge>}
+            </div>
+          ) : data.selectedTradeCategories.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {data.selectedTradeCategories.map((slug) => (
                 <Badge key={slug} variant="info">{slug}</Badge>
@@ -75,13 +177,13 @@ export function ReadyStep({ data, onGoToStep }: ReadyStepProps) {
 
         {/* Business */}
         <SummarySection title="Business Details" stepIndex={2} onEdit={onGoToStep}>
-          {data.businessName ? (
+          {businessName ? (
             <div>
-              <p className="font-medium text-gray-800">{data.businessName}</p>
-              {data.tradingName && <p>Trading as: {data.tradingName}</p>}
-              {data.phone && <p>Phone: {data.phone}</p>}
-              {data.address && <p>Address: {data.address}</p>}
-              {data.taxNumber && <p>{data.taxNumberLabel}: {data.taxNumber}</p>}
+              <p className="font-medium text-gray-800">{businessName}</p>
+              {tradeName && <p>Trading as: {tradeName}</p>}
+              {phone && <p>Phone: {phone}</p>}
+              {address && <p>Address: {address}</p>}
+              {taxNumber && <p>{taxLabel}: {taxNumber}</p>}
             </div>
           ) : (
             <p className="text-gray-400 italic">Not configured</p>
@@ -91,9 +193,9 @@ export function ReadyStep({ data, onGoToStep }: ReadyStepProps) {
         {/* Branding */}
         <SummarySection title="Branding" stepIndex={3} onEdit={onGoToStep}>
           <div className="flex items-center gap-3">
-            {data.logoUrl ? (
+            {logoUrl ? (
               <img
-                src={data.logoUrl}
+                src={logoUrl}
                 alt="Logo"
                 className="h-8 w-8 object-contain rounded border border-gray-200"
               />
@@ -103,13 +205,13 @@ export function ReadyStep({ data, onGoToStep }: ReadyStepProps) {
             <div className="flex gap-2">
               <div
                 className="h-6 w-6 rounded border border-gray-300"
-                style={{ backgroundColor: data.primaryColour }}
-                title={`Primary: ${data.primaryColour}`}
+                style={{ backgroundColor: primaryColour }}
+                title={`Primary: ${primaryColour}`}
               />
               <div
                 className="h-6 w-6 rounded border border-gray-300"
-                style={{ backgroundColor: data.secondaryColour }}
-                title={`Secondary: ${data.secondaryColour}`}
+                style={{ backgroundColor: secondaryColour }}
+                title={`Secondary: ${secondaryColour}`}
               />
             </div>
           </div>
@@ -117,9 +219,9 @@ export function ReadyStep({ data, onGoToStep }: ReadyStepProps) {
 
         {/* Modules */}
         <SummarySection title="Modules" stepIndex={4} onEdit={onGoToStep}>
-          {data.enabledModules.length > 0 ? (
+          {enabledModules.length > 0 ? (
             <div className="flex flex-wrap gap-1">
-              {data.enabledModules.map((slug) => (
+              {enabledModules.map((slug) => (
                 <Badge key={slug} variant="success">{slug}</Badge>
               ))}
             </div>

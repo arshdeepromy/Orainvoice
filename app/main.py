@@ -363,6 +363,10 @@ def create_app() -> FastAPI:
     from app.modules.setup_wizard.router import router as setup_wizard_router
     app.include_router(setup_wizard_router, prefix="/api/v2/setup-wizard", tags=["v2-setup-wizard"])
 
+    # --- Setup guide (question-driven module onboarding) ---
+    from app.modules.setup_guide.router import router as setup_guide_router
+    app.include_router(setup_guide_router, prefix="/api/v2/setup-guide", tags=["v2-setup-guide"])
+
     # --- Inventory module routers ---
     from app.modules.products.router import router as products_router_v2
     from app.modules.products.category_router import router as product_categories_router

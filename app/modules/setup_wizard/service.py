@@ -88,8 +88,8 @@ NZ_DEFAULTS = COUNTRY_DEFAULTS["NZ"]
 # ---------------------------------------------------------------------------
 
 TAX_VALIDATORS: dict[str, re.Pattern] = {
-    # NZ GST: XX-XXX-XXX (digits with dashes)
-    "NZ": re.compile(r"^\d{2}-\d{3}-\d{3}$"),
+    # NZ IRD: 8 or 9 digits, optionally with dashes (XX-XXX-XXX or XXX-XXX-XXX)
+    "NZ": re.compile(r"^\d{2,3}-?\d{3}-?\d{3}$"),
     # AU ABN: 11 digits (may have spaces)
     "AU": re.compile(r"^\d{11}$"),
     # UK VAT: GB + 9 or 12 digits
@@ -137,17 +137,42 @@ class SetupWizardService:
 
     # -- Progress management ------------------------------------------------
 
-    async def get_or_create_progress(
+    async def get_progress(
         self, org_id: uuid.UUID,
-    ) -> SetupWizardProgress:
-        """Return existing progress or create a new record."""
+    ) -> SetupWizardProgress | None:
+        """Return existing progress or None if no record exists."""
         stmt = select(SetupWizardProgress).where(
             SetupWizardProgress.org_id == org_id,
         )
         result = await self.db.execute(stmt)
-        progress = result.scalar_one_or_none()
+        return result.scalar_one_or_none()
+
+    async def get_or_create_progress(
+        self, org_id: uuid.UUID,
+    ) -> SetupWizardProgress:
+        """Return existing progress or create a new record.
+
+        When creating a new record, auto-marks steps as complete if the
+        org already has the relevant data (e.g. from signup flow):
+        - Step 1 (Country): complete if org has a country_code in settings
+        - Step 2 (Trade): complete if org has a trade_category_id
+        """
+        progress = await self.get_progress(org_id)
         if progress is None:
             progress = SetupWizardProgress(org_id=org_id)
+
+            # Auto-mark steps that are already satisfied by signup data
+            from app.modules.admin.models import Organisation
+            org_stmt = select(Organisation).where(Organisation.id == org_id)
+            org_result = await self.db.execute(org_stmt)
+            org = org_result.scalar_one_or_none()
+            if org:
+                org_settings = org.settings or {}
+                if org_settings.get("address_country") or org_settings.get("country_code"):
+                    progress.step_1_complete = True
+                if org.trade_category_id is not None:
+                    progress.step_2_complete = True
+
             self.db.add(progress)
             await self.db.flush()
         return progress
@@ -266,6 +291,15 @@ class SetupWizardService:
     ) -> dict:
         """Apply country defaults to the organisation row."""
         if profile is not None:
+            # Handle double-encoded JSONB (stored as JSON string instead of array)
+            tax_rates = profile.default_tax_rates
+            if isinstance(tax_rates, str):
+                import json
+                try:
+                    tax_rates = json.loads(tax_rates)
+                except (ValueError, TypeError):
+                    tax_rates = []
+
             defaults = {
                 "country_code": country_code,
                 "base_currency": profile.currency_code,
@@ -273,8 +307,8 @@ class SetupWizardService:
                 "number_format": profile.number_format,
                 "tax_label": profile.tax_label,
                 "default_tax_rate": (
-                    profile.default_tax_rates[0]["rate"]
-                    if profile.default_tax_rates
+                    tax_rates[0]["rate"]
+                    if tax_rates and isinstance(tax_rates, list)
                     else 0
                 ),
                 "timezone": COUNTRY_DEFAULTS.get(
@@ -386,7 +420,8 @@ class SetupWizardService:
             clean_tax = parsed.tax_number.replace(" ", "")
             if not validate_tax_number(country_code, clean_tax):
                 raise ValueError(
-                    f"Invalid tax number format for country {country_code}",
+                    f"Invalid tax number format for {country_code}. "
+                    f"NZ IRD numbers should be 8 or 9 digits (e.g. 12-345-678 or 123-456-789).",
                 )
             # Additional AU ABN check digit validation
             if country_code == "AU" and not _abn_check_digit_valid(clean_tax):
@@ -403,8 +438,16 @@ class SetupWizardService:
             settings_updates["tax_number"] = parsed.tax_number
         if parsed.phone is not None:
             settings_updates["phone"] = parsed.phone
-        if parsed.address is not None:
-            settings_updates["address"] = parsed.address
+        if parsed.address_unit is not None:
+            settings_updates["address_unit"] = parsed.address_unit
+        if parsed.address_street is not None:
+            settings_updates["address_street"] = parsed.address_street
+        if parsed.address_city is not None:
+            settings_updates["address_city"] = parsed.address_city
+        if parsed.address_state is not None:
+            settings_updates["address_state"] = parsed.address_state
+        if parsed.address_postcode is not None:
+            settings_updates["address_postcode"] = parsed.address_postcode
         if parsed.website is not None:
             settings_updates["website"] = parsed.website
 
@@ -551,12 +594,13 @@ class SetupWizardService:
         self, org_id: uuid.UUID, updates: dict,
     ) -> None:
         """Merge key-value pairs into the org's JSONB settings column."""
-        # Use jsonb concatenation to merge
+        import json as _json
+        # Use CAST() instead of :: to avoid asyncpg named-param conflict
         await self.db.execute(
             text(
                 "UPDATE organisations "
-                "SET settings = settings || :patch::jsonb "
+                "SET settings = settings || CAST(:patch AS jsonb) "
                 "WHERE id = :oid"
             ),
-            {"patch": __import__("json").dumps(updates), "oid": str(org_id)},
+            {"patch": _json.dumps(updates), "oid": str(org_id)},
         )

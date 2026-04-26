@@ -23,6 +23,11 @@ interface Customer {
 interface JobCardItem {
   id: string
   description: string
+  quantity: number
+  unit_price: number
+  line_total: number
+  item_type: string
+  catalogue_item_id: string | null
 }
 
 interface TimeEntry {
@@ -86,6 +91,10 @@ const STATUS_CONFIG: Record<JobCardStatus, { label: string; variant: BadgeVarian
   in_progress: { label: 'In Progress', variant: 'warning' },
   completed: { label: 'Completed', variant: 'success' },
   invoiced: { label: 'Invoiced', variant: 'neutral' },
+}
+
+function formatCurrency(value: number | null | undefined): string {
+  return (value ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2 })
 }
 
 /** Valid status transitions: Open → In Progress → Completed → Invoiced */
@@ -370,21 +379,45 @@ export default function JobCardDetail() {
         </section>
       )}
 
-      {/* Work Items */}
+      {/* Line Items */}
       <section className="mb-6">
-        <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">Work to be Performed</h2>
+        <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">Line Items</h2>
         {items.length === 0 ? (
-          <p className="text-sm text-gray-500">No work items listed.</p>
+          <p className="text-sm text-gray-500">No line items listed.</p>
         ) : (
-          <div className="rounded-lg border border-gray-200 divide-y divide-gray-200">
-            {items.map((item, index) => (
-              <div key={item.id} className="flex items-start gap-3 px-4 py-3">
-                <span className="flex-shrink-0 mt-0.5 h-5 w-5 rounded-full bg-blue-100 text-blue-700 text-xs font-medium flex items-center justify-center">
-                  {index + 1}
-                </span>
-                <span className="text-sm text-gray-900">{item.description}</span>
-              </div>
-            ))}
+          <div className="overflow-x-auto rounded-lg border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200">
+              <caption className="sr-only">Job card line items</caption>
+              <thead className="bg-gray-50">
+                <tr>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 w-10">#</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Description</th>
+                  <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500 w-20">Qty</th>
+                  <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500 w-28">Unit Price</th>
+                  <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500 w-28">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 bg-white">
+                {items.map((item, index) => (
+                  <tr key={item.id}>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-500">{index + 1}</td>
+                    <td className="px-4 py-3 text-sm text-gray-900">{item.description}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums">{item.quantity ?? 0}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums">${formatCurrency(item.unit_price)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums">${formatCurrency(item.line_total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bg-gray-50">
+                  <td colSpan={3} />
+                  <td className="whitespace-nowrap px-4 py-3 text-sm font-semibold text-gray-900 text-right">Subtotal</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-sm font-semibold text-gray-900 text-right tabular-nums">
+                    ${formatCurrency(items.reduce((sum, item) => sum + (item.line_total ?? 0), 0))}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
           </div>
         )}
       </section>

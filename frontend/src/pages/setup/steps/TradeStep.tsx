@@ -42,8 +42,8 @@ export function TradeStep({ data, onChange }: TradeStepProps) {
       setError(false)
       try {
         const [famRes, catRes] = await Promise.all([
-          apiClient.get('/v2/trade-families'),
-          apiClient.get('/v2/trade-categories'),
+          apiClient.get('/api/v2/trade-families'),
+          apiClient.get('/api/v2/trade-categories'),
         ])
         const famData = famRes.data?.families ?? famRes.data
         const catData = catRes.data?.categories ?? catRes.data
