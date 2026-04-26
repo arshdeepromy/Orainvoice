@@ -43,33 +43,18 @@ def get_heartbeat_service() -> HeartbeatService | None:
     return _heartbeat_service
 
 
-def _get_heartbeat_secret() -> str:
-    """Retrieve the HMAC shared secret from the environment.
-
-    .. warning::
-       Logs a warning at startup if the secret is empty — HMAC verification
-       becomes trivially forgeable with an empty key.
-    """
-    secret = os.environ.get("HA_HEARTBEAT_SECRET", "")
-    if not secret:
-        logger.warning(
-            "HA_HEARTBEAT_SECRET is empty — heartbeat HMAC verification is effectively disabled. "
-            "Set it via the GUI (Node Configuration → Heartbeat Secret) or the HA_HEARTBEAT_SECRET env var."
-        )
-    return secret
-
-
 def _get_heartbeat_secret_from_config(cfg: HAConfig | None) -> str:
-    """Retrieve the HMAC shared secret, preferring DB-stored value over env var.
+    """Retrieve the HMAC shared secret from the DB-stored encrypted value.
 
-    Priority: encrypted DB column > HA_HEARTBEAT_SECRET env var > empty string.
+    Returns the decrypted DB secret when available, otherwise empty string.
+    No env-var fallback — all HA secrets are GUI-configured.
     """
     if cfg is not None and cfg.heartbeat_secret:
         try:
             return envelope_decrypt_str(cfg.heartbeat_secret)
         except Exception:
-            logger.error("Failed to decrypt heartbeat_secret from DB — falling back to env var")
-    return os.environ.get("HA_HEARTBEAT_SECRET", "")
+            logger.error("Failed to decrypt heartbeat_secret from DB — returning empty string")
+    return ""
 
 
 def _config_to_response(cfg: HAConfig) -> HAConfigResponse:
@@ -94,6 +79,8 @@ def _config_to_response(cfg: HAConfig) -> HAConfigResponse:
         peer_db_configured=cfg.peer_db_password is not None and len(cfg.peer_db_password) > 0,
         peer_db_sslmode=cfg.peer_db_sslmode,
         heartbeat_secret_configured=cfg.heartbeat_secret is not None and len(cfg.heartbeat_secret) > 0,
+        local_lan_ip=cfg.local_lan_ip,
+        local_pg_port=cfg.local_pg_port,
     )
 
 
@@ -130,16 +117,16 @@ def _build_peer_db_url(cfg: HAConfig) -> str | None:
 
 
 async def get_peer_db_url(db: AsyncSession) -> str | None:
-    """Return the peer DB URL from stored config, falling back to env var.
+    """Return the peer DB URL from stored config.
 
-    Priority: DB-stored fields > HA_PEER_DB_URL env var.
+    Returns None when DB peer config is empty — no env-var fallback.
     """
     cfg = await _load_config(db)
     if cfg is not None:
         url = _build_peer_db_url(cfg)
         if url:
             return url
-    return os.environ.get("HA_PEER_DB_URL") or None
+    return None
 
 
 class HAService:
@@ -200,6 +187,9 @@ class HAService:
             # Heartbeat secret — only store if provided
             if config.heartbeat_secret:
                 cfg.heartbeat_secret = envelope_encrypt(config.heartbeat_secret)
+            # Local connection info overrides
+            cfg.local_lan_ip = config.local_lan_ip
+            cfg.local_pg_port = config.local_pg_port
             db.add(cfg)
         else:
             # Update existing config
@@ -222,6 +212,11 @@ class HAService:
             # Heartbeat secret — only update if provided
             if config.heartbeat_secret:
                 cfg.heartbeat_secret = envelope_encrypt(config.heartbeat_secret)
+            # Local connection info overrides — only update if provided
+            if config.local_lan_ip is not None:
+                cfg.local_lan_ip = config.local_lan_ip
+            if config.local_pg_port is not None:
+                cfg.local_pg_port = config.local_pg_port
 
         await db.flush()
         await db.refresh(cfg)
@@ -264,6 +259,14 @@ class HAService:
                     secret=secret,
                     local_role=cfg.role,
                 )
+                # Wire Redis lock info so the new service renews the lock TTL (BUG-HA-06)
+                try:
+                    from app.core.redis import redis_pool
+                    _heartbeat_service._redis_lock_key = "ha:heartbeat_lock"
+                    _heartbeat_service._lock_ttl = 30
+                    _heartbeat_service._redis_client = redis_pool
+                except Exception:
+                    pass  # Redis unavailable — lock renewal won't work but service still runs
                 await _heartbeat_service.start()
                 logger.info("Heartbeat service (re)started for peer %s", cfg.peer_endpoint)
 
@@ -350,6 +353,10 @@ class HAService:
         # Update middleware
         set_node_role("primary", cfg.peer_endpoint)
 
+        # Update heartbeat service local_role for correct split-brain detection
+        if _heartbeat_service is not None:
+            _heartbeat_service.local_role = "primary"
+
         # Post-promotion sequence sync (BUG-HA-01 safety net)
         try:
             await ReplicationManager.sync_sequences_post_promotion()
@@ -409,6 +416,12 @@ class HAService:
         cfg.updated_at = datetime.now(timezone.utc)
         await db.flush()
 
+        # Drop this node's publication (it is no longer a primary)
+        try:
+            await ReplicationManager.drop_publication(db)
+        except Exception as exc:
+            logger.warning("Could not drop publication during demote: %s", exc)
+
         # Resume subscription from the new primary
         peer_db_url = await get_peer_db_url(db)
         if peer_db_url:
@@ -419,6 +432,10 @@ class HAService:
 
         # Update middleware
         set_node_role("standby", cfg.peer_endpoint)
+
+        # Update heartbeat service local_role for correct split-brain detection
+        if _heartbeat_service is not None:
+            _heartbeat_service.local_role = "standby"
 
         # Audit
         await write_audit_log(
@@ -507,6 +524,10 @@ class HAService:
 
         # Update middleware cache
         set_node_role("standby", cfg.peer_endpoint)
+
+        # Update heartbeat service local_role for correct split-brain detection
+        if _heartbeat_service is not None:
+            _heartbeat_service.local_role = "standby"
 
         # Clear split-brain flags
         set_split_brain_blocked(False)

@@ -4203,3 +4203,450 @@ Additionally, the `_apply_country_defaults` function in `app/modules/setup_wizar
 **Related Issues**: N/A
 
 **Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+
+---
+
+### ISSUE-129: `trigger_resync` orphaned slot — resync always fails on second call
+
+- **Date**: 2026-04-27
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: agent (HA post-bugfix review round 2)
+- **Regression of**: N/A
+
+**Symptoms**: Calling "Resync" on a standby that previously had a subscription always fails with `ERROR: replication slot "orainvoice_ha_sub" already exists` on the `CREATE SUBSCRIPTION` step. The standby is left with all tables truncated (step 1 succeeded) and no subscription (step 3 failed), making it fully broken with no data and no replication — requiring manual `psql` intervention to recover.
+
+**Root Cause**: `trigger_resync` calls `drop_subscription(db)` which executes `ALTER SUBSCRIPTION ... SET (slot_name = NONE)`, orphaning the replication slot named `orainvoice_ha_sub` on the primary. It then immediately executes `CREATE SUBSCRIPTION ... WITH (copy_data = true)` which fails because the orphaned slot still exists on the primary. The `init_standby` path correctly handles this via `_cleanup_orphaned_slot_on_peer`, but `trigger_resync` was written separately and skips this cleanup step.
+
+**Fix Applied**: Added `await ReplicationManager._cleanup_orphaned_slot_on_peer(primary_conn_str)` between `drop_subscription(db)` and the `CREATE SUBSCRIPTION` SQL in `trigger_resync`. This follows the exact pattern already used by `init_standby` for orphaned slot handling. Added comment: `# Step 3: clean up orphaned slot left on primary by SET (slot_name = NONE)`.
+
+**Files Changed**:
+- `app/modules/ha/replication.py`
+
+**Similar Bugs Found & Fixed**: N/A — `init_standby` already had correct orphaned slot cleanup.
+
+**Related Issues**: ISSUE-115 (trigger_resync truncation fix from round 1)
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes-2/`
+
+---
+
+### ISSUE-130: `promote()`/`demote()`/`demote_and_sync()` don't update `_heartbeat_service.local_role`
+
+- **Date**: 2026-04-27
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: agent (HA post-bugfix review round 2)
+- **Regression of**: N/A
+
+**Symptoms**: Three distinct failure modes depending on which manual role transition is used:
+
+1. **After `promote()`**: `_heartbeat_service.local_role` stays `"standby"`, so `detect_split_brain("standby", peer_role)` never returns `True` even when both nodes are simultaneously primary — true split-brain goes undetected.
+2. **After `demote()`**: `_heartbeat_service.local_role` stays `"primary"`, so `detect_split_brain("primary", "primary")` returns `True` on the next heartbeat — a spurious split-brain detection that persists until container restart, blocking all requests with misleading "split-brain detected" errors.
+3. **After `demote_and_sync()`**: Same spurious split-brain as `demote()`.
+
+**Root Cause**: The auto-promote path (`_execute_auto_promote`) correctly sets `self.local_role = "primary"` directly on the heartbeat service instance. However, the three manual role transition functions (`promote()`, `demote()`, `demote_and_sync()`) only call `set_node_role()` to update the middleware cache but never update `_heartbeat_service.local_role`. This is a simple omission — the auto-promote code shows the correct pattern.
+
+**Fix Applied**: Added `_heartbeat_service.local_role` update after `set_node_role()` in all three functions:
+
+1. In `promote()`: Added `if _heartbeat_service is not None: _heartbeat_service.local_role = "primary"` after `set_node_role("primary", cfg.peer_endpoint)`
+2. In `demote()`: Added `if _heartbeat_service is not None: _heartbeat_service.local_role = "standby"` after `set_node_role("standby", cfg.peer_endpoint)`
+3. In `demote_and_sync()`: Added `if _heartbeat_service is not None: _heartbeat_service.local_role = "standby"` after `set_node_role("standby", cfg.peer_endpoint)`
+
+All three follow the exact pattern from `_execute_auto_promote` and include a `None` guard for when the heartbeat service is not running.
+
+**Files Changed**:
+- `app/modules/ha/service.py`
+
+**Similar Bugs Found & Fixed**: N/A — the auto-promote path already had the correct pattern.
+
+**Related Issues**: ISSUE-121 (multi-worker heartbeat race conditions from round 1)
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes-2/`
+
+---
+
+### ISSUE-131: `drop_replication_slot` router passes `None` as db → 500 on every call
+
+- **Date**: 2026-04-27
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: agent (HA post-bugfix review round 2)
+- **Regression of**: N/A
+
+**Symptoms**: Calling `DELETE /api/v1/ha/replication/slots/{slot_name}` always returns 500 Internal Server Error with `AttributeError: 'NoneType' object has no attribute 'execute'`. The endpoint is completely non-functional.
+
+**Root Cause**: The `drop_replication_slot` endpoint function in `app/modules/ha/router.py` has no `db: AsyncSession = Depends(get_db_session)` parameter. It passes `None` to `ReplicationManager.drop_replication_slot(None, slot_name)`, which calls `db.execute()` on `None`. The adjacent `list_replication_slots` endpoint has the `db` dependency correctly — this was a copy-paste omission when the drop endpoint was added.
+
+**Fix Applied**: Added `db: AsyncSession = Depends(get_db_session)` parameter to the `drop_replication_slot` function signature and changed the call from `ReplicationManager.drop_replication_slot(None, slot_name)` to `ReplicationManager.drop_replication_slot(db, slot_name)`. This matches the pattern used by the adjacent `list_replication_slots` endpoint.
+
+**Files Changed**:
+- `app/modules/ha/router.py`
+
+**Similar Bugs Found & Fixed**: N/A — all other HA router endpoints have the `db` dependency correctly.
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes-2/`
+
+---
+
+### ISSUE-132: `save_config` restarts heartbeat without Redis lock info
+
+- **Date**: 2026-04-27
+- **Severity**: significant
+- **Status**: resolved
+- **Reporter**: agent (HA post-bugfix review round 2)
+- **Regression of**: N/A
+
+**Symptoms**: After changing HA config (peer endpoint, secret, etc.) via the admin UI, the heartbeat service restarts but the Redis heartbeat lock (`ha:heartbeat_lock`) expires within 30 seconds. After expiry, a second gunicorn worker starts a duplicate heartbeat service, reintroducing the multi-worker race condition fixed in ISSUE-121 (BUG-HA-06).
+
+**Root Cause**: `save_config` in `service.py` creates a new `HeartbeatService` instance when config changes require a heartbeat restart. However, it never sets `_redis_lock_key`, `_lock_ttl`, or `_redis_client` on the new instance. The initial startup path (`_start_ha_heartbeat` in `main.py`) correctly wires these attributes, but `save_config` was written before the Redis lock mechanism was added and was never updated.
+
+**Fix Applied**: Added Redis lock wiring after creating the new `HeartbeatService` and before calling `start()` in `save_config`, replicating the exact pattern from `_start_ha_heartbeat` in `main.py`:
+
+```python
+try:
+    from app.core.redis import redis_pool
+    _heartbeat_service._redis_lock_key = "ha:heartbeat_lock"
+    _heartbeat_service._lock_ttl = 30
+    _heartbeat_service._redis_client = redis_pool
+except Exception:
+    pass  # Redis unavailable — lock renewal won't work but service still runs
+```
+
+**Files Changed**:
+- `app/modules/ha/service.py`
+
+**Similar Bugs Found & Fixed**: N/A — the initial startup path in `main.py` already had correct Redis lock wiring.
+
+**Related Issues**: ISSUE-121 (multi-worker heartbeat race conditions — the fix this bug undermines)
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes-2/`
+
+---
+
+### ISSUE-133: `demote()` uses `copy_data=true` on full dataset and doesn't drop publication
+
+- **Date**: 2026-04-27
+- **Severity**: significant
+- **Status**: resolved
+- **Reporter**: agent (HA post-bugfix review round 2)
+- **Regression of**: N/A
+
+**Symptoms**: Two issues during manual demotion of a primary to standby:
+
+1. **Duplicate PK violations**: When `demote()` calls `resume_subscription()` and the fallback path (re-create subscription) executes, PostgreSQL attempts a full initial table sync on a node that already has all the data, causing duplicate primary-key violations on every table. The demotion fails and the node is left in an inconsistent state.
+2. **Orphaned publication**: `demote()` never calls `drop_publication()`, leaving the former primary with an active publication (`orainvoice_ha_pub`) that retains WAL unnecessarily and is conceptually incorrect for a standby node.
+
+**Root Cause**: Two separate omissions in the demote flow:
+
+1. The `resume_subscription` fallback `CREATE SUBSCRIPTION` SQL has no `WITH (copy_data = false)` clause, defaulting to `copy_data=true`. During demotion, the former primary already has all the data, so `copy_data=true` causes PostgreSQL to attempt a full initial table sync that conflicts with existing rows.
+2. `demote()` transitions a primary to standby but never drops the publication. The publication should be removed because a standby node should not hold an active publication.
+
+**Fix Applied**:
+
+1. **`copy_data=false` in fallback path**: Changed the fallback `CREATE SUBSCRIPTION` SQL in `resume_subscription` (in `replication.py`) from `PUBLICATION {name}` to `PUBLICATION {name} WITH (copy_data = false)` to prevent duplicate-key violations when the node already has all the data.
+
+2. **Drop publication in `demote()`**: Added a `drop_publication(db)` call in `demote()` (in `service.py`) before the `resume_subscription` call, wrapped in try/except so a failure to drop the publication doesn't block the demotion:
+   ```python
+   try:
+       await ReplicationManager.drop_publication(db)
+   except Exception as exc:
+       logger.warning("Could not drop publication during demote: %s", exc)
+   ```
+
+**Files Changed**:
+- `app/modules/ha/replication.py` (added `WITH (copy_data = false)` to `resume_subscription` fallback)
+- `app/modules/ha/service.py` (added `drop_publication` call in `demote()`)
+
+**Similar Bugs Found & Fixed**: N/A — the `resume_subscription` enable path (ALTER SUBSCRIPTION ENABLE) is unchanged and does not need `copy_data` since it re-enables an existing subscription without re-copying.
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes-2/`
+
+---
+
+### ISSUE-134: Dev standby compose missing `max_wal_senders` and `max_replication_slots`
+
+- **Date**: 2026-04-27
+- **Severity**: minor
+- **Status**: resolved
+- **Reporter**: agent (HA post-bugfix review round 2)
+- **Regression of**: N/A
+
+**Symptoms**: The dev standby postgres (`docker-compose.ha-standby.yml`) starts without explicit `max_wal_senders` or `max_replication_slots` settings. Replication works by coincidence (PostgreSQL 16 defaults are sufficient for 1 standby) but the configuration is not intentional or auditable. All other compose files (`docker-compose.yml`, `docker-compose.pi.yml`, `docker-compose.standby-prod.yml`) have these settings explicitly declared.
+
+**Root Cause**: `docker-compose.ha-standby.yml` was missing `-c max_wal_senders=10` and `-c max_replication_slots=10` in the postgres command args. This was an oversight when the other compose files were updated in ISSUE-118/ISSUE-119 (round 1 HA bugfixes) — the dev standby compose was missed.
+
+**Fix Applied**: Appended `-c max_wal_senders=10` and `-c max_replication_slots=10` to the postgres command list in `docker-compose.ha-standby.yml`, matching all other compose files. Existing settings (`wal_level=logical`, `idle_in_transaction_session_timeout=30000`, `statement_timeout=30000`, SSL configuration) are unchanged.
+
+**Files Changed**:
+- `docker-compose.ha-standby.yml`
+
+**Similar Bugs Found & Fixed**: N/A — all other compose files already have explicit WAL settings from ISSUE-118/ISSUE-119.
+
+**Related Issues**: ISSUE-118 (WAL disk space guard), ISSUE-119 (base compose WAL settings)
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes-2/`
+
+
+---
+
+### ISSUE-135: Leaked password in `.env.standby-prod` + active `HA_PEER_DB_URL` env fallback in `get_peer_db_url()`
+
+- **Date**: 2026-04-27
+- **Severity**: critical
+- **Status**: fixed
+- **Reporter**: agent (HA GUI config cleanup audit round 3)
+- **Regression of**: N/A
+
+**Symptoms**: `.env.standby-prod` contained a hardcoded production password in the `HA_PEER_DB_URL` line (`postgresql://replicator:NoorHarleen1@192.168.1.90:5432/workshoppro`). Additionally, `get_peer_db_url()` in `service.py` fell back to `os.environ.get("HA_PEER_DB_URL")` when DB-stored peer config was empty, silently using the leaked credential instead of returning `None`. The `.env` and `.env.ha-standby` files also had non-empty `HA_PEER_DB_URL` values with dev credentials.
+
+**Root Cause**: The BUG-HA-03 fix added a DB-preferred path for peer DB URL retrieval but left the `os.environ.get("HA_PEER_DB_URL")` fallback as a safety net at `service.py:142`. The `.env*` files were never cleared of their `HA_PEER_DB_URL` values after the GUI migration, leaving a production password in plaintext in `.env.standby-prod` and dev credentials in `.env` and `.env.ha-standby`.
+
+**Fix Applied**:
+1. Cleared `HA_PEER_DB_URL` to empty in `.env.standby-prod`, `.env`, and `.env.ha-standby` (set to `HA_PEER_DB_URL=`)
+2. Removed the env fallback in `get_peer_db_url()`: changed `return os.environ.get("HA_PEER_DB_URL") or None` to `return None`
+3. `.env.pi` and `.env.pi-standby` already had blank `HA_PEER_DB_URL=` — no change needed
+
+**Files Changed**:
+- `app/modules/ha/service.py`
+- `.env`
+- `.env.ha-standby`
+- `.env.standby-prod`
+
+**Similar Bugs Found & Fixed**: Same env-fallback pattern existed for `HA_HEARTBEAT_SECRET` (see ISSUE-136).
+
+**Related Issues**: ISSUE-136 (heartbeat secret env fallback — same class of bug)
+
+**Spec**: `.kiro/specs/ha-gui-config-cleanup/`
+
+---
+
+### ISSUE-136: `HA_HEARTBEAT_SECRET` env fallback still active in `_get_heartbeat_secret_from_config()` and heartbeat endpoint; dev secret in all `.env*` files
+
+- **Date**: 2026-04-27
+- **Severity**: moderate
+- **Status**: fixed
+- **Reporter**: agent (HA GUI config cleanup audit round 3)
+- **Regression of**: N/A
+
+**Symptoms**: When the DB-stored `heartbeat_secret` was empty or decryption failed, `_get_heartbeat_secret_from_config()` at `service.py:72` fell back to `os.environ.get("HA_HEARTBEAT_SECRET", "")`, silently using the weak dev secret `dev-ha-secret-for-testing` from env files for HMAC signing. The heartbeat endpoint at `router.py:165` had the same env fallback in its cache-miss branch. All four `.env*` files (`.env`, `.env.pi`, `.env.ha-standby`, `.env.standby-prod`) contained `HA_HEARTBEAT_SECRET=dev-ha-secret-for-testing`.
+
+**Root Cause**: The BUG-HA-04 fix introduced `_get_heartbeat_secret_from_config()` as the DB-preferred path but left `os.environ.get("HA_HEARTBEAT_SECRET", "")` as a fallback in both the service function and the heartbeat endpoint cache-miss branch. The `.env*` files were never cleared of their dev secret values after the GUI migration.
+
+**Fix Applied**:
+1. Removed env fallback in `_get_heartbeat_secret_from_config()`: changed `return os.environ.get("HA_HEARTBEAT_SECRET", "")` to `return ""`
+2. Removed env fallback in heartbeat endpoint cache-miss: changed `secret = os.environ.get("HA_HEARTBEAT_SECRET", "")` to `secret = ""`
+3. Cleared `HA_HEARTBEAT_SECRET` to empty in `.env`, `.env.pi`, `.env.ha-standby`, and `.env.standby-prod` (set to `HA_HEARTBEAT_SECRET=`)
+4. `.env.pi-standby` already had blank `HA_HEARTBEAT_SECRET=` — no change needed
+
+**Files Changed**:
+- `app/modules/ha/service.py`
+- `app/modules/ha/router.py`
+- `.env`
+- `.env.pi`
+- `.env.ha-standby`
+- `.env.standby-prod`
+
+**Similar Bugs Found & Fixed**: Same env-fallback pattern existed for `HA_PEER_DB_URL` (see ISSUE-135).
+
+**Related Issues**: ISSUE-135 (peer DB URL env fallback — same class of bug)
+
+**Spec**: `.kiro/specs/ha-gui-config-cleanup/`
+
+---
+
+### ISSUE-137: Error messages at `replication/init` and `replication/resync` still reference `HA_PEER_DB_URL` env var
+
+- **Date**: 2026-04-27
+- **Severity**: moderate
+- **Status**: fixed
+- **Reporter**: agent (HA GUI config cleanup audit round 3)
+- **Regression of**: N/A
+
+**Symptoms**: When `POST /ha/replication/init` or `POST /ha/replication/resync` detected no peer DB URL on a standby node, the error message said "Peer database connection is not configured. Set peer DB settings in HA configuration or set HA_PEER_DB_URL environment variable." This directed users to use an env var that should no longer be the configuration path after the GUI migration.
+
+**Root Cause**: The error messages at `router.py:449` (replication_init) and `router.py:521` (replication_resync) were written when the env var was the primary configuration path and were never updated after the GUI migration.
+
+**Fix Applied**: Updated both error messages to remove the env var reference:
+- Changed `"Peer database connection is not configured. Set peer DB settings in HA configuration or set HA_PEER_DB_URL environment variable."` to `"Peer database connection is not configured. Set peer DB settings in HA configuration."`
+
+**Files Changed**:
+- `app/modules/ha/router.py`
+
+**Similar Bugs Found & Fixed**: N/A — these were the only two error messages referencing `HA_PEER_DB_URL`.
+
+**Related Issues**: ISSUE-135 (env fallback removal for the same env var)
+
+**Spec**: `.kiro/specs/ha-gui-config-cleanup/`
+
+---
+
+### ISSUE-138: No GUI fields for `local_lan_ip`/`local_pg_port`; auto-detect returns wrong IP in Docker on Linux
+
+- **Date**: 2026-04-27
+- **Severity**: moderate
+- **Status**: fixed
+- **Reporter**: agent (HA GUI config cleanup audit round 3)
+- **Regression of**: N/A
+
+**Symptoms**: The "View Connection Info" modal displayed an auto-detected LAN IP using a UDP socket trick that returned the Docker container's internal IP (e.g., `172.17.0.2`) on Linux production instead of the host's LAN IP (e.g., `192.168.1.90`). The only override was the `HA_LOCAL_LAN_IP` env var, which had no GUI equivalent. Similarly, the PostgreSQL port defaulted to reading `HA_LOCAL_PG_PORT` from the environment with no GUI field. The `HAConfig` model had no `local_lan_ip` or `local_pg_port` columns.
+
+**Root Cause**: `local_lan_ip` and `local_pg_port` were never part of the original HA design — they were added as env-var overrides for Docker-specific issues. The `HAConfig` model, schemas, service, router, and frontend were never extended to support them as GUI-configurable fields.
+
+**Fix Applied**:
+1. Added `local_lan_ip` (VARCHAR 255, nullable) and `local_pg_port` (INTEGER, nullable) columns to the `HAConfig` model
+2. Created Alembic migration to add both columns to the `ha_config` table
+3. Added `local_lan_ip` and `local_pg_port` fields to `HAConfigRequest` and `HAConfigResponse` schemas
+4. Updated `save_config()` to persist both fields and `_config_to_response()` to return them
+5. Updated `local_db_info()` and `create_replication_user()` endpoints to prioritize DB fields over env vars over auto-detect
+6. Added "Local LAN IP" and "Local PostgreSQL Port" form fields to the frontend HA configuration form with helper text
+
+**Files Changed**:
+- `app/modules/ha/models.py`
+- `app/modules/ha/schemas.py`
+- `app/modules/ha/service.py`
+- `app/modules/ha/router.py`
+- `frontend/src/pages/admin/HAReplication.tsx`
+- `alembic/versions/` (new migration)
+
+**Similar Bugs Found & Fixed**: N/A
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-gui-config-cleanup/`
+
+---
+
+### ISSUE-139: Peer role hardcoded as logical opposite in frontend; `FailoverStatusResponse` missing `peer_role` field
+
+- **Date**: 2026-04-27
+- **Severity**: moderate
+- **Status**: fixed
+- **Reporter**: agent (HA GUI config cleanup audit round 3)
+- **Regression of**: N/A
+
+**Symptoms**: The Cluster Status peer card in `HAReplication.tsx` displayed `config.role === 'primary' ? 'Standby' : 'Primary'` as the peer role — a hardcoded logical opposite of the local role. After a promotion or demotion, both nodes could show incorrect peer roles. The actual peer role was already available in `_heartbeat_service.peer_role` (from the BUG-HA-15 fix) but the `/ha/failover-status` endpoint did not include it in its response, so the frontend had no way to display it.
+
+**Root Cause**: The BUG-HA-15 fix stored `peer_role` in `_heartbeat_service.peer_role` and exposed it through `get_cluster_status()`, but the `/ha/failover-status` endpoint (which the frontend polls) was never updated to include a `peer_role` field in `FailoverStatusResponse`. The frontend fell back to a hardcoded logical opposite.
+
+**Fix Applied**:
+1. Added `peer_role: str = Field(default="unknown")` to `FailoverStatusResponse` schema
+2. Populated `peer_role` from `_heartbeat_service.peer_role` in the `failover_status()` endpoint
+3. Added `peer_role?: string` to the `FailoverStatus` TypeScript interface
+4. Changed the peer card Badge to use `failoverStatus?.peer_role ?? (config.role === 'primary' ? 'standby' : 'primary')` instead of the hardcoded opposite
+
+**Files Changed**:
+- `app/modules/ha/schemas.py`
+- `app/modules/ha/router.py`
+- `frontend/src/pages/admin/HAReplication.tsx`
+
+**Similar Bugs Found & Fixed**: N/A
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-gui-config-cleanup/`
+
+---
+
+### ISSUE-140: `stop-replication` on primary has no CONFIRM gate; can accidentally drop publication
+
+- **Date**: 2026-04-27
+- **Severity**: moderate
+- **Status**: fixed
+- **Reporter**: agent (HA GUI config cleanup audit round 3)
+- **Regression of**: N/A
+
+**Symptoms**: Clicking "Stop Replication" on a primary node dropped the publication (halting all data flow to the standby) without requiring the user to type CONFIRM. All other destructive HA actions (promote, demote, resync, demote-and-sync) required typing CONFIRM, but `stop-replication` was missing from the list.
+
+**Root Cause**: The `needsConfirmText` check at `HAReplication.tsx:638` was written before `stop-replication` was considered a destructive action. The action was omitted from the list `['promote', 'demote', 'resync', 'demote-and-sync']`.
+
+**Fix Applied**: Added `'stop-replication'` to the `needsConfirmText` list: `['promote', 'demote', 'resync', 'stop-replication', 'demote-and-sync']`. Also added `'stop-replication'` to the `isStandbyInit` condition check so it requires CONFIRM on both primary and standby.
+
+**Files Changed**:
+- `frontend/src/pages/admin/HAReplication.tsx`
+
+**Similar Bugs Found & Fixed**: N/A — all other destructive actions already had CONFIRM gates.
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-gui-config-cleanup/`
+
+---
+
+### ISSUE-141: `_auto_promote_attempted` never cleared on peer recovery; auto-promote permanently disabled after one attempt
+
+- **Date**: 2026-04-27
+- **Severity**: minor
+- **Status**: fixed
+- **Reporter**: agent (HA GUI config cleanup audit round 3)
+- **Regression of**: N/A
+
+**Symptoms**: After a failed auto-promote attempt, `_auto_promote_attempted` remained `True` permanently. Even if the peer recovered and later went down again, auto-promote would never trigger — it was permanently disabled until the container was restarted.
+
+**Root Cause**: In `heartbeat.py`'s `_ping_loop`, the peer recovery branch (where `previous_health == "unreachable" and self.peer_health != "unreachable"`) reset `_peer_unreachable_since = None` but did not reset `_auto_promote_attempted`. The single-attempt flag should reset when the peer recovers so auto-promote can trigger again on a future outage. Note: `_auto_promote_failed_permanently` (the two-failure permanent flag) is intentionally NOT reset.
+
+**Fix Applied**: Added `self._auto_promote_attempted = False` in the peer recovery branch of `_ping_loop`, after the existing `self._peer_unreachable_since = None` reset. The `_auto_promote_failed_permanently` flag is intentionally left unchanged.
+
+**Files Changed**:
+- `app/modules/ha/heartbeat.py`
+
+**Similar Bugs Found & Fixed**: N/A
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-gui-config-cleanup/`
+
+---
+
+### ISSUE-142: Dead code `_get_heartbeat_secret()` still present in `service.py`
+
+- **Date**: 2026-04-27
+- **Severity**: minor
+- **Status**: fixed
+- **Reporter**: agent (HA GUI config cleanup audit round 3)
+- **Regression of**: N/A
+
+**Symptoms**: The function `_get_heartbeat_secret()` at `service.py:46-59` still existed in the codebase but was never called anywhere. It was the old env-only path that read `HA_HEARTBEAT_SECRET` from the environment, replaced by `_get_heartbeat_secret_from_config()` during the BUG-HA-04 fix. Its presence caused confusion about which function was authoritative for heartbeat secret retrieval.
+
+**Root Cause**: When `_get_heartbeat_secret_from_config()` was introduced as the DB-preferred replacement, the old `_get_heartbeat_secret()` function was left in place as dead code and never cleaned up.
+
+**Fix Applied**: Deleted the entire `_get_heartbeat_secret()` function (lines 46-59) from `service.py`.
+
+**Files Changed**:
+- `app/modules/ha/service.py`
+
+**Similar Bugs Found & Fixed**: N/A
+
+**Related Issues**: ISSUE-136 (env fallback removal in the replacement function)
+
+**Spec**: `.kiro/specs/ha-gui-config-cleanup/`
+
+---
+
+### ISSUE-143: Setup guide security notes still mention `.env` files for HA configuration
+
+- **Date**: 2026-04-27
+- **Severity**: minor
+- **Status**: fixed
+- **Reporter**: agent (HA GUI config cleanup audit round 3)
+- **Regression of**: N/A
+
+**Symptoms**: The Setup Guide security notes in `HAReplication.tsx` said "protect your `.env` files too", which contradicted the GUI-only configuration model and misled users into thinking env files were required for HA configuration.
+
+**Root Cause**: The setup guide text was written before the GUI-only migration and was never updated to reflect that all HA secrets and credentials are now stored encrypted in the database.
+
+**Fix Applied**: Changed the security note text from `"protect your .env files too"` to `"The heartbeat secret and peer DB credentials are stored encrypted in the database — no .env file entries are required for HA configuration"`.
+
+**Files Changed**:
+- `frontend/src/pages/admin/HAReplication.tsx`
+
+**Similar Bugs Found & Fixed**: N/A
+
+**Related Issues**: ISSUE-135, ISSUE-136 (env value cleanup that makes this text change accurate)
+
+**Spec**: `.kiro/specs/ha-gui-config-cleanup/`

@@ -38,6 +38,10 @@ class HAConfigRequest(BaseModel):
     # Heartbeat HMAC secret (optional — falls back to HA_HEARTBEAT_SECRET env var)
     heartbeat_secret: str | None = Field(default=None, description="HMAC shared secret for heartbeat signing (stored encrypted)")
 
+    # Local connection info overrides
+    local_lan_ip: str | None = Field(default=None, description="Local LAN IP override for View Connection Info (auto-detected if blank)")
+    local_pg_port: int | None = Field(default=None, description="Local PostgreSQL host port override (defaults to 5432 if blank)")
+
 
 class HAConfigResponse(BaseModel):
     """Response for GET /api/v1/ha/identity and PUT /api/v1/ha/configure."""
@@ -62,6 +66,8 @@ class HAConfigResponse(BaseModel):
     peer_db_configured: bool = Field(default=False, description="True when peer DB credentials are stored")
     peer_db_sslmode: str | None = Field(default="disable", description="SSL mode for peer DB connection")
     heartbeat_secret_configured: bool = Field(default=False, description="True when heartbeat HMAC secret is stored in DB")
+    local_lan_ip: str | None = None
+    local_pg_port: int | None = None
     promoted_at: datetime | None = None
 
 
@@ -220,6 +226,7 @@ class FailoverStatusResponse(BaseModel):
     split_brain_detected: bool = False
     is_stale_primary: bool = False
     promoted_at: str | None = None  # ISO 8601
+    peer_role: str = Field(default="unknown", description="Actual peer role from heartbeat responses")
 
 
 class DemoteAndSyncRequest(BaseModel):

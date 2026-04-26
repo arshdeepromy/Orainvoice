@@ -72,6 +72,10 @@ class HAConfig(Base):
         String(20), nullable=True, default="disable",
     )
 
+    # Local connection info overrides (for View Connection Info / replication user)
+    local_lan_ip: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    local_pg_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Heartbeat HMAC shared secret (encrypted at rest, replaces env var)
     heartbeat_secret: Mapped[bytes | None] = mapped_column(
         LargeBinary, nullable=True,

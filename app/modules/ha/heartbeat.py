@@ -132,6 +132,9 @@ class HeartbeatService:
                         )
                         # Reset unreachable tracking when peer comes back (Req 3.5)
                         self._peer_unreachable_since = None
+                        # Reset auto-promote flag so it can trigger again on future outage (Req 2.15)
+                        # NOTE: _auto_promote_failed_permanently is intentionally NOT reset (Req 3.10)
+                        self._auto_promote_attempted = False
 
                     # --- Split-brain write protection (Req 8.1) ---
                     if self.split_brain_detected:

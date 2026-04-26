@@ -153,7 +153,7 @@ async def heartbeat(db: AsyncSession = Depends(get_db_session)):
             result = await db.execute(select(HAConfig).limit(1))
             cfg_row = result.scalars().first()
 
-            # Decrypt secret from DB, fall back to env var
+            # Decrypt secret from DB — no env-var fallback
             secret = ""
             if cfg_row and cfg_row.heartbeat_secret:
                 try:
@@ -161,8 +161,6 @@ async def heartbeat(db: AsyncSession = Depends(get_db_session)):
                     secret = _decrypt(cfg_row.heartbeat_secret)
                 except Exception:
                     pass
-            if not secret:
-                secret = os.environ.get("HA_HEARTBEAT_SECRET", "")
 
             # Store snapshot in cache (detached from session)
             _hb_cache["config"] = cfg_row
@@ -413,7 +411,7 @@ async def replication_init(
     """Initialize PostgreSQL logical replication.
 
     On a primary node, creates the publication.
-    On a standby node, creates the subscription using ``HA_PEER_DB_URL``.
+    On a standby node, creates the subscription using the peer DB URL from GUI config.
 
     This endpoint manages its own DB session because the DDL operations
     (CREATE PUBLICATION / CREATE SUBSCRIPTION) can take longer than the
@@ -446,7 +444,7 @@ async def replication_init(
     if role == "standby" and not peer_db_url:
         return JSONResponse(
             status_code=400,
-            content={"detail": "Peer database connection is not configured. Set peer DB settings in HA configuration or set HA_PEER_DB_URL environment variable."},
+            content={"detail": "Peer database connection is not configured. Set peer DB settings in HA configuration."},
         )
 
     # --- Phase 2: run DDL (no SQLAlchemy session open) -------------------
@@ -518,7 +516,7 @@ async def replication_resync(
     if not peer_db_url:
         return JSONResponse(
             status_code=400,
-            content={"detail": "Peer database connection is not configured. Set peer DB settings in HA configuration or set HA_PEER_DB_URL environment variable."},
+            content={"detail": "Peer database connection is not configured. Set peer DB settings in HA configuration."},
         )
 
     # --- Phase 2: run DDL (no SQLAlchemy session open) -------------------
@@ -658,20 +656,23 @@ async def test_db_connection(payload: PeerDBTestRequest):
         403: {"description": "Global_Admin role required"},
     },
 )
-async def local_db_info():
+async def local_db_info(db: AsyncSession = Depends(get_db_session)):
     """Return the host's LAN IP and the postgres port visible to external peers.
 
-    The host LAN IP is read from ``HA_LOCAL_LAN_IP`` env var.  If not
-    set, falls back to ``host.docker.internal`` (works for Docker Desktop
-    on Windows/Mac where both stacks run on the same host).  On Linux
-    production (no Docker Desktop), the UDP socket trick is used.
+    Priority: DB-stored field > env var > auto-detect for LAN IP,
+    and DB-stored field > env var > 5432 for PG port.
     """
-    lan_ip = _detect_host_lan_ip()
+    from app.modules.ha.models import HAConfig
+    from sqlalchemy import select as _select
 
-    # Exposed postgres port — configurable via env var since the host
-    # port mapping is defined in docker-compose, not visible from inside
-    # the container.  Defaults to 5432.
-    pg_port = int(os.environ.get("HA_LOCAL_PG_PORT", "5432"))
+    result = await db.execute(_select(HAConfig).limit(1))
+    cfg = result.scalars().first()
+
+    # LAN IP: DB field > env var > auto-detect
+    lan_ip = (cfg.local_lan_ip if cfg and cfg.local_lan_ip else None) or _detect_host_lan_ip()
+
+    # PG port: DB field > env var > 5432
+    pg_port = (cfg.local_pg_port if cfg and cfg.local_pg_port else None) or int(os.environ.get("HA_LOCAL_PG_PORT", "5432"))
 
     # Database name from the current connection
     from app.config import settings as app_settings
@@ -782,9 +783,15 @@ async def create_replication_user(
             await db.commit()
 
             # Build connection string for the peer node
-            lan_ip = _detect_host_lan_ip()
+            # Priority: DB field > env var > auto-detect
+            from app.modules.ha.models import HAConfig as _HAConfig
+            from sqlalchemy import select as _sel
 
-            pg_port = int(os.environ.get("HA_LOCAL_PG_PORT", "5432"))
+            _cfg_result = await db.execute(_sel(_HAConfig).limit(1))
+            _cfg = _cfg_result.scalars().first()
+
+            lan_ip = (_cfg.local_lan_ip if _cfg and _cfg.local_lan_ip else None) or _detect_host_lan_ip()
+            pg_port = (_cfg.local_pg_port if _cfg and _cfg.local_pg_port else None) or int(os.environ.get("HA_LOCAL_PG_PORT", "5432"))
             db_name = "workshoppro"
             try:
                 db_name = settings.database_url.rsplit("/", 1)[-1].split("?")[0]
@@ -925,6 +932,7 @@ async def failover_status(db: AsyncSession = Depends(get_db_session)):
     split_brain_detected = False
     is_stale = False
     seconds_until_auto_promote: float | None = None
+    peer_role = hb_service.peer_role if hb_service is not None else "unknown"
 
     if hb_service is not None:
         peer_unreachable_seconds = hb_service.get_peer_unreachable_seconds()
@@ -947,6 +955,7 @@ async def failover_status(db: AsyncSession = Depends(get_db_session)):
         split_brain_detected=split_brain_detected,
         is_stale_primary=is_stale,
         promoted_at=cfg.promoted_at.isoformat() if cfg.promoted_at else None,
+        peer_role=peer_role,
     )
 
 
@@ -1036,14 +1045,14 @@ async def list_replication_slots(db: AsyncSession = Depends(get_db_session)):
         404: {"description": "Slot not found"},
     },
 )
-async def drop_replication_slot(slot_name: str):
+async def drop_replication_slot(slot_name: str, db: AsyncSession = Depends(get_db_session)):
     """Drop an inactive replication slot.
 
     Only inactive (orphaned) slots can be dropped. Active slots must be
     disconnected first by stopping the subscription on the standby.
     """
     try:
-        result = await ReplicationManager.drop_replication_slot(None, slot_name)
+        result = await ReplicationManager.drop_replication_slot(db, slot_name)
         if result["status"] == "not_found":
             return JSONResponse(status_code=404, content={"detail": result["message"]})
         if result["status"] == "error":

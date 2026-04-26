@@ -29,6 +29,8 @@ interface HAConfig {
   peer_db_configured: boolean
   peer_db_sslmode: string | null
   heartbeat_secret_configured: boolean
+  local_lan_ip: string | null
+  local_pg_port: number | null
 }
 
 interface HeartbeatHistoryEntry {
@@ -57,6 +59,7 @@ interface FailoverStatus {
   split_brain_detected: boolean
   is_stale_primary: boolean
   promoted_at: string | null
+  peer_role?: string
 }
 
 type ModalAction = 'promote' | 'demote' | 'init-replication' | 'stop-replication' | 'resync' | 'maintenance-enter' | 'maintenance-exit' | 'demote-and-sync' | null
@@ -164,7 +167,7 @@ function SetupGuide({ configured }: { configured: boolean }) {
               <li>Generate SSL certificates with <code className="bg-amber-100 px-1 rounded">bash scripts/generate_pg_certs.sh</code> and set SSL Mode to <code className="bg-amber-100 px-1 rounded">require</code> in Peer Database Settings</li>
               <li>In production, create a dedicated replication user via the "Replication User" section below (not the superuser)</li>
               <li>Restrict <code className="bg-amber-100 px-1 rounded">pg_hba.conf</code> to only allow the peer's specific IP address</li>
-              <li>The peer DB password is encrypted at rest — but protect your <code className="bg-amber-100 px-1 rounded">.env</code> files too</li>
+              <li>The heartbeat secret and peer DB credentials are stored encrypted in the database — no <code className="bg-amber-100 px-1 rounded">.env</code> file entries are required for HA configuration</li>
               <li>Rotate the <strong>Heartbeat Secret</strong> periodically by updating both nodes simultaneously via the GUI</li>
             </ul>
           </div>
@@ -214,6 +217,8 @@ export function HAReplication() {
   const [formPeerDbPassword, setFormPeerDbPassword] = useState('')
   const [formPeerDbSslmode, setFormPeerDbSslmode] = useState('disable')
   const [formHeartbeatSecret, setFormHeartbeatSecret] = useState('')
+  const [formLocalLanIp, setFormLocalLanIp] = useState('')
+  const [formLocalPgPort, setFormLocalPgPort] = useState('')
   const [testingConnection, setTestingConnection] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
 
@@ -283,6 +288,8 @@ export function HAReplication() {
       setFormPeerDbName(cfg.peer_db_name || '')
       setFormPeerDbUser(cfg.peer_db_user || '')
       setFormPeerDbSslmode(cfg.peer_db_sslmode || 'disable')
+      setFormLocalLanIp(cfg.local_lan_ip ?? '')
+      setFormLocalPgPort(cfg.local_pg_port ? String(cfg.local_pg_port) : '')
       setFormInitialized(true)
     }
     setLoading(false)
@@ -314,6 +321,8 @@ export function HAReplication() {
         peer_db_password: formPeerDbPassword || null,
         peer_db_sslmode: formPeerDbSslmode,
         heartbeat_secret: formHeartbeatSecret || null,
+        local_lan_ip: formLocalLanIp || null,
+        local_pg_port: formLocalPgPort ? Number(formLocalPgPort) : null,
       })
       setSaveSuccess(true)
       // Re-sync form from server after save
@@ -541,6 +550,8 @@ export function HAReplication() {
         peer_db_password: formPeerDbPassword || null,
         peer_db_sslmode: formPeerDbSslmode,
         heartbeat_secret: formHeartbeatSecret || null,
+        local_lan_ip: formLocalLanIp || null,
+        local_pg_port: formLocalPgPort ? Number(formLocalPgPort) : null,
       })
       setWizardStepComplete(prev => {
         const next = [...prev]
@@ -635,7 +646,7 @@ export function HAReplication() {
   const lagSeconds = replication?.replication_lag_seconds ?? null
   const isStandbyInit = modalAction === 'init-replication' && config?.role === 'standby'
   const isDemoteAndSync = modalAction === 'demote-and-sync'
-  const needsConfirmText = modalAction && (['promote', 'demote', 'resync', 'demote-and-sync'].includes(modalAction) || isStandbyInit)
+  const needsConfirmText = modalAction && (['promote', 'demote', 'resync', 'stop-replication', 'demote-and-sync'].includes(modalAction) || isStandbyInit)
   const showForceCheckbox = modalAction === 'promote' && lagSeconds != null && lagSeconds > 5
 
   const modalTitles: Record<string, string> = {
@@ -1068,6 +1079,21 @@ export function HAReplication() {
                 : 'Required for secure heartbeat signing. Must be identical on both nodes.'}
             />
           </div>
+          <Input
+            label="Local LAN IP"
+            placeholder="e.g. 192.168.1.90 (auto-detected if blank)"
+            value={formLocalLanIp}
+            onChange={(e) => setFormLocalLanIp(e.target.value)}
+            helperText="Used for View Connection Info. Auto-detected if blank."
+          />
+          <Input
+            label="Local PostgreSQL Port"
+            type="number"
+            placeholder="5432"
+            value={formLocalPgPort}
+            onChange={(e) => setFormLocalPgPort(e.target.value)}
+            helperText="The host port mapped to PostgreSQL. Defaults to 5432 if blank."
+          />
         </div>
 
         <div className="flex justify-end pt-2">
@@ -1305,9 +1331,14 @@ export function HAReplication() {
               <div className="rounded-md border border-gray-200 p-4 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="font-medium text-gray-900">Peer Node</span>
-                  <Badge variant={roleVariant(config.role === 'primary' ? 'standby' : 'primary')}>
-                    {config.role === 'primary' ? 'Standby' : 'Primary'}
-                  </Badge>
+                  {(() => {
+                    const peerRole = failoverStatus?.peer_role ?? (config.role === 'primary' ? 'standby' : 'primary')
+                    return (
+                      <Badge variant={roleVariant(peerRole)}>
+                        {peerRole.charAt(0).toUpperCase() + peerRole.slice(1)}
+                      </Badge>
+                    )
+                  })()}
                 </div>
                 <div className="flex items-center gap-2">
                   <span

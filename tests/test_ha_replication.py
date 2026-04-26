@@ -45,6 +45,15 @@ def _make_ha_config_model(**overrides):
     cfg.sync_status = overrides.get("sync_status", "not_configured")
     cfg.created_at = overrides.get("created_at", datetime.now(timezone.utc))
     cfg.updated_at = overrides.get("updated_at", datetime.now(timezone.utc))
+    cfg.peer_db_host = overrides.get("peer_db_host", None)
+    cfg.peer_db_port = overrides.get("peer_db_port", None)
+    cfg.peer_db_name = overrides.get("peer_db_name", None)
+    cfg.peer_db_user = overrides.get("peer_db_user", None)
+    cfg.peer_db_password = overrides.get("peer_db_password", None)
+    cfg.peer_db_sslmode = overrides.get("peer_db_sslmode", None)
+    cfg.heartbeat_secret = overrides.get("heartbeat_secret", None)
+    cfg.local_lan_ip = overrides.get("local_lan_ip", None)
+    cfg.local_pg_port = overrides.get("local_pg_port", None)
     return cfg
 
 
