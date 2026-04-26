@@ -6,13 +6,18 @@ inclusion: auto
 
 ## Environments
 
-### DEV — Local Windows Machine
-- Containers: `invoicing-*` (app, frontend, nginx, postgres, redis)
-- Compose: `docker-compose.yml` + `docker-compose.dev.yml`
+### DEV — Local Ubuntu Machine
+- OS: Ubuntu 25.04 (x86_64, Linux 7.0)
+- Containers: `invoicing-*` (app, frontend, mobile, nginx, postgres, redis)
+- Compose: `docker-compose.yml` + `docker-compose.dev.yml` (auto-loaded via `COMPOSE_FILE` in `.env`)
 - Env file: `.env`
 - URL: `http://localhost` (port 80)
+- Postgres exposed on host port 5434 (not 5432, to avoid conflicts)
+- Redis exposed on host port 6379
 - All development, testing, and code changes happen here FIRST
 - Never deploy untested code to prod
+- Git + GitHub CLI (`gh`) authenticated for push/pull
+- SSH key auth to Pi (192.168.1.90) for deployments
 
 ### PROD — Raspberry Pi
 - Host: `192.168.1.90`
@@ -58,35 +63,30 @@ ssh nerdy@192.168.1.90 'ls -lh ~/invoicing-backups/ | tail -5'
 
 The Pi's ARM CPU can't reliably build the Vite frontend. Build it locally and transfer the pre-built dist.
 
-```powershell
+```bash
 # Delete any stale local dist (prevents Docker from using cached old build)
-Remove-Item -Recurse -Force frontend/dist 2>$null
+rm -rf frontend/dist
 
 # Build frontend in Docker with --no-cache to force fresh Vite build
-docker compose -f docker-compose.yml -f docker-compose.dev.yml build --no-cache frontend
+docker compose build --no-cache frontend
 
 # Start the frontend container to populate the volume
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d frontend
+docker compose up -d frontend
 
 # Copy the pre-built dist from the container to a clean local directory
+rm -rf frontend_dist_export
 docker cp invoicing-frontend-1:/app/dist frontend_dist_export
 ```
 
 ### Step 4: Sync code to Pi using git archive + SCP
 
-**IMPORTANT:** Windows `tar` does NOT work for syncing to Pi. It has issues with:
-- Exclude flags being ignored
-- Permission errors on existing files
-- Symlinks from Docker volumes
-- `__pycache__` directories owned by root
+**Use `git archive`** — it creates a clean tar from the git repo:
 
-**Use `git archive` instead** — it creates a clean tar from the git repo:
-
-```powershell
+```bash
 # Ensure all changes are committed and pushed
 git add -A
 git commit -m "deploy: <description>"
-git push origin <branch>
+git push origin main
 
 # Create a clean tar from the current HEAD (excludes .git, node_modules, __pycache__ automatically)
 git archive --format=tar HEAD -o deploy.tar
@@ -110,7 +110,7 @@ ssh nerdy@192.168.1.90 'ls ~/invoicing/app/main.py ~/invoicing/Dockerfile ~/invo
 
 ### Step 6: Transfer pre-built frontend dist
 
-```powershell
+```bash
 # Create the dist directory on Pi if it doesn't exist
 ssh nerdy@192.168.1.90 'mkdir -p ~/invoicing/frontend/dist/assets'
 
@@ -155,10 +155,10 @@ ssh nerdy@192.168.1.90 'curl -s -o /dev/null -w "%{http_code}" http://localhost:
 
 ### Step 9: Cleanup
 
-```powershell
+```bash
 # Remove local temp files
-Remove-Item deploy.tar 2>$null
-Remove-Item -Recurse -Force frontend_dist_export 2>$null
+rm -f deploy.tar
+rm -rf frontend_dist_export
 
 # Remove tar from Pi
 ssh nerdy@192.168.1.90 'rm -f /tmp/deploy.tar'
@@ -172,13 +172,9 @@ ssh nerdy@192.168.1.90 'rm -f /tmp/deploy.tar'
 **Cause:** The `frontend/dist/assets/` directory gets created with `drwx------` (700) permissions inside the Docker volume. Nginx worker runs as non-root and can't read the JS/CSS files.
 **Fix:** Run `chmod -R 755 /app/dist/assets` inside the frontend container after every deployment (Step 7 above).
 
-### Issue: Windows tar fails with "Cannot open: File exists" or "Permission denied"
-**Cause:** Windows tar can't overwrite files owned by root on the Pi, and has issues with Docker-created symlinks and `__pycache__` directories.
-**Fix:** Use `git archive` instead of Windows tar. Git archive creates a clean tar from the repo that extracts cleanly on Linux.
-
 ### Issue: Pi can't build frontend (Vite fails on ARM)
 **Cause:** Some npm packages don't have ARM64 binaries, and Vite build can be unreliable on the Pi's limited resources.
-**Fix:** Always build the frontend locally on Windows, then transfer the pre-built `dist/` to Pi. The Dockerfile detects `dist/` exists and skips the Vite build ("Using pre-built dist/").
+**Fix:** Always build the frontend locally, then transfer the pre-built `dist/` to Pi. The Dockerfile detects `dist/` exists and skips the Vite build ("Using pre-built dist/").
 
 ### Issue: Old frontend assets still showing after deployment
 **Cause:** The Docker volume `invoicing_frontend_dist` caches old assets. New deployment adds new files but doesn't remove old ones.
@@ -197,17 +193,16 @@ ssh nerdy@192.168.1.90 'rm -f /tmp/deploy.tar'
 ## Database Comparison (Dev vs Prod)
 
 After deployment, verify tables match:
-```powershell
+```bash
 # Save dev tables
-docker compose exec postgres psql -U postgres -d workshoppro -t -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;" > dev_tables.txt
+docker compose exec -T postgres psql -U postgres -d workshoppro -tAc \
+  "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;" > /tmp/dev_tables.txt
 
 # Save prod tables
-ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml exec -T postgres psql -U postgres -d workshoppro -t -c "SELECT tablename FROM pg_tables WHERE schemaname = '\''public'\'' ORDER BY tablename;"' > prod_tables.txt
+ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml exec -T postgres psql -U postgres -d workshoppro -tAc "SELECT tablename FROM pg_tables WHERE schemaname = '\''public'\'' ORDER BY tablename;"' > /tmp/prod_tables.txt
 
 # Compare
-$dev = (Get-Content dev_tables.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-$prod = (Get-Content prod_tables.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-Compare-Object $dev $prod
+diff /tmp/dev_tables.txt /tmp/prod_tables.txt
 # No output = tables match
 ```
 
@@ -271,7 +266,7 @@ The dev environment runs two complete stacks on the same machine (for testing on
 **Critical rules:**
 - Primary postgres is on host port **5434** (not 5432) to avoid conflicts with local PostgreSQL
 - **Never seed the standby database** — all data comes from replication
-- Use `host.docker.internal` for peer endpoints (not `localhost`)
+- Use `host.docker.internal` for peer endpoints on Docker Desktop; on native Linux Docker use the host's LAN IP (e.g. `172.17.0.1` or the machine's actual IP) since `host.docker.internal` is not available by default
 - Containers must be recreated (not just restarted) after adding new env vars
 - Both postgres instances must have `wal_level=logical`
 

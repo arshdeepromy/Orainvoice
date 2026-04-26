@@ -2,75 +2,75 @@
 inclusion: auto
 ---
 
-# Windows Development Environment — Shell & Docker Reference
+# Development Environment — Shell & Docker Reference
 
-This workspace runs on **Windows** with **PowerShell** as the default shell. All terminal commands must use PowerShell syntax. Bash syntax will silently fail or produce confusing errors.
+This workspace runs on **Ubuntu Linux** (x86_64) with **bash** as the default shell.
 
 ## Shell Rules
 
-### PowerShell — Use These
-- Command separator: `;` (semicolon)
-- Output to string: `| Out-String`
-- Write output: `Write-Host "message"`
-- Suppress errors: `2>$null` or `-ErrorAction SilentlyContinue`
-- Environment variables: `$env:VAR_NAME`
-- Multiline commands: backtick `` ` `` at end of line
-
-### Bash — Do NOT Use These
-- `&&` chaining — **breaks in PowerShell** with `The token '&&' is not a valid statement separator`
-- `2>&1` redirection — behaves inconsistently, often produces `NativeCommandError`
-- `$VARIABLE` — use `$env:VARIABLE` instead
-- `export VAR=value` — use `$env:VAR = "value"` instead
-- `echo` — works but prefer `Write-Host` for reliability
-- `||` — use `try/catch` or `; if ($LASTEXITCODE -ne 0) { ... }` instead
+- Standard bash syntax: `&&`, `||`, pipes, redirects all work normally
+- Environment variables: `$VAR_NAME` or `export VAR=value`
+- Docker commands work without `sudo` (user is in the `docker` group)
 
 ## Docker Compose
 
 ### Project Name
-The local dev containers use project name **`orainvoice`** (not derived from the workspace folder name `Invoicing`). Always specify `-p orainvoice` when the compose files are not picking up containers automatically.
+The local dev containers use project name **`invoicing`** (derived from the workspace folder). Container names follow the pattern `invoicing-<service>-1`.
 
 ### Compose File Selection
-The `.env` file sets `COMPOSE_FILE=docker-compose.yml;docker-compose.dev.yml`. If compose commands don't find containers, specify files explicitly:
-```powershell
-docker compose -p orainvoice -f docker-compose.yml -f docker-compose.dev.yml <command>
-```
+The `.env` file sets `COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml` (colon separator on Linux). This auto-loads the dev override for hot-reload.
 
-### Common Docker Commands (PowerShell)
-```powershell
+### Common Docker Commands
+```bash
 # Check running containers
-docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+docker compose ps
 
 # Stop and remove containers (preserves data volumes)
-docker compose -p orainvoice -f docker-compose.yml -f docker-compose.dev.yml down
+docker compose down
 
-# Rebuild and restart everything (preserves pgdata + redisdata)
-docker compose -p orainvoice -f docker-compose.yml -f docker-compose.dev.yml up -d --build --force-recreate
+# Rebuild and restart everything
+docker compose up -d --build --force-recreate
+
+# Rebuild a single service
+docker compose up -d --build --force-recreate app
 
 # Delete frontend_dist volume for fresh frontend rebuild
-docker volume rm orainvoice_frontend_dist
-
-# Check volumes
-docker volume ls --format "{{.Name}}" | Select-String orainvoice
+docker volume rm invoicing_frontend_dist
 
 # View container logs
-docker logs orainvoice-app-1 --tail 50
-docker logs orainvoice-postgres-1 --tail 50
+docker compose logs app --tail 50
+docker compose logs postgres --tail 50
+
+# Run migrations manually
+docker compose exec app alembic upgrade head
+
+# Open a shell in the app container
+docker compose exec app bash
+
+# Open a psql shell
+docker compose exec postgres psql -U postgres -d workshoppro
+```
+
+### Fresh Database Setup Note
+When starting with a completely fresh database (no tables), the `alembic_version` table must be pre-created with a wider `version_num` column because some migration revision IDs exceed the default 32-char limit:
+
+```bash
+docker compose exec postgres psql -U postgres -d workshoppro -c \
+  "CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(128) NOT NULL, CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num));"
+```
+
+Then restart the app container to run migrations:
+```bash
+docker compose restart app
 ```
 
 ### Data Volumes — Never Delete These
-- `orainvoice_pgdata` — PostgreSQL database (all org/customer/invoice data)
-- `orainvoice_redisdata` — Redis cache
+- `invoicing_pgdata` — PostgreSQL database (all org/customer/invoice data)
+- `invoicing_redisdata` — Redis cache
 
 ### Safe to Delete & Rebuild
-- `orainvoice_frontend_dist` — rebuilt automatically on `up --build`
-
-## Tool Preferences
-
-When running commands from Kiro:
-- Use `controlPwshProcess` (background process) for docker commands — gives cleaner output and handles long-running builds
-- Use `getProcessOutput` to monitor build progress
-- Avoid `executePwsh` for docker compose commands — output is often garbled with PowerShell echo artifacts
-- For quick checks (docker ps, volume ls), either tool works
+- `invoicing_frontend_dist` — rebuilt automatically on `up --build`
+- `invoicing_mobile_dist` — rebuilt automatically on `up --build`
 
 ## Port Mappings (Local Dev)
 | Service  | Host Port | Container Port |
@@ -79,3 +79,9 @@ When running commands from Kiro:
 | postgres | 5434      | 5432           |
 | redis    | 6379      | 6379           |
 | app      | (internal)| 8000           |
+
+## Git & GitHub
+- Remote: `https://github.com/arshdeepromy/Orainvoice.git`
+- Auth: GitHub CLI (`gh auth login`) — credentials stored in keyring
+- Push/pull works without password prompts
+- SSH to Pi: `ssh nerdy@192.168.1.90` (key auth, no password)
