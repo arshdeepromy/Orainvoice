@@ -28,6 +28,11 @@ def filter_tables_for_truncation(all_table_names: list[str]) -> list[str]:
     Excludes ``ha_config`` — it stores per-node HA state and must survive
     truncation so the node can still identify itself after a data wipe.
 
+    Note: ``dead_letter_queue`` is intentionally *not* excluded here.
+    It is excluded from the *publication* (so it is not replicated) but
+    it should still be truncated during standby init / re-sync so the
+    standby starts clean.  Only ``ha_config`` needs to survive truncation.
+
     This is a pure function extracted for testability.
     """
     return [t for t in all_table_names if t != "ha_config"]
@@ -135,7 +140,10 @@ class ReplicationManager:
 
     @staticmethod
     async def init_primary(db: AsyncSession) -> dict:
-        """Create a publication for all tables on the primary node, excluding ha_config.
+        """Create a publication for all tables on the primary node.
+
+        Excludes ``ha_config`` (per-node HA state) and ``dead_letter_queue``
+        (node-local failed-task queue that should not be replicated).
 
         Uses raw asyncpg connections for all queries to avoid SQLAlchemy
         session timeout issues during long-running DDL operations.
@@ -152,30 +160,34 @@ class ReplicationManager:
                 )
 
                 if existing:
-                    # Check if ha_config is in the publication (legacy fix)
-                    ha_count = await conn.fetchval(
+                    # Check if excluded tables leaked into the publication (legacy fix)
+                    excluded_count = await conn.fetchval(
                         "SELECT COUNT(*) FROM pg_publication_tables "
-                        "WHERE pubname = $1 AND tablename = 'ha_config'",
+                        "WHERE pubname = $1 AND tablename IN ('ha_config', 'dead_letter_queue')",
                         ReplicationManager.PUBLICATION_NAME,
                     )
-                    if not ha_count:
-                        logger.info("Publication '%s' already exists (ha_config excluded)", ReplicationManager.PUBLICATION_NAME)
+                    if not excluded_count:
+                        logger.info("Publication '%s' already exists (ha_config, dead_letter_queue excluded)", ReplicationManager.PUBLICATION_NAME)
                         return {
                             "status": "ok",
                             "publication": ReplicationManager.PUBLICATION_NAME,
                             "message": "Publication already exists",
                         }
-                    # ha_config is in the publication — need to recreate
-                    logger.info("Recreating publication to exclude ha_config")
+                    # Excluded table(s) found in the publication — need to recreate
+                    logger.info("Recreating publication to exclude ha_config and dead_letter_queue")
                     await conn.execute(
                         f"DROP PUBLICATION {ReplicationManager.PUBLICATION_NAME}",
                     )
 
-                # Get all public tables except ha_config
+                # Get all public tables except ha_config and dead_letter_queue.
+                # dead_letter_queue is excluded so that after failover the new
+                # primary starts with an empty dead-letter table, preventing
+                # re-processing of partially-executed jobs from the old primary.
                 tbl_list = await conn.fetchval(
                     "SELECT string_agg(tablename, ', ') "
                     "FROM pg_tables "
-                    "WHERE schemaname = 'public' AND tablename != 'ha_config'",
+                    "WHERE schemaname = 'public' "
+                    "AND tablename NOT IN ('ha_config', 'dead_letter_queue')",
                 )
                 if not tbl_list:
                     raise RuntimeError("No tables found in public schema")
@@ -183,10 +195,16 @@ class ReplicationManager:
                 await conn.execute(
                     f"CREATE PUBLICATION {ReplicationManager.PUBLICATION_NAME} FOR TABLE {tbl_list}",
                 )
+
+                # Include all sequences in the publication for ongoing sync
+                # (PostgreSQL 16 native sequence replication)
+                await conn.execute(
+                    f"ALTER PUBLICATION {ReplicationManager.PUBLICATION_NAME} ADD ALL SEQUENCES",
+                )
             finally:
                 await conn.close()
 
-            logger.info("Publication '%s' created (ha_config excluded)", ReplicationManager.PUBLICATION_NAME)
+            logger.info("Publication '%s' created (ha_config, dead_letter_queue excluded)", ReplicationManager.PUBLICATION_NAME)
             return {"status": "ok", "publication": ReplicationManager.PUBLICATION_NAME}
         except RuntimeError:
             raise
@@ -194,6 +212,49 @@ class ReplicationManager:
             error_msg = str(exc)
             logger.error("Failed to create publication: %s", error_msg)
             raise RuntimeError(f"Failed to create publication: {error_msg}") from exc
+
+    @staticmethod
+    async def sync_sequences_post_promotion() -> dict:
+        """Advance all sequences to be at least max(existing_id) + 1.
+
+        Safety net for post-promotion: ensures nextval() returns a value
+        higher than any existing row, preventing duplicate key violations
+        even if sequence replication had a gap.
+
+        Validates: BUG-HA-01 fix (Phase 2)
+        """
+        conn = await ReplicationManager._get_raw_conn()
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT s.relname AS seq_name,
+                       t.relname AS table_name,
+                       a.attname AS col_name
+                FROM pg_class s
+                JOIN pg_depend d ON d.objid = s.oid
+                JOIN pg_class t ON t.oid = d.refobjid
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+                WHERE s.relkind = 'S' AND d.deptype = 'a'
+                AND t.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
+                """
+            )
+            synced = 0
+            for row in rows:
+                try:
+                    max_val = await conn.fetchval(
+                        f"SELECT COALESCE(MAX({row['col_name']}), 0) FROM {row['table_name']}"
+                    )
+                    await conn.execute(
+                        f"SELECT setval('{row['seq_name']}', GREATEST($1 + 1, 1), false)",
+                        max_val,
+                    )
+                    synced += 1
+                except Exception as exc:
+                    logger.warning("Could not sync sequence %s: %s", row["seq_name"], exc)
+            logger.info("Post-promotion sequence sync: %d sequences advanced", synced)
+            return {"status": "ok", "sequences_synced": synced}
+        finally:
+            await conn.close()
 
     @staticmethod
     async def drop_publication(db: AsyncSession) -> None:
@@ -398,12 +459,19 @@ class ReplicationManager:
 
     @staticmethod
     async def trigger_resync(db: AsyncSession, primary_conn_str: str) -> None:
-        """Drop and re-create the subscription with ``copy_data=true`` for a full re-sync.
+        """Truncate standby data, then drop and re-create the subscription for a full re-sync.
 
         This is the nuclear option when replication has become inconsistent
         and a differential catch-up is not possible.
+
+        Truncation runs first so that ``copy_data=true`` does not hit
+        duplicate-key conflicts from pre-existing rows.  If truncation
+        fails, the error propagates and the subscription is left untouched.
         """
-        logger.info("Triggering full re-sync — dropping and re-creating subscription")
+        logger.info("Triggering full re-sync — truncating standby data first")
+        # Step 1: truncate all tables (raises RuntimeError on failure, aborts early)
+        await ReplicationManager.truncate_all_tables()
+        # Step 2: drop existing subscription
         await ReplicationManager.drop_subscription(db)
         sql = (
             f"CREATE SUBSCRIPTION {ReplicationManager.SUBSCRIPTION_NAME} "
@@ -480,11 +548,15 @@ class ReplicationManager:
 
         try:
             # Get lag and last message time from pg_stat_subscription
+            # Use GREATEST of send and receipt times for more accurate lag
+            # (last_msg_send_time updates on keepalives; last_msg_receipt_time
+            # updates only when data arrives — GREATEST gives the most recent
+            # meaningful activity timestamp)
             result = await db.execute(
                 text(
                     "SELECT "
-                    "  EXTRACT(EPOCH FROM (now() - last_msg_send_time)) AS lag_seconds, "
-                    "  last_msg_send_time "
+                    "  EXTRACT(EPOCH FROM (now() - GREATEST(last_msg_send_time, last_msg_receipt_time))) AS lag_seconds, "
+                    "  GREATEST(last_msg_send_time, last_msg_receipt_time) "
                     "FROM pg_stat_subscription "
                     "WHERE subname = :name"
                 ),
@@ -522,9 +594,12 @@ class ReplicationManager:
         Returns ``None`` if no subscription exists or lag cannot be determined.
         """
         try:
+            # Use GREATEST of send and receipt times for accurate lag measurement
+            # (last_msg_send_time updates on keepalives even without data changes;
+            # last_msg_receipt_time only updates when data arrives)
             result = await db.execute(
                 text(
-                    "SELECT EXTRACT(EPOCH FROM (now() - last_msg_send_time)) "
+                    "SELECT EXTRACT(EPOCH FROM (now() - GREATEST(last_msg_send_time, last_msg_receipt_time))) "
                     "FROM pg_stat_subscription "
                     "WHERE subname = :name"
                 ),

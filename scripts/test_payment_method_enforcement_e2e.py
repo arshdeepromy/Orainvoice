@@ -35,7 +35,7 @@ BASE = os.environ.get("E2E_BASE_URL", "http://localhost:8000")
 API = f"{BASE}/api/v1"
 
 ORG_EMAIL = "admin@nerdytech.co.nz"
-ORG_PASSWORD = "W4h3guru1#"
+ORG_PASSWORD = os.environ.get("E2E_ORG_PASSWORD", "changeme")
 GLOBAL_ADMIN_EMAIL = "admin@orainvoice.com"
 GLOBAL_ADMIN_PASSWORD = "admin123"
 

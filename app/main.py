@@ -1,6 +1,7 @@
 """FastAPI application factory and middleware registration."""
 
 import logging
+import os
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -640,26 +641,51 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def _start_ha_heartbeat() -> None:
-        from app.modules.ha.service import HAService
         from app.modules.ha.middleware import set_node_role
         from app.core.database import async_session_factory
         try:
             async with async_session_factory() as session:
                 async with session.begin():
-                    config = await HAService.get_config(session)
-                    if config is not None:
-                        set_node_role(config.role, config.peer_endpoint)
+                    from app.modules.ha.models import HAConfig
+                    from sqlalchemy import select
+                    result = await session.execute(select(HAConfig).limit(1))
+                    cfg_orm = result.scalars().first()
+                    if cfg_orm is not None:
+                        set_node_role(cfg_orm.role, cfg_orm.peer_endpoint)
                         # Start heartbeat if peer is configured
-                        if config.peer_endpoint:
-                            import os
+                        if cfg_orm.peer_endpoint:
+                            # --- BUG-HA-06: Redis distributed lock for multi-worker heartbeat ---
+                            LOCK_KEY = "ha:heartbeat_lock"
+                            LOCK_TTL = 30  # seconds
+                            worker_id = str(os.getpid())
+                            redis_client = None
+                            try:
+                                from app.core.redis import redis_pool
+                                acquired = await redis_pool.set(LOCK_KEY, worker_id, nx=True, ex=LOCK_TTL)
+                                if not acquired:
+                                    logger.info("Heartbeat lock already held — skipping in PID %s", worker_id)
+                                    return
+                                redis_client = redis_pool
+                            except Exception as redis_exc:
+                                logger.warning(
+                                    "Redis unavailable for heartbeat lock — proceeding without lock in PID %s: %s",
+                                    worker_id, redis_exc,
+                                )
+
                             from app.modules.ha.heartbeat import HeartbeatService
+                            from app.modules.ha.service import _get_heartbeat_secret_from_config
                             from app.modules.ha import service as ha_svc_module
-                            secret = os.environ.get("HA_HEARTBEAT_SECRET", "")
+                            secret = _get_heartbeat_secret_from_config(cfg_orm)
                             hb = HeartbeatService(
-                                peer_endpoint=config.peer_endpoint,
-                                interval=config.heartbeat_interval_seconds,
+                                peer_endpoint=cfg_orm.peer_endpoint,
+                                interval=cfg_orm.heartbeat_interval_seconds,
                                 secret=secret,
+                                local_role=cfg_orm.role,
                             )
+                            # Pass Redis lock info to heartbeat service for TTL renewal
+                            hb._redis_lock_key = LOCK_KEY
+                            hb._lock_ttl = LOCK_TTL
+                            hb._redis_client = redis_client
                             ha_svc_module._heartbeat_service = hb
                             await hb.start()
         except Exception as exc:

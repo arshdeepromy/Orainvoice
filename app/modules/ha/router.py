@@ -129,6 +129,15 @@ async def heartbeat(db: AsyncSession = Depends(get_db_session)):
     try:
         now_mono = time.monotonic()
 
+        # --- BUG-HA-06: Check Redis dirty-flag for cross-worker cache invalidation ---
+        try:
+            from app.core.redis import redis_pool as _redis
+            if await _redis.get("ha:hb_cache_dirty"):
+                _hb_cache["ts"] = 0  # force cache miss
+                await _redis.delete("ha:hb_cache_dirty")
+        except Exception:
+            pass  # Redis unavailable — fall back to TTL-based expiry
+
         # --- Cached config lookup (avoids DB hit on every ping) ---
         cfg_row = None
         secret = ""

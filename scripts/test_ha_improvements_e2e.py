@@ -30,7 +30,7 @@ import httpx
 
 DEFAULT_BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:80/api/v1")
 DEFAULT_EMAIL = os.environ.get("E2E_EMAIL", "admin@nerdytech.co.nz")
-DEFAULT_PASSWORD = os.environ.get("E2E_PASSWORD", "W4h3guru1#")
+DEFAULT_PASSWORD = os.environ.get("E2E_PASSWORD", "changeme")
 
 # ---------------------------------------------------------------------------
 # Output helpers

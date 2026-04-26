@@ -1053,6 +1053,9 @@ export function HAReplication() {
             />
             Enable auto-promote (standby auto-promotes when primary is unreachable)
           </label>
+          <p className="text-xs text-amber-700 sm:col-span-2 -mt-1 pl-6">
+            Note: If the primary is also unreachable by the standby (full partition), split-brain detection will be inactive until connectivity is restored.
+          </p>
           <div className="sm:col-span-2">
             <Input
               label="Heartbeat Secret"

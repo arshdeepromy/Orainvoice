@@ -454,3 +454,197 @@ class TestHAServiceDemote:
         with patch("app.modules.ha.service._load_config", new_callable=AsyncMock, return_value=cfg):
             with pytest.raises(ValueError, match="Cannot demote"):
                 await HAService.demote(db, uuid.uuid4(), "test")
+
+
+# ═════════════════════════════════════════════════════════════════════
+# WebSocket write protection middleware tests (BUG-HA-13)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class TestWebSocketWriteProtection:
+    """Requirement 13.1, 13.2, 13.3 — WebSocket standby write protection."""
+
+    @pytest.mark.asyncio
+    async def test_ws_blocked_on_standby_non_allowlisted_path(self):
+        """Non-allowlisted WS path is closed with 1013 on standby."""
+        from app.modules.ha import middleware as mw
+
+        original_role = mw._node_role
+        original_split = mw._split_brain_blocked
+        try:
+            mw._node_role = "standby"
+            mw._split_brain_blocked = False
+
+            app = AsyncMock()
+            mid = mw.StandbyWriteProtectionMiddleware(app)
+
+            scope = {"type": "websocket", "path": "/ws/orders/live"}
+            receive = AsyncMock()
+            send = AsyncMock()
+
+            await mid(scope, receive, send)
+
+            send.assert_called_once_with({
+                "type": "websocket.close",
+                "code": 1013,
+                "reason": "This node is in standby mode. Writes not accepted.",
+            })
+            app.assert_not_called()
+        finally:
+            mw._node_role = original_role
+            mw._split_brain_blocked = original_split
+
+    @pytest.mark.asyncio
+    async def test_ws_allowed_kitchen_display_on_standby(self):
+        """Kitchen display WS (/ws/kitchen/) is allowed on standby (read-only)."""
+        from app.modules.ha import middleware as mw
+
+        original_role = mw._node_role
+        original_split = mw._split_brain_blocked
+        try:
+            mw._node_role = "standby"
+            mw._split_brain_blocked = False
+
+            app = AsyncMock()
+            mid = mw.StandbyWriteProtectionMiddleware(app)
+
+            scope = {"type": "websocket", "path": "/ws/kitchen/test-org/all"}
+            receive = AsyncMock()
+            send = AsyncMock()
+
+            await mid(scope, receive, send)
+
+            app.assert_called_once_with(scope, receive, send)
+        finally:
+            mw._node_role = original_role
+            mw._split_brain_blocked = original_split
+
+    @pytest.mark.asyncio
+    async def test_ws_allowed_ha_path_on_standby(self):
+        """HA management WS path (/api/v1/ha/) is allowed on standby."""
+        from app.modules.ha import middleware as mw
+
+        original_role = mw._node_role
+        original_split = mw._split_brain_blocked
+        try:
+            mw._node_role = "standby"
+            mw._split_brain_blocked = False
+
+            app = AsyncMock()
+            mid = mw.StandbyWriteProtectionMiddleware(app)
+
+            scope = {"type": "websocket", "path": "/api/v1/ha/ws-status"}
+            receive = AsyncMock()
+            send = AsyncMock()
+
+            await mid(scope, receive, send)
+
+            app.assert_called_once_with(scope, receive, send)
+        finally:
+            mw._node_role = original_role
+            mw._split_brain_blocked = original_split
+
+    @pytest.mark.asyncio
+    async def test_ws_allowed_on_primary(self):
+        """All WS paths are allowed on primary."""
+        from app.modules.ha import middleware as mw
+
+        original_role = mw._node_role
+        original_split = mw._split_brain_blocked
+        try:
+            mw._node_role = "primary"
+            mw._split_brain_blocked = False
+
+            app = AsyncMock()
+            mid = mw.StandbyWriteProtectionMiddleware(app)
+
+            scope = {"type": "websocket", "path": "/ws/orders/live"}
+            receive = AsyncMock()
+            send = AsyncMock()
+
+            await mid(scope, receive, send)
+
+            app.assert_called_once_with(scope, receive, send)
+        finally:
+            mw._node_role = original_role
+            mw._split_brain_blocked = original_split
+
+    @pytest.mark.asyncio
+    async def test_ws_allowed_on_standalone(self):
+        """All WS paths are allowed on standalone."""
+        from app.modules.ha import middleware as mw
+
+        original_role = mw._node_role
+        original_split = mw._split_brain_blocked
+        try:
+            mw._node_role = "standalone"
+            mw._split_brain_blocked = False
+
+            app = AsyncMock()
+            mid = mw.StandbyWriteProtectionMiddleware(app)
+
+            scope = {"type": "websocket", "path": "/ws/orders/live"}
+            receive = AsyncMock()
+            send = AsyncMock()
+
+            await mid(scope, receive, send)
+
+            app.assert_called_once_with(scope, receive, send)
+        finally:
+            mw._node_role = original_role
+            mw._split_brain_blocked = original_split
+
+    @pytest.mark.asyncio
+    async def test_ws_blocked_on_split_brain(self):
+        """Non-allowlisted WS path is closed with 1013 during split-brain."""
+        from app.modules.ha import middleware as mw
+
+        original_role = mw._node_role
+        original_split = mw._split_brain_blocked
+        try:
+            mw._node_role = "primary"
+            mw._split_brain_blocked = True
+
+            app = AsyncMock()
+            mid = mw.StandbyWriteProtectionMiddleware(app)
+
+            scope = {"type": "websocket", "path": "/ws/orders/live"}
+            receive = AsyncMock()
+            send = AsyncMock()
+
+            await mid(scope, receive, send)
+
+            send.assert_called_once_with({
+                "type": "websocket.close",
+                "code": 1013,
+                "reason": "This node is in standby mode. Writes not accepted.",
+            })
+            app.assert_not_called()
+        finally:
+            mw._node_role = original_role
+            mw._split_brain_blocked = original_split
+
+    @pytest.mark.asyncio
+    async def test_ws_kitchen_allowed_during_split_brain(self):
+        """Kitchen display WS is allowed even during split-brain (read-only)."""
+        from app.modules.ha import middleware as mw
+
+        original_role = mw._node_role
+        original_split = mw._split_brain_blocked
+        try:
+            mw._node_role = "primary"
+            mw._split_brain_blocked = True
+
+            app = AsyncMock()
+            mid = mw.StandbyWriteProtectionMiddleware(app)
+
+            scope = {"type": "websocket", "path": "/ws/kitchen/org-123/all"}
+            receive = AsyncMock()
+            send = AsyncMock()
+
+            await mid(scope, receive, send)
+
+            app.assert_called_once_with(scope, receive, send)
+        finally:
+            mw._node_role = original_role
+            mw._split_brain_blocked = original_split

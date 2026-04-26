@@ -224,6 +224,15 @@ if [ "$OLD_COMMIT" = "$NEW_COMMIT" ] && [ -z "$BRANCH" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 6b. Scrub any hardcoded credentials from scripts (BUG-HA-03 follow-up)
+#     Safe to run every deploy — idempotent, only touches files with matches.
+# ---------------------------------------------------------------------------
+if [ -f "scripts/scrub_credentials.sh" ]; then
+    log "Scrubbing hardcoded credentials from scripts..."
+    bash scripts/scrub_credentials.sh 2>&1 | tee -a "$DEPLOY_LOG"
+fi
+
+# ---------------------------------------------------------------------------
 # Rollback function
 # ---------------------------------------------------------------------------
 rollback() {

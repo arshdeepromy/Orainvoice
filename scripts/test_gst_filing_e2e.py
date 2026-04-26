@@ -29,7 +29,7 @@ import httpx
 
 BASE = os.environ.get("E2E_BASE_URL", "http://localhost:8000/api/v1")
 ORG_EMAIL = "admin@nerdytech.co.nz"
-ORG_PASSWORD = "W4h3guru1#"
+ORG_PASSWORD = os.environ.get("E2E_ORG_PASSWORD", "changeme")
 
 PASS = "\033[92m✓\033[0m"
 FAIL = "\033[91m✗\033[0m"

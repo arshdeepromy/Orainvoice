@@ -37,7 +37,7 @@ BASE = "http://localhost:8000/api/v1"
 ADMIN_EMAIL = "admin@orainvoice.com"
 ADMIN_PASSWORD = "Admin123!"
 ORG_EMAIL = "admin@nerdytech.co.nz"
-ORG_PASSWORD = "W4h3guru1#"
+ORG_PASSWORD = os.environ.get("E2E_ORG_PASSWORD", "changeme")
 
 DB_HOST = os.environ.get("DB_HOST", "postgres")
 DB_PORT = int(os.environ.get("DB_PORT", "5432"))

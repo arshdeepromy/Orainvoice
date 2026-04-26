@@ -3779,3 +3779,427 @@ Additionally, the `_apply_country_defaults` function in `app/modules/setup_wizar
 **Similar Bugs Found & Fixed**: 11 additional instances of the same `/v2/...` pattern in inventory pages — all fixed in this pass. Full scan confirmed zero remaining instances.
 
 **Related Issues**: ISSUE-006 (original systemic v2 double-prefix fix)
+
+
+---
+
+### ISSUE-114: Sequences not replicated — post-promotion duplicate key violations
+
+- **Date**: 2026-04-26
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: After promoting a standby to primary, the first INSERT on any table with an auto-increment primary key fails with a duplicate key violation. `nextval('some_id_seq')` returns `1` because sequences were never replicated from the primary. The replication lag metric also understates true lag during low-write periods because it uses `last_msg_send_time` (updated by keepalives) instead of `last_msg_receipt_time`.
+
+**Root Cause**: `init_primary` in `replication.py` creates a `FOR TABLE` publication that replicates row data only — sequences are excluded. PostgreSQL logical replication applies rows directly without calling `nextval()`, so standby sequences remain at their initial values. On promotion, the ORM calls `nextval()` which returns a value that conflicts with existing replicated rows. Additionally, `get_replication_lag` used `last_msg_send_time` which is refreshed by keepalive pings regardless of data changes, making the promote lag-safety guard ineffective.
+
+**Fix Applied**:
+1. Added `ALTER PUBLICATION ... ADD ALL SEQUENCES` after `CREATE PUBLICATION` in `init_primary` (PostgreSQL 16 native sequence replication)
+2. Added `sync_sequences_post_promotion()` safety-net method that runs `SELECT setval(seq, MAX(id) + 1)` for all auto-increment sequences
+3. Called sequence sync in `HAService.promote()` and `HeartbeatService._execute_auto_promote()`
+4. Changed lag query to use `GREATEST(last_msg_send_time, last_msg_receipt_time)` in both `get_replication_lag` and `get_replication_status`
+
+**Files Changed**:
+- `app/modules/ha/replication.py`
+- `app/modules/ha/service.py`
+- `app/modules/ha/heartbeat.py`
+
+**Similar Bugs Found & Fixed**: The lag metric fix also improves the promote safety guard accuracy across all promotion paths (manual and auto-promote).
+
+**Related Issues**: ISSUE-120 (same lag metric fix)
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-115: trigger_resync does not truncate standby before re-copying — duplicate key errors
+
+- **Date**: 2026-04-26
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: Calling `POST /api/v1/ha/replication/resync` on a standby with existing replicated data fails with duplicate primary key errors on every table. The re-sync never completes.
+
+**Root Cause**: `trigger_resync` calls `drop_subscription` then `CREATE SUBSCRIPTION ... WITH (copy_data = true)` without first truncating the standby tables. PostgreSQL's `copy_data = true` does not auto-truncate — it inserts rows into existing tables, causing PK conflicts. The `init_standby` path correctly passes `truncate_first=True`, but `trigger_resync` bypasses this safeguard.
+
+**Fix Applied**:
+1. Added `await ReplicationManager.truncate_all_tables()` as the first step in `trigger_resync`, before `drop_subscription`
+2. Added INFO log: "Triggered re-sync: truncating standby tables first"
+3. If truncation fails, the exception propagates and resync is aborted (no partial state)
+
+**Files Changed**:
+- `app/modules/ha/replication.py`
+
+**Similar Bugs Found & Fixed**: N/A — `init_standby` already had correct truncation.
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-116: Hardcoded credentials committed to repository in operational scripts
+
+- **Date**: 2026-04-26
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: Three scripts in `scripts/` contain hardcoded production credentials in plaintext: the sudo password (`echo <password> | sudo -S` pattern) and the replication user's database password in a connection string.
+
+**Root Cause**: `check_repl_status.sh`, `check_sync_status.sh`, and `fix_replication.sh` were written with inline credentials for convenience during initial setup. These credentials are visible in git history to any developer, CI pipeline, or code scanner.
+
+**Fix Applied**:
+1. Removed all `echo <password> | sudo -S` prefixes — replaced with bare `sudo` (relies on SSH key auth and NOPASSWD sudoers)
+2. Removed hardcoded database password from `fix_replication.sh` — replaced connection string with `${HA_PEER_DB_URL}` environment variable reference
+3. Added prerequisite header comments to all three scripts documenting SSH key auth, NOPASSWD sudoers, and env var requirements
+4. Rotated leaked credentials on production server
+
+**Files Changed**:
+- `scripts/check_repl_status.sh`
+- `scripts/check_sync_status.sh`
+- `scripts/fix_replication.sh`
+
+**Similar Bugs Found & Fixed**: No other scripts contained hardcoded credentials.
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-117: Startup heartbeat service ignores DB-stored secret — uses env var only
+
+- **Date**: 2026-04-26
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: After setting the heartbeat secret via the HA admin UI and restarting the app container, heartbeat HMAC verification fails with "Invalid HMAC signature" on every ping. The secret set through the UI is stored encrypted in the DB but the startup code reads only from `HA_HEARTBEAT_SECRET` env var.
+
+**Root Cause**: `_start_ha_heartbeat()` in `app/main.py` used `os.environ.get("HA_HEARTBEAT_SECRET", "")` exclusively. The runtime path (`HAService.save_config`) correctly uses `_get_heartbeat_secret_from_config(cfg_orm)` which reads the encrypted DB value, but the startup path bypassed this entirely. Additionally, `local_role` was not passed to the `HeartbeatService` constructor at startup, causing split-brain detection to always compare `"standalone"` against the peer's role.
+
+**Fix Applied**:
+1. Changed startup to load `HAConfig` ORM object and call `_get_heartbeat_secret_from_config(cfg_orm)` instead of reading env var directly
+2. Added `local_role=cfg_orm.role` to `HeartbeatService()` constructor call
+3. Falls back to env var when no DB-stored secret exists (matching existing runtime behaviour)
+
+**Files Changed**:
+- `app/main.py`
+
+**Similar Bugs Found & Fixed**: N/A
+
+**Related Issues**: ISSUE-088 (HMAC mismatch between Pi and standby)
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-118: No WAL disk space guard — unbounded WAL retention can crash primary
+
+- **Date**: 2026-04-26
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: When the standby goes offline, the primary's replication slot accumulates WAL indefinitely with no upper bound. On the Raspberry Pi with limited storage, this can fill the disk and crash PostgreSQL with `FATAL: could not write to file "pg_wal/..."`. The Pi compose also had `max_replication_slots=150`, allowing up to 150 orphaned slots to each accumulate WAL independently.
+
+**Root Cause**: `max_slot_wal_keep_size` was not set in any compose file, so PostgreSQL retained all WAL from the slot's `restart_lsn` indefinitely. The base `docker-compose.yml` also had no explicit `max_wal_senders` or `max_replication_slots`, silently depending on PostgreSQL defaults.
+
+**Fix Applied**:
+1. `docker-compose.pi.yml`: Added `max_slot_wal_keep_size=2048` (2 GB ceiling), changed `max_replication_slots=150` to `max_replication_slots=10`
+2. `docker-compose.yml`: Added explicit `max_wal_senders=10` and `max_replication_slots=10`
+3. `docker-compose.standby-prod.yml`: Added `max_slot_wal_keep_size=2048`
+
+**Files Changed**:
+- `docker-compose.pi.yml`
+- `docker-compose.yml`
+- `docker-compose.standby-prod.yml`
+
+**Similar Bugs Found & Fixed**: Base compose WAL settings (ISSUE-119) fixed in the same pass.
+
+**Related Issues**: ISSUE-119
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-119: Base compose missing explicit WAL settings — relies on PostgreSQL defaults
+
+- **Date**: 2026-04-26
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: When a developer sets up a local dev HA environment using only `docker-compose.yml` (without the Pi overlay), the postgres command only has `wal_level=logical` but no `max_wal_senders` or `max_replication_slots`. Replication works by accident (defaults are sufficient for 1 standby) but the configuration is not intentional or auditable.
+
+**Root Cause**: `docker-compose.yml` postgres command section only had `wal_level=logical` without explicit sender/slot settings.
+
+**Fix Applied**: Added `-c max_wal_senders=10` and `-c max_replication_slots=10` to the postgres command in `docker-compose.yml`, making replication capability intentional and auditable.
+
+**Files Changed**:
+- `docker-compose.yml`
+
+**Similar Bugs Found & Fixed**: Combined with ISSUE-118 WAL guard fix.
+
+**Related Issues**: ISSUE-118
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-120: Replication lag metric uses last_msg_send_time — understates true lag
+
+- **Date**: 2026-04-26
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: The HA admin page shows near-zero replication lag even when the subscription is lagging in LSN terms. During periods of low write activity, `last_msg_send_time` is refreshed by keepalive pings and reports near-zero lag. The promote safety guard (`lag > 5.0 → require force`) allows promotion without force despite significant data loss risk.
+
+**Root Cause**: `get_replication_lag` and `get_replication_status` used `EXTRACT(EPOCH FROM (now() - last_msg_send_time))` from `pg_stat_subscription`. `last_msg_send_time` is updated by keepalive messages sent every few seconds regardless of data changes, substantially understating true replication lag.
+
+**Fix Applied**: Changed both functions to use `GREATEST(last_msg_send_time, last_msg_receipt_time)`. `last_msg_receipt_time` is only updated when data arrives, making it a more accurate lag indicator during active replication. Using `GREATEST` of both ensures the metric reflects the most recent meaningful activity. Added comment explaining the rationale.
+
+**Files Changed**:
+- `app/modules/ha/replication.py`
+
+**Similar Bugs Found & Fixed**: Fixed in both `get_replication_lag` and `get_replication_status` in the same pass.
+
+**Related Issues**: ISSUE-114 (lag fix was part of the sequence replication task)
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-121: Multi-worker gunicorn spawns independent heartbeat per worker — race conditions
+
+- **Date**: 2026-04-26
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: With `--workers 2`, the standby receives two heartbeat pings per interval (double the expected load). Two independent auto-promote executions can race: both workers detect the timeout, both call `_execute_auto_promote()`, creating a race condition on `cfg.role` update and writing duplicate audit log entries. The heartbeat response cache `_hb_cache` invalidation after `save_config` only affects the worker that handled the request.
+
+**Root Cause**: Each gunicorn worker independently executes `_start_ha_heartbeat()`, creating separate `HeartbeatService` instances with separate `asyncio.Task` background loops. Module-level state (`_peer_unreachable_since`, `_auto_promote_attempted`, `_hb_cache`) is per-process, not shared across workers.
+
+**Fix Applied**:
+1. Added Redis distributed lock (`SET NX EX`) in `_start_ha_heartbeat()` — only the lock-holder starts the heartbeat loop
+2. Added lock TTL renewal in `HeartbeatService._ping_loop` after each successful ping cycle
+3. Added separate Redis promotion lock in `_execute_auto_promote()` to prevent race conditions
+4. Added Redis dirty-flag (`ha:hb_cache_dirty`) in `save_config` for cross-worker cache invalidation
+5. Added Redis dirty-flag check in heartbeat endpoint handler — forces cache miss if dirty flag present
+6. Fallback: if Redis unavailable, log warning and proceed without lock (single-worker behaviour)
+
+**Files Changed**:
+- `app/main.py`
+- `app/modules/ha/heartbeat.py`
+- `app/modules/ha/service.py`
+- `app/modules/ha/router.py`
+
+**Similar Bugs Found & Fixed**: ISSUE-125 (cache invalidation) is fully covered by the Redis dirty-flag mechanism in this fix.
+
+**Related Issues**: ISSUE-125
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-122: Split-brain undetectable and undocumented during full network partition
+
+- **Date**: 2026-04-26
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: During a full network partition where neither node can reach the other, split-brain detection is inactive because it relies on successful heartbeat communication. If auto-promote is enabled, the standby promotes after the failover timeout, resulting in two independent primaries with diverging data. This limitation was not documented.
+
+**Root Cause**: `detect_split_brain(self.local_role, peer_role)` only executes when `_ping_peer()` returns a successful heartbeat response with a `role` field. During a full partition, pings fail and split-brain detection never runs. This is an inherent limitation of a 2-node active-standby design without a quorum mechanism.
+
+**Fix Applied**: No code changes — documentation-only fix:
+1. Added explicit network partition warning block to `docs/HA_REPLICATION_GUIDE.md` under the Unplanned Failover section, explaining the limitation and recovery procedure
+2. Added tooltip text on the auto-promote toggle in the HA admin frontend component
+
+**Files Changed**:
+- `docs/HA_REPLICATION_GUIDE.md`
+
+**Similar Bugs Found & Fixed**: N/A — inherent 2-node design limitation.
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-123: Standby dev compose missing statement and idle-transaction timeouts
+
+- **Date**: 2026-04-26
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: A session on the dev standby that hangs inside a transaction (bug, deadlock, forgotten commit) is never killed, masking timeout-related bugs that would surface in production. The production standby (`docker-compose.standby-prod.yml`) and Pi primary (`docker-compose.pi.yml`) both have 30000ms timeouts, but the dev standby does not.
+
+**Root Cause**: `docker-compose.ha-standby.yml` was missing `idle_in_transaction_session_timeout` and `statement_timeout` postgres command args.
+
+**Fix Applied**: Added `-c idle_in_transaction_session_timeout=30000` and `-c statement_timeout=30000` to the postgres command in `docker-compose.ha-standby.yml`, matching the production standby configuration.
+
+**Files Changed**:
+- `docker-compose.ha-standby.yml`
+
+**Similar Bugs Found & Fixed**: N/A
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-124: pg_hba.conf unmanaged — replication connections not IP-restricted
+
+- **Date**: 2026-04-26
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: The PostgreSQL Docker image uses default `pg_hba.conf` rules which allow all authenticated connections from any host. Any host on the VPN/network that knows the replication user credentials can establish a replication connection to the primary, even if it is not the designated standby. The HA guide documented IP-based restrictions but provided no script or mechanism to deploy them.
+
+**Root Cause**: No script, entrypoint, or compose mechanism existed to configure `pg_hba.conf` inside the Docker container with IP-specific replication rules.
+
+**Fix Applied**:
+1. Created `scripts/configure_pg_hba.sh` that appends IP-specific `hostssl replication` and `hostssl all` rules for the replicator user to the postgres container's `pg_hba.conf` and reloads the configuration via `pg_reload_conf()`
+2. Added reference to the new script in `docs/HA_REPLICATION_GUIDE.md` under the Security section
+
+**Files Changed**:
+- `scripts/configure_pg_hba.sh` (new)
+- `docs/HA_REPLICATION_GUIDE.md`
+
+**Similar Bugs Found & Fixed**: N/A
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-125: Heartbeat cache invalidation is single-worker only in multi-worker gunicorn
+
+- **Date**: 2026-04-26
+- **Severity**: low
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: After `save_config` completes in one gunicorn worker, other workers continue serving stale heartbeat config (role, secret, maintenance mode) from their in-memory `_hb_cache` for up to 10 seconds.
+
+**Root Cause**: `save_config` invalidates the cache by setting `_hb_cache["ts"] = 0` in the current worker's memory. Other workers' caches are unaffected because each process has its own memory space.
+
+**Fix Applied**: Covered by the Redis dirty-flag mechanism in ISSUE-121 (BUG-HA-06 fix). When `save_config` completes, it writes `ha:hb_cache_dirty` to Redis. All workers check this flag before serving cached heartbeat responses. If Redis is unavailable, the existing 10-second TTL-based expiry takes over.
+
+**Files Changed**:
+- `app/modules/ha/service.py`
+- `app/modules/ha/router.py`
+
+**Similar Bugs Found & Fixed**: N/A — fully covered by ISSUE-121.
+
+**Related Issues**: ISSUE-121
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-126: WebSocket connections bypass standby write-protection middleware
+
+- **Date**: 2026-04-26
+- **Severity**: low
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: WebSocket connections on a standby node bypass the `StandbyWriteProtectionMiddleware` entirely. The middleware checks `if scope["type"] != "http"` and passes through unconditionally for non-HTTP scopes. Any future WebSocket handler that writes to the database would silently succeed on a standby, bypassing the protection the middleware was designed to enforce.
+
+**Root Cause**: `StandbyWriteProtectionMiddleware.__call__` only handled `scope["type"] == "http"` and passed all other scope types (including `websocket`) through without any write-protection check.
+
+**Fix Applied**:
+1. Extended the middleware to handle `scope["type"] == "websocket"` connections
+2. Added WebSocket path allowlist: `/ws/kitchen/` (read-only Redis pub/sub) and `/api/v1/ha/` (HA management)
+3. Non-allowlisted WebSocket paths on standby are closed with code 1013 (Try Again Later) and a descriptive reason message
+
+**Files Changed**:
+- `app/modules/ha/middleware.py`
+
+**Similar Bugs Found & Fixed**: N/A
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-127: dead_letter table replicated — may cause double-processing after failover
+
+- **Date**: 2026-04-26
+- **Severity**: low
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: After failover, the new primary (former standby) inherits all `dead_letter` entries from the old primary. The background task processor may re-attempt these partially-executed operations, causing double side-effects (duplicate emails, duplicate payment attempts, duplicate webhook deliveries).
+
+**Root Cause**: `init_primary` builds the publication table list excluding only `ha_config`. The `dead_letter` table (failed background jobs) is included in the publication and replicated to the standby. After promotion, the new primary's task processor sees these entries and re-attempts them.
+
+**Fix Applied**:
+1. Changed the table exclusion filter in `init_primary` from `!= 'ha_config'` to `NOT IN ('ha_config', 'dead_letter_queue')` (actual table name verified from `app/models/dead_letter.py`)
+2. Added comment in `filter_tables_for_truncation` explaining why `dead_letter` is excluded from publication but not from truncation
+
+**Files Changed**:
+- `app/modules/ha/replication.py`
+
+**Similar Bugs Found & Fixed**: N/A
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`
+
+---
+
+### ISSUE-128: Peer role inferred as opposite of local — incorrect in standalone mode
+
+- **Date**: 2026-04-26
+- **Severity**: low
+- **Status**: resolved
+- **Reporter**: agent (HA audit)
+- **Regression of**: N/A
+
+**Symptoms**: In standalone mode, `GET /api/v1/ha/cluster-status` shows the peer entry with `role: "primary"` (inferred as opposite of `"standalone"`), which is incorrect. The peer's actual role is available from heartbeat responses but was never stored or used.
+
+**Root Cause**: `get_cluster_status` in `service.py` sets `peer_role = "standby" if cfg.role == "primary" else "primary"`, always producing the opposite of the local role. This is wrong for standalone mode and also wrong when the peer is in an unexpected state. The heartbeat response payload already contains the peer's actual role (`data.get("role")`) but this data was discarded after each ping.
+
+**Fix Applied**:
+1. Added `self.peer_role: str = "unknown"` to `HeartbeatService.__init__`
+2. Set `self.peer_role = data.get("role", "unknown")` in `_ping_peer()` on successful response
+3. Changed `get_cluster_status` to use `_heartbeat_service.peer_role` instead of the inferred opposite role
+4. Defaults to `"unknown"` when no heartbeat has been received yet
+
+**Files Changed**:
+- `app/modules/ha/heartbeat.py`
+- `app/modules/ha/service.py`
+
+**Similar Bugs Found & Fixed**: N/A
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/ha-replication-bugfixes/`

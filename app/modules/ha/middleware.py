@@ -3,10 +3,13 @@
 Rejects non-GET/HEAD/OPTIONS requests when the local node is in standby
 role, except for HA management endpoints (``/api/v1/ha/*``).
 
+WebSocket connections on non-allowlisted paths are closed with code 1013
+(Try Again Later) when the node is in standby or split-brain-blocked mode.
+
 The current node role and peer endpoint are stored as module-level
 variables and updated by the HA service via :func:`set_node_role`.
 
-Requirements: 9.1, 9.2, 9.3, 9.4
+Requirements: 9.1, 9.2, 9.3, 9.4, 13.1, 13.2, 13.3
 """
 
 from __future__ import annotations
@@ -80,13 +83,37 @@ class StandbyWriteProtectionMiddleware:
     - All GET / HEAD / OPTIONS requests (reads)
     - All requests to ``/api/v1/ha/*`` (HA management)
     - All requests when node role is ``'primary'`` or ``'standalone'``
+
+    WebSocket connections are also checked: non-allowlisted paths are
+    closed with code 1013 (Try Again Later) on standby/split-brain nodes.
+    The kitchen display WebSocket (``/ws/kitchen/``) is explicitly allowed
+    because it is read-only (Redis pub/sub subscriber only).
     """
+
+    # WebSocket paths allowed on standby nodes (read-only or HA management).
+    _WS_ALLOWED_PREFIXES: tuple[str, ...] = ("/ws/kitchen/", "/api/v1/ha/")
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        scope_type = scope["type"]
+
+        # --- WebSocket write protection ---
+        if scope_type == "websocket":
+            if _node_role == "standby" or _split_brain_blocked:
+                path = scope.get("path", "")
+                if not any(path.startswith(p) for p in self._WS_ALLOWED_PREFIXES):
+                    await send({
+                        "type": "websocket.close",
+                        "code": 1013,  # Try Again Later
+                        "reason": "This node is in standby mode. Writes not accepted.",
+                    })
+                    return
+            await self.app(scope, receive, send)
+            return
+
+        if scope_type != "http":
             await self.app(scope, receive, send)
             return
 

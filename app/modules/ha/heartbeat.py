@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from collections import deque
@@ -55,6 +56,12 @@ class HeartbeatService:
         self._peer_promoted_at: datetime | None = None
         # Sync status DB update throttle (Task 16.4)
         self._last_sync_status_update: float = 0.0  # monotonic timestamp
+        # Actual peer role from heartbeat responses (BUG-HA-15)
+        self.peer_role: str = "unknown"
+        # Redis distributed lock for multi-worker isolation (BUG-HA-06)
+        self._redis_lock_key: str | None = None
+        self._lock_ttl: int = 30
+        self._redis_client = None  # redis.asyncio.Redis or None
 
     async def start(self) -> None:
         """Start the background heartbeat ping loop."""
@@ -206,6 +213,13 @@ class HeartbeatService:
                     # Successful cycle — reset consecutive failure counter
                     _consecutive_failures = 0
 
+                    # --- BUG-HA-06: Renew Redis heartbeat lock TTL ---
+                    try:
+                        if self._redis_lock_key and self._redis_client:
+                            await self._redis_client.expire(self._redis_lock_key, self._lock_ttl)
+                    except Exception:
+                        pass  # Non-critical; another worker takes over when lock expires
+
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -261,6 +275,9 @@ class HeartbeatService:
 
             # Successful heartbeat
             self._last_successful_heartbeat = time.monotonic()
+
+            # Store actual peer role from response (BUG-HA-15)
+            self.peer_role = data.get("role", "unknown")
 
             # Parse promoted_at from peer heartbeat response (Req 11.3)
             raw_promoted_at = data.get("promoted_at")
@@ -415,6 +432,21 @@ class HeartbeatService:
 
         Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.7, 4.8
         """
+        # --- BUG-HA-06: Redis distributed lock for auto-promote ---
+        PROMOTE_LOCK_KEY = "ha:auto_promote_lock"
+        worker_id = str(os.getpid())
+        try:
+            from app.core.redis import redis_pool
+            acquired = await redis_pool.set(PROMOTE_LOCK_KEY, worker_id, nx=True, ex=60)
+            if not acquired:
+                logger.info("Auto-promote lock held by another worker — skipping")
+                return
+        except Exception as redis_exc:
+            logger.warning(
+                "Redis unavailable for auto-promote lock — proceeding without lock: %s",
+                redis_exc,
+            )
+
         for attempt in range(2):
             try:
                 from app.core.database import async_session_factory
@@ -458,6 +490,12 @@ class HeartbeatService:
                         # Update middleware cache so node starts accepting writes
                         set_node_role("primary", cfg.peer_endpoint)
                         self.local_role = "primary"
+
+                        # Post-promotion sequence sync (BUG-HA-01 safety net)
+                        try:
+                            await ReplicationManager.sync_sequences_post_promotion()
+                        except Exception as seq_exc:
+                            logger.warning("Post-promotion sequence sync failed: %s", seq_exc)
 
                         # Write audit log with system UUID (no user session active)
                         system_user_id = uuid.uuid4()

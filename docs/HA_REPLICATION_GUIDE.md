@@ -607,6 +607,18 @@ host    replication  replicator  192.168.1.90/32  scram-sha-256
 host    all          replicator  192.168.1.90/32  scram-sha-256
 ```
 
+**Automated script:** Use `scripts/configure_pg_hba.sh` to append these rules and reload the configuration automatically:
+
+```bash
+# On PRIMARY — restrict replicator to standby's IP
+bash scripts/configure_pg_hba.sh invoicing-postgres-1 192.168.1.91
+
+# On STANDBY — restrict replicator to primary's IP (for reverse replication after failover)
+bash scripts/configure_pg_hba.sh invoicing-standby-postgres-1 192.168.1.90
+```
+
+The script appends `hostssl` rules (SSL-enforced) for both `replication` and `all` connection types, then reloads `pg_hba.conf` via `pg_reload_conf()`. Run it on each node after creating the replicator user and generating SSL certificates.
+
 #### 5. Protect Environment Files
 
 - `.env` files containing `HA_PEER_DB_URL` and `HA_HEARTBEAT_SECRET` must not be committed to git
@@ -645,6 +657,16 @@ These must be identical on both nodes for cross-node authentication to work:
 10. Verify both nodes healthy
 
 ### Unplanned Failover (Primary Down)
+
+> **Warning — Network Partition (Full Isolation):** During a network partition where
+> neither node can reach the other, split-brain detection is inactive because it relies
+> on successful heartbeat communication. If auto-promote is enabled, the standby will
+> promote after the failover timeout, resulting in two independent primaries with diverging
+> data. This is an inherent limitation of a 2-node design without a quorum mechanism.
+>
+> To recover: identify which node served customer traffic after the split, use
+> "Demote and Sync" on the stale primary once connectivity is restored. Any data written
+> to the stale primary since the split will be lost.
 
 1. If auto-promote is enabled, the standby will automatically promote after the failover timeout
 2. If auto-promote is disabled, manually promote the standby: Admin > HA Replication > Promote to Primary

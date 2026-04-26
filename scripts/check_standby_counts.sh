@@ -1,7 +1,7 @@
 #!/bin/bash
 # Run on PRIMARY Pi - check row counts on standby
 ssh nerdy@192.168.10.87 << 'EOF'
-echo W4h3guru1# | sudo -S docker exec invoicing-postgres-1 psql -U postgres -d workshoppro -c "
+sudo docker exec invoicing-postgres-1 psql -U postgres -d workshoppro -c "
 SELECT 'organisations' as tbl, count(*) as cnt FROM organisations
 UNION ALL SELECT 'users', count(*) FROM users
 UNION ALL SELECT 'invoices', count(*) FROM invoices

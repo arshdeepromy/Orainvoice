@@ -275,6 +275,13 @@ class HAService:
         except Exception:
             pass  # Non-critical — cache will expire naturally in 10s
 
+        # --- BUG-HA-06: Redis dirty-flag for cross-worker cache invalidation ---
+        try:
+            from app.core.redis import redis_pool
+            await redis_pool.set("ha:hb_cache_dirty", "1", ex=15)
+        except Exception:
+            pass  # Non-critical — cache expires naturally via 10s TTL
+
         return _config_to_response(cfg)
 
     # ------------------------------------------------------------------
@@ -342,6 +349,12 @@ class HAService:
 
         # Update middleware
         set_node_role("primary", cfg.peer_endpoint)
+
+        # Post-promotion sequence sync (BUG-HA-01 safety net)
+        try:
+            await ReplicationManager.sync_sequences_post_promotion()
+        except Exception as exc:
+            logger.warning("Post-promotion sequence sync failed: %s", exc)
 
         # Audit
         await write_audit_log(
@@ -563,8 +576,8 @@ class HAService:
                 peer_last_hb = latest.timestamp
                 peer_lag = latest.replication_lag_seconds
 
-        # Infer peer role (opposite of local)
-        peer_role = "standby" if cfg.role == "primary" else "primary"
+        # Use actual peer role from heartbeat responses (BUG-HA-15)
+        peer_role = _heartbeat_service.peer_role if _heartbeat_service is not None else "unknown"
 
         peer_entry = HANodeStatusForDashboard(
             node_name=f"Peer ({cfg.peer_endpoint or 'unknown'})",
