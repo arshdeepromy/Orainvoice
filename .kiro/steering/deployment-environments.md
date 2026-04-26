@@ -22,15 +22,16 @@ inclusion: auto
 ### PROD — Raspberry Pi
 - Host: `192.168.1.90`
 - User: `nerdy` (SSH key auth, no password needed for SSH; password required for sudo)
-- Project path: `~/invoicing/`
-- Containers: `invoicing-*` (same 5 containers, ARM64 native builds)
+- Project path: `~/invoicing/` (git repo, pulls from GitHub)
+- Containers: `invoicing-*` (app, frontend, mobile, nginx, postgres, redis — ARM64 native builds)
 - Compose: `docker-compose.yml` + `docker-compose.pi.yml`
-- Env file: `.env.pi` (copied as `.env` on Pi)
+- Env file: `.env.pi` (copied as `.env` on Pi, gitignored)
 - URL: `http://192.168.1.90:8999`
 - Port 8999 (nginx-proxy-manager occupies 80/443)
 - `ENVIRONMENT=development` (SSL disabled — no certs on internal Docker network)
 - DATABASE_URL includes `?ssl=disable` in docker-compose.yml on Pi
 - Has active customer data — treat with care
+- Code deployed via `git pull origin main` (no tar/scp needed)
 
 ## Workflow Rules
 
@@ -59,73 +60,28 @@ ssh nerdy@192.168.1.90 'docker exec invoicing-postgres-1 pg_dump -U postgres -Fc
 ssh nerdy@192.168.1.90 'ls -lh ~/invoicing-backups/ | tail -5'
 ```
 
-### Step 3: Build frontend locally (Pi can't build Vite on ARM)
-
-The Pi's ARM CPU can't reliably build the Vite frontend. Build it locally and transfer the pre-built dist.
-
+### Step 3: Commit and push to GitHub
 ```bash
-# Delete any stale local dist (prevents Docker from using cached old build)
-rm -rf frontend/dist
-
-# Build frontend in Docker with --no-cache to force fresh Vite build
-docker compose build --no-cache frontend
-
-# Start the frontend container to populate the volume
-docker compose up -d frontend
-
-# Copy the pre-built dist from the container to a clean local directory
-rm -rf frontend_dist_export
-docker cp invoicing-frontend-1:/app/dist frontend_dist_export
-```
-
-### Step 4: Sync code to Pi using git archive + SCP
-
-**Use `git archive`** — it creates a clean tar from the git repo:
-
-```bash
-# Ensure all changes are committed and pushed
 git add -A
 git commit -m "deploy: <description>"
 git push origin main
-
-# Create a clean tar from the current HEAD (excludes .git, node_modules, __pycache__ automatically)
-git archive --format=tar HEAD -o deploy.tar
-
-# SCP the tar to Pi
-scp deploy.tar nerdy@192.168.1.90:/tmp/deploy.tar
 ```
 
-### Step 5: Extract code on Pi
-
+### Step 4: Pull code on Pi from GitHub
 ```bash
-# Fix directory permissions (Docker sets directories to read-only)
-ssh nerdy@192.168.1.90 'cd ~/invoicing && find . -maxdepth 5 -type d -exec chmod u+w {} \; 2>/dev/null'
-
-# Extract the git archive (overwrites existing files)
-ssh nerdy@192.168.1.90 'cd ~/invoicing && tar --overwrite -xf /tmp/deploy.tar'
-
-# Verify critical files landed
-ssh nerdy@192.168.1.90 'ls ~/invoicing/app/main.py ~/invoicing/Dockerfile ~/invoicing/docker-compose.yml'
+ssh nerdy@192.168.1.90 'cd ~/invoicing && git pull origin main'
 ```
 
-### Step 6: Transfer pre-built frontend dist
+The Pi has git installed and pulls directly from GitHub. No tar/scp needed for code.
+The `.env` file is gitignored and untouched by `git pull`.
 
+### Step 5: Rebuild and restart containers on Pi
 ```bash
-# Create the dist directory on Pi if it doesn't exist
-ssh nerdy@192.168.1.90 'mkdir -p ~/invoicing/frontend/dist/assets'
-
-# SCP the pre-built dist files
-scp -r frontend_dist_export/* nerdy@192.168.1.90:/home/nerdy/invoicing/frontend/dist/
-```
-
-### Step 7: Rebuild and restart containers on Pi
-
-```bash
-# Rebuild app container (backend only — uses cached pip layers, fast)
+# Rebuild app container (backend)
 ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml up -d --build --force-recreate app'
 
-# Rebuild frontend + nginx (frontend uses pre-built dist, no Vite build needed)
-ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml stop frontend nginx && docker compose -f docker-compose.yml -f docker-compose.pi.yml rm -f frontend nginx && docker volume rm invoicing_frontend_dist 2>/dev/null && docker compose -f docker-compose.yml -f docker-compose.pi.yml up -d --build frontend nginx'
+# Rebuild frontend + nginx (delete old volume to clear cached assets)
+ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml stop frontend nginx && docker compose -f docker-compose.yml -f docker-compose.pi.yml rm -f frontend nginx && docker volume rm invoicing_frontend_dist 2>/dev/null && docker compose -f docker-compose.yml -f docker-compose.pi.yml up -d --build --force-recreate frontend nginx'
 ```
 
 **CRITICAL:** After frontend container starts, fix the assets directory permissions:
@@ -134,8 +90,7 @@ ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -
 ```
 Without this, nginx can't read the JS/CSS files and you get a blank white page.
 
-### Step 8: Verify deployment
-
+### Step 6: Verify deployment
 ```bash
 # Check all containers are running
 ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml ps'
@@ -150,18 +105,30 @@ ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -
 ssh nerdy@192.168.1.90 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8999/'
 
 # Verify API responds
-ssh nerdy@192.168.1.90 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8999/api/v1/auth/stripe-publishable-key'
+ssh nerdy@192.168.1.90 'curl -s http://localhost:8999/health'
 ```
 
-### Step 9: Cleanup
+### Fallback: If Vite build fails on Pi ARM
+
+If the frontend Docker build fails on the Pi (Vite/npm ARM compatibility issue), build locally and transfer:
 
 ```bash
-# Remove local temp files
-rm -f deploy.tar
+# Build frontend locally
+docker compose build --no-cache frontend
+docker compose up -d frontend
 rm -rf frontend_dist_export
+docker cp invoicing-frontend-1:/app/dist frontend_dist_export
 
-# Remove tar from Pi
-ssh nerdy@192.168.1.90 'rm -f /tmp/deploy.tar'
+# Transfer to Pi
+ssh nerdy@192.168.1.90 'mkdir -p ~/invoicing/frontend/dist/assets'
+scp -r frontend_dist_export/* nerdy@192.168.1.90:/home/nerdy/invoicing/frontend/dist/
+
+# Then rebuild frontend container on Pi (it will use the pre-built dist)
+ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml up -d --build --force-recreate frontend nginx'
+ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml exec frontend chmod -R 755 /app/dist/assets'
+
+# Cleanup
+rm -rf frontend_dist_export
 ```
 
 ---
@@ -172,9 +139,9 @@ ssh nerdy@192.168.1.90 'rm -f /tmp/deploy.tar'
 **Cause:** The `frontend/dist/assets/` directory gets created with `drwx------` (700) permissions inside the Docker volume. Nginx worker runs as non-root and can't read the JS/CSS files.
 **Fix:** Run `chmod -R 755 /app/dist/assets` inside the frontend container after every deployment (Step 7 above).
 
-### Issue: Pi can't build frontend (Vite fails on ARM)
-**Cause:** Some npm packages don't have ARM64 binaries, and Vite build can be unreliable on the Pi's limited resources.
-**Fix:** Always build the frontend locally, then transfer the pre-built `dist/` to Pi. The Dockerfile detects `dist/` exists and skips the Vite build ("Using pre-built dist/").
+### Issue: Vite build may fail on Pi ARM
+**Cause:** Some npm packages occasionally lack ARM64 binaries, or the Pi's limited RAM causes OOM during build.
+**Fix:** If `docker compose up --build frontend` fails on Pi, build locally and transfer the dist. See "Fallback: If Vite build fails on Pi ARM" above. As of April 2026, Vite builds successfully on Pi in most cases.
 
 ### Issue: Old frontend assets still showing after deployment
 **Cause:** The Docker volume `invoicing_frontend_dist` caches old assets. New deployment adds new files but doesn't remove old ones.
@@ -223,9 +190,18 @@ ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -
 ```
 
 ### Full rollback (code + database)
-- Keep previous code snapshots if needed (git tag before deploy)
-- Restore database from backup as above
-- Re-sync the previous code version
+```bash
+# Rollback code to a specific commit
+ssh nerdy@192.168.1.90 'cd ~/invoicing && git log --oneline -5'  # find the commit to rollback to
+ssh nerdy@192.168.1.90 'cd ~/invoicing && git checkout <commit-sha>'
+# Rebuild containers
+ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml up -d --build --force-recreate app frontend nginx'
+ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml exec frontend chmod -R 755 /app/dist/assets'
+# Restore database from backup
+ssh nerdy@192.168.1.90 'docker cp ~/invoicing-backups/FILENAME.dump invoicing-postgres-1:/tmp/restore.dump && docker exec invoicing-postgres-1 pg_restore -U postgres -d workshoppro --clean --if-exists --no-owner /tmp/restore.dump && docker exec invoicing-postgres-1 rm /tmp/restore.dump'
+# Return to main branch when ready
+ssh nerdy@192.168.1.90 'cd ~/invoicing && git checkout main'
+```
 
 ## Key Files (Pi-specific)
 - `docker-compose.pi.yml` — Pi resource limits, port 8999, tuned postgres/redis
