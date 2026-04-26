@@ -780,10 +780,10 @@ async def create_replication_user(
                 user_id=user_id,
                 after_value={"username": payload.username},
             )
-            await db.commit()
 
             # Build connection string for the peer node
             # Priority: DB field > env var > auto-detect
+            # NOTE: Query HAConfig BEFORE the transaction closes
             from app.modules.ha.models import HAConfig as _HAConfig
             from sqlalchemy import select as _sel
 
