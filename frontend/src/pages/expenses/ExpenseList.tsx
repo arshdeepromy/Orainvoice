@@ -721,13 +721,16 @@ function BulkAddTab({ onSaved }: { onSaved: () => void }) {
 /* ── Main Page ── */
 export default function ExpenseList() {
   const { branches: branchList } = useBranch()
-  const [tab, setTab] = useState<Tab>('expense')
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const pageSize = 20
+
+  /* Create modal state */
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createTab, setCreateTab] = useState<Tab>('expense')
 
   /* Receipt preview modal state */
   const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null)
@@ -740,25 +743,38 @@ export default function ExpenseList() {
     try {
       const params: Record<string, string> = { page: String(page), page_size: String(pageSize) }
       const res = await apiClient.get('/api/v2/expenses', { params })
-      setExpenses(res.data.expenses || [])
-      setTotal(res.data.total || 0)
+      setExpenses(res.data?.expenses ?? [])
+      setTotal(res.data?.total ?? 0)
     } catch { setExpenses([]) }
     finally { setLoading(false) }
   }, [page])
 
   useEffect(() => { fetchExpenses() }, [fetchExpenses])
 
-  const totalPages = Math.ceil(total / pageSize)
+  const totalPages = Math.ceil((total ?? 0) / pageSize)
 
   const filtered = search.trim()
-    ? expenses.filter(e => e.description.toLowerCase().includes(search.toLowerCase()) || (e.category || '').toLowerCase().includes(search.toLowerCase()))
-    : expenses
+    ? (expenses ?? []).filter(e => (e.description ?? '').toLowerCase().includes(search.toLowerCase()) || (e.category ?? '').toLowerCase().includes(search.toLowerCase()))
+    : (expenses ?? [])
+
+  const handleSaved = () => {
+    setCreateOpen(false)
+    fetchExpenses()
+  }
 
   const tabClass = (t: Tab) =>
-    `px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-600 hover:text-gray-900'}`
+    `px-4 py-2 text-sm font-medium border-b-2 transition-colors ${createTab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-600 hover:text-gray-900'}`
 
   return (
     <div className="px-4 py-6 sm:px-6 lg:px-8">
+      {/* Header with search and + Expense button */}
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-semibold text-gray-900">Expenses</h1>
+        <Button variant="primary" onClick={() => { setCreateTab('expense'); setCreateOpen(true) }}>
+          + Expense
+        </Button>
+      </div>
+
       {/* Search bar */}
       <div className="flex items-center gap-3 mb-4">
         <div className="relative flex-1 max-w-sm">
@@ -766,107 +782,114 @@ export default function ExpenseList() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
           <input type="text" value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Search in Expenses ( / )"
+            placeholder="Search expenses..."
             className="w-full rounded-md border border-gray-300 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex border-b border-gray-200 mb-6">
-        <button className={tabClass('expense')} onClick={() => setTab('expense')}>Record Expense</button>
-        <button className={tabClass('mileage')} onClick={() => setTab('mileage')}>Record Mileage</button>
-        <button className={tabClass('bulk')} onClick={() => setTab('bulk')}>Bulk Add Expenses</button>
-      </div>
-
-      {/* Tab content */}
-      <div className="bg-white rounded-lg border border-gray-200 p-6 mb-8">
-        {tab === 'expense' && <RecordExpenseTab onSaved={fetchExpenses} />}
-        {tab === 'mileage' && <RecordMileageTab onSaved={fetchExpenses} />}
-        {tab === 'bulk' && <BulkAddTab onSaved={fetchExpenses} />}
+        <span className="text-sm text-gray-500">{(total ?? 0).toLocaleString()} expense{total !== 1 ? 's' : ''}</span>
       </div>
 
       {/* Expense list */}
-      <div>
-        <h2 className="text-lg font-semibold text-gray-900 mb-3">Recent Expenses</h2>
-        {loading ? (
-          <div className="py-8 text-center"><Spinner label="Loading expenses" /></div>
-        ) : filtered.length === 0 ? (
-          <div className="rounded-lg border border-gray-200 bg-white p-8 text-center text-gray-500">
-            No expenses recorded yet.
-          </div>
-        ) : (
-          <>
-            <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Date</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Description</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Category</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Branch</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Amount</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Type</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Receipt</th>
+      {loading ? (
+        <div className="py-8 text-center"><Spinner label="Loading expenses" /></div>
+      ) : filtered.length === 0 ? (
+        <div className="rounded-lg border border-gray-200 bg-white p-12 text-center">
+          <p className="text-gray-500 mb-4">No expenses recorded yet.</p>
+          <Button variant="primary" onClick={() => { setCreateTab('expense'); setCreateOpen(true) }}>
+            + Record Your First Expense
+          </Button>
+        </div>
+      ) : (
+        <>
+          <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Date</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Description</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Category</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Branch</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Amount</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Type</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Receipt</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {filtered.map(exp => (
+                  <tr key={exp.id} className="hover:bg-gray-50">
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{new Date(exp.date).toLocaleDateString('en-NZ')}</td>
+                    <td className="px-4 py-3 text-sm text-gray-900 max-w-xs truncate">{exp.description}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{catLabel(exp.category)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-500">
+                      {exp.branch_id ? ((branchList ?? []).find(b => b.id === exp.branch_id)?.name ?? '—') : '—'}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-right font-medium tabular-nums">{formatNZD(exp.amount)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm">
+                      {exp.expense_type === 'mileage' ? <Badge variant="info">Mileage</Badge> : <Badge variant="neutral">Expense</Badge>}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm">
+                      {exp.is_invoiced ? <Badge variant="success">Invoiced</Badge> : exp.is_billable ? <Badge variant="warning">Billable</Badge> : <span className="text-gray-400 text-xs">—</span>}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm">
+                      {exp.receipt_file_key ? (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setReceiptLoading(true)
+                            setReceiptPreviewName(exp.receipt_file_key?.split('/').pop() ?? 'Receipt')
+                            setReceiptPreviewOpen(true)
+                            try {
+                              const res = await apiClient.get(`/api/v2/uploads/${exp.receipt_file_key}`, { responseType: 'blob' })
+                              const blob = res.data as Blob
+                              const url = URL.createObjectURL(blob)
+                              setReceiptPreviewUrl(url)
+                            } catch {
+                              setReceiptPreviewUrl(null)
+                            } finally {
+                              setReceiptLoading(false)
+                            }
+                          }}
+                          className="text-blue-600 hover:underline text-xs"
+                        >View</button>
+                      ) : <span className="text-gray-400 text-xs">—</span>}
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {filtered.map(exp => (
-                    <tr key={exp.id} className="hover:bg-gray-50">
-                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{new Date(exp.date).toLocaleDateString('en-NZ')}</td>
-                      <td className="px-4 py-3 text-sm text-gray-900 max-w-xs truncate">{exp.description}</td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{catLabel(exp.category)}</td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-500">
-                        {exp.branch_id ? ((branchList ?? []).find(b => b.id === exp.branch_id)?.name ?? '—') : '—'}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm text-right font-medium tabular-nums">{formatNZD(exp.amount)}</td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm">
-                        {exp.expense_type === 'mileage' ? <Badge variant="info">Mileage</Badge> : <Badge variant="neutral">Expense</Badge>}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm">
-                        {exp.is_invoiced ? <Badge variant="success">Invoiced</Badge> : exp.is_billable ? <Badge variant="warning">Billable</Badge> : <span className="text-gray-400 text-xs">—</span>}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm">
-                        {exp.receipt_file_key ? (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              setReceiptLoading(true)
-                              setReceiptPreviewName(exp.receipt_file_key?.split('/').pop() ?? 'Receipt')
-                              setReceiptPreviewOpen(true)
-                              try {
-                                const res = await apiClient.get(`/api/v2/uploads/${exp.receipt_file_key}`, { responseType: 'blob' })
-                                const blob = res.data as Blob
-                                const url = URL.createObjectURL(blob)
-                                setReceiptPreviewUrl(url)
-                              } catch {
-                                setReceiptPreviewUrl(null)
-                              } finally {
-                                setReceiptLoading(false)
-                              }
-                            }}
-                            className="text-blue-600 hover:underline text-xs"
-                          >View</button>
-                        ) : <span className="text-gray-400 text-xs">—</span>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {totalPages > 1 && (
-              <div className="flex items-center justify-between mt-4">
-                <p className="text-sm text-gray-500">{total} expense{total !== 1 ? 's' : ''}</p>
-                <div className="flex gap-2">
-                  <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Previous</Button>
-                  <span className="flex items-center text-sm text-gray-600">Page {page} of {totalPages}</span>
-                  <Button size="sm" variant="secondary" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next</Button>
-                </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-sm text-gray-500">{(total ?? 0).toLocaleString()} expense{total !== 1 ? 's' : ''}</p>
+              <div className="flex gap-2">
+                <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Previous</Button>
+                <span className="flex items-center text-sm text-gray-600">Page {page} of {totalPages}</span>
+                <Button size="sm" variant="secondary" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next</Button>
               </div>
-            )}
-          </>
-        )}
-      </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Create Expense Modal */}
+      <Modal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="Record Expense"
+        size="lg"
+      >
+        {/* Tabs inside modal */}
+        <div className="flex border-b border-gray-200 mb-4 -mx-6 px-6">
+          <button className={tabClass('expense')} onClick={() => setCreateTab('expense')}>Record Expense</button>
+          <button className={tabClass('mileage')} onClick={() => setCreateTab('mileage')}>Record Mileage</button>
+          <button className={tabClass('bulk')} onClick={() => setCreateTab('bulk')}>Bulk Add</button>
+        </div>
+        <div className="max-h-[70vh] overflow-y-auto">
+          {createTab === 'expense' && <RecordExpenseTab onSaved={handleSaved} />}
+          {createTab === 'mileage' && <RecordMileageTab onSaved={handleSaved} />}
+          {createTab === 'bulk' && <BulkAddTab onSaved={handleSaved} />}
+        </div>
+      </Modal>
 
       {/* Receipt Preview Modal */}
       <Modal open={receiptPreviewOpen} onClose={() => { setReceiptPreviewOpen(false); if (receiptPreviewUrl) { URL.revokeObjectURL(receiptPreviewUrl); setReceiptPreviewUrl(null) } }} title={receiptPreviewName}>

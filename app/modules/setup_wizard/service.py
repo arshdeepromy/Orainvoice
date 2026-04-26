@@ -152,27 +152,16 @@ class SetupWizardService:
     ) -> SetupWizardProgress:
         """Return existing progress or create a new record.
 
-        When creating a new record, auto-marks steps as complete if the
-        org already has the relevant data (e.g. from signup flow):
-        - Step 1 (Country): complete if org has a country_code in settings
-        - Step 2 (Trade): complete if org has a trade_category_id
+        Steps 1 (Country) and 2 (Trade) are always auto-marked as
+        complete because they are captured during signup — the wizard
+        no longer includes these steps.
         """
         progress = await self.get_progress(org_id)
         if progress is None:
             progress = SetupWizardProgress(org_id=org_id)
-
-            # Auto-mark steps that are already satisfied by signup data
-            from app.modules.admin.models import Organisation
-            org_stmt = select(Organisation).where(Organisation.id == org_id)
-            org_result = await self.db.execute(org_stmt)
-            org = org_result.scalar_one_or_none()
-            if org:
-                org_settings = org.settings or {}
-                if org_settings.get("address_country") or org_settings.get("country_code"):
-                    progress.step_1_complete = True
-                if org.trade_category_id is not None:
-                    progress.step_2_complete = True
-
+            # Country and Trade are handled by signup — always mark complete
+            progress.step_1_complete = True
+            progress.step_2_complete = True
             self.db.add(progress)
             await self.db.flush()
         return progress

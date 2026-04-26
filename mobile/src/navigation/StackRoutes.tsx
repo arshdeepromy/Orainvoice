@@ -73,6 +73,11 @@ const CustomerCreateScreen = lazy(() =>
     default: () => <ScreenPlaceholder name="New Customer" />,
   })),
 )
+const CustomerEditScreen = lazy(() =>
+  import('@/screens/customers/CustomerEditScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Edit Customer" />,
+  })),
+)
 
 // Jobs
 const JobListScreen = lazy(() =>
@@ -476,6 +481,7 @@ export function StackRoutes() {
         <Route path="/customers" element={<CustomerListScreen />} />
         <Route path="/customers/new" element={<CustomerCreateScreen />} />
         <Route path="/customers/:id" element={<CustomerProfileScreen />} />
+        <Route path="/customers/:id/edit" element={<CustomerEditScreen />} />
 
         {/* Jobs tab stack */}
         <Route path="/jobs" element={<JobListScreen />} />

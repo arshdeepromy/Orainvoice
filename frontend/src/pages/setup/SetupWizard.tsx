@@ -4,30 +4,42 @@ import { Button } from '@/components/ui/Button'
 import { Spinner } from '@/components/ui/Spinner'
 import apiClient from '@/api/client'
 import { StepIndicator, type StepInfo } from './components/StepIndicator'
-import { CountryStep } from './steps/CountryStep'
-import { TradeStep } from './steps/TradeStep'
 import { BusinessStep } from './steps/BusinessStep'
 import { BrandingStep } from './steps/BrandingStep'
-import { ModulesStep } from './steps/ModulesStep'
 import { CatalogueStep } from './steps/CatalogueStep'
 import { ReadyStep } from './steps/ReadyStep'
-import { STEP_LABELS, INITIAL_WIZARD_DATA, type WizardData } from './types'
+import { INITIAL_WIZARD_DATA, type WizardData } from './types'
 
+/**
+ * The wizard UI has 5 steps (Business, Branding, Modules, Catalogue, Ready).
+ * Country and Trade are captured during signup — no need to ask again.
+ *
+ * Backend step mapping:
+ *   UI step 0 (Business)  → backend step 3
+ *   UI step 1 (Branding)  → backend step 4
+ *   UI step 2 (Modules)   → redirects to /setup-guide
+ *   UI step 3 (Catalogue) → backend step 6
+ *   UI step 4 (Ready)     → backend step 7
+ */
+
+const STEP_LABELS = ['Business Details', 'Branding', 'Modules', 'Catalogue', 'Ready'] as const
 const TOTAL_STEPS = STEP_LABELS.length
 
-/** Map step index to the API step number (1-based). */
-function apiStepNumber(index: number): number {
-  return index + 1
+/** Map UI step index to backend step number. */
+function apiStepNumber(uiStep: number): number {
+  // UI 0=Business→3, 1=Branding→4, 2=Modules→5, 3=Catalogue→6, 4=Ready→7
+  return uiStep + 3
+}
+
+/** Map backend step key (step_3..step_7) to UI step index. */
+function backendStepToUi(backendStep: number): number {
+  return backendStep - 3
 }
 
 /** Build the step-specific payload for the backend. */
-function buildStepPayload(step: number, data: WizardData): Record<string, unknown> {
-  switch (step) {
-    case 0:
-      return { country_code: data.countryCode }
-    case 1:
-      return { trade_category_slug: data.tradeCategorySlug }
-    case 2:
+function buildStepPayload(uiStep: number, data: WizardData): Record<string, unknown> {
+  switch (uiStep) {
+    case 0: // Business Details → backend step 3
       return {
         business_name: data.businessName,
         trading_name: data.tradingName || null,
@@ -41,15 +53,15 @@ function buildStepPayload(step: number, data: WizardData): Record<string, unknow
         address_postcode: data.addressPostcode || null,
         website: data.website || null,
       }
-    case 3:
+    case 1: // Branding → backend step 4
       return {
         logo_url: data.logoUrl || null,
         primary_colour: data.primaryColour,
         secondary_colour: data.secondaryColour,
       }
-    case 4:
+    case 2: // Modules → backend step 5 (handled by setup guide redirect)
       return { enabled_modules: data.enabledModules }
-    case 5:
+    case 3: // Catalogue → backend step 6
       return {
         items: data.catalogueItems.map((item) => ({
           name: item.name,
@@ -59,8 +71,8 @@ function buildStepPayload(step: number, data: WizardData): Record<string, unknow
           item_type: item.item_type,
         })),
       }
-    case 6:
-      return {} // Ready step — no data to submit
+    case 4: // Ready → backend step 7
+      return {}
     default:
       return {}
   }
@@ -86,10 +98,11 @@ export function SetupWizard() {
         const progress = res.data
         if (progress?.steps) {
           const newStates = [...stepStates]
-          for (let i = 0; i < TOTAL_STEPS; i++) {
-            const key = `step_${i + 1}`
-            if (progress.steps[key]) {
-              newStates[i] = { ...newStates[i], completed: true }
+          // Map backend steps 3-7 to UI steps 0-4
+          for (let uiIdx = 0; uiIdx < TOTAL_STEPS; uiIdx++) {
+            const backendKey = `step_${uiIdx + 3}`
+            if (progress.steps[backendKey]) {
+              newStates[uiIdx] = { ...newStates[uiIdx], completed: true }
             }
           }
           setStepStates(newStates)
@@ -110,9 +123,9 @@ export function SetupWizard() {
     loadProgress()
   }, [])
 
-  // Redirect to setup guide when wizard reaches Step 5 (Modules)
+  // Redirect to setup guide when wizard reaches Modules step (UI step 2)
   useEffect(() => {
-    if (!loadingProgress && currentStep === 4) {
+    if (!loadingProgress && currentStep === 2) {
       navigate('/setup-guide')
     }
   }, [currentStep, loadingProgress, navigate])
@@ -135,7 +148,7 @@ export function SetupWizard() {
     setError(null)
 
     // Validate business step before submission
-    if (currentStep === 2 && !skip && !validateBusinessStep()) {
+    if (currentStep === 0 && !skip && !validateBusinessStep()) {
       setSaving(false)
       return
     }
@@ -163,8 +176,8 @@ export function SetupWizard() {
         window.location.href = '/dashboard'
       }
     } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to save. Please try again.'
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      const message = detail ?? (err instanceof Error ? err.message : 'Failed to save. Please try again.')
       setError(message)
     } finally {
       setSaving(false)
@@ -199,10 +212,6 @@ export function SetupWizard() {
   const renderStep = () => {
     switch (currentStep) {
       case 0:
-        return <CountryStep data={wizardData} onChange={updateWizardData} />
-      case 1:
-        return <TradeStep data={wizardData} onChange={updateWizardData} />
-      case 2:
         return (
           <BusinessStep
             data={wizardData}
@@ -210,13 +219,14 @@ export function SetupWizard() {
             errors={businessErrors}
           />
         )
-      case 3:
+      case 1:
         return <BrandingStep data={wizardData} onChange={updateWizardData} />
-      case 4:
-        return <ModulesStep data={wizardData} onChange={updateWizardData} />
-      case 5:
+      case 2:
+        // Modules — handled by redirect to /setup-guide
+        return null
+      case 3:
         return <CatalogueStep data={wizardData} onChange={updateWizardData} />
-      case 6:
+      case 4:
         return <ReadyStep data={wizardData} onGoToStep={goToStep} />
       default:
         return null
