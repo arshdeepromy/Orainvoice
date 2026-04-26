@@ -185,82 +185,82 @@ async def get_recent_customers(
     db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
 ) -> dict:
     """Last 10 customers who had invoices created, newest first."""
-    try:
-        from app.modules.customers.models import Customer
+    from app.modules.customers.models import Customer
+    from sqlalchemy import text as sa_text
 
-        query = (
-            select(
-                Customer.id,
-                func.coalesce(Customer.display_name, func.concat(Customer.first_name, " ", Customer.last_name)).label("customer_name"),
-                Invoice.created_at.label("invoice_date"),
-                Invoice.vehicle_rego,
-            )
-            .join(Customer, Invoice.customer_id == Customer.id)
-            .where(Invoice.org_id == org_id, Invoice.status != "voided")
-            .order_by(Invoice.created_at.desc())
-            .limit(10)
-        )
-        if branch_id is not None:
-            query = query.where(Invoice.branch_id == branch_id)
+    params: dict = {"org_id": str(org_id)}
+    sql = sa_text("""
+        SELECT c.id AS customer_id,
+               COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS customer_name,
+               i.created_at AS invoice_date,
+               i.vehicle_rego
+        FROM invoices i
+        JOIN customers c ON i.customer_id = c.id
+        WHERE i.org_id = :org_id AND i.status != 'voided'
+        ORDER BY i.created_at DESC
+        LIMIT 10
+    """)
+    if branch_id is not None:
+        sql = sa_text("""
+            SELECT c.id AS customer_id,
+                   COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS customer_name,
+                   i.created_at AS invoice_date,
+                   i.vehicle_rego
+            FROM invoices i
+            JOIN customers c ON i.customer_id = c.id
+            WHERE i.org_id = :org_id AND i.status != 'voided' AND i.branch_id = :branch_id
+            ORDER BY i.created_at DESC
+            LIMIT 10
+        """)
+        params["branch_id"] = str(branch_id)
 
-        result = await db.execute(query)
-        rows = result.all()
-        items = [
-            {
-                "customer_id": str(r.id),
-                "customer_name": r.customer_name or "Unknown",
-                "invoice_date": r.invoice_date.isoformat() if r.invoice_date else "",
-                "vehicle_rego": r.vehicle_rego,
-            }
-            for r in rows
-        ]
-        return {"items": items, "total": len(items)}
-    except Exception:
-        logger.exception("get_recent_customers failed")
-        return _empty_section()
+    result = await db.execute(sql, params)
+    rows = result.all()
+    items = [
+        {
+            "customer_id": str(r.customer_id),
+            "customer_name": r.customer_name or "Unknown",
+            "invoice_date": r.invoice_date.isoformat() if r.invoice_date else "",
+            "vehicle_rego": r.vehicle_rego,
+        }
+        for r in rows
+    ]
+    return {"items": items, "total": len(items)}
 
 
 async def get_todays_bookings(
     db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
 ) -> dict:
     """Bookings scheduled for today, sorted by start time ascending."""
-    try:
-        from app.modules.bookings.models import Booking
-        from app.modules.customers.models import Customer
-
-        today = date.today()
-        query = (
-            select(
-                Booking.id.label("booking_id"),
-                Booking.start_time.label("scheduled_time"),
-                func.coalesce(Customer.display_name, func.concat(Customer.first_name, " ", Customer.last_name)).label("customer_name"),
-                Booking.vehicle_rego,
-            )
-            .outerjoin(Customer, Booking.customer_id == Customer.id)
-            .where(
-                Booking.org_id == org_id,
-                cast(Booking.start_time, Date) == today,
-            )
-            .order_by(Booking.start_time.asc())
-        )
-        if branch_id is not None:
-            query = query.where(Booking.branch_id == branch_id)
-
-        result = await db.execute(query)
-        rows = result.all()
-        items = [
-            {
-                "booking_id": str(r.booking_id),
-                "scheduled_time": r.scheduled_time.isoformat() if r.scheduled_time else "",
-                "customer_name": r.customer_name or "Walk-in",
-                "vehicle_rego": r.vehicle_rego,
-            }
-            for r in rows
-        ]
-        return {"items": items, "total": len(items)}
-    except Exception:
-        logger.exception("get_todays_bookings failed")
-        return _empty_section()
+    from sqlalchemy import text as sa_text
+    params: dict = {"org_id": str(org_id), "today": date.today()}
+    sql = sa_text("""
+        SELECT b.id AS booking_id, b.start_time AS scheduled_time,
+               COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS customer_name,
+               b.vehicle_rego
+        FROM bookings b
+        LEFT JOIN customers c ON b.customer_id = c.id
+        WHERE b.org_id = :org_id AND b.start_time::date = :today
+        ORDER BY b.start_time ASC
+    """)
+    if branch_id is not None:
+        sql = sa_text("""
+            SELECT b.id AS booking_id, b.start_time AS scheduled_time,
+                   COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS customer_name,
+                   b.vehicle_rego
+            FROM bookings b
+            LEFT JOIN customers c ON b.customer_id = c.id
+            WHERE b.org_id = :org_id AND b.start_time::date = :today AND b.branch_id = :branch_id
+            ORDER BY b.start_time ASC
+        """)
+        params["branch_id"] = str(branch_id)
+    result = await db.execute(sql, params)
+    rows = result.all()
+    return {"items": [
+        {"booking_id": str(r.booking_id), "scheduled_time": r.scheduled_time.isoformat() if r.scheduled_time else "",
+         "customer_name": r.customer_name or "Walk-in", "vehicle_rego": r.vehicle_rego}
+        for r in rows
+    ], "total": len(rows)}
 
 
 async def get_public_holidays(
@@ -280,322 +280,230 @@ async def get_inventory_overview(
     db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
 ) -> dict:
     """Inventory grouped by category with low-stock counts."""
-    try:
-        from app.modules.products.models import Product
+    from sqlalchemy import text as sa_text
+    params: dict = {"org_id": str(org_id)}
+    sql = sa_text("""
+        SELECT COALESCE(category, 'other') AS category,
+               COUNT(*) AS total_count,
+               COUNT(*) FILTER (WHERE current_stock <= low_stock_threshold) AS low_stock_count
+        FROM products
+        WHERE org_id = :org_id
+        GROUP BY COALESCE(category, 'other')
+    """)
+    if branch_id is not None:
+        sql = sa_text("""
+            SELECT COALESCE(category, 'other') AS category,
+                   COUNT(*) AS total_count,
+                   COUNT(*) FILTER (WHERE current_stock <= low_stock_threshold) AS low_stock_count
+            FROM products
+            WHERE org_id = :org_id AND branch_id = :branch_id
+            GROUP BY COALESCE(category, 'other')
+        """)
+        params["branch_id"] = str(branch_id)
 
-        query = (
-            select(
-                func.coalesce(Product.category, "other").label("category"),
-                func.count(Product.id).label("total_count"),
-                func.count(
-                    case(
-                        (Product.current_stock <= Product.low_stock_threshold, Product.id),
-                    )
-                ).label("low_stock_count"),
-            )
-            .where(Product.org_id == org_id)
-            .group_by(func.coalesce(Product.category, "other"))
-        )
-        if branch_id is not None:
-            query = query.where(Product.branch_id == branch_id)
-
-        result = await db.execute(query)
-        rows = result.all()
-        items = [
-            {
-                "category": r.category or "other",
-                "total_count": r.total_count or 0,
-                "low_stock_count": r.low_stock_count or 0,
-            }
-            for r in rows
-        ]
-        return {"items": items, "total": len(items)}
-    except Exception:
-        logger.exception("get_inventory_overview failed")
-        return _empty_section()
+    result = await db.execute(sql, params)
+    rows = result.all()
+    return {"items": [
+        {"category": r.category or "other", "total_count": r.total_count or 0, "low_stock_count": r.low_stock_count or 0}
+        for r in rows
+    ], "total": len(rows)}
 
 
 async def get_cash_flow(
     db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
 ) -> dict:
     """Monthly revenue and expenses for the last 6 months."""
+    from sqlalchemy import text as sa_text
+    six_months_ago = date.today().replace(day=1) - timedelta(days=180)
+
+    params: dict = {"org_id": str(org_id), "cutoff": six_months_ago}
+    rev_sql = sa_text("""
+        SELECT to_char(created_at, 'YYYY-MM') AS month,
+               to_char(created_at, 'Mon YYYY') AS month_label,
+               COALESCE(SUM(subtotal), 0) AS revenue
+        FROM invoices
+        WHERE org_id = :org_id AND status NOT IN ('voided', 'draft') AND created_at >= :cutoff
+        GROUP BY to_char(created_at, 'YYYY-MM'), to_char(created_at, 'Mon YYYY')
+        ORDER BY to_char(created_at, 'YYYY-MM')
+    """)
+    if branch_id is not None:
+        rev_sql = sa_text("""
+            SELECT to_char(created_at, 'YYYY-MM') AS month,
+                   to_char(created_at, 'Mon YYYY') AS month_label,
+                   COALESCE(SUM(subtotal), 0) AS revenue
+            FROM invoices
+            WHERE org_id = :org_id AND status NOT IN ('voided', 'draft') AND created_at >= :cutoff AND branch_id = :branch_id
+            GROUP BY to_char(created_at, 'YYYY-MM'), to_char(created_at, 'Mon YYYY')
+            ORDER BY to_char(created_at, 'YYYY-MM')
+        """)
+        params["branch_id"] = str(branch_id)
+
+    rev_result = await db.execute(rev_sql, params)
+    rev_rows = {r.month: r for r in rev_result.all()}
+
+    # Expenses (may not exist)
+    exp_map: dict[str, float] = {}
     try:
-        six_months_ago = date.today().replace(day=1) - timedelta(days=180)
-
-        # Revenue from invoices
-        rev_query = (
-            select(
-                func.to_char(Invoice.created_at, "YYYY-MM").label("month"),
-                func.to_char(Invoice.created_at, "Mon YYYY").label("month_label"),
-                func.coalesce(func.sum(Invoice.subtotal), 0).label("revenue"),
-            )
-            .where(
-                Invoice.org_id == org_id,
-                Invoice.status.notin_(["voided", "draft"]),
-                Invoice.created_at >= six_months_ago,
-            )
-            .group_by(
-                func.to_char(Invoice.created_at, "YYYY-MM"),
-                func.to_char(Invoice.created_at, "Mon YYYY"),
-            )
-            .order_by(func.to_char(Invoice.created_at, "YYYY-MM"))
-        )
+        exp_params: dict = {"org_id": str(org_id), "cutoff": six_months_ago}
+        exp_sql = sa_text("SELECT to_char(expense_date, 'YYYY-MM') AS month, COALESCE(SUM(amount), 0) AS expenses FROM expenses WHERE org_id = :org_id AND expense_date >= :cutoff GROUP BY to_char(expense_date, 'YYYY-MM')")
         if branch_id is not None:
-            rev_query = rev_query.where(Invoice.branch_id == branch_id)
-
-        rev_result = await db.execute(rev_query)
-        rev_rows = {r.month: r for r in rev_result.all()}
-
-        # Expenses
-        exp_map: dict[str, float] = {}
-        try:
-            from app.modules.expenses.models import Expense
-
-            exp_query = (
-                select(
-                    func.to_char(Expense.expense_date, "YYYY-MM").label("month"),
-                    func.coalesce(func.sum(Expense.amount), 0).label("expenses"),
-                )
-                .where(
-                    Expense.org_id == org_id,
-                    Expense.expense_date >= six_months_ago,
-                )
-                .group_by(func.to_char(Expense.expense_date, "YYYY-MM"))
-            )
-            if branch_id is not None:
-                exp_query = exp_query.where(Expense.branch_id == branch_id)
-
-            exp_result = await db.execute(exp_query)
-            exp_map = {r.month: float(r.expenses) for r in exp_result.all()}
-        except Exception:
-            pass  # Expenses module may not exist
-
-        # Merge
-        all_months = sorted(set(list(rev_rows.keys()) + list(exp_map.keys())))
-        items = []
-        for m in all_months:
-            rev_row = rev_rows.get(m)
-            items.append({
-                "month": m,
-                "month_label": rev_row.month_label if rev_row else m,
-                "revenue": float(rev_row.revenue) if rev_row else 0.0,
-                "expenses": exp_map.get(m, 0.0),
-            })
-
-        return {"items": items, "total": len(items)}
+            exp_sql = sa_text("SELECT to_char(expense_date, 'YYYY-MM') AS month, COALESCE(SUM(amount), 0) AS expenses FROM expenses WHERE org_id = :org_id AND expense_date >= :cutoff AND branch_id = :branch_id GROUP BY to_char(expense_date, 'YYYY-MM')")
+            exp_params["branch_id"] = str(branch_id)
+        exp_result = await db.execute(exp_sql, exp_params)
+        exp_map = {r.month: float(r.expenses) for r in exp_result.all()}
     except Exception:
-        logger.exception("get_cash_flow failed")
-        return _empty_section()
+        pass  # expenses table may not exist
+
+    all_months = sorted(set(list(rev_rows.keys()) + list(exp_map.keys())))
+    items = []
+    for m in all_months:
+        rev_row = rev_rows.get(m)
+        items.append({
+            "month": m,
+            "month_label": rev_row.month_label if rev_row else m,
+            "revenue": float(rev_row.revenue) if rev_row else 0.0,
+            "expenses": exp_map.get(m, 0.0),
+        })
+    return {"items": items, "total": len(items)}
 
 
 async def get_recent_claims(
     db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
 ) -> dict:
     """Last 10 customer claims, newest first."""
-    try:
-        from app.modules.claims.models import CustomerClaim
-        from app.modules.customers.models import Customer
-
-        query = (
-            select(
-                CustomerClaim.id.label("claim_id"),
-                CustomerClaim.reference,
-                func.coalesce(Customer.display_name, func.concat(Customer.first_name, " ", Customer.last_name)).label("customer_name"),
-                CustomerClaim.created_at.label("claim_date"),
-                CustomerClaim.status,
-            )
-            .outerjoin(Customer, CustomerClaim.customer_id == Customer.id)
-            .where(CustomerClaim.org_id == org_id)
-            .order_by(CustomerClaim.created_at.desc())
-            .limit(10)
-        )
-        if branch_id is not None:
-            query = query.where(CustomerClaim.branch_id == branch_id)
-
-        result = await db.execute(query)
-        rows = result.all()
-        items = [
-            {
-                "claim_id": str(r.claim_id),
-                "reference": r.reference or "",
-                "customer_name": r.customer_name or "Unknown",
-                "claim_date": r.claim_date.isoformat() if r.claim_date else "",
-                "status": r.status or "open",
-            }
-            for r in rows
-        ]
-        return {"items": items, "total": len(items)}
-    except Exception:
-        logger.exception("get_recent_claims failed")
-        return _empty_section()
+    from sqlalchemy import text as sa_text
+    params: dict = {"org_id": str(org_id)}
+    sql = sa_text("""
+        SELECT cc.id AS claim_id, cc.reference,
+               COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS customer_name,
+               cc.created_at AS claim_date, cc.status
+        FROM customer_claims cc
+        LEFT JOIN customers c ON cc.customer_id = c.id
+        WHERE cc.org_id = :org_id
+        ORDER BY cc.created_at DESC LIMIT 10
+    """)
+    if branch_id is not None:
+        sql = sa_text("""
+            SELECT cc.id AS claim_id, cc.reference,
+                   COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS customer_name,
+                   cc.created_at AS claim_date, cc.status
+            FROM customer_claims cc
+            LEFT JOIN customers c ON cc.customer_id = c.id
+            WHERE cc.org_id = :org_id AND cc.branch_id = :branch_id
+            ORDER BY cc.created_at DESC LIMIT 10
+        """)
+        params["branch_id"] = str(branch_id)
+    result = await db.execute(sql, params)
+    rows = result.all()
+    return {"items": [
+        {"claim_id": str(r.claim_id), "reference": r.reference or "", "customer_name": r.customer_name or "Unknown",
+         "claim_date": r.claim_date.isoformat() if r.claim_date else "", "status": r.status or "open"}
+        for r in rows
+    ], "total": len(rows)}
 
 
 async def get_active_staff(
     db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
 ) -> dict:
     """Staff currently clocked in (time entries with no end_time today)."""
-    try:
-        from app.modules.time_tracking.models import TimeEntry
-        from app.modules.auth.models import User
-
-        today = date.today()
-        query = (
-            select(
-                User.id.label("staff_id"),
-                User.email.label("name"),
-                TimeEntry.start_time.label("clock_in_time"),
-            )
-            .join(User, TimeEntry.user_id == User.id)
-            .where(
-                TimeEntry.org_id == org_id,
-                TimeEntry.end_time.is_(None),
-                cast(TimeEntry.start_time, Date) == today,
-            )
-        )
-        if branch_id is not None:
-            query = query.where(TimeEntry.branch_id == branch_id)
-
-        result = await db.execute(query)
-        rows = result.all()
-        items = [
-            {
-                "staff_id": str(r.staff_id),
-                "name": r.name or "Unknown",
-                "clock_in_time": r.clock_in_time.isoformat() if r.clock_in_time else "",
-            }
-            for r in rows
-        ]
-        return {"items": items, "total": len(items)}
-    except Exception:
-        logger.exception("get_active_staff failed")
-        return _empty_section()
+    from sqlalchemy import text as sa_text
+    params: dict = {"org_id": str(org_id), "today": date.today()}
+    sql = sa_text("""
+        SELECT u.id AS staff_id, u.email AS name, te.start_time AS clock_in_time
+        FROM time_entries te
+        JOIN users u ON te.user_id = u.id
+        WHERE te.org_id = :org_id AND te.end_time IS NULL AND te.start_time::date = :today
+    """)
+    if branch_id is not None:
+        sql = sa_text("""
+            SELECT u.id AS staff_id, u.email AS name, te.start_time AS clock_in_time
+            FROM time_entries te
+            JOIN users u ON te.user_id = u.id
+            WHERE te.org_id = :org_id AND te.end_time IS NULL AND te.start_time::date = :today AND te.branch_id = :branch_id
+        """)
+        params["branch_id"] = str(branch_id)
+    result = await db.execute(sql, params)
+    rows = result.all()
+    return {"items": [
+        {"staff_id": str(r.staff_id), "name": r.name or "Unknown",
+         "clock_in_time": r.clock_in_time.isoformat() if r.clock_in_time else ""}
+        for r in rows
+    ], "total": len(rows)}
 
 
 async def get_expiry_reminders(
     db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
 ) -> dict:
     """Vehicles with upcoming WOF/service expiry, excluding dismissed."""
-    try:
-        from app.modules.vehicles.models import OrgVehicle, GlobalVehicle
-        from app.modules.customers.models import Customer, CustomerVehicle
-        from app.modules.organisations.models import DashboardReminderDismissal, DashboardReminderConfig
+    from sqlalchemy import text as sa_text
 
-        # Get config thresholds
-        config_result = await db.execute(
-            select(DashboardReminderConfig).where(DashboardReminderConfig.org_id == org_id)
-        )
-        config = config_result.scalar_one_or_none()
-        wof_days = config.wof_days if config else 30
-        service_days = config.service_days if config else 30
+    # Get config thresholds
+    cfg_result = await db.execute(sa_text("SELECT wof_days, service_days FROM dashboard_reminder_config WHERE org_id = :org_id"), {"org_id": str(org_id)})
+    cfg_row = cfg_result.first()
+    wof_days = cfg_row.wof_days if cfg_row else 30
+    service_days = cfg_row.service_days if cfg_row else 30
 
-        today = date.today()
-        wof_cutoff = today + timedelta(days=wof_days)
-        service_cutoff = today + timedelta(days=service_days)
+    today = date.today()
+    wof_cutoff = today + timedelta(days=wof_days)
+    service_cutoff = today + timedelta(days=service_days)
 
-        # Get dismissed vehicle+type+date combos
-        dismissed_result = await db.execute(
-            select(
-                DashboardReminderDismissal.vehicle_id,
-                DashboardReminderDismissal.reminder_type,
-                DashboardReminderDismissal.expiry_date,
-            ).where(DashboardReminderDismissal.org_id == org_id)
-        )
-        dismissed_set = {
-            (str(r.vehicle_id), r.reminder_type, str(r.expiry_date)[:10])
-            for r in dismissed_result.all()
-        }
+    # Get dismissed combos
+    dis_result = await db.execute(sa_text("SELECT vehicle_id, reminder_type, expiry_date::text FROM dashboard_reminder_dismissals WHERE org_id = :org_id"), {"org_id": str(org_id)})
+    dismissed_set = {(str(r.vehicle_id), r.reminder_type, r.expiry_date[:10]) for r in dis_result.all()}
 
-        # Query vehicles with WOF expiry
-        items = []
-        try:
-            vehicle_query = (
-                select(
-                    GlobalVehicle.id.label("vehicle_id"),
-                    GlobalVehicle.rego.label("vehicle_rego"),
-                    GlobalVehicle.make.label("vehicle_make"),
-                    GlobalVehicle.model.label("vehicle_model"),
-                    GlobalVehicle.wof_expiry,
-                    GlobalVehicle.service_due_date,
-                )
-                .join(OrgVehicle, OrgVehicle.global_vehicle_id == GlobalVehicle.id)
-                .where(OrgVehicle.org_id == org_id)
-                .where(
-                    or_(
-                        and_(GlobalVehicle.wof_expiry.isnot(None), GlobalVehicle.wof_expiry <= wof_cutoff, GlobalVehicle.wof_expiry >= today),
-                        and_(GlobalVehicle.service_due_date.isnot(None), GlobalVehicle.service_due_date <= service_cutoff, GlobalVehicle.service_due_date >= today),
-                    )
-                )
-            )
-            v_result = await db.execute(vehicle_query)
-            vehicles = v_result.all()
+    # Get vehicles with upcoming expiry
+    v_result = await db.execute(sa_text("""
+        SELECT gv.id AS vehicle_id, gv.rego AS vehicle_rego, gv.make AS vehicle_make,
+               gv.model AS vehicle_model, gv.wof_expiry, gv.service_due_date
+        FROM global_vehicles gv
+        JOIN org_vehicles ov ON ov.global_vehicle_id = gv.id
+        WHERE ov.org_id = :org_id
+          AND ((gv.wof_expiry IS NOT NULL AND gv.wof_expiry >= :today AND gv.wof_expiry <= :wof_cutoff)
+            OR (gv.service_due_date IS NOT NULL AND gv.service_due_date >= :today AND gv.service_due_date <= :service_cutoff))
+    """), {"org_id": str(org_id), "today": today, "wof_cutoff": wof_cutoff, "service_cutoff": service_cutoff})
+    vehicles = v_result.all()
 
-            for v in vehicles:
-                vid = str(v.vehicle_id)
-                # Get linked customer
-                cv_result = await db.execute(
-                    select(Customer.id, func.coalesce(Customer.display_name, func.concat(Customer.first_name, " ", Customer.last_name)).label("name"))
-                    .join(CustomerVehicle, CustomerVehicle.customer_id == Customer.id)
-                    .where(CustomerVehicle.global_vehicle_id == v.vehicle_id)
-                    .limit(1)
-                )
-                cv_row = cv_result.first()
-                cust_name = cv_row.name if cv_row else "Unlinked"
-                cust_id = str(cv_row.id) if cv_row else ""
+    items = []
+    for v in vehicles:
+        vid = str(v.vehicle_id)
+        # Get linked customer
+        cv_result = await db.execute(sa_text("""
+            SELECT c.id, COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS name
+            FROM customers c JOIN customer_vehicles cv ON cv.customer_id = c.id
+            WHERE cv.global_vehicle_id = :vid LIMIT 1
+        """), {"vid": vid})
+        cv_row = cv_result.first()
+        cust_name = cv_row.name if cv_row else "Unlinked"
+        cust_id = str(cv_row.id) if cv_row else ""
 
-                if v.wof_expiry and v.wof_expiry >= today and v.wof_expiry <= wof_cutoff:
-                    exp_str = str(v.wof_expiry)[:10]
-                    if (vid, "wof", exp_str) not in dismissed_set:
-                        items.append({
-                            "vehicle_id": vid,
-                            "vehicle_rego": v.vehicle_rego or "",
-                            "vehicle_make": v.vehicle_make,
-                            "vehicle_model": v.vehicle_model,
-                            "expiry_type": "wof",
-                            "expiry_date": exp_str,
-                            "customer_name": cust_name,
-                            "customer_id": cust_id,
-                        })
+        if v.wof_expiry and v.wof_expiry >= today and v.wof_expiry <= wof_cutoff:
+            exp_str = str(v.wof_expiry)[:10]
+            if (vid, "wof", exp_str) not in dismissed_set:
+                items.append({"vehicle_id": vid, "vehicle_rego": v.vehicle_rego or "", "vehicle_make": v.vehicle_make,
+                              "vehicle_model": v.vehicle_model, "expiry_type": "wof", "expiry_date": exp_str,
+                              "customer_name": cust_name, "customer_id": cust_id})
 
-                if v.service_due_date and v.service_due_date >= today and v.service_due_date <= service_cutoff:
-                    exp_str = str(v.service_due_date)[:10]
-                    if (vid, "service", exp_str) not in dismissed_set:
-                        items.append({
-                            "vehicle_id": vid,
-                            "vehicle_rego": v.vehicle_rego or "",
-                            "vehicle_make": v.vehicle_make,
-                            "vehicle_model": v.vehicle_model,
-                            "expiry_type": "service",
-                            "expiry_date": exp_str,
-                            "customer_name": cust_name,
-                            "customer_id": cust_id,
-                        })
-        except Exception:
-            logger.exception("get_expiry_reminders vehicle query failed")
+        if v.service_due_date and v.service_due_date >= today and v.service_due_date <= service_cutoff:
+            exp_str = str(v.service_due_date)[:10]
+            if (vid, "service", exp_str) not in dismissed_set:
+                items.append({"vehicle_id": vid, "vehicle_rego": v.vehicle_rego or "", "vehicle_make": v.vehicle_make,
+                              "vehicle_model": v.vehicle_model, "expiry_type": "service", "expiry_date": exp_str,
+                              "customer_name": cust_name, "customer_id": cust_id})
 
-        items.sort(key=lambda x: x.get("expiry_date", ""))
-        return {"items": items, "total": len(items)}
-    except Exception:
-        logger.exception("get_expiry_reminders failed")
-        return _empty_section()
+    items.sort(key=lambda x: x.get("expiry_date", ""))
+    return {"items": items, "total": len(items)}
 
 
 async def get_reminder_config(
     db: AsyncSession, org_id: uuid.UUID
 ) -> dict:
     """Get the org's reminder threshold config, or defaults."""
-    try:
-        from app.modules.organisations.models import DashboardReminderConfig
-
-        result = await db.execute(
-            select(DashboardReminderConfig).where(DashboardReminderConfig.org_id == org_id)
-        )
-        config = result.scalar_one_or_none()
-        if config:
-            return {"wof_days": config.wof_days, "service_days": config.service_days}
-        return {"wof_days": 30, "service_days": 30}
-    except Exception:
-        logger.exception("get_reminder_config failed")
-        return {"wof_days": 30, "service_days": 30}
+    from sqlalchemy import text as sa_text
+    result = await db.execute(sa_text("SELECT wof_days, service_days FROM dashboard_reminder_config WHERE org_id = :org_id"), {"org_id": str(org_id)})
+    row = result.first()
+    if row:
+        return {"wof_days": row.wof_days, "service_days": row.service_days}
+    return {"wof_days": 30, "service_days": 30}
 
 
 async def update_reminder_config(
@@ -667,59 +575,46 @@ async def dismiss_reminder(
 async def get_all_widget_data(
     db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
 ) -> dict:
-    """Aggregate all widget data in one call. Per-widget errors are isolated."""
-    try:
-        recent_customers = await get_recent_customers(db, org_id, branch_id)
-    except Exception:
-        logger.exception("Widget: recent_customers failed")
-        recent_customers = _empty_section()
+    """Aggregate all widget data in one call.
 
-    try:
-        todays_bookings = await get_todays_bookings(db, org_id, branch_id)
-    except Exception:
-        logger.exception("Widget: todays_bookings failed")
-        todays_bookings = _empty_section()
+    Each widget query runs inside a SAVEPOINT so that if one fails
+    (e.g. missing table, bad column), the transaction isn't poisoned
+    for subsequent widgets. See ISSUE-044 / performance-and-resilience
+    steering doc for the pattern.
+    """
+    async def _safe_call(name: str, coro):
+        try:
+            savepoint = await db.begin_nested()
+            try:
+                result = await coro
+                return result
+            except Exception:
+                await savepoint.rollback()
+                logger.exception("Widget: %s failed", name)
+                return _empty_section()
+        except Exception:
+            logger.exception("Widget: %s savepoint failed", name)
+            return _empty_section()
 
-    try:
-        public_holidays = await get_public_holidays(db, org_id)
-    except Exception:
-        logger.exception("Widget: public_holidays failed")
-        public_holidays = _empty_section()
+    recent_customers = await _safe_call("recent_customers", get_recent_customers(db, org_id, branch_id))
+    todays_bookings = await _safe_call("todays_bookings", get_todays_bookings(db, org_id, branch_id))
+    public_holidays = await _safe_call("public_holidays", get_public_holidays(db, org_id))
+    inventory_overview = await _safe_call("inventory_overview", get_inventory_overview(db, org_id, branch_id))
+    cash_flow = await _safe_call("cash_flow", get_cash_flow(db, org_id, branch_id))
+    recent_claims = await _safe_call("recent_claims", get_recent_claims(db, org_id, branch_id))
+    active_staff = await _safe_call("active_staff", get_active_staff(db, org_id, branch_id))
+    expiry_reminders = await _safe_call("expiry_reminders", get_expiry_reminders(db, org_id, branch_id))
 
+    # Reminder config returns a dict, not a section
     try:
-        inventory_overview = await get_inventory_overview(db, org_id, branch_id)
+        savepoint = await db.begin_nested()
+        try:
+            reminder_config = await get_reminder_config(db, org_id)
+        except Exception:
+            await savepoint.rollback()
+            logger.exception("Widget: reminder_config failed")
+            reminder_config = {"wof_days": 30, "service_days": 30}
     except Exception:
-        logger.exception("Widget: inventory_overview failed")
-        inventory_overview = _empty_section()
-
-    try:
-        cash_flow = await get_cash_flow(db, org_id, branch_id)
-    except Exception:
-        logger.exception("Widget: cash_flow failed")
-        cash_flow = _empty_section()
-
-    try:
-        recent_claims = await get_recent_claims(db, org_id, branch_id)
-    except Exception:
-        logger.exception("Widget: recent_claims failed")
-        recent_claims = _empty_section()
-
-    try:
-        active_staff = await get_active_staff(db, org_id, branch_id)
-    except Exception:
-        logger.exception("Widget: active_staff failed")
-        active_staff = _empty_section()
-
-    try:
-        expiry_reminders = await get_expiry_reminders(db, org_id, branch_id)
-    except Exception:
-        logger.exception("Widget: expiry_reminders failed")
-        expiry_reminders = _empty_section()
-
-    try:
-        reminder_config = await get_reminder_config(db, org_id)
-    except Exception:
-        logger.exception("Widget: reminder_config failed")
         reminder_config = {"wof_days": 30, "service_days": 30}
 
     return {
