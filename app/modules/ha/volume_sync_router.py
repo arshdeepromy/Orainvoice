@@ -65,11 +65,27 @@ async def update_volume_sync_config(
 ):
     """Upsert the rsync configuration.
 
+    When ``enabled`` changes to True, starts the periodic background sync task.
+    When ``enabled`` changes to False, stops it.
+
     Returns 422 if validation fails (empty SSH host, interval out of range).
     """
     svc = VolumeSyncService()
     try:
+        # Check previous enabled state before saving
+        old_cfg = await svc.get_config(db)
+        was_enabled = old_cfg.enabled if old_cfg else False
+
         cfg = await svc.save_config(db, payload)
+
+        # Start or stop the periodic sync task based on enabled state change
+        if payload.enabled and not was_enabled:
+            logger.info("Volume sync enabled — starting periodic sync task")
+            await svc.start_periodic_sync(db)
+        elif not payload.enabled and was_enabled:
+            logger.info("Volume sync disabled — stopping periodic sync task")
+            await svc.stop_periodic_sync()
+
         return cfg
     except ValueError as exc:
         return JSONResponse(
