@@ -97,6 +97,7 @@ services:
       PYTHONUNBUFFERED: "1"
       WATCHFILES_FORCE_POLLING: "true"
       HA_LOCAL_PG_PORT: "5433"
+      HA_LOCAL_SSH_PORT: "2223"
     volumes:
       - ./app:/app/app:delegated
       - ./alembic:/app/alembic:delegated

@@ -725,6 +725,7 @@ async def local_db_info(db: AsyncSession = Depends(get_db_session)):
         "pg_port": pg_port,
         "db_name": db_name,
         "ssl_enabled": ssl_enabled,
+        "ssh_port": int(os.environ.get("HA_LOCAL_SSH_PORT", "2222")),
     }
 
 
@@ -1731,6 +1732,7 @@ async def wizard_setup(
     # not persisted in ha_config — we need to query the standby's local-db-info.
     standby_lan_ip: str | None = None
     standby_pg_port: int = 5432
+    standby_ssh_port: int = 2222
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
             resp = await client.get(
@@ -1741,6 +1743,7 @@ async def wizard_setup(
             info = resp.json()
             standby_lan_ip = info.get("lan_ip")
             standby_pg_port = info.get("pg_port", 5432)
+            standby_ssh_port = info.get("ssh_port", 2222)
     except Exception as exc:
         logger.warning("Could not fetch standby local-db-info: %s", exc)
 
@@ -2097,10 +2100,13 @@ async def wizard_setup(
                 message="Wizard setup: configuring volume sync on both nodes",
             )
 
+            # Read the primary's SSH port from env
+            primary_ssh_port = int(os.environ.get("HA_LOCAL_SSH_PORT", "2222"))
+
             # Primary's volume sync config: sync TO the standby
             primary_vs_body = {
                 "standby_ssh_host": standby_lan_ip,
-                "ssh_port": 2222,
+                "ssh_port": standby_ssh_port,
                 "ssh_key_path": "/ha_keys/id_ed25519",
                 "remote_upload_path": "/app/uploads/",
                 "remote_compliance_path": "/app/compliance_files/",
@@ -2111,7 +2117,7 @@ async def wizard_setup(
             # Standby's volume sync config: sync TO the primary (for reverse sync if promoted)
             standby_vs_body = {
                 "standby_ssh_host": primary_lan_ip,
-                "ssh_port": 2222,
+                "ssh_port": primary_ssh_port,
                 "ssh_key_path": "/ha_keys/id_ed25519",
                 "remote_upload_path": "/app/uploads/",
                 "remote_compliance_path": "/app/compliance_files/",
