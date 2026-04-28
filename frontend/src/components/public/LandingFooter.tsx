@@ -88,10 +88,10 @@ export function LandingFooter() {
             <ul className="mt-3 space-y-2">
               <li>
                 <a
-                  href="mailto:arshdeep.romy@gmail.com"
+                  href={`mailto:${branding.support_email || 'support@oraflows.co.nz'}`}
                   className="text-sm text-gray-400 transition-colors hover:text-white"
                 >
-                  arshdeep.romy@gmail.com
+                  {branding.support_email || 'support@oraflows.co.nz'}
                 </a>
               </li>
             </ul>

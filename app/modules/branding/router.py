@@ -15,10 +15,9 @@ from __future__ import annotations
 import io
 import logging
 import os
-import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -116,12 +115,30 @@ async def get_public_branding(db: AsyncSession = Depends(get_db_session)):
     summary="Serve a branding file (logo/favicon)",
     responses={404: {"description": "File not found"}},
 )
-async def serve_branding_file(file_id: str):
+async def serve_branding_file(file_id: str, db: AsyncSession = Depends(get_db_session)):
     """Public endpoint — serves uploaded branding files (logos, favicons).
 
     No authentication required since these are public branding assets
     displayed on login pages, emails, and PDFs.
+
+    If file_id is a known file type (logo, dark_logo, favicon), serves from
+    the database BYTEA column. Otherwise, falls back to disk-based serving
+    for backward compatibility with legacy UUID-based paths.
     """
+    # DB-first: serve from database if file_id is a known branding file type
+    if file_id in ("logo", "dark_logo", "favicon"):
+        svc = BrandingService(db)
+        result = await svc.get_branding_file(file_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        data, content_type, filename = result
+        return Response(
+            content=data,
+            media_type=content_type,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+    # Legacy fallback: serve from disk for old UUID-based file paths
     # Sanitise file_id to prevent path traversal
     safe_id = Path(file_id).name
     if safe_id != file_id or ".." in file_id:
@@ -196,24 +213,22 @@ async def update_branding(
     responses={413: {"description": "File too large"}, 415: {"description": "Unsupported file type"}},
 )
 async def upload_logo(
-    request: Request,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db_session),
 ):
     """Upload a logo image file. Accepts PNG, JPEG, WebP, SVG. Max 2 MB.
 
-    The uploaded file is stored on disk and the branding ``logo_url`` is
-    updated to point to the public serving endpoint.
+    The uploaded file is stored in the database and the branding ``logo_url`` is
+    updated to point to the database-backed serving endpoint.
     """
     return await _handle_branding_upload(
         file=file,
         db=db,
-        request=request,
-        field="logo_url",
         max_size=MAX_LOGO_SIZE,
         allowed_types=ALLOWED_IMAGE_TYPES,
         max_dim=512,
         label="logo",
+        file_type="logo",
     )
 
 
@@ -223,7 +238,6 @@ async def upload_logo(
     responses={413: {"description": "File too large"}, 415: {"description": "Unsupported file type"}},
 )
 async def upload_dark_logo(
-    request: Request,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -235,12 +249,11 @@ async def upload_dark_logo(
     return await _handle_branding_upload(
         file=file,
         db=db,
-        request=request,
-        field="dark_logo_url",
         max_size=MAX_LOGO_SIZE,
         allowed_types=ALLOWED_IMAGE_TYPES,
         max_dim=512,
         label="dark logo",
+        file_type="dark_logo",
     )
 
 
@@ -250,24 +263,22 @@ async def upload_dark_logo(
     responses={413: {"description": "File too large"}, 415: {"description": "Unsupported file type"}},
 )
 async def upload_favicon(
-    request: Request,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db_session),
 ):
     """Upload a favicon image file. Accepts PNG, JPEG, WebP, SVG, ICO. Max 512 KB.
 
-    The uploaded file is stored on disk and the branding ``favicon_url`` is
-    updated to point to the public serving endpoint.
+    The uploaded file is stored in the database and the branding ``favicon_url`` is
+    updated to point to the database-backed serving endpoint.
     """
     return await _handle_branding_upload(
         file=file,
         db=db,
-        request=request,
-        field="favicon_url",
         max_size=MAX_FAVICON_SIZE,
         allowed_types=ALLOWED_FAVICON_TYPES,
         max_dim=128,
         label="favicon",
+        file_type="favicon",
     )
 
 
@@ -275,14 +286,17 @@ async def _handle_branding_upload(
     *,
     file: UploadFile,
     db: AsyncSession,
-    request: Request,
-    field: str,
     max_size: int,
     allowed_types: dict[str, str],
     max_dim: int,
     label: str,
+    file_type: str,
 ) -> dict:
-    """Shared upload handler for logo and favicon."""
+    """Shared upload handler for logo and favicon.
+
+    Stores the processed image bytes in the database via
+    ``BrandingService.store_branding_file()`` instead of writing to disk.
+    """
     content_type = file.content_type or ""
     if content_type not in allowed_types:
         raise HTTPException(
@@ -302,29 +316,23 @@ async def _handle_branding_upload(
     ext = allowed_types[content_type]
     processed = _process_image(content, ext, max_dim=max_dim)
 
-    # Store file
-    file_id = f"{uuid.uuid4().hex}{ext}"
-    BRANDING_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    dest = BRANDING_UPLOAD_DIR / file_id
-    dest.write_bytes(processed)
-
-    # Build the public URL
-    # Use X-Forwarded-Proto + Host if behind a proxy, else fall back to request base
-    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = request.headers.get("host", request.url.netloc)
-    public_url = f"{proto}://{host}/api/v1/public/branding/file/{file_id}"
-
-    # Update branding record
+    # Store file in database via BrandingService
+    filename = file.filename or f"{file_type}{ext}"
     svc = BrandingService(db)
     try:
-        await svc.update_branding(**{field: public_url})
+        branding = await svc.store_branding_file(
+            file_type=file_type,
+            file_data=processed,
+            content_type=content_type,
+            filename=filename,
+        )
     except ValueError as exc:
-        # Clean up the file if DB update fails
-        dest.unlink(missing_ok=True)
         raise HTTPException(status_code=404, detail=str(exc))
+
+    public_url = f"/api/v1/public/branding/file/{file_type}"
 
     return {
         "message": f"{label.capitalize()} uploaded successfully",
         "url": public_url,
-        "file_id": file_id,
+        "branding": BrandingResponse.model_validate(branding).model_dump(mode="json"),
     }

@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, func
+from sqlalchemy import Boolean, DateTime, LargeBinary, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -71,4 +71,39 @@ class PlatformBranding(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+    # --- BYTEA file storage (migration 0165) ---
+
+    # Binary file data
+    logo_data: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True,
+    )
+    dark_logo_data: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True,
+    )
+    favicon_data: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True,
+    )
+
+    # MIME types
+    logo_content_type: Mapped[str | None] = mapped_column(
+        String(100), nullable=True,
+    )
+    dark_logo_content_type: Mapped[str | None] = mapped_column(
+        String(100), nullable=True,
+    )
+    favicon_content_type: Mapped[str | None] = mapped_column(
+        String(100), nullable=True,
+    )
+
+    # Original filenames
+    logo_filename: Mapped[str | None] = mapped_column(
+        String(255), nullable=True,
+    )
+    dark_logo_filename: Mapped[str | None] = mapped_column(
+        String(255), nullable=True,
+    )
+    favicon_filename: Mapped[str | None] = mapped_column(
+        String(255), nullable=True,
     )

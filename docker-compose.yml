@@ -130,6 +130,7 @@ services:
       REDIS_URL: redis://redis:6379/0
     volumes:
       - compliance_files:/app/compliance_files
+      - app_uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -186,3 +187,4 @@ volumes:
   frontend_dist:
   mobile_dist:
   compliance_files:
+  app_uploads:

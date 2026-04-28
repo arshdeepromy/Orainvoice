@@ -18,6 +18,7 @@ services:
       - ./alembic:/app/alembic:delegated
       - ./tests:/app/tests:delegated
       - ./scripts:/app/scripts:delegated
+      - app_uploads:/app/uploads
     command: >
       uvicorn app.main:app
       --host 0.0.0.0

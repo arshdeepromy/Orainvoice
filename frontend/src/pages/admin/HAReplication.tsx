@@ -64,6 +64,39 @@ interface FailoverStatus {
 
 type ModalAction = 'promote' | 'demote' | 'init-replication' | 'stop-replication' | 'resync' | 'maintenance-enter' | 'maintenance-exit' | 'demote-and-sync' | null
 
+interface VolumeSyncConfig {
+  id: string
+  standby_ssh_host: string
+  ssh_port: number
+  ssh_key_path: string
+  remote_upload_path: string
+  remote_compliance_path: string
+  sync_interval_minutes: number
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+interface VolumeSyncStatus {
+  last_sync_time: string | null
+  last_sync_result: string | null
+  next_scheduled_sync: string | null
+  total_file_count: number
+  total_size_bytes: number
+  sync_in_progress: boolean
+}
+
+interface VolumeSyncHistoryEntry {
+  id: string
+  started_at: string
+  completed_at: string | null
+  status: string
+  files_transferred: number
+  bytes_transferred: number
+  error_message: string | null
+  sync_type: string
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -92,6 +125,14 @@ function formatLag(seconds: number | null): string {
 function formatTime(iso: string | null): string {
   if (!iso) return '—'
   try { return new Date(iso).toLocaleString() } catch { return iso }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(1024))
+  const value = bytes / Math.pow(1024, i)
+  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
 }
 
 /* ------------------------------------------------------------------ */
@@ -262,19 +303,53 @@ export function HAReplication() {
   // Track whether initial form state has been populated
   const [formInitialized, setFormInitialized] = useState(false)
 
+  // Volume sync state
+  const [volumeSyncConfig, setVolumeSyncConfig] = useState<VolumeSyncConfig | null>(null)
+  const [volumeSyncStatus, setVolumeSyncStatus] = useState<VolumeSyncStatus | null>(null)
+  const [volumeSyncHistory, setVolumeSyncHistory] = useState<VolumeSyncHistoryEntry[]>([])
+  const [syncSaving, setSyncSaving] = useState(false)
+  const [syncTriggering, setSyncTriggering] = useState(false)
+
+  // Volume sync config form state
+  const [syncFormHost, setSyncFormHost] = useState('')
+  const [syncFormPort, setSyncFormPort] = useState(22)
+  const [syncFormKeyPath, setSyncFormKeyPath] = useState('')
+  const [syncFormUploadPath, setSyncFormUploadPath] = useState('/app/uploads/')
+  const [syncFormCompliancePath, setSyncFormCompliancePath] = useState('/app/compliance_files/')
+  const [syncFormInterval, setSyncFormInterval] = useState(5)
+  const [syncFormEnabled, setSyncFormEnabled] = useState(false)
+  const [syncSaveError, setSyncSaveError] = useState<string | null>(null)
+  const [syncSaveSuccess, setSyncSaveSuccess] = useState(false)
+  const [syncFormInitialized, setSyncFormInitialized] = useState(false)
+
   const fetchData = useCallback(async () => {
-    const [cfg, hist, repl, slotsData, failover] = await Promise.all([
+    const [cfg, hist, repl, slotsData, failover, volStatus, volHistory] = await Promise.all([
       safeFetch<HAConfig | null>('/ha/identity', null),
       safeFetch<HeartbeatHistoryEntry[]>('/ha/history', []),
       safeFetch<ReplicationStatus | null>('/ha/replication/status', null),
       safeFetch<{ slots: typeof slots }>('/ha/replication/slots', { slots: [] }),
       safeFetch<FailoverStatus | null>('/ha/failover-status', null),
+      safeFetch<VolumeSyncStatus | null>('/ha/volume-sync/status', null),
+      safeFetch<VolumeSyncHistoryEntry[]>('/ha/volume-sync/history', []),
     ])
     setConfig(cfg)
     setHistory(hist)
     setReplication(repl)
     setSlots(slotsData?.slots ?? [])
     setFailoverStatus(failover)
+    setVolumeSyncStatus(volStatus)
+    setVolumeSyncHistory(volHistory ?? [])
+
+    // Fetch volume sync config separately — 404 means not configured (set to null)
+    let volCfg: VolumeSyncConfig | null = null
+    try {
+      const cfgRes = await apiClient.get<VolumeSyncConfig>('/ha/volume-sync/config')
+      volCfg = cfgRes.data ?? null
+      setVolumeSyncConfig(volCfg)
+    } catch {
+      setVolumeSyncConfig(null)
+    }
+
     // Only populate form fields on initial load — not on polling refreshes
     if (cfg && !formInitialized) {
       setFormNodeName(cfg.node_name)
@@ -292,8 +367,21 @@ export function HAReplication() {
       setFormLocalPgPort(cfg.local_pg_port ? String(cfg.local_pg_port) : '')
       setFormInitialized(true)
     }
+
+    // Populate volume sync form fields on initial load
+    if (volCfg && !syncFormInitialized) {
+      setSyncFormHost(volCfg.standby_ssh_host ?? '')
+      setSyncFormPort(volCfg.ssh_port ?? 22)
+      setSyncFormKeyPath(volCfg.ssh_key_path ?? '')
+      setSyncFormUploadPath(volCfg.remote_upload_path ?? '/app/uploads/')
+      setSyncFormCompliancePath(volCfg.remote_compliance_path ?? '/app/compliance_files/')
+      setSyncFormInterval(volCfg.sync_interval_minutes ?? 5)
+      setSyncFormEnabled(volCfg.enabled ?? false)
+      setSyncFormInitialized(true)
+    }
+
     setLoading(false)
-  }, [formInitialized])
+  }, [formInitialized, syncFormInitialized])
 
   useEffect(() => {
     fetchData()
@@ -334,6 +422,53 @@ export function HAReplication() {
       setSaveError(msg)
     } finally {
       setSaving(false)
+    }
+  }
+
+  /* ---- Save volume sync config ---- */
+  const handleSaveSyncConfig = async () => {
+    setSyncSaving(true)
+    setSyncSaveError(null)
+    setSyncSaveSuccess(false)
+    try {
+      await apiClient.put('/ha/volume-sync/config', {
+        standby_ssh_host: syncFormHost,
+        ssh_port: syncFormPort,
+        ssh_key_path: syncFormKeyPath,
+        remote_upload_path: syncFormUploadPath,
+        remote_compliance_path: syncFormCompliancePath,
+        sync_interval_minutes: syncFormInterval,
+        enabled: syncFormEnabled,
+      })
+      setSyncSaveSuccess(true)
+      setSyncFormInitialized(false)
+      await fetchData()
+      setTimeout(() => setSyncSaveSuccess(false), 3000)
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to save volume sync configuration'
+      setSyncSaveError(msg)
+    } finally {
+      setSyncSaving(false)
+    }
+  }
+
+  /* ---- Trigger volume sync ---- */
+  const handleTriggerSync = async () => {
+    setSyncTriggering(true)
+    try {
+      await apiClient.post('/ha/volume-sync/trigger')
+      await fetchData()
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status
+      if (status !== 409) {
+        // 409 = already running — handle gracefully (just refresh)
+        const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to trigger sync'
+        setSyncSaveError(msg)
+        setTimeout(() => setSyncSaveError(null), 5000)
+      }
+      await fetchData()
+    } finally {
+      setSyncTriggering(false)
     }
   }
 
@@ -1550,6 +1685,232 @@ export function HAReplication() {
             </section>
           )}
         </>
+      )}
+
+      {/* ── Volume Data Replication Configuration ── */}
+      <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
+        <h2 className="text-lg font-medium text-gray-900">Volume Data Replication</h2>
+        <p className="text-sm text-gray-500">
+          Configure rsync-based replication of upload volumes and compliance files from the primary to the standby node.
+        </p>
+
+        {syncSaveError && <AlertBanner variant="error">{syncSaveError}</AlertBanner>}
+        {syncSaveSuccess && <AlertBanner variant="success">Volume sync configuration saved</AlertBanner>}
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Input
+            label="Standby SSH Host"
+            placeholder="e.g. 192.168.1.100"
+            value={syncFormHost}
+            onChange={(e) => setSyncFormHost(e.target.value)}
+          />
+          <Input
+            label="SSH Port"
+            type="number"
+            value={String(syncFormPort)}
+            onChange={(e) => setSyncFormPort(Number(e.target.value) || 22)}
+          />
+          <div className="sm:col-span-2">
+            <Input
+              label="SSH Key Path"
+              placeholder="e.g. /root/.ssh/id_rsa"
+              value={syncFormKeyPath}
+              onChange={(e) => setSyncFormKeyPath(e.target.value)}
+              helperText="Filesystem path to the SSH private key on this server."
+            />
+          </div>
+          <Input
+            label="Remote Upload Path"
+            placeholder="/app/uploads/"
+            value={syncFormUploadPath}
+            onChange={(e) => setSyncFormUploadPath(e.target.value)}
+          />
+          <Input
+            label="Remote Compliance Path"
+            placeholder="/app/compliance_files/"
+            value={syncFormCompliancePath}
+            onChange={(e) => setSyncFormCompliancePath(e.target.value)}
+          />
+          <Input
+            label="Sync Interval (minutes)"
+            type="number"
+            value={String(syncFormInterval)}
+            onChange={(e) => setSyncFormInterval(Number(e.target.value) || 5)}
+            helperText="How often to sync files (1–1440 minutes)."
+          />
+          <label className="flex items-center gap-2 text-sm text-gray-700 pt-6">
+            <input
+              type="checkbox"
+              checked={syncFormEnabled}
+              onChange={(e) => setSyncFormEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            Enable automatic sync
+          </label>
+        </div>
+
+        <div className="flex justify-end pt-2">
+          <Button
+            onClick={handleSaveSyncConfig}
+            loading={syncSaving}
+            disabled={!syncFormHost.trim()}
+          >
+            {volumeSyncConfig ? 'Update Sync Configuration' : 'Save Sync Configuration'}
+          </Button>
+        </div>
+      </section>
+
+      {/* ── Volume Sync Status Card ── */}
+      {volumeSyncConfig && (
+        <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-medium text-gray-900">Sync Status</h2>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleTriggerSync}
+              loading={syncTriggering}
+              disabled={syncTriggering || (volumeSyncStatus?.sync_in_progress ?? false)}
+            >
+              {(syncTriggering || (volumeSyncStatus?.sync_in_progress ?? false)) ? (
+                <span className="flex items-center gap-2">
+                  <Spinner size="sm" />
+                  Syncing…
+                </span>
+              ) : (
+                'Sync Now'
+              )}
+            </Button>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="rounded-md border border-gray-200 p-4 space-y-1">
+              <dt className="text-sm text-gray-500">Last Sync</dt>
+              <dd className="text-sm font-medium text-gray-900">
+                {formatTime(volumeSyncStatus?.last_sync_time ?? null)}
+              </dd>
+            </div>
+
+            <div className="rounded-md border border-gray-200 p-4 space-y-1">
+              <dt className="text-sm text-gray-500">Last Result</dt>
+              <dd>
+                {volumeSyncStatus?.last_sync_result ? (
+                  <Badge variant={volumeSyncStatus.last_sync_result === 'success' ? 'success' : 'error'}>
+                    {volumeSyncStatus.last_sync_result}
+                  </Badge>
+                ) : (
+                  <span className="text-sm text-gray-400">—</span>
+                )}
+              </dd>
+            </div>
+
+            <div className="rounded-md border border-gray-200 p-4 space-y-1">
+              <dt className="text-sm text-gray-500">Next Scheduled Sync</dt>
+              <dd className="text-sm font-medium text-gray-900">
+                {formatTime(volumeSyncStatus?.next_scheduled_sync ?? null)}
+              </dd>
+            </div>
+
+            <div className="rounded-md border border-gray-200 p-4 space-y-1">
+              <dt className="text-sm text-gray-500">File Count</dt>
+              <dd className="text-sm font-medium text-gray-900">
+                {(volumeSyncStatus?.total_file_count ?? 0).toLocaleString()}
+              </dd>
+            </div>
+
+            <div className="rounded-md border border-gray-200 p-4 space-y-1">
+              <dt className="text-sm text-gray-500">Total Size</dt>
+              <dd className="text-sm font-medium text-gray-900">
+                {formatBytes(volumeSyncStatus?.total_size_bytes ?? 0)}
+              </dd>
+            </div>
+
+            {(volumeSyncStatus?.sync_in_progress ?? false) && (
+              <div className="rounded-md border border-blue-200 bg-blue-50 p-4 space-y-1">
+                <dt className="text-sm text-blue-600">Status</dt>
+                <dd className="flex items-center gap-2 text-sm font-medium text-blue-700">
+                  <Spinner size="sm" />
+                  Sync in progress…
+                </dd>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* ── Volume Sync History Table ── */}
+      {volumeSyncConfig && (
+        <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-3">
+          <h2 className="text-lg font-medium text-gray-900">Sync History</h2>
+          {(volumeSyncHistory ?? []).length === 0 ? (
+            <p className="text-sm text-gray-400">No sync history</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-gray-500">
+                    <th className="pb-2 pr-4">Time</th>
+                    <th className="pb-2 pr-4">Status</th>
+                    <th className="pb-2 pr-4">Files</th>
+                    <th className="pb-2 pr-4">Bytes</th>
+                    <th className="pb-2 pr-4">Duration</th>
+                    <th className="pb-2">Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(volumeSyncHistory ?? []).map((entry) => {
+                    const durationSec =
+                      entry?.started_at && entry?.completed_at
+                        ? Math.round(
+                            (new Date(entry.completed_at).getTime() -
+                              new Date(entry.started_at).getTime()) /
+                              1000
+                          )
+                        : null
+                    return (
+                      <tr key={entry?.id ?? ''} className="border-b border-gray-100">
+                        <td className="py-1.5 pr-4 text-gray-600">
+                          {formatTime(entry?.started_at ?? null)}
+                        </td>
+                        <td className="py-1.5 pr-4">
+                          <Badge
+                            variant={
+                              entry?.status === 'success'
+                                ? 'success'
+                                : entry?.status === 'failure'
+                                  ? 'error'
+                                  : entry?.status === 'running'
+                                    ? 'info'
+                                    : 'neutral'
+                            }
+                          >
+                            {entry?.status ?? 'unknown'}
+                          </Badge>
+                        </td>
+                        <td className="py-1.5 pr-4 text-gray-600">
+                          {(entry?.files_transferred ?? 0).toLocaleString()}
+                        </td>
+                        <td className="py-1.5 pr-4 text-gray-600">
+                          {formatBytes(entry?.bytes_transferred ?? 0)}
+                        </td>
+                        <td className="py-1.5 pr-4 text-gray-600">
+                          {durationSec != null
+                            ? durationSec < 60
+                              ? `${durationSec}s`
+                              : `${Math.floor(durationSec / 60)}m ${durationSec % 60}s`
+                            : '—'}
+                        </td>
+                        <td className="py-1.5 text-red-600 text-xs">
+                          {entry?.error_message ?? ''}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
       )}
 
       {/* ── Action Confirmation Modal ── */}

@@ -172,11 +172,35 @@ Every test script MUST include these security checks relevant to the feature:
 - Verify stock levels change correctly after operations
 - Verify audit logs are created for sensitive operations
 
-### Cleanup
+### Cleanup — MANDATORY
 
-- Every test script must clean up after itself (delete test records)
-- Use a recognizable prefix for test data (e.g. `TEST_E2E_` in names)
-- If cleanup fails, log it but don't fail the test
+**Every test script MUST clean up ALL data it creates.** This is non-negotiable. Previous test runs left 42 "Preservation Test Org" organisations and 66 "Test Plan" subscription plans in the dev database, requiring manual SQL cleanup. This must never happen again.
+
+**Rules:**
+
+1. **Track every created resource ID** — maintain a list of IDs created during the test (org IDs, plan IDs, customer IDs, etc.)
+2. **Delete in reverse dependency order** — child records first (invoices, customers, users, branches), then parent records (organisations, plans)
+3. **Use a `finally` block** — cleanup must run even if the test fails or crashes:
+   ```python
+   created_ids = {"orgs": [], "plans": [], "customers": []}
+   try:
+       # ... test logic that appends to created_ids ...
+   finally:
+       await cleanup(client, created_ids)
+   ```
+4. **Use a recognizable prefix** — all test data names MUST start with `TEST_E2E_` (e.g., `TEST_E2E_Org_1234`, `TEST_E2E_Plan_abc`)
+5. **Verify cleanup succeeded** — after cleanup, query the database to confirm no test records remain:
+   ```python
+   # Verify no orphaned test data
+   resp = await client.get("/admin/organisations", headers=headers)
+   remaining = [o for o in resp.json().get("organisations", []) if o["name"].startswith("TEST_E2E_")]
+   if remaining:
+       fail(f"Cleanup incomplete: {len(remaining)} test orgs remain")
+   ```
+6. **Never create data without a cleanup path** — if an API doesn't have a DELETE endpoint, use direct SQL via asyncpg to clean up
+7. **Property-based tests (Hypothesis)** — use mocks instead of hitting the real database. If they must create real data, use pytest fixtures with `yield` and cleanup in the teardown
+
+**If cleanup fails, the test MUST report it as a failure** — not silently continue. Orphaned test data is a bug.
 
 ## Running Tests
 

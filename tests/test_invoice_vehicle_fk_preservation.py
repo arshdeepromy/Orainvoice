@@ -61,7 +61,11 @@ from app.modules.vehicles.models import CustomerVehicle, OdometerReading
 # ---------------------------------------------------------------------------
 
 async def _make_session() -> tuple[AsyncSession, "AsyncEngine"]:
-    """Create a fresh engine + session for each test."""
+    """Create a fresh engine + session for each test.
+
+    IMPORTANT: Tests MUST call _cleanup_fixtures() in a finally block
+    to delete all test data. See the cleanup helper below.
+    """
     test_engine = create_async_engine(
         settings.database_url,
         echo=False,
@@ -74,6 +78,50 @@ async def _make_session() -> tuple[AsyncSession, "AsyncEngine"]:
     )
     session = factory()
     return session, test_engine
+
+
+async def _cleanup_fixtures(session: AsyncSession, fixtures: dict) -> None:
+    """Delete all test data created by _create_global_vehicle_fixtures.
+
+    Must be called in a finally block to prevent orphaned test records.
+    Deletes in reverse dependency order.
+    """
+    from sqlalchemy import text as sa_text
+
+    try:
+        org_id = str(fixtures["org"].id) if fixtures.get("org") else None
+        plan_id = str(fixtures["plan"].id) if fixtures.get("plan") else None
+
+        if org_id:
+            # Delete child records first (reverse dependency order)
+            for table in [
+                "odometer_readings", "customer_vehicles", "invoices",
+                "line_items", "customers", "org_modules", "users",
+                "branches", "organisations",
+            ]:
+                await session.execute(
+                    sa_text(f"DELETE FROM {table} WHERE org_id = :oid"),
+                    {"oid": org_id},
+                )
+
+        # Delete global vehicle if created
+        if fixtures.get("global_vehicle"):
+            await session.execute(
+                sa_text("DELETE FROM global_vehicles WHERE id = :vid"),
+                {"vid": str(fixtures["global_vehicle"].id)},
+            )
+
+        # Delete test plan
+        if plan_id:
+            await session.execute(
+                sa_text("DELETE FROM subscription_plans WHERE id = :pid"),
+                {"pid": plan_id},
+            )
+
+        await session.commit()
+    except Exception as e:
+        await session.rollback()
+        print(f"  ⚠️  Cleanup warning: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +215,34 @@ async def _create_global_vehicle_fixtures(session: AsyncSession):
 
 class TestPreservationGlobalVehicle:
     """Preservation tests: global vehicle behavior must remain unchanged."""
+
+    @pytest.fixture(autouse=True)
+    async def _cleanup_after_test(self):
+        """Ensure all test data is cleaned up after each test method."""
+        yield
+        # After each test, delete any orphaned test data
+        from sqlalchemy import text as sa_text
+        engine = create_async_engine(settings.database_url, pool_size=1)
+        factory = async_sessionmaker(engine, class_=AsyncSession)
+        async with factory() as session:
+            try:
+                # Delete orgs named "Preservation Test Org" and all their children
+                await session.execute(sa_text("""
+                    DELETE FROM odometer_readings WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM customer_vehicles WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM line_items WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM invoices WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM customers WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM org_modules WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM users WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM branches WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM organisations WHERE name = 'Preservation Test Org';
+                    DELETE FROM subscription_plans WHERE name = 'Test Plan';
+                """))
+                await session.commit()
+            except Exception:
+                await session.rollback()
+        await engine.dispose()
 
     # -------------------------------------------------------------------
     # 3.1 — Global vehicle auto-link creates CustomerVehicle with
@@ -528,6 +604,32 @@ class TestPreservationPropertyBased:
     that global-vehicle and no-vehicle paths are preserved across the
     full non-buggy input domain.
     """
+
+    @pytest.fixture(autouse=True)
+    async def _cleanup_after_test(self):
+        """Ensure all test data is cleaned up after each test method."""
+        yield
+        from sqlalchemy import text as sa_text
+        engine = create_async_engine(settings.database_url, pool_size=1)
+        factory = async_sessionmaker(engine, class_=AsyncSession)
+        async with factory() as session:
+            try:
+                await session.execute(sa_text("""
+                    DELETE FROM odometer_readings WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM customer_vehicles WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM line_items WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM invoices WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM customers WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM org_modules WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM users WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM branches WHERE org_id IN (SELECT id FROM organisations WHERE name = 'Preservation Test Org');
+                    DELETE FROM organisations WHERE name = 'Preservation Test Org';
+                    DELETE FROM subscription_plans WHERE name = 'Test Plan';
+                """))
+                await session.commit()
+            except Exception:
+                await session.rollback()
+        await engine.dispose()
 
     # -------------------------------------------------------------------
     # Property: Global vehicle metadata updates are always applied

@@ -104,6 +104,7 @@ services:
     volumes:
       - ./app:/app/app:delegated
       - ./alembic:/app/alembic:delegated
+      - standby_prod_uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -162,3 +163,4 @@ volumes:
   sbprod_pgdata:
   sbprod_redisdata:
   sbprod_frontend_dist:
+  standby_prod_uploads:

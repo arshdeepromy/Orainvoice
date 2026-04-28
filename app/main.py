@@ -199,6 +199,7 @@ def create_app() -> FastAPI:
     from app.modules.staff import models as _staff_models  # noqa: F401
     from app.modules.sms_chat import models as _sms_chat_models  # noqa: F401
     from app.modules.ha import models as _ha_models  # noqa: F401
+    from app.modules.ha import volume_sync_models as _volume_sync_models  # noqa: F401
     from app.modules.stock import models as _stock_models  # noqa: F401
     from app.modules.quotes import models as _quote_models  # noqa: F401
     from app.modules.payments import models as _payment_models  # noqa: F401
@@ -706,6 +707,38 @@ def create_app() -> FastAPI:
                 "Could not initialize HA on startup: %s", exc,
             )
 
+    @app.on_event("startup")
+    async def _migrate_branding_files_to_db() -> None:
+        """Auto-migrate disk-based branding files to DB BYTEA columns (idempotent)."""
+        try:
+            from app.core.database import async_session_factory
+            from app.modules.branding.service import BrandingService
+            async with async_session_factory() as db:
+                async with db.begin():
+                    svc = BrandingService(db)
+                    result = await svc.migrate_disk_files_to_db()
+                    migrated = result.get("migrated", 0)
+                    warnings = result.get("warnings", [])
+                    if migrated:
+                        logger.info("Migrated %d branding file(s) from disk to DB", migrated)
+                    for w in warnings:
+                        logger.warning("Branding migration warning: %s", w)
+        except Exception as exc:
+            logger.warning("Branding disk-to-DB migration failed on startup: %s", exc)
+
+    @app.on_event("startup")
+    async def _start_volume_sync() -> None:
+        """Start volume sync periodic task if configured and enabled."""
+        try:
+            from app.core.database import async_session_factory
+            from app.modules.ha.volume_sync_service import VolumeSyncService
+            async with async_session_factory() as db:
+                async with db.begin():
+                    vol_svc = VolumeSyncService()
+                    await vol_svc.start_periodic_sync(db)
+        except Exception as exc:
+            logger.warning("Volume sync periodic task failed to start: %s", exc)
+
     @app.on_event("shutdown")
     async def _stop_connexus_token_refresher() -> None:
         from app.integrations.connexus_sms import _token_refresher
@@ -722,6 +755,12 @@ def create_app() -> FastAPI:
         hb = get_heartbeat_service()
         if hb is not None:
             await hb.stop()
+
+    @app.on_event("shutdown")
+    async def _stop_volume_sync() -> None:
+        from app.modules.ha.volume_sync_service import VolumeSyncService
+        vol_svc = VolumeSyncService()
+        await vol_svc.stop_periodic_sync()
 
     return app
 

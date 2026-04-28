@@ -114,6 +114,7 @@ services:
       --error-logfile -
     volumes:
       - compliance_files:/app/compliance_files
+      - app_uploads:/app/uploads
     deploy:
       resources:
         limits:

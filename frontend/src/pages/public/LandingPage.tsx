@@ -10,6 +10,7 @@ interface Feature {
   icon: string
   name: string
   description: string
+  comingSoon?: boolean
 }
 
 interface FeatureCategory {
@@ -193,12 +194,14 @@ const FEATURE_CATEGORIES: FeatureCategory[] = [
         name: 'Customer Portal',
         description:
           'Give customers a self-service portal to view invoices, pay online, and book appointments.',
+        comingSoon: true,
       },
       {
         icon: '📱',
         name: 'Mobile App',
         description:
           'Full-featured mobile companion app for field staff — create invoices, track time, and manage jobs on the go.',
+        comingSoon: true,
       },
       {
         icon: '🏢',
@@ -220,23 +223,23 @@ const FEATURE_CATEGORIES: FeatureCategory[] = [
 /*  Pricing features checklist                                         */
 /* ------------------------------------------------------------------ */
 
-const PRICING_FEATURES = [
-  'Unlimited invoices & quotes',
-  'Job cards with vehicle linking',
-  'CarJam vehicle database',
-  'Customer management & portal',
-  'Bookings & scheduling',
-  'Staff management & time tracking',
-  'Inventory & purchase orders',
-  'Recurring invoices',
-  'Online payments (Stripe)',
-  'Xero accounting integration',
-  'Compliance document storage',
-  'Reports & analytics',
-  'Mobile app access',
-  'Multi-branch support',
-  'MFA security',
-  'Data import/export',
+const PRICING_FEATURES: { label: string; comingSoon?: boolean }[] = [
+  { label: 'Unlimited invoices & quotes' },
+  { label: 'Job cards with vehicle linking' },
+  { label: 'CarJam vehicle database' },
+  { label: 'Customer management & portal', comingSoon: true },
+  { label: 'Bookings & scheduling' },
+  { label: 'Staff management & time tracking' },
+  { label: 'Inventory & purchase orders' },
+  { label: 'Recurring invoices' },
+  { label: 'Online payments (Stripe)' },
+  { label: 'Xero accounting integration' },
+  { label: 'Compliance document storage' },
+  { label: 'Reports & analytics' },
+  { label: 'Mobile app access', comingSoon: true },
+  { label: 'Multi-branch support' },
+  { label: 'MFA security' },
+  { label: 'Data import/export' },
 ]
 
 /* ------------------------------------------------------------------ */
@@ -345,8 +348,13 @@ export default function LandingPage() {
                   {category.features.map((feature) => (
                     <div
                       key={feature.name}
-                      className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:shadow-md"
+                      className="relative rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:shadow-md"
                     >
+                      {feature.comingSoon && (
+                        <span className="absolute right-4 top-4 inline-flex items-center rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800">
+                          Coming Soon
+                        </span>
+                      )}
                       <div className="mb-3 text-3xl" aria-hidden="true">
                         {feature.icon}
                       </div>
@@ -387,7 +395,7 @@ export default function LandingPage() {
               {/* Feature checklist */}
               <ul className="mt-8 space-y-3 text-left">
                 {PRICING_FEATURES.map((feature) => (
-                  <li key={feature} className="flex items-start gap-3">
+                  <li key={feature.label} className="flex items-start gap-3">
                     <svg
                       className="mt-0.5 h-5 w-5 flex-shrink-0 text-blue-600"
                       fill="none"
@@ -402,7 +410,12 @@ export default function LandingPage() {
                         d="M5 13l4 4L19 7"
                       />
                     </svg>
-                    <span className="text-sm text-gray-700">{feature}</span>
+                    <span className="text-sm text-gray-700">{feature.label}</span>
+                    {feature.comingSoon && (
+                      <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                        Coming Soon
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>

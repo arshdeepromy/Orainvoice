@@ -1006,6 +1006,11 @@ async def demote_and_sync(
 # Combined router — merges public + admin under a single export
 # ---------------------------------------------------------------------------
 
+# Include volume sync sub-router in admin_router so it inherits global_admin
+from app.modules.ha.volume_sync_router import router as volume_sync_router
+
+admin_router.include_router(volume_sync_router)
+
 router = APIRouter()
 router.include_router(public_router)
 router.include_router(admin_router)

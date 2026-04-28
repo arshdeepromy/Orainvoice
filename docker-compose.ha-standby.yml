@@ -102,6 +102,7 @@ services:
       - ./alembic:/app/alembic:delegated
       - ./tests:/app/tests:delegated
       - ./scripts:/app/scripts:delegated
+      - standby_uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -155,3 +156,4 @@ volumes:
   standby_pgdata:
   standby_redisdata:
   standby_frontend_dist:
+  standby_uploads:

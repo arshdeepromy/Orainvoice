@@ -1,6 +1,7 @@
 import { useState, FormEvent } from 'react'
 import axios from 'axios'
 import { Modal } from '@/components/ui/Modal'
+import { usePlatformBranding } from '@/contexts/PlatformBrandingContext'
 
 interface DemoRequestModalProps {
   open: boolean
@@ -28,6 +29,8 @@ const INITIAL_FORM: FormData = {
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export function DemoRequestModal({ open, onClose }: DemoRequestModalProps) {
+  const { branding } = usePlatformBranding()
+  const fallbackEmail = branding.support_email || 'support@oraflows.co.nz'
   const [form, setForm] = useState<FormData>(INITIAL_FORM)
   const [errors, setErrors] = useState<Partial<Record<keyof FormData, string>>>({})
   const [submitting, setSubmitting] = useState(false)
@@ -93,7 +96,7 @@ export function DemoRequestModal({ open, onClose }: DemoRequestModalProps) {
         setSubmitState('error')
         setErrorMessage(
           res.data?.message ??
-            'Something went wrong. Please email us directly at arshdeep.romy@gmail.com',
+            `Something went wrong. Please email us directly at ${fallbackEmail}`,
         )
       }
     } catch (err) {
@@ -103,7 +106,7 @@ export function DemoRequestModal({ open, onClose }: DemoRequestModalProps) {
         setErrorMessage('Too many requests. Please try again later.')
       } else {
         setErrorMessage(
-          'Something went wrong. Please email us directly at arshdeep.romy@gmail.com',
+          `Something went wrong. Please email us directly at ${fallbackEmail}`,
         )
       }
     } finally {
