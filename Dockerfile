@@ -9,7 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
     libcairo2 \
     shared-mime-info \
-    && rm -rf /var/lib/apt/lists/*
+    openssh-server \
+    rsync \
+    iproute2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd
 
 WORKDIR /app
 

@@ -53,6 +53,11 @@ The `watch-build.sh` watcher inside the container may not reliably detect change
 - **Deploying code to Pi prod without syncing `alembic/versions/`** — the model references a column that doesn't exist in the prod DB, causing `AttributeError` at runtime. Always sync migrations when deploying to Pi.
 - **Syncing only the changed `.py` files to Pi but missing the migration** — even if the code change is "just a bugfix", check if any migration was created since the last deploy. The entrypoint runs `alembic upgrade head` automatically, but only if the migration files are present on disk.
 
+## PostgreSQL Logical Replication Pitfalls
+
+- **PostgreSQL 16 does not support sequence replication via `ALTER PUBLICATION ADD ALL SEQUENCES`.** This syntax does not exist. Sequences are not replicated by logical replication — they must be synced manually (e.g., `setval()` after promotion). Do not attempt to add sequences to a publication.
+- **After calling `save_config()` (or any service method that calls `db.commit()`), the current SQLAlchemy session's transaction is closed.** Subsequent DB operations on the same session will fail. Create a fresh session via `async_session_factory()` for any DB work that follows a commit in the same request handler.
+
 ## When Creating New Roles, Enum Values, or Constraints
 
 1. Create the Alembic migration

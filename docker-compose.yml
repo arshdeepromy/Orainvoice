@@ -131,6 +131,9 @@ services:
     volumes:
       - compliance_files:/app/compliance_files
       - app_uploads:/app/uploads
+      - ha_keys:/ha_keys
+    ports:
+      - "2222:2222"
     depends_on:
       postgres:
         condition: service_healthy
@@ -188,3 +191,4 @@ volumes:
   mobile_dist:
   compliance_files:
   app_uploads:
+  ha_keys:

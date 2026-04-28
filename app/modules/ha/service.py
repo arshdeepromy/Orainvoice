@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.core.encryption import envelope_decrypt_str, envelope_encrypt
+from app.modules.ha.event_log import log_ha_event
 from app.modules.ha.heartbeat import HeartbeatService
 from app.modules.ha.middleware import set_node_role, set_split_brain_blocked
 from app.modules.ha.models import HAConfig
@@ -241,6 +242,22 @@ class HAService:
 
         await db.commit()
 
+        # Log config change to event log (Req 34.4)
+        try:
+            await log_ha_event(
+                event_type="config_change",
+                severity="info",
+                message=f"HA config saved: role={cfg.role}, peer={cfg.peer_endpoint}",
+                details={
+                    "node_name": cfg.node_name,
+                    "role": cfg.role,
+                    "peer_endpoint": cfg.peer_endpoint,
+                    "auto_promote_enabled": cfg.auto_promote_enabled,
+                },
+            )
+        except Exception:
+            pass  # Never crash the calling operation
+
         # Hot-reload heartbeat service when config changes
         secret = _get_heartbeat_secret_from_config(cfg)
         if cfg.peer_endpoint:
@@ -381,6 +398,18 @@ class HAService:
         await db.commit()
 
         logger.info("Node promoted to PRIMARY (reason: %s, force: %s)", reason, force)
+
+        # Log role change to event log (Req 34.4)
+        try:
+            await log_ha_event(
+                event_type="role_change",
+                severity="info",
+                message=f"Node promoted to PRIMARY (reason: {reason}, force: {force})",
+                details={"role": "primary", "reason": reason, "force": force, "replication_lag": lag},
+            )
+        except Exception:
+            pass  # Never crash the calling operation
+
         return {
             "status": "ok",
             "role": "primary",
@@ -453,6 +482,18 @@ class HAService:
         await db.commit()
 
         logger.info("Node demoted to STANDBY (reason: %s)", reason)
+
+        # Log role change to event log (Req 34.4)
+        try:
+            await log_ha_event(
+                event_type="role_change",
+                severity="info",
+                message=f"Node demoted to STANDBY (reason: {reason})",
+                details={"role": "standby", "reason": reason},
+            )
+        except Exception:
+            pass  # Never crash the calling operation
+
         return {
             "status": "ok",
             "role": "standby",
@@ -547,6 +588,18 @@ class HAService:
         )
 
         logger.info("Demote-and-sync completed: node is now STANDBY (reason: %s)", reason)
+
+        # Log role change to event log (Req 34.4)
+        try:
+            await log_ha_event(
+                event_type="role_change",
+                severity="info",
+                message=f"Demote-and-sync completed: node is now STANDBY (reason: {reason})",
+                details={"role": "standby", "reason": reason, "peer_endpoint": cfg.peer_endpoint},
+            )
+        except Exception:
+            pass  # Never crash the calling operation
+
         return {
             "status": "ok",
             "role": "standby",

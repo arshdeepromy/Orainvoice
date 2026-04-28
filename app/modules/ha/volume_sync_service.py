@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.ha.event_log import log_ha_event
 from app.modules.ha.volume_sync_models import VolumeSyncConfig, VolumeSyncHistory
 from app.modules.ha.volume_sync_schemas import (
     VolumeSyncConfigRequest,
@@ -235,6 +236,16 @@ class VolumeSyncService:
             if errors:
                 history.status = "failure"
                 history.error_message = "; ".join(errors)
+                # Log sync failure to event log (Req 34.5)
+                try:
+                    await log_ha_event(
+                        event_type="volume_sync_error",
+                        severity="error",
+                        message=f"Volume sync failed: {'; '.join(errors)}",
+                        details={"sync_type": sync_type, "errors": errors},
+                    )
+                except Exception:
+                    pass  # Never crash the calling operation
             else:
                 history.status = "success"
 
@@ -262,6 +273,17 @@ class VolumeSyncService:
 
             self.__class__._last_sync_time = history.completed_at
             self.__class__._last_sync_result = "failure"
+
+            # Log sync failure to event log (Req 34.5)
+            try:
+                await log_ha_event(
+                    event_type="volume_sync_error",
+                    severity="error",
+                    message=f"Volume sync execution failed: {exc}",
+                    details={"sync_type": sync_type, "error": str(exc)},
+                )
+            except Exception:
+                pass  # Never crash the calling operation
 
             return history
 

@@ -97,6 +97,55 @@ interface VolumeSyncHistoryEntry {
   sync_type: string
 }
 
+/* ---- Wizard Types (Tasks 8.1) ---- */
+
+interface WizardStep {
+  id: number
+  title: string
+  status: 'pending' | 'active' | 'completed' | 'failed'
+}
+
+const WIZARD_STEPS_TEMPLATE: WizardStep[] = [
+  { id: 1, title: 'Enter Standby Address', status: 'pending' },
+  { id: 2, title: 'Verify Reachability', status: 'pending' },
+  { id: 3, title: 'Authenticate', status: 'pending' },
+  { id: 4, title: 'Trust Handshake', status: 'pending' },
+  { id: 5, title: 'Setup Replication', status: 'pending' },
+]
+
+interface HAEvent {
+  id: string
+  timestamp: string
+  event_type: string
+  severity: 'info' | 'warning' | 'error' | 'critical'
+  message: string
+  details: Record<string, unknown> | null
+  node_name: string
+}
+
+interface ReachabilityResult {
+  reachable: boolean
+  node_name: string | null
+  role: string | null
+  is_orainvoice: boolean
+  version_warning: string | null
+}
+
+interface HandshakeResult {
+  primary_ip: string | null
+  primary_pg_port: number | null
+  standby_ip: string | null
+  standby_pg_port: number | null
+  hmac_secret_set: boolean
+}
+
+interface SetupStepResult {
+  step: string
+  status: string
+  message: string | null
+  error: string | null
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -299,6 +348,38 @@ export function HAReplication() {
   const [wizardReplUserPassword, setWizardReplUserPassword] = useState('')
   const [wizardCreatingReplUser, setWizardCreatingReplUser] = useState(false)
   const [wizardReplUserResult, setWizardReplUserResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  // HA Setup Wizard state (5-step flow)
+  const [haWizardActive, setHaWizardActive] = useState(false)
+  const [haWizardCurrentStep, setHaWizardCurrentStep] = useState(1)
+  const [haWizardSteps, setHaWizardSteps] = useState<WizardStep[]>(
+    WIZARD_STEPS_TEMPLATE.map(s => ({ ...s }))
+  )
+  const [standbyAddress, setStandbyAddress] = useState('')
+  const [standbyToken, setStandbyToken] = useState<string | null>(null)
+  const [reachabilityResult, setReachabilityResult] = useState<ReachabilityResult | null>(null)
+  const [handshakeResult, setHandshakeResult] = useState<HandshakeResult | null>(null)
+  const [setupLog, setSetupLog] = useState<SetupStepResult[]>([])
+  const [haWizardLoading, setHaWizardLoading] = useState(false)
+  const [haWizardError, setHaWizardError] = useState<string | null>(null)
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [setupComplete, setSetupComplete] = useState(false)
+
+  // HA Event Log state
+  const [haEvents, setHaEvents] = useState<HAEvent[]>([])
+  const [haEventsTotal, setHaEventsTotal] = useState(0)
+  const [haEventsLoading, setHaEventsLoading] = useState(false)
+  const [haEventsSeverityFilter, setHaEventsSeverityFilter] = useState('')
+  const [haEventsTypeFilter, setHaEventsTypeFilter] = useState('')
+  const [haEventsLimit, setHaEventsLimit] = useState(50)
+
+  // Recovery state
+  const [recoveryAction, setRecoveryAction] = useState<'resume' | 'fresh' | null>(null)
+  const [recoveryConfirmText, setRecoveryConfirmText] = useState('')
+  const [recoveryLoading, setRecoveryLoading] = useState(false)
+  const [recoveryError, setRecoveryError] = useState<string | null>(null)
+  const [recoverySuccess, setRecoverySuccess] = useState<string | null>(null)
 
   // Track whether initial form state has been populated
   const [formInitialized, setFormInitialized] = useState(false)
@@ -771,6 +852,273 @@ export function HAReplication() {
     setWizardReplUserPassword('')
   }
 
+  /* ---- HA Event Log fetching ---- */
+  const fetchHaEvents = useCallback(async (limit?: number) => {
+    setHaEventsLoading(true)
+    try {
+      const params: Record<string, string | number> = { limit: limit ?? haEventsLimit }
+      if (haEventsSeverityFilter) params.severity = haEventsSeverityFilter
+      if (haEventsTypeFilter) params.event_type = haEventsTypeFilter
+      const res = await apiClient.get<{ events: HAEvent[]; total: number }>('/ha/events', { params })
+      setHaEvents(res.data?.events ?? [])
+      setHaEventsTotal(res.data?.total ?? 0)
+    } catch {
+      // Silently fail — event log is non-critical
+    } finally {
+      setHaEventsLoading(false)
+    }
+  }, [haEventsLimit, haEventsSeverityFilter, haEventsTypeFilter])
+
+  // Fetch events when filters change or on initial load (only when config exists)
+  useEffect(() => {
+    if (config && config.role !== 'standalone') {
+      fetchHaEvents()
+    }
+  }, [config, fetchHaEvents])
+
+  /* ---- HA Wizard step helpers ---- */
+  const updateStepStatus = (stepId: number, status: WizardStep['status']) => {
+    setHaWizardSteps(prev =>
+      prev.map(s => (s.id === stepId ? { ...s, status } : s))
+    )
+  }
+
+  const resetHaWizard = () => {
+    setHaWizardActive(false)
+    setHaWizardCurrentStep(1)
+    setHaWizardSteps(WIZARD_STEPS_TEMPLATE.map(s => ({ ...s })))
+    setStandbyAddress('')
+    setStandbyToken(null)
+    setReachabilityResult(null)
+    setHandshakeResult(null)
+    setSetupLog([])
+    setHaWizardLoading(false)
+    setHaWizardError(null)
+    setAuthEmail('')
+    setAuthPassword('')
+    setSetupComplete(false)
+  }
+
+  const startHaWizard = () => {
+    resetHaWizard()
+    setHaWizardActive(true)
+    updateStepStatus(1, 'active')
+  }
+
+  /* ---- Step 1 + 2: Check Reachability ---- */
+  const handleCheckReachability = async () => {
+    if (!standbyAddress.trim()) return
+    setHaWizardLoading(true)
+    setHaWizardError(null)
+    updateStepStatus(1, 'active')
+    try {
+      const res = await apiClient.post<{
+        reachable: boolean
+        node_name: string | null
+        role: string | null
+        is_orainvoice: boolean
+        error: string | null
+        version_warning: string | null
+      }>('/ha/wizard/check-reachability', { address: standbyAddress.trim() })
+
+      const data = res.data
+      if (data?.reachable && data?.is_orainvoice) {
+        setReachabilityResult({
+          reachable: true,
+          node_name: data?.node_name ?? null,
+          role: data?.role ?? null,
+          is_orainvoice: true,
+          version_warning: data?.version_warning ?? null,
+        })
+        updateStepStatus(1, 'completed')
+        updateStepStatus(2, 'completed')
+        setHaWizardCurrentStep(3)
+        updateStepStatus(3, 'active')
+      } else if (data?.reachable && !data?.is_orainvoice) {
+        setHaWizardError('The remote host is reachable but is not running OraInvoice.')
+        updateStepStatus(1, 'failed')
+      } else {
+        setHaWizardError(data?.error ?? 'Node is unreachable. Check the address and try again.')
+        updateStepStatus(1, 'failed')
+      }
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to check reachability'
+      setHaWizardError(msg)
+      updateStepStatus(1, 'failed')
+    } finally {
+      setHaWizardLoading(false)
+    }
+  }
+
+  /* ---- Step 3: Authenticate ---- */
+  const handleWizardAuthenticate = async () => {
+    if (!authEmail.trim() || !authPassword) return
+    setHaWizardLoading(true)
+    setHaWizardError(null)
+    updateStepStatus(3, 'active')
+    try {
+      const res = await apiClient.post<{
+        authenticated: boolean
+        is_global_admin: boolean
+        token: string | null
+        error: string | null
+      }>('/ha/wizard/authenticate', {
+        address: standbyAddress.trim(),
+        email: authEmail.trim(),
+        password: authPassword,
+      })
+
+      const data = res.data
+      if (data?.authenticated && data?.is_global_admin && data?.token) {
+        setStandbyToken(data.token)
+        updateStepStatus(3, 'completed')
+        setHaWizardCurrentStep(4)
+        updateStepStatus(4, 'active')
+      } else if (data?.authenticated && !data?.is_global_admin) {
+        setHaWizardError('Authentication succeeded but the account does not have Global Admin privileges on the standby node.')
+        updateStepStatus(3, 'failed')
+      } else {
+        setHaWizardError(data?.error ?? 'Authentication failed. Check your credentials and try again.')
+        updateStepStatus(3, 'failed')
+      }
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Authentication failed'
+      setHaWizardError(msg)
+      updateStepStatus(3, 'failed')
+    } finally {
+      setHaWizardLoading(false)
+    }
+  }
+
+  /* ---- Step 4: Trust Handshake ---- */
+  const handleWizardHandshake = async () => {
+    if (!standbyToken) return
+    setHaWizardLoading(true)
+    setHaWizardError(null)
+    updateStepStatus(4, 'active')
+    try {
+      const res = await apiClient.post<{
+        success: boolean
+        primary_ip: string | null
+        primary_pg_port: number | null
+        standby_ip: string | null
+        standby_pg_port: number | null
+        hmac_secret_set: boolean
+        error: string | null
+      }>('/ha/wizard/handshake', {
+        address: standbyAddress.trim(),
+        standby_token: standbyToken,
+      })
+
+      const data = res.data
+      if (data?.success) {
+        setHandshakeResult({
+          primary_ip: data?.primary_ip ?? null,
+          primary_pg_port: data?.primary_pg_port ?? null,
+          standby_ip: data?.standby_ip ?? null,
+          standby_pg_port: data?.standby_pg_port ?? null,
+          hmac_secret_set: data?.hmac_secret_set ?? false,
+        })
+        updateStepStatus(4, 'completed')
+        setHaWizardCurrentStep(5)
+        updateStepStatus(5, 'active')
+      } else {
+        setHaWizardError(data?.error ?? 'Trust handshake failed. Please try again.')
+        updateStepStatus(4, 'failed')
+      }
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Handshake failed'
+      setHaWizardError(msg)
+      updateStepStatus(4, 'failed')
+    } finally {
+      setHaWizardLoading(false)
+    }
+  }
+
+  /* ---- Step 5: Automated Setup ---- */
+  const handleWizardSetup = async () => {
+    if (!standbyToken) return
+    setHaWizardLoading(true)
+    setHaWizardError(null)
+    setSetupLog([])
+    updateStepStatus(5, 'active')
+    try {
+      const res = await apiClient.post<{
+        success: boolean
+        steps: SetupStepResult[]
+        error: string | null
+      }>('/ha/wizard/setup', {
+        address: standbyAddress.trim(),
+        standby_token: standbyToken,
+      })
+
+      const data = res.data
+      setSetupLog(data?.steps ?? [])
+
+      if (data?.success) {
+        updateStepStatus(5, 'completed')
+        setSetupComplete(true)
+        // Discard standby token from memory
+        setStandbyToken(null)
+        setAuthPassword('')
+        // Refresh HA config to show monitoring view
+        setFormInitialized(false)
+        await fetchData()
+        await fetchHaEvents()
+      } else {
+        setHaWizardError(data?.error ?? 'Setup failed. Check the log below for details.')
+        updateStepStatus(5, 'failed')
+      }
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Setup failed'
+      setHaWizardError(msg)
+      updateStepStatus(5, 'failed')
+    } finally {
+      setHaWizardLoading(false)
+    }
+  }
+
+  /* ---- Recovery handlers ---- */
+  const handleResume = async () => {
+    setRecoveryLoading(true)
+    setRecoveryError(null)
+    setRecoverySuccess(null)
+    try {
+      await apiClient.post('/ha/replication/resume')
+      setRecoverySuccess('Replication resumed successfully.')
+      setRecoveryAction(null)
+      await fetchData()
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to resume replication'
+      setRecoveryError(msg)
+    } finally {
+      setRecoveryLoading(false)
+    }
+  }
+
+  const handleFreshSetup = async () => {
+    if (recoveryConfirmText !== 'CONFIRM') return
+    setRecoveryLoading(true)
+    setRecoveryError(null)
+    setRecoverySuccess(null)
+    try {
+      // Stop existing replication first
+      try { await apiClient.post('/ha/replication/stop') } catch { /* ignore */ }
+      // Start the wizard from the handshake step
+      setRecoveryAction(null)
+      setRecoveryConfirmText('')
+      startHaWizard()
+      // Jump to step 1 so user can re-enter address
+      setHaWizardCurrentStep(1)
+      updateStepStatus(1, 'active')
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to start fresh setup'
+      setRecoveryError(msg)
+    } finally {
+      setRecoveryLoading(false)
+    }
+  }
+
   // Determine if the suggestion banner should show
   const peerPermanentlyUnreachable =
     config?.role === 'primary' &&
@@ -783,6 +1131,15 @@ export function HAReplication() {
   const isDemoteAndSync = modalAction === 'demote-and-sync'
   const needsConfirmText = modalAction && (['promote', 'demote', 'resync', 'stop-replication', 'demote-and-sync'].includes(modalAction) || isStandbyInit)
   const showForceCheckbox = modalAction === 'promote' && lagSeconds != null && lagSeconds > 5
+
+  // Determine if replication is broken (for recovery options)
+  const isReplicationBroken = config && config.role !== 'standalone' && (
+    (replication?.subscription_status != null && replication.subscription_status !== 'active' && replication.subscription_status !== 'not_configured') ||
+    (peerHealth === 'unreachable' && (failoverStatus?.peer_unreachable_seconds ?? 0) > (config?.heartbeat_interval_seconds ?? 10) * 3)
+  )
+
+  // Determine page mode for conditional rendering (Task 8.9)
+  const hasHaConfig = !!config && config.role !== 'standalone'
 
   const modalTitles: Record<string, string> = {
     promote: 'Promote to Primary',
@@ -831,11 +1188,406 @@ export function HAReplication() {
         <AlertBanner variant="success">{actionSuccess}</AlertBanner>
       )}
 
-      {/* ── Setup Guide (collapsible) ── */}
-      <SetupGuide configured={!!config} />
+      {/* ── Setup Guide (collapsible) — only show when HA is configured ── */}
+      {hasHaConfig && <SetupGuide configured={true} />}
+
+      {/* ── 5-Step HA Setup Wizard (Task 8.1–8.6, 8.9) ── */}
+      {/* Show wizard when: no HA config, or wizard explicitly activated */}
+      {(!hasHaConfig || haWizardActive) && !setupComplete && (
+        <section className="rounded-lg border-2 border-blue-300 bg-white p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-medium text-gray-900">HA Setup Wizard</h2>
+            {hasHaConfig && (
+              <button
+                type="button"
+                onClick={resetHaWizard}
+                className="rounded p-1 text-gray-400 hover:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                aria-label="Close wizard"
+              >
+                <span aria-hidden="true" className="text-xl leading-none">×</span>
+              </button>
+            )}
+          </div>
+
+          {!hasHaConfig && !haWizardActive && (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-600">
+                HA is not configured yet. Use this wizard to pair two OraInvoice nodes for automatic replication.
+              </p>
+              <Button variant="primary" size="sm" onClick={startHaWizard}>
+                Start Setup Wizard
+              </Button>
+            </div>
+          )}
+
+          {/* Step indicator (Task 8.9) */}
+          {haWizardActive && (
+            <>
+              <div className="flex items-center gap-1">
+                {haWizardSteps.map((step, i) => (
+                  <div key={step.id} className="flex items-center gap-1">
+                    {i > 0 && (
+                      <div className={`h-px w-4 sm:w-8 ${step.status === 'completed' || haWizardSteps[i - 1]?.status === 'completed' ? 'bg-blue-400' : 'bg-gray-200'}`} />
+                    )}
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`inline-flex h-7 w-7 items-center justify-center rounded-full text-xs font-medium ${
+                          step.status === 'completed'
+                            ? 'bg-green-100 text-green-700'
+                            : step.status === 'active'
+                              ? 'bg-blue-100 text-blue-700'
+                              : step.status === 'failed'
+                                ? 'bg-red-100 text-red-700'
+                                : 'bg-gray-100 text-gray-400'
+                        }`}
+                      >
+                        {step.status === 'completed' ? '✓' : step.status === 'active' && haWizardLoading ? (
+                          <Spinner size="sm" />
+                        ) : step.status === 'failed' ? '✗' : step.id}
+                      </span>
+                      <span className={`hidden sm:inline text-xs ${
+                        step.status === 'active' ? 'font-medium text-gray-900'
+                          : step.status === 'completed' ? 'text-green-700'
+                          : step.status === 'failed' ? 'text-red-700'
+                          : 'text-gray-400'
+                      }`}>
+                        {step.title}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+                <span className="ml-auto text-xs text-gray-400">
+                  Step {haWizardCurrentStep} of {haWizardSteps.length}
+                </span>
+              </div>
+
+              {/* Error banner */}
+              {haWizardError && (
+                <AlertBanner variant="error">{haWizardError}</AlertBanner>
+              )}
+
+              {/* Step 1: Enter Standby Address (Task 8.2) */}
+              {haWizardCurrentStep === 1 && (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-600">
+                    Enter the standby node's address (IP or URL with port). The wizard will verify it's reachable and running OraInvoice.
+                  </p>
+                  <Input
+                    label="Standby Node Address"
+                    placeholder="e.g. http://192.168.1.91:8081"
+                    value={standbyAddress}
+                    onChange={(e) => setStandbyAddress(e.target.value)}
+                  />
+                  <div className="flex justify-end gap-3 pt-2">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={handleCheckReachability}
+                      loading={haWizardLoading}
+                      disabled={!standbyAddress.trim()}
+                    >
+                      Check Reachability
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 2: Verify Reachability — auto-completed by Step 1 (Task 8.3) */}
+              {haWizardCurrentStep === 2 && reachabilityResult && (
+                <div className="space-y-4">
+                  <div className="rounded-md border border-green-200 bg-green-50 p-4 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-green-200 text-green-700 text-xs">✓</span>
+                      <span className="text-sm font-medium text-green-800">Standby node is reachable</span>
+                    </div>
+                    <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-green-800 pl-7">
+                      <dt className="text-green-600">Node Name</dt>
+                      <dd>{reachabilityResult.node_name ?? '—'}</dd>
+                      <dt className="text-green-600">Role</dt>
+                      <dd>{reachabilityResult.role ?? '—'}</dd>
+                    </dl>
+                  </div>
+                  {reachabilityResult.version_warning && (
+                    <AlertBanner variant="warning">{reachabilityResult.version_warning}</AlertBanner>
+                  )}
+                  <div className="flex justify-between gap-3 pt-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        setHaWizardCurrentStep(1)
+                        updateStepStatus(1, 'active')
+                        updateStepStatus(2, 'pending')
+                        setReachabilityResult(null)
+                        setHaWizardError(null)
+                      }}
+                    >
+                      Edit Address
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => {
+                        setHaWizardCurrentStep(3)
+                        updateStepStatus(3, 'active')
+                      }}
+                    >
+                      Continue
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 3: Authenticate (Task 8.4) */}
+              {haWizardCurrentStep === 3 && (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-600">
+                    Enter Global Admin credentials for the standby node. This proves you own both nodes.
+                  </p>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Input
+                      label="Email"
+                      type="email"
+                      placeholder="admin@example.com"
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                    />
+                    <Input
+                      label="Password"
+                      type="password"
+                      placeholder="Standby node password"
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex justify-end gap-3 pt-2">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={handleWizardAuthenticate}
+                      loading={haWizardLoading}
+                      disabled={!authEmail.trim() || !authPassword}
+                    >
+                      Authenticate
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 4: Trust Handshake (Task 8.5) */}
+              {haWizardCurrentStep === 4 && (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-600">
+                    The trust handshake exchanges SSH keys, network details, and a shared HMAC secret between both nodes.
+                  </p>
+
+                  {!handshakeResult && (
+                    <div className="flex justify-end gap-3 pt-2">
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={handleWizardHandshake}
+                        loading={haWizardLoading}
+                      >
+                        {haWizardLoading ? (
+                          <span className="flex items-center gap-2">
+                            <Spinner size="sm" />
+                            Handshake in progress…
+                          </span>
+                        ) : 'Start Handshake'}
+                      </Button>
+                    </div>
+                  )}
+
+                  {handshakeResult && (
+                    <div className="rounded-md border border-green-200 bg-green-50 p-4 space-y-2">
+                      <p className="text-sm font-medium text-green-800">Handshake completed successfully</p>
+                      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-green-800">
+                        <dt className="text-green-600">Primary IP</dt>
+                        <dd>{handshakeResult.primary_ip ?? '—'}</dd>
+                        <dt className="text-green-600">Primary PG Port</dt>
+                        <dd>{handshakeResult.primary_pg_port ?? '—'}</dd>
+                        <dt className="text-green-600">Standby IP</dt>
+                        <dd>{handshakeResult.standby_ip ?? '—'}</dd>
+                        <dt className="text-green-600">Standby PG Port</dt>
+                        <dd>{handshakeResult.standby_pg_port ?? '—'}</dd>
+                        <dt className="text-green-600">HMAC Secret</dt>
+                        <dd>{handshakeResult.hmac_secret_set ? '✓ Set on both nodes' : '✗ Not set'}</dd>
+                      </dl>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Step 5: Automated Setup (Task 8.6) */}
+              {haWizardCurrentStep === 5 && (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-600">
+                    Click "Start Setup" to automatically configure replication on both nodes.
+                  </p>
+
+                  {setupLog.length === 0 && !haWizardLoading && (
+                    <div className="flex justify-end gap-3 pt-2">
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={handleWizardSetup}
+                        loading={haWizardLoading}
+                      >
+                        Start Setup
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* Setup progress log */}
+                  {(setupLog.length > 0 || haWizardLoading) && (
+                    <div className="rounded-md border border-gray-200 bg-gray-50 p-4 space-y-2">
+                      <p className="text-sm font-medium text-gray-900 mb-2">Setup Progress</p>
+                      {haWizardLoading && setupLog.length === 0 && (
+                        <div className="flex items-center gap-2 text-sm text-blue-700">
+                          <Spinner size="sm" />
+                          Running automated setup…
+                        </div>
+                      )}
+                      {(setupLog ?? []).map((step, i) => (
+                        <div key={i} className="flex items-center gap-2 text-sm">
+                          {step.status === 'completed' ? (
+                            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-green-100 text-green-700 text-xs">✓</span>
+                          ) : step.status === 'failed' ? (
+                            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-red-100 text-red-700 text-xs">✗</span>
+                          ) : step.status === 'skipped' ? (
+                            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-gray-100 text-gray-400 text-xs">—</span>
+                          ) : (
+                            <Spinner size="sm" />
+                          )}
+                          <span className={
+                            step.status === 'completed' ? 'text-green-800'
+                              : step.status === 'failed' ? 'text-red-800'
+                              : 'text-gray-500'
+                          }>
+                            {step.step?.replace(/_/g, ' ') ?? 'Unknown step'}
+                          </span>
+                          {step.message && (
+                            <span className="text-gray-500 text-xs">— {step.message}</span>
+                          )}
+                          {step.error && (
+                            <span className="text-red-600 text-xs">— {step.error}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Retry button on failure */}
+                  {haWizardSteps[4]?.status === 'failed' && !haWizardLoading && (
+                    <div className="flex justify-end gap-3 pt-2">
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={handleWizardSetup}
+                        loading={haWizardLoading}
+                      >
+                        Retry Setup
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      )}
+
+      {/* ── Setup Complete Transition Message ── */}
+      {setupComplete && (
+        <AlertBanner variant="success">
+          HA replication setup completed successfully. The monitoring view is now active.
+        </AlertBanner>
+      )}
+
+      {/* ── Recovery Options (Task 8.7) ── */}
+      {hasHaConfig && isReplicationBroken && !haWizardActive && (
+        <section className="rounded-lg border border-red-200 bg-red-50 p-5 space-y-4">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-red-200 text-red-700 text-sm">!</span>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-red-900">Replication appears broken</p>
+              <p className="mt-1 text-sm text-red-700">
+                {replication?.subscription_status && replication.subscription_status !== 'active' && replication.subscription_status !== 'not_configured'
+                  ? `Subscription status: ${replication.subscription_status}`
+                  : peerHealth === 'unreachable'
+                    ? `Standby unreachable for ${Math.round(failoverStatus?.peer_unreachable_seconds ?? 0)} seconds`
+                    : 'Replication is not in a healthy state'}
+              </p>
+            </div>
+          </div>
+
+          {recoveryError && <AlertBanner variant="error">{recoveryError}</AlertBanner>}
+          {recoverySuccess && <AlertBanner variant="success">{recoverySuccess}</AlertBanner>}
+
+          {recoveryAction === 'fresh' && (
+            <div className="space-y-3 pl-9">
+              <p className="text-sm text-red-800">
+                Fresh Setup will drop all replication objects and re-run the wizard. Type <span className="font-semibold">CONFIRM</span> to proceed.
+              </p>
+              <Input
+                label='Type "CONFIRM" to proceed'
+                placeholder="CONFIRM"
+                value={recoveryConfirmText}
+                onChange={(e) => setRecoveryConfirmText(e.target.value)}
+              />
+            </div>
+          )}
+
+          <div className="flex gap-3 pl-9">
+            {recoveryAction !== 'fresh' && (
+              <>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleResume}
+                  loading={recoveryLoading && recoveryAction === 'resume'}
+                >
+                  Resume Replication
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => setRecoveryAction('fresh')}
+                >
+                  Fresh Setup
+                </Button>
+              </>
+            )}
+            {recoveryAction === 'fresh' && (
+              <>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={handleFreshSetup}
+                  loading={recoveryLoading}
+                  disabled={recoveryConfirmText !== 'CONFIRM'}
+                >
+                  Confirm Fresh Setup
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setRecoveryAction(null)
+                    setRecoveryConfirmText('')
+                  }}
+                >
+                  Cancel
+                </Button>
+              </>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* ── New Standby Setup Wizard — Suggestion Banner ── */}
-      {peerPermanentlyUnreachable && !wizardOpen && (
+      {peerPermanentlyUnreachable && !wizardOpen && !haWizardActive && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-5 py-4">
           <div className="flex items-center justify-between gap-4">
             <div>
@@ -857,7 +1609,7 @@ export function HAReplication() {
         </div>
       )}
 
-      {/* ── New Standby Setup Wizard ── */}
+      {/* ── New Standby Setup Wizard (legacy — peer DB config wizard) ── */}
       {wizardOpen && (
         <section className="rounded-lg border-2 border-blue-300 bg-white p-6 space-y-5">
           <div className="flex items-center justify-between">
@@ -1908,6 +2660,141 @@ export function HAReplication() {
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* ── HA Event Log Table (Task 8.8) ── */}
+      {hasHaConfig && (
+        <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-medium text-gray-900">HA Event Log</h2>
+            <span className="text-xs text-gray-400">
+              {haEventsTotal > 0 ? `${(haEvents ?? []).length} of ${haEventsTotal} events` : 'No events'}
+            </span>
+          </div>
+
+          {/* Filters */}
+          <div className="flex flex-wrap gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Severity</label>
+              <select
+                value={haEventsSeverityFilter}
+                onChange={(e) => {
+                  setHaEventsSeverityFilter(e.target.value)
+                  setHaEventsLimit(50)
+                }}
+                className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">All</option>
+                <option value="info">Info</option>
+                <option value="warning">Warning</option>
+                <option value="error">Error</option>
+                <option value="critical">Critical</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Event Type</label>
+              <select
+                value={haEventsTypeFilter}
+                onChange={(e) => {
+                  setHaEventsTypeFilter(e.target.value)
+                  setHaEventsLimit(50)
+                }}
+                className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">All</option>
+                <option value="heartbeat_failure">Heartbeat Failure</option>
+                <option value="role_change">Role Change</option>
+                <option value="replication_error">Replication Error</option>
+                <option value="split_brain">Split Brain</option>
+                <option value="auto_promote">Auto Promote</option>
+                <option value="volume_sync_error">Volume Sync Error</option>
+                <option value="config_change">Config Change</option>
+                <option value="recovery">Recovery</option>
+                <option value="wizard">Wizard</option>
+              </select>
+            </div>
+            <div className="flex items-end">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => fetchHaEvents()}
+                loading={haEventsLoading}
+              >
+                Refresh
+              </Button>
+            </div>
+          </div>
+
+          {/* Event table */}
+          {haEventsLoading && (haEvents ?? []).length === 0 ? (
+            <div className="py-8">
+              <Spinner size="sm" label="Loading events…" />
+            </div>
+          ) : (haEvents ?? []).length === 0 ? (
+            <p className="text-sm text-gray-400 py-4">No events found</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-gray-500">
+                    <th className="pb-2 pr-4">Time</th>
+                    <th className="pb-2 pr-4">Severity</th>
+                    <th className="pb-2 pr-4">Event Type</th>
+                    <th className="pb-2">Message</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(haEvents ?? []).map((event) => (
+                    <tr key={event.id} className="border-b border-gray-100">
+                      <td className="py-1.5 pr-4 text-gray-600 whitespace-nowrap">
+                        {formatTime(event.timestamp)}
+                      </td>
+                      <td className="py-1.5 pr-4">
+                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                          event.severity === 'info'
+                            ? 'bg-green-100 text-green-700'
+                            : event.severity === 'warning'
+                              ? 'bg-yellow-100 text-yellow-700'
+                              : event.severity === 'error'
+                                ? 'bg-red-100 text-red-700'
+                                : event.severity === 'critical'
+                                  ? 'bg-purple-100 text-purple-700'
+                                  : 'bg-gray-100 text-gray-600'
+                        }`}>
+                          {event.severity}
+                        </span>
+                      </td>
+                      <td className="py-1.5 pr-4 text-gray-700 whitespace-nowrap">
+                        {event.event_type?.replace(/_/g, ' ') ?? '—'}
+                      </td>
+                      <td className="py-1.5 text-gray-600 text-xs">
+                        {event.message ?? '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Load More pagination */}
+          {(haEvents ?? []).length < haEventsTotal && (
+            <div className="flex justify-center pt-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  const newLimit = haEventsLimit + 50
+                  setHaEventsLimit(newLimit)
+                  fetchHaEvents(newLimit)
+                }}
+                loading={haEventsLoading}
+              >
+                Load More
+              </Button>
             </div>
           )}
         </section>

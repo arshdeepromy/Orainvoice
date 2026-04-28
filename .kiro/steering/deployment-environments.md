@@ -135,6 +135,10 @@ rm -rf frontend_dist_export
 
 ## Known Deployment Issues and Fixes
 
+### Issue: Docker bridge networking — cross-project container communication
+**Cause:** Containers in different Docker Compose projects (e.g., `invoicing` and `invoicing-standby`) run on separate Docker bridge networks. Container-internal IPs (172.x.x.x) from one project are not routable from the other project's network. The wizard's LAN IP auto-detection returns the Docker gateway IP, which is correct for reaching the host but not for direct container-to-container communication across projects.
+**Fix:** Cross-project communication must use host gateway IPs (e.g., `host.docker.internal` on Docker Desktop, or the machine's actual LAN IP on Linux) and host-mapped ports (not container-internal ports). When configuring peer endpoints in the HA wizard, always use the address the user entered (which includes the host-mapped port) rather than auto-detected container IPs. The primary's API port comes from the `Host` header; the standby's port comes from the address the user provided in the wizard.
+
 ### Issue: Blank white page after deployment
 **Cause:** The `frontend/dist/assets/` directory gets created with `drwx------` (700) permissions inside the Docker volume. Nginx worker runs as non-root and can't read the JS/CSS files.
 **Fix:** Run `chmod -R 755 /app/dist/assets` inside the frontend container after every deployment (Step 7 above).

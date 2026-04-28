@@ -45,8 +45,13 @@ class ReplicationManager:
     SUBSCRIPTION_NAME = "orainvoice_ha_sub"
 
     # ------------------------------------------------------------------
-    # Internal helper
+    # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _escape_conn_str(conn_str: str) -> str:
+        """Escape single quotes in a connection string for SQL interpolation."""
+        return conn_str.replace("'", "''")
 
     @staticmethod
     async def _get_raw_conn():
@@ -142,8 +147,9 @@ class ReplicationManager:
     async def init_primary(db: AsyncSession) -> dict:
         """Create a publication for all tables on the primary node.
 
-        Excludes ``ha_config`` (per-node HA state) and ``dead_letter_queue``
-        (node-local failed-task queue that should not be replicated).
+        Excludes ``ha_config`` (per-node HA state), ``dead_letter_queue``
+        (node-local failed-task queue that should not be replicated), and
+        ``ha_event_log`` (per-node event history).
 
         Uses raw asyncpg connections for all queries to avoid SQLAlchemy
         session timeout issues during long-running DDL operations.
@@ -163,31 +169,33 @@ class ReplicationManager:
                     # Check if excluded tables leaked into the publication (legacy fix)
                     excluded_count = await conn.fetchval(
                         "SELECT COUNT(*) FROM pg_publication_tables "
-                        "WHERE pubname = $1 AND tablename IN ('ha_config', 'dead_letter_queue')",
+                        "WHERE pubname = $1 AND tablename IN ('ha_config', 'dead_letter_queue', 'ha_event_log')",
                         ReplicationManager.PUBLICATION_NAME,
                     )
                     if not excluded_count:
-                        logger.info("Publication '%s' already exists (ha_config, dead_letter_queue excluded)", ReplicationManager.PUBLICATION_NAME)
+                        logger.info("Publication '%s' already exists (ha_config, dead_letter_queue, ha_event_log excluded)", ReplicationManager.PUBLICATION_NAME)
                         return {
                             "status": "ok",
                             "publication": ReplicationManager.PUBLICATION_NAME,
                             "message": "Publication already exists",
                         }
                     # Excluded table(s) found in the publication — need to recreate
-                    logger.info("Recreating publication to exclude ha_config and dead_letter_queue")
+                    logger.info("Recreating publication to exclude ha_config, dead_letter_queue, and ha_event_log")
                     await conn.execute(
                         f"DROP PUBLICATION {ReplicationManager.PUBLICATION_NAME}",
                     )
 
-                # Get all public tables except ha_config and dead_letter_queue.
+                # Get all public tables except ha_config, dead_letter_queue, and ha_event_log.
                 # dead_letter_queue is excluded so that after failover the new
                 # primary starts with an empty dead-letter table, preventing
                 # re-processing of partially-executed jobs from the old primary.
+                # ha_event_log is excluded because it stores per-node event
+                # history that should not be replicated between nodes.
                 tbl_list = await conn.fetchval(
                     "SELECT string_agg(tablename, ', ') "
                     "FROM pg_tables "
                     "WHERE schemaname = 'public' "
-                    "AND tablename NOT IN ('ha_config', 'dead_letter_queue')",
+                    "AND tablename NOT IN ('ha_config', 'dead_letter_queue', 'ha_event_log')",
                 )
                 if not tbl_list:
                     raise RuntimeError("No tables found in public schema")
@@ -195,16 +203,10 @@ class ReplicationManager:
                 await conn.execute(
                     f"CREATE PUBLICATION {ReplicationManager.PUBLICATION_NAME} FOR TABLE {tbl_list}",
                 )
-
-                # Include all sequences in the publication for ongoing sync
-                # (PostgreSQL 16 native sequence replication)
-                await conn.execute(
-                    f"ALTER PUBLICATION {ReplicationManager.PUBLICATION_NAME} ADD ALL SEQUENCES",
-                )
             finally:
                 await conn.close()
 
-            logger.info("Publication '%s' created (ha_config, dead_letter_queue excluded)", ReplicationManager.PUBLICATION_NAME)
+            logger.info("Publication '%s' created (ha_config, dead_letter_queue, ha_event_log excluded)", ReplicationManager.PUBLICATION_NAME)
             return {"status": "ok", "publication": ReplicationManager.PUBLICATION_NAME}
         except RuntimeError:
             raise
@@ -282,21 +284,18 @@ class ReplicationManager:
     async def init_standby(db: AsyncSession, primary_conn_str: str, truncate_first: bool = False) -> dict:
         """Create a subscription on the standby node to replicate from the primary.
 
+        This method is designed to be **idempotent and self-healing**:
+
+        1. If a local subscription already exists, returns success immediately.
+        2. If an orphaned replication slot exists on the primary (from a
+           previous failed attempt), it is cleaned up automatically before
+           creating the subscription.
+        3. After creating the subscription, verifies it actually exists in
+           ``pg_subscription`` — never returns success without confirmation.
+
         When ``truncate_first`` is True, truncates all tables except ha_config
         before creating the subscription to avoid duplicate key conflicts
         during the initial data sync.
-
-        Executes::
-
-            CREATE SUBSCRIPTION orainvoice_ha_sub
-              CONNECTION '<primary_conn_str>'
-              PUBLICATION orainvoice_ha_pub
-
-        If the subscription fails because the replication slot already exists
-        on the primary (orphaned from a previous failed attempt), this method
-        automatically cleans up the orphaned slot and retries once.
-
-        The initial ``copy_data=true`` (default) triggers a full data sync.
 
         Returns a dict with the operation result.
         """
@@ -307,10 +306,48 @@ class ReplicationManager:
                 "Pre-subscription truncation complete: %d tables truncated",
                 truncate_result.get("tables_truncated", 0),
             )
+
+        # --- Check if subscription already exists locally ---
+        try:
+            conn = await ReplicationManager._get_raw_conn()
+            try:
+                existing = await conn.fetchval(
+                    "SELECT subname FROM pg_subscription WHERE subname = $1",
+                    ReplicationManager.SUBSCRIPTION_NAME,
+                )
+            finally:
+                await conn.close()
+
+            if existing:
+                logger.info(
+                    "Subscription '%s' already exists — skipping creation",
+                    ReplicationManager.SUBSCRIPTION_NAME,
+                )
+                return {
+                    "status": "ok",
+                    "subscription": ReplicationManager.SUBSCRIPTION_NAME,
+                    "message": "Subscription already exists",
+                }
+        except Exception as exc:
+            logger.warning("Could not check for existing subscription: %s", exc)
+            # Continue — the CREATE will fail if it exists, which we handle below
+
+        # --- Proactively clean up orphaned replication slot on primary ---
+        # This prevents the most common failure mode: a previous failed
+        # subscription attempt left an orphaned slot on the primary.
+        try:
+            await ReplicationManager._cleanup_orphaned_slot_on_peer(primary_conn_str)
+        except Exception as exc:
+            logger.warning(
+                "Pre-create orphaned slot cleanup failed (non-fatal): %s", exc
+            )
+
+        # --- Create the subscription ---
         async def _try_create() -> dict:
+            escaped = ReplicationManager._escape_conn_str(primary_conn_str)
             sql = (
                 f"CREATE SUBSCRIPTION {ReplicationManager.SUBSCRIPTION_NAME} "
-                f"CONNECTION '{primary_conn_str}' "
+                f"CONNECTION '{escaped}' "
                 f"PUBLICATION {ReplicationManager.PUBLICATION_NAME}"
             )
             await ReplicationManager._exec_autocommit(db, sql)
@@ -325,33 +362,21 @@ class ReplicationManager:
             }
 
         try:
-            return await _try_create()
+            result = await _try_create()
         except Exception as exc:
             error_msg = str(exc)
 
-            if "already exists" in error_msg.lower():
-                # Subscription already exists locally
-                logger.info(
-                    "Subscription '%s' already exists",
-                    ReplicationManager.SUBSCRIPTION_NAME,
-                )
-                return {
-                    "status": "ok",
-                    "subscription": ReplicationManager.SUBSCRIPTION_NAME,
-                    "message": "Subscription already exists",
-                }
-
+            # Orphaned replication slot on primary — cleanup and retry
             if "replication slot" in error_msg.lower() and "already exists" in error_msg.lower():
-                # Orphaned slot on primary — auto-cleanup and retry
                 logger.warning(
-                    "Orphaned replication slot detected on primary — attempting cleanup"
+                    "Orphaned replication slot detected on primary — attempting cleanup and retry"
                 )
                 cleaned = await ReplicationManager._cleanup_orphaned_slot_on_peer(
                     primary_conn_str
                 )
                 if cleaned:
                     try:
-                        return await _try_create()
+                        result = await _try_create()
                     except Exception as retry_exc:
                         logger.error("Retry after slot cleanup failed: %s", retry_exc)
                         raise RuntimeError(
@@ -365,8 +390,45 @@ class ReplicationManager:
                         "then retry Initialize Replication."
                     ) from exc
 
-            logger.error("Failed to create subscription: %s", error_msg)
-            raise RuntimeError(f"Failed to create subscription: {error_msg}") from exc
+            # Subscription already exists locally (race condition or concurrent call)
+            elif "already exists" in error_msg.lower():
+                logger.info(
+                    "Subscription '%s' already exists (concurrent creation)",
+                    ReplicationManager.SUBSCRIPTION_NAME,
+                )
+                return {
+                    "status": "ok",
+                    "subscription": ReplicationManager.SUBSCRIPTION_NAME,
+                    "message": "Subscription already exists",
+                }
+            else:
+                logger.error("Failed to create subscription: %s", error_msg)
+                raise RuntimeError(f"Failed to create subscription: {error_msg}") from exc
+
+        # --- Verify the subscription actually exists ---
+        try:
+            conn = await ReplicationManager._get_raw_conn()
+            try:
+                verified = await conn.fetchval(
+                    "SELECT subname FROM pg_subscription WHERE subname = $1",
+                    ReplicationManager.SUBSCRIPTION_NAME,
+                )
+            finally:
+                await conn.close()
+
+            if not verified:
+                raise RuntimeError(
+                    f"Subscription '{ReplicationManager.SUBSCRIPTION_NAME}' was reported as "
+                    f"created but does not exist in pg_subscription. This indicates a silent "
+                    f"failure — check the PostgreSQL logs on this node."
+                )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.warning("Could not verify subscription existence: %s", exc)
+            # Non-fatal — the CREATE succeeded, verification is a safety check
+
+        return result
 
     @staticmethod
     async def drop_subscription(db: AsyncSession) -> None:
@@ -446,9 +508,10 @@ class ReplicationManager:
             )
             # Drop and re-create
             await ReplicationManager.drop_subscription(db)
+            escaped = ReplicationManager._escape_conn_str(primary_conn_str)
             sql = (
                 f"CREATE SUBSCRIPTION {ReplicationManager.SUBSCRIPTION_NAME} "
-                f"CONNECTION '{primary_conn_str}' "
+                f"CONNECTION '{escaped}' "
                 f"PUBLICATION {ReplicationManager.PUBLICATION_NAME} "
                 f"WITH (copy_data = false)"
             )
@@ -477,9 +540,10 @@ class ReplicationManager:
         # Step 3: clean up orphaned slot left on primary by SET (slot_name = NONE)
         await ReplicationManager._cleanup_orphaned_slot_on_peer(primary_conn_str)
         # Step 4: re-create subscription with full data copy
+        escaped = ReplicationManager._escape_conn_str(primary_conn_str)
         sql = (
             f"CREATE SUBSCRIPTION {ReplicationManager.SUBSCRIPTION_NAME} "
-            f"CONNECTION '{primary_conn_str}' "
+            f"CONNECTION '{escaped}' "
             f"PUBLICATION {ReplicationManager.PUBLICATION_NAME} "
             f"WITH (copy_data = true)"
         )

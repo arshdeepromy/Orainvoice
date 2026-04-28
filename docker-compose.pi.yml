@@ -115,6 +115,9 @@ services:
     volumes:
       - compliance_files:/app/compliance_files
       - app_uploads:/app/uploads
+      - ha_keys:/ha_keys
+    ports:
+      - "2222:2222"
     deploy:
       resources:
         limits:

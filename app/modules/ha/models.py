@@ -17,9 +17,10 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     String,
+    Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -122,3 +123,38 @@ class HAConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now(),
     )
+
+
+class HAEventLog(Base):
+    """Persistent HA event log for the local node.
+
+    Stores HA events (heartbeat failures, role changes, replication errors,
+    split-brain detections, auto-promote attempts, volume sync errors,
+    config changes, recovery actions).  This table is NOT replicated —
+    each node maintains its own event history.
+    """
+
+    __tablename__ = "ha_event_log"
+
+    # Primary key
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+    )
+
+    # When the event occurred
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+    # Event classification
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # Human-readable description
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Optional structured payload (stack traces, peer response, lag, etc.)
+    details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Which node logged the event
+    node_name: Mapped[str] = mapped_column(String(100), nullable=False)

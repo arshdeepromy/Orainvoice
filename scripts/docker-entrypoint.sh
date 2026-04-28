@@ -4,17 +4,73 @@ set -e
 # ---------------------------------------------------------------------------
 # Check if this is a standby node (skip migrations — data comes from replication).
 # If ha_config doesn't exist yet (first deployment), treat as standalone and
-# run migrations normally.  The 2>/dev/null || echo "standalone" handles the
-# missing-table case.
+# run migrations normally.  Uses Python+asyncpg (already installed) since psql
+# is not available in the python:3.11-slim image.
 # ---------------------------------------------------------------------------
-ROLE=$(psql -U "$POSTGRES_USER" -h postgres -d "$POSTGRES_DB" -tAc \
-  "SELECT role FROM ha_config LIMIT 1" 2>/dev/null || echo "standalone")
+ROLE=$(python -c "
+import asyncio, os
+async def detect():
+    import asyncpg
+    url = os.environ.get('DATABASE_URL','').replace('+asyncpg','').replace('postgresql+asyncpg','postgresql')
+    if not url: url = 'postgresql://postgres:postgres@postgres:5432/workshoppro'
+    try:
+        conn = await asyncpg.connect(url.replace('postgresql+asyncpg://','postgresql://'), timeout=5)
+        role = await conn.fetchval('SELECT role FROM ha_config LIMIT 1')
+        await conn.close()
+        print(role or 'standalone')
+    except Exception:
+        print('standalone')
+asyncio.run(detect())
+" 2>/dev/null || echo "standalone")
 ROLE=$(echo "$ROLE" | tr -d '[:space:]')
 
 # Treat empty result (table exists but no rows) as standalone
 if [ -z "$ROLE" ]; then
     ROLE="standalone"
 fi
+
+# ---------------------------------------------------------------------------
+# SSH keypair auto-generation (for rsync-based volume sync between HA nodes)
+# ---------------------------------------------------------------------------
+if [ ! -f /ha_keys/id_ed25519 ]; then
+    ssh-keygen -t ed25519 -f /ha_keys/id_ed25519 -N "" -q
+    echo "  SSH keypair generated at /ha_keys/"
+fi
+chmod 600 /ha_keys/id_ed25519
+chmod 644 /ha_keys/id_ed25519.pub
+[ -f /ha_keys/authorized_keys ] || touch /ha_keys/authorized_keys
+chmod 600 /ha_keys/authorized_keys
+
+# ---------------------------------------------------------------------------
+# Host LAN IP auto-detection (used by HA wizard trust handshake)
+# ---------------------------------------------------------------------------
+if [ -n "$HA_LOCAL_LAN_IP" ]; then
+    HOST_LAN_IP="$HA_LOCAL_LAN_IP"
+else
+    # Inside a Docker bridge container, we can only see the Docker gateway IP
+    # (172.x.x.x), not the host's actual LAN IP.  For cross-machine HA, set
+    # HA_LOCAL_LAN_IP in the environment or .env file.
+    HOST_LAN_IP=$(ip route 2>/dev/null | awk '/default/ {print $3}')
+    if [ -z "$HOST_LAN_IP" ]; then
+        HOST_LAN_IP="127.0.0.1"
+        echo "  WARNING: Could not detect host LAN IP, falling back to 127.0.0.1"
+    fi
+    echo "  NOTE: Auto-detected Docker gateway IP ($HOST_LAN_IP). For cross-machine HA, set HA_LOCAL_LAN_IP in your environment."
+fi
+echo "$HOST_LAN_IP" > /tmp/host_lan_ip
+echo "  Host LAN IP: $HOST_LAN_IP"
+
+# ---------------------------------------------------------------------------
+# Start sshd on port 2222 (for rsync volume sync from peer node)
+# ---------------------------------------------------------------------------
+cat > /etc/ssh/sshd_config.d/ha.conf <<EOF
+Port 2222
+AuthorizedKeysFile /ha_keys/authorized_keys
+PasswordAuthentication no
+PubkeyAuthentication yes
+PermitRootLogin no
+EOF
+/usr/sbin/sshd 2>/dev/null || echo "  WARNING: sshd failed to start (non-fatal)"
 
 if [ "$ROLE" = "standby" ]; then
     echo "==> Standby node detected — skipping migrations (data comes from replication)"

@@ -103,6 +103,9 @@ services:
       - ./tests:/app/tests:delegated
       - ./scripts:/app/scripts:delegated
       - standby_uploads:/app/uploads
+      - standby_ha_keys:/ha_keys
+    ports:
+      - "2223:2222"
     depends_on:
       postgres:
         condition: service_healthy
@@ -157,3 +160,4 @@ volumes:
   standby_redisdata:
   standby_frontend_dist:
   standby_uploads:
+  standby_ha_keys:

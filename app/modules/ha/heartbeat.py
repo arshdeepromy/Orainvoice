@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from app.modules.ha.event_log import log_ha_event
 from app.modules.ha.hmac_utils import verify_hmac
 from app.modules.ha.schemas import HeartbeatHistoryEntry
 from app.modules.ha.utils import classify_peer_health, detect_split_brain, should_auto_promote
@@ -56,6 +57,8 @@ class HeartbeatService:
         self._peer_promoted_at: datetime | None = None
         # Sync status DB update throttle (Task 16.4)
         self._last_sync_status_update: float = 0.0  # monotonic timestamp
+        # Event log pruning throttle (Task 6.9 — Req 34.9)
+        self._last_prune_time: float = 0.0  # monotonic timestamp
         # Actual peer role from heartbeat responses (BUG-HA-15)
         self.peer_role: str = "unknown"
         # Redis distributed lock for multi-worker isolation (BUG-HA-06)
@@ -112,6 +115,18 @@ class HeartbeatService:
                     entry = await self._ping_peer()
                     self.history.append(entry)
 
+                    # Log heartbeat ping failure to event log (Req 34.3)
+                    if entry.peer_status == "error" and entry.error:
+                        try:
+                            await log_ha_event(
+                                event_type="heartbeat_failure",
+                                severity="warning",
+                                message=f"Heartbeat ping failed: {entry.error}",
+                                details={"peer_endpoint": self.peer_endpoint, "error": entry.error},
+                            )
+                        except Exception:
+                            pass  # Never crash the heartbeat loop
+
                     previous_health = self.peer_health
                     self.peer_health = self._classify_health()
 
@@ -122,6 +137,16 @@ class HeartbeatService:
                             self.peer_endpoint,
                             previous_health,
                         )
+                        # Log peer health transition to event log (Req 34.3)
+                        try:
+                            await log_ha_event(
+                                event_type="heartbeat_failure",
+                                severity="error",
+                                message=f"Peer transitioned to UNREACHABLE (was {previous_health})",
+                                details={"peer_endpoint": self.peer_endpoint, "previous_health": previous_health},
+                            )
+                        except Exception:
+                            pass  # Never crash the heartbeat loop
                         # Record when peer became unreachable (Req 3.2)
                         self._peer_unreachable_since = time.monotonic()
                     elif previous_health == "unreachable" and self.peer_health != "unreachable":
@@ -130,11 +155,32 @@ class HeartbeatService:
                             self.peer_endpoint,
                             self.peer_health,
                         )
+                        # Log peer recovery to event log (Req 34.3)
+                        try:
+                            await log_ha_event(
+                                event_type="heartbeat_failure",
+                                severity="info",
+                                message=f"Peer is reachable again (now {self.peer_health})",
+                                details={"peer_endpoint": self.peer_endpoint, "new_health": self.peer_health},
+                            )
+                        except Exception:
+                            pass  # Never crash the heartbeat loop
                         # Reset unreachable tracking when peer comes back (Req 3.5)
                         self._peer_unreachable_since = None
                         # Reset auto-promote flag so it can trigger again on future outage (Req 2.15)
                         # NOTE: _auto_promote_failed_permanently is intentionally NOT reset (Req 3.10)
                         self._auto_promote_attempted = False
+                    elif previous_health != self.peer_health and previous_health != "unknown":
+                        # Log other health transitions (e.g. healthy→degraded) (Req 34.3)
+                        try:
+                            await log_ha_event(
+                                event_type="heartbeat_failure",
+                                severity="warning",
+                                message=f"Peer health changed: {previous_health} → {self.peer_health}",
+                                details={"peer_endpoint": self.peer_endpoint, "previous_health": previous_health, "new_health": self.peer_health},
+                            )
+                        except Exception:
+                            pass  # Never crash the heartbeat loop
 
                     # --- Split-brain write protection (Req 8.1) ---
                     if self.split_brain_detected:
@@ -187,6 +233,16 @@ class HeartbeatService:
                                             elapsed,
                                             cfg.failover_timeout_seconds,
                                         )
+                                        # Log auto-promote attempt to event log (Req 34.3)
+                                        try:
+                                            await log_ha_event(
+                                                event_type="auto_promote",
+                                                severity="warning",
+                                                message=f"Auto-promote triggered: peer unreachable {elapsed:.1f}s > timeout {cfg.failover_timeout_seconds}s",
+                                                details={"elapsed_seconds": round(elapsed, 1), "failover_timeout_seconds": cfg.failover_timeout_seconds},
+                                            )
+                                        except Exception:
+                                            pass  # Never crash the heartbeat loop
                                         await self._execute_auto_promote()
                         except asyncio.CancelledError:
                             raise
@@ -212,6 +268,22 @@ class HeartbeatService:
                                         cfg.last_peer_heartbeat = datetime.now(timezone.utc)
                         except Exception:
                             pass  # Non-critical — don't crash heartbeat for status updates
+
+                    # --- Event log pruning (Req 34.9) ---
+                    # Every ~24 hours, delete ha_event_log rows older than 30 days
+                    if time.monotonic() - self._last_prune_time > 86400:
+                        self._last_prune_time = time.monotonic()
+                        try:
+                            from app.core.database import async_session_factory
+                            from sqlalchemy import text
+
+                            async with async_session_factory() as prune_session:
+                                async with prune_session.begin():
+                                    await prune_session.execute(
+                                        text("DELETE FROM ha_event_log WHERE timestamp < now() - interval '30 days'")
+                                    )
+                        except Exception:
+                            pass  # Non-critical — never crash heartbeat for event pruning
 
                     # Successful cycle — reset consecutive failure counter
                     _consecutive_failures = 0
@@ -302,6 +374,16 @@ class HeartbeatService:
                     self.local_role,
                     peer_role,
                 )
+                # Log split-brain detection to event log (Req 34.3)
+                try:
+                    await log_ha_event(
+                        event_type="split_brain",
+                        severity="critical",
+                        message=f"SPLIT-BRAIN DETECTED: both local ({self.local_role}) and peer ({peer_role}) claim role 'primary'",
+                        details={"local_role": self.local_role, "peer_role": peer_role, "peer_endpoint": self.peer_endpoint},
+                    )
+                except Exception:
+                    pass  # Never crash the heartbeat loop
             else:
                 self.split_brain_detected = False
 
@@ -521,6 +603,16 @@ class HeartbeatService:
                     "Auto-promote SUCCEEDED: node is now PRIMARY (attempt %d)",
                     attempt + 1,
                 )
+                # Log auto-promote success to event log (Req 34.3)
+                try:
+                    await log_ha_event(
+                        event_type="auto_promote",
+                        severity="info",
+                        message=f"Auto-promote SUCCEEDED: node is now PRIMARY (attempt {attempt + 1})",
+                        details={"attempt": attempt + 1},
+                    )
+                except Exception:
+                    pass  # Never crash the heartbeat loop
                 return  # Success — exit retry loop
 
             except asyncio.CancelledError:
@@ -530,6 +622,16 @@ class HeartbeatService:
                     "Auto-promote FAILED (attempt %d/2): %s", attempt + 1, exc
                 )
                 if attempt == 0:
+                    # Log auto-promote failure to event log (Req 34.3)
+                    try:
+                        await log_ha_event(
+                            event_type="auto_promote",
+                            severity="error",
+                            message=f"Auto-promote FAILED (attempt {attempt + 1}/2): {exc}",
+                            details={"attempt": attempt + 1, "error": str(exc)},
+                        )
+                    except Exception:
+                        pass  # Never crash the heartbeat loop
                     # Wait 10 seconds before retry
                     await asyncio.sleep(10)
                 else:
@@ -539,3 +641,13 @@ class HeartbeatService:
                         "Auto-promote failed permanently after 2 attempts. "
                         "Manual promotion required."
                     )
+                    # Log permanent auto-promote failure to event log (Req 34.3)
+                    try:
+                        await log_ha_event(
+                            event_type="auto_promote",
+                            severity="critical",
+                            message="Auto-promote failed permanently after 2 attempts. Manual promotion required.",
+                            details={"error": str(exc)},
+                        )
+                    except Exception:
+                        pass  # Never crash the heartbeat loop

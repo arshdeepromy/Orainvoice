@@ -105,6 +105,9 @@ services:
       - ./app:/app/app:delegated
       - ./alembic:/app/alembic:delegated
       - standby_prod_uploads:/app/uploads
+      - ha_keys:/ha_keys
+    ports:
+      - "2224:2222"
     depends_on:
       postgres:
         condition: service_healthy
@@ -164,3 +167,4 @@ volumes:
   sbprod_redisdata:
   sbprod_frontend_dist:
   standby_prod_uploads:
+  ha_keys:

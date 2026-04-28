@@ -1,6 +1,6 @@
 """Pydantic request/response schemas for the HA Replication feature.
 
-Requirements: 1.1, 1.5, 2.1, 4.1, 4.3, 7.1, 8.4
+Requirements: 1.1, 1.5, 2.1, 4.1, 4.3, 5.1, 6.1, 7.1, 8.1, 8.4, 10.1, 34.6
 """
 
 from __future__ import annotations
@@ -93,6 +93,7 @@ class HeartbeatResponse(BaseModel):
     uptime_seconds: float
     maintenance: bool
     timestamp: str = Field(description="ISO 8601 timestamp")
+    app_version: str | None = Field(default=None, description="Application version from GIT_SHA or BUILD_DATE")
     hmac_signature: str = Field(description="HMAC-SHA256 of payload")
 
 
@@ -258,3 +259,165 @@ class HANodeStatusForDashboard(BaseModel):
     last_heartbeat: str | None = None
     maintenance: bool
     is_local: bool = Field(description="True for the node the admin is connected to")
+
+
+# ---------------------------------------------------------------------------
+# Wizard — Setup Flow
+# ---------------------------------------------------------------------------
+
+
+class WizardCheckReachabilityRequest(BaseModel):
+    """Request body for POST /api/v1/ha/wizard/check-reachability.
+
+    Requirements: 4.1, 5.1
+    """
+
+    address: str
+
+
+class WizardCheckReachabilityResponse(BaseModel):
+    """Response for POST /api/v1/ha/wizard/check-reachability.
+
+    Requirements: 5.1, 5.2, 5.3, 5.4, 37.1, 37.2, 37.3
+    """
+
+    reachable: bool
+    node_name: str | None = None
+    role: str | None = None
+    is_orainvoice: bool = False
+    error: str | None = None
+    version_warning: str | None = None
+
+
+class WizardAuthenticateRequest(BaseModel):
+    """Request body for POST /api/v1/ha/wizard/authenticate.
+
+    Requirements: 6.1
+    """
+
+    address: str
+    email: str
+    password: str
+
+
+class WizardAuthenticateResponse(BaseModel):
+    """Response for POST /api/v1/ha/wizard/authenticate.
+
+    Requirements: 6.1, 6.2, 6.3, 6.4, 6.5
+    """
+
+    authenticated: bool
+    is_global_admin: bool = False
+    token: str | None = None
+    error: str | None = None
+
+
+class WizardHandshakeRequest(BaseModel):
+    """Request body for POST /api/v1/ha/wizard/handshake.
+
+    Requirements: 7.1
+    """
+
+    address: str
+    standby_token: str
+
+
+class WizardHandshakeResponse(BaseModel):
+    """Response for POST /api/v1/ha/wizard/handshake.
+
+    Requirements: 7.1, 7.8, 7.9
+    """
+
+    success: bool
+    primary_ip: str | None = None
+    primary_pg_port: int | None = None
+    standby_ip: str | None = None
+    standby_pg_port: int | None = None
+    hmac_secret_set: bool = False
+    error: str | None = None
+
+
+class WizardReceiveHandshakeRequest(BaseModel):
+    """Request body for POST /api/v1/ha/wizard/receive-handshake.
+
+    Requirements: 10.1, 10.2, 10.3
+    """
+
+    ssh_pub_key: str
+    lan_ip: str
+    pg_port: int = 5432
+    hmac_secret: str
+
+
+class WizardReceiveHandshakeResponse(BaseModel):
+    """Response for POST /api/v1/ha/wizard/receive-handshake.
+
+    Requirements: 10.1, 10.2
+    """
+
+    ssh_pub_key: str
+    lan_ip: str
+    pg_port: int
+
+
+class WizardSetupRequest(BaseModel):
+    """Request body for POST /api/v1/ha/wizard/setup.
+
+    Requirements: 8.1
+    """
+
+    address: str
+    standby_token: str
+
+
+class WizardSetupStepResult(BaseModel):
+    """A single step result in the automated setup sequence.
+
+    Requirements: 8.6, 8.7, 8.8
+    """
+
+    step: str
+    status: str = Field(description="'completed' | 'failed' | 'skipped'")
+    message: str | None = None
+    error: str | None = None
+
+
+class WizardSetupResponse(BaseModel):
+    """Response for POST /api/v1/ha/wizard/setup.
+
+    Requirements: 8.1, 8.7, 8.8
+    """
+
+    success: bool
+    steps: list[WizardSetupStepResult] = []
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# HA Event Log
+# ---------------------------------------------------------------------------
+
+
+class HAEventResponse(BaseModel):
+    """A single HA event log entry.
+
+    Requirements: 34.6
+    """
+
+    id: str
+    timestamp: str
+    event_type: str
+    severity: str
+    message: str
+    details: dict | None = None
+    node_name: str
+
+
+class HAEventListResponse(BaseModel):
+    """Response for GET /api/v1/ha/events.
+
+    Requirements: 34.6, 34.7
+    """
+
+    events: list[HAEventResponse] = []
+    total: int = 0
