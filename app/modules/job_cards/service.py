@@ -5,6 +5,8 @@ Requirements: 59.1, 59.2, 59.5
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
 import re
 import uuid
@@ -20,6 +22,8 @@ from app.modules.customers.models import Customer
 from app.modules.job_cards.models import JobCard, JobCardItem
 from app.modules.time_tracking_v2.models import TimeEntry
 
+
+logger = logging.getLogger(__name__)
 
 TWO_PLACES = Decimal("0.01")
 
@@ -46,17 +50,33 @@ def _validate_status_transition(current: str, target: str) -> None:
         )
 
 
+def _format_billing_address(billing_address: dict | None) -> str | None:
+    """Format a structured billing_address JSONB into a single-line string."""
+    if not billing_address or not isinstance(billing_address, dict):
+        return None
+    parts = []
+    for key in ("street", "city", "state", "postal_code"):
+        val = (billing_address.get(key) or "").strip()
+        if val:
+            parts.append(val)
+    return ", ".join(parts) if parts else None
+
+
 def _job_card_to_dict(job_card: JobCard, line_items: list[JobCardItem]) -> dict:
     """Convert JobCard + JobCardItems to a serialisable dict."""
     customer_data = None
     if job_card.customer is not None:
         c = job_card.customer
+        # Prefer the legacy text address; fall back to formatted billing_address
+        address = c.address
+        if not address:
+            address = _format_billing_address(getattr(c, "billing_address", None))
         customer_data = {
             "first_name": c.first_name,
             "last_name": c.last_name,
             "email": c.email,
             "phone": c.phone,
-            "address": c.address,
+            "address": address,
         }
     return {
         "id": job_card.id,
@@ -104,10 +124,12 @@ async def create_job_card(
     line_items_data: list[dict] | None = None,
     ip_address: str | None = None,
     branch_id: uuid.UUID | None = None,
+    service_type_id: str | None = None,
+    service_type_values: list[dict] | None = None,
 ) -> dict:
     """Create a new job card in Open status.
 
-    Requirements: 59.1
+    Requirements: 59.1, 6.3
     """
     # Validate branch is active if provided (Req 2.2)
     if branch_id is not None:
@@ -159,6 +181,7 @@ async def create_job_card(
         notes=notes,
         assigned_to=resolved_assigned_to,
         created_by=user_id,
+        service_type_id=uuid.UUID(service_type_id) if service_type_id else None,
     )
     # Explicitly set the customer relationship so _job_card_to_dict can
     # access it without triggering a lazy load in async context.
@@ -184,6 +207,16 @@ async def create_job_card(
         await db.flush()
         created_items.append(li)
 
+    # Save service type field values if provided (Req 6.3)
+    if service_type_id and service_type_values:
+        from app.modules.service_types.service import save_service_type_values
+        await save_service_type_values(
+            db,
+            job_card_id=job_card.id,
+            service_type_id=uuid.UUID(service_type_id),
+            values=service_type_values,
+        )
+
     # Audit log
     await write_audit_log(
         session=db,
@@ -197,6 +230,7 @@ async def create_job_card(
             "customer_id": str(customer_id),
             "vehicle_rego": vehicle_rego,
             "line_item_count": len(items),
+            "service_type_id": service_type_id,
         },
         ip_address=ip_address,
     )
@@ -263,6 +297,25 @@ async def get_job_card(
 
     base["active_timer"] = active_timer
     base["total_time_seconds"] = total_seconds
+
+    # Include service type data (Req 6.4, 7.4)
+    if job_card.service_type_id:
+        base["service_type_id"] = str(job_card.service_type_id)
+        # Fetch service type name
+        from app.modules.service_types.models import ServiceType
+        st_result = await db.execute(
+            select(ServiceType.name).where(ServiceType.id == job_card.service_type_id)
+        )
+        base["service_type_name"] = st_result.scalar_one_or_none()
+        # Fetch field values
+        from app.modules.service_types.service import get_service_type_values
+        base["service_type_values"] = await get_service_type_values(
+            db, job_card_id=job_card.id
+        )
+    else:
+        base["service_type_id"] = None
+        base["service_type_name"] = None
+        base["service_type_values"] = None
 
     return base
 
@@ -429,6 +482,23 @@ async def update_job_card(
         for field in ("customer_id", "vehicle_rego", "description", "notes"):
             if field in updates and updates[field] is not None:
                 setattr(job_card, field, updates[field])
+
+        # Update service_type_id if provided (Req 6.3)
+        if "service_type_id" in updates:
+            st_id = updates["service_type_id"]
+            job_card.service_type_id = uuid.UUID(st_id) if st_id else None
+
+        # Save service type field values if provided (Req 6.3)
+        if "service_type_values" in updates and updates["service_type_values"] is not None:
+            st_id = updates.get("service_type_id") or (str(job_card.service_type_id) if job_card.service_type_id else None)
+            if st_id:
+                from app.modules.service_types.service import save_service_type_values
+                await save_service_type_values(
+                    db,
+                    job_card_id=job_card.id,
+                    service_type_id=uuid.UUID(str(st_id)),
+                    values=updates["service_type_values"],
+                )
 
         # Replace line items if provided
         if "line_items" in updates and updates["line_items"] is not None:
@@ -611,6 +681,74 @@ async def convert_job_card_to_invoice(
         notes_customer=clean_notes,
         ip_address=ip_address,
     )
+
+    # --- Appendix HTML generation (non-blocking) ---
+    # Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 6.3
+    appendix_html = None
+    try:
+        from app.modules.job_cards.attachment_service import (
+            list_attachments,
+            download_attachment,
+        )
+        from app.modules.job_cards.snapshot_renderer import render_job_card_appendix_html
+
+        # Fetch attachment metadata (Req 3.1)
+        attachments = await list_attachments(db, org_id=org_id, job_card_id=job_card_id)
+
+        # Decrypt image attachments via asyncio.to_thread (Req 3.1, 3.4)
+        attachment_bytes: dict[str, bytes] = {}
+        for att in attachments:
+            if att["mime_type"].startswith("image/"):
+                try:
+                    raw = await asyncio.to_thread(
+                        download_attachment, org_id, att["file_key"]
+                    )
+                    attachment_bytes[str(att["id"])] = raw
+                except Exception as e:
+                    logger.warning(
+                        "Failed to decrypt attachment %s: %s", att["id"], e
+                    )
+
+        # Fetch org trade_family for conditional rendering
+        from app.modules.admin.models import Organisation
+        org_result = await db.execute(
+            select(Organisation).where(Organisation.id == org_id)
+        )
+        org_obj = org_result.scalar_one_or_none()
+        trade_family = (
+            (org_obj.settings or {}).get("trade_family") if org_obj else None
+        )
+
+        # Build snapshot data — exclude description (Req 3.5)
+        jc_data_for_snapshot = {
+            k: v for k, v in jc_dict.items() if k != "description"
+        }
+
+        # Render appendix HTML (Req 3.2)
+        appendix_html = await render_job_card_appendix_html(
+            job_card_data=jc_data_for_snapshot,
+            attachments=attachments,
+            attachment_bytes=attachment_bytes,
+            trade_family=trade_family,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to render job card appendix HTML for job_card=%s",
+            job_card_id,
+        )
+        appendix_html = None
+
+    # Store appendix HTML on the invoice record (Req 3.3)
+    if appendix_html is not None:
+        from app.modules.invoices.models import Invoice as InvoiceModel
+
+        inv_result = await db.execute(
+            select(InvoiceModel).where(InvoiceModel.id == invoice_dict["id"])
+        )
+        inv_obj = inv_result.scalar_one_or_none()
+        if inv_obj:
+            inv_obj.job_card_appendix_html = appendix_html
+            await db.flush()
 
     # Transition job card to invoiced
     result = await db.execute(

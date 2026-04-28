@@ -12,6 +12,7 @@ export interface PlatformBranding {
   id: string
   platform_name: string
   logo_url: string | null
+  dark_logo_url: string | null
   favicon_url: string | null
   primary_colour: string
   secondary_colour: string
@@ -220,6 +221,7 @@ export function BrandingConfig() {
       const res = await apiClient.put('/api/v2/admin/branding', {
         platform_name: branding.platform_name,
         logo_url: branding.logo_url,
+        dark_logo_url: branding.dark_logo_url,
         favicon_url: branding.favicon_url,
         primary_colour: branding.primary_colour,
         secondary_colour: branding.secondary_colour,
@@ -288,6 +290,22 @@ export function BrandingConfig() {
               onUploadSuccess={(url) => {
                 handleChange('logo_url', url)
                 addToast('success', 'Logo uploaded')
+              }}
+              onError={(msg) => addToast('error', msg)}
+            />
+
+            {/* Dark mode logo upload */}
+            <ImageUpload
+              label="Dark Mode Logo"
+              currentUrl={branding.dark_logo_url}
+              onUrlChange={(url) => handleChange('dark_logo_url', url)}
+              uploadEndpoint="/api/v2/admin/branding/upload-dark-logo"
+              accept="image/png,image/jpeg,image/webp,image/svg+xml"
+              maxSizeLabel="2 MB"
+              previewSize="h-16 w-16"
+              onUploadSuccess={(url) => {
+                handleChange('dark_logo_url', url)
+                addToast('success', 'Dark mode logo uploaded')
               }}
               onError={(msg) => addToast('error', msg)}
             />
@@ -463,9 +481,9 @@ export function BrandingConfig() {
                 className="flex items-center gap-3 px-4 py-3"
                 style={{ backgroundColor: branding.primary_colour }}
               >
-                {branding.logo_url ? (
+                {(branding.dark_logo_url || branding.logo_url) ? (
                   <img
-                    src={branding.logo_url}
+                    src={branding.dark_logo_url || branding.logo_url || ''}
                     alt={branding.platform_name}
                     className="h-8 w-8 rounded object-contain bg-white/20"
                   />

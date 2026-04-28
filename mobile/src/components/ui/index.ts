@@ -42,3 +42,5 @@ export type { MobileToastProps, ToastVariant } from './MobileToast'
 
 export { MobileEmptyState } from './MobileEmptyState'
 export type { MobileEmptyStateProps } from './MobileEmptyState'
+
+export { SkeletonLine, SkeletonCard, DetailScreenSkeleton } from './MobileSkeleton'

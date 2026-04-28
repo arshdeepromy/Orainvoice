@@ -4650,3 +4650,145 @@ except Exception:
 **Related Issues**: ISSUE-135, ISSUE-136 (env value cleanup that makes this text change accurate)
 
 **Spec**: `.kiro/specs/ha-gui-config-cleanup/`
+
+---
+
+### ISSUE-144: `get_todays_bookings` references non-existent `bookings.customer_id` column — crashes dashboard widget endpoint
+
+- **Date**: 2026-04-28
+- **Severity**: high
+- **Status**: fixed
+- **Fixed**: 2026-04-28
+- **Reporter**: user (prod error ID `a44a5e42-6446-4d13-80c1-d2ee504e07ca`, recurring since at least 2026-04-26)
+- **Regression of**: N/A
+
+**Symptoms**:
+- `GET /api/v1/dashboard/widgets` logs `asyncpg.exceptions.UndefinedColumnError: column b.customer_id does not exist` on every request.
+- The entire PostgreSQL transaction enters **aborted state** — all subsequent widget SAVEPOINT operations fail with `InFailedSQLTransactionError: current transaction is aborted, commands ignored until end of transaction block`.
+- All dashboard widgets silently return `{"items": [], "total": 0}` (empty) for every org.
+- HTTP status is still 200, so the client sees no error — the dashboard just shows no data.
+- The error cascade also triggers ISSUE-145 (see below), producing noisy `error_log` entries and uvicorn `Exception in ASGI application` lines.
+
+**Root Cause**:
+`get_todays_bookings` in `app/modules/organisations/dashboard_service.py` (lines 231–263) runs:
+
+```sql
+SELECT b.id AS booking_id, b.start_time AS scheduled_time,
+       COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS customer_name,
+       b.vehicle_rego
+FROM bookings b
+LEFT JOIN customers c ON b.customer_id = c.id   -- column does not exist
+WHERE b.org_id = :org_id AND b.start_time::date = :today
+```
+
+The `bookings` table stores customer info as plain text columns (`customer_name`, `customer_email`, `customer_phone`) — it has **no `customer_id` foreign key**. The JOIN is therefore invalid.
+
+When asyncpg raises `UndefinedColumnError`, PostgreSQL marks the entire outer transaction (not just the SAVEPOINT) as **aborted**. The `_safe_call` wrapper in `get_all_widget_data` attempts `await savepoint.rollback()`, which itself raises `InFailedSQLTransactionError` because no SQL can execute in an aborted transaction. The outer `except Exception` in `_safe_call` catches this second error and returns `_empty_section()` — but the DB session is now permanently poisoned for the lifetime of this request. Every subsequent `_safe_call` also fails immediately when it tries `db.begin_nested()`.
+
+**Confirmed on prod** — `bookings` table column list (from `information_schema.columns`):
+```
+id, org_id, customer_name, customer_email, customer_phone,
+staff_id, service_type, start_time, end_time, status, notes,
+confirmation_token, converted_job_id, converted_invoice_id,
+created_at, updated_at, service_catalogue_id, service_price,
+send_email_confirmation, send_sms_confirmation,
+reminder_offset_hours, reminder_scheduled_at,
+reminder_cancelled, vehicle_rego, booking_data_json, branch_id
+```
+No `customer_id` column. First seen in `error_log` at `2026-04-26 03:55:20 UTC`, recurring on every request to this endpoint.
+
+**Fix Required**:
+In `get_todays_bookings`, remove the `LEFT JOIN customers` and use `b.customer_name` directly (already a text column on `bookings`). Apply to both the non-branch and branch-scoped query variants:
+
+```sql
+SELECT b.id AS booking_id, b.start_time AS scheduled_time,
+       COALESCE(b.customer_name, 'Walk-in') AS customer_name,
+       b.vehicle_rego
+FROM bookings b
+WHERE b.org_id = :org_id AND b.start_time::date = :today
+ORDER BY b.start_time ASC
+```
+
+If the intent was to link bookings back to a Customer record, that requires a `customer_id` FK column and a migration — but the existing text field is sufficient and correct for the widget display.
+
+**Files to Change**:
+- `app/modules/organisations/dashboard_service.py` — `get_todays_bookings` function, lines ~231–263 (both query variants)
+
+**Similar Bugs Found**:
+- `get_recent_claims` (same file, lines ~370–402) joins `customer_claims LEFT JOIN customers c ON cc.customer_id = c.id` — verify that `customer_claims.customer_id` exists on prod before this triggers the same crash.
+
+**Related Issues**: ISSUE-145 (secondary ASGI double-response crash triggered by this error cascade)
+
+**Spec**: N/A (direct fix — change SQL to use existing text column)
+
+---
+
+### ISSUE-145: Rate limiter `except Exception` handler re-runs the inner app after a response has already completed — causes ASGI double-response crash
+
+- **Date**: 2026-04-28
+- **Severity**: high
+- **Status**: fixed
+- **Fixed**: 2026-04-28
+- **Reporter**: user (prod error IDs `a44a5e42-6446-4d13-80c1-d2ee504e07ca`, `b31c2e5c-0f64-4ab9-a24f-042046e9c392`, `a217f7be-f390-40ef-ad1d-f76665ecd04e`, `e68298fe-082d-444b-b108-d083cbcaaef5`, `29a86d7c-af3f-43bd-bac9-7f98a612f492`, `8ac11be3-0c13-4668-b7dc-079d473d5b7a`, `b4b31db0-3955-4000-bec4-75c2a26f3f1c` and earlier — recurring for multiple orgs)
+- **Regression of**: N/A
+
+**Symptoms**:
+- `error_log` entries: `module=builtins`, `function_name=RuntimeError`, `message=Unexpected ASGI message 'http.response.start' sent, after response already completed.`
+- Uvicorn logs: `[ERROR] Exception in ASGI application` with the same RuntimeError.
+- App logs immediately before: `Rate limiter unexpected error — allowing request through: /api/v1/dashboard/widgets (error: RuntimeError: Caught handled exception, but response already started.)`
+- Triggered on every failed `GET /api/v1/dashboard/widgets` request (i.e., every time ISSUE-144 fires).
+- At least 7 occurrences in `error_log` across two orgs as of 2026-04-28.
+
+**Root Cause**:
+This is a secondary crash triggered by ISSUE-144, but it is a latent bug in the rate limiter that can be triggered by **any** exception that propagates back through `_apply_rate_limits` after the inner app has already sent a response.
+
+**Full crash chain (for each occurrence):**
+
+1. ISSUE-144 causes `UndefinedColumnError` → PostgreSQL transaction aborted → SQLAlchemy cascades failures through all widgets.
+2. An exception propagates upward from the route handler **after** `http.response.start` has been sent (the 200 response headers are already transmitted to the client).
+3. Starlette's `_exception_handler.py:56` detects `response_started=True` and raises:
+   `RuntimeError: Caught handled exception, but response already started.`
+4. This propagates out of `await self.app(scope, receive, send)` at `rate_limit.py:308` (the call inside `_apply_rate_limits`), back to `__call__`.
+5. `__call__`'s `except Exception as exc:` block at `rate_limit.py:189` catches it.
+6. The handler logs the warning, then calls **`await self.app(scope, receive, send)` again at line 200** — attempting to re-run the entire inner middleware stack and route handler on a connection whose response is already complete.
+7. The second run attempts to send `http.response.start` to Uvicorn's `ASGIHTTPCycle`, which checks its `response_complete` flag and raises:
+   `RuntimeError: Unexpected ASGI message 'http.response.start' sent, after response already completed.`
+8. This second RuntimeError propagates through ExceptionMiddleware, is caught by `general_exception_handler` in `main.py`, logged to `error_log`, and re-raised.
+9. Uvicorn's `run_asgi` catches the final unhandled exception and logs `Exception in ASGI application`.
+
+**The bug in isolation** (independent of ISSUE-144):
+
+```python
+# rate_limit.py lines 189–200 — CURRENT BUGGY CODE
+except Exception as exc:
+    logger.exception("Rate limiter unexpected error — allowing request through: %s ...", ...)
+    await self.app(scope, receive, send)   # ← calls the inner app a SECOND time
+```
+
+`_apply_rate_limits` calls `await self.app(scope, receive, send)` at line 308 as its final step (after all rate checks pass). Any exception that propagates *from* that call — including exceptions from the downstream app — is caught by line 189's `except Exception`. The fallback then calls `self.app()` a second time, which is never correct when the first call already dispatched a response. The "fail open" intent of this block applies to bugs in the **rate-check logic** (before `self.app()` is ever called), not to exceptions from the **inner app** (which propagate back after `self.app()` ran).
+
+**Fix Required**:
+Change the `except Exception` fallback to `raise` instead of calling `self.app()` again:
+
+```python
+# rate_limit.py lines 189–200 — PROPOSED FIX
+except Exception as exc:
+    path = request.url.path
+    logger.exception(
+        "Rate limiter unexpected error — failing open: %s (error: %s: %s)",
+        path,
+        type(exc).__name__,
+        exc,
+    )
+    raise  # re-raise; never retry self.app() after a response may have started
+```
+
+Re-raising is safe: if the inner app completed successfully, there is no exception in flight and this block is never reached. If a real rate-limiter bug fires before `self.app()` (e.g., a logic error in `_check_rate_limit`), the exception propagates to ServerErrorMiddleware which handles it correctly with a 500 response.
+
+**Files to Change**:
+- `app/middleware/rate_limit.py` — `__call__` method, lines 189–200
+
+**Similar Bugs Found**:
+All other custom ASGI middleware audited for the same pattern (calling `self.app()` inside an `except` block after already calling it in the try): `idempotency.py`, `modules.py`, `security_headers.py`, `ha/middleware.py`, `tenant.py` — none repeat the pattern. Bug is isolated to `rate_limit.py`.
+
+**Related Issues**: ISSUE-144 (primary trigger; fixing ISSUE-144 prevents the cascade that currently exposes this bug, but ISSUE-145 remains a latent risk for any future downstream exception)

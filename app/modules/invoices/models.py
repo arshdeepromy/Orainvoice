@@ -208,6 +208,9 @@ class Invoice(Base):
     quote_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
+    job_card_appendix_html: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="HTML snapshot of job card data for PDF appendix"
+    )
     stripe_payment_intent_id: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )

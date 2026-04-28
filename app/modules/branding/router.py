@@ -174,6 +174,7 @@ async def update_branding(
         branding = await svc.update_branding(
             platform_name=payload.platform_name,
             logo_url=payload.logo_url,
+            dark_logo_url=payload.dark_logo_url,
             favicon_url=payload.favicon_url,
             primary_colour=payload.primary_colour,
             secondary_colour=payload.secondary_colour,
@@ -213,6 +214,33 @@ async def upload_logo(
         allowed_types=ALLOWED_IMAGE_TYPES,
         max_dim=512,
         label="logo",
+    )
+
+
+@router.post(
+    "/upload-dark-logo",
+    summary="Upload a dark mode logo image",
+    responses={413: {"description": "File too large"}, 415: {"description": "Unsupported file type"}},
+)
+async def upload_dark_logo(
+    request: Request,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Upload a dark mode logo image file. Accepts PNG, JPEG, WebP, SVG. Max 2 MB.
+
+    The dark logo is displayed on dark/coloured backgrounds (e.g. landing page
+    header, admin sidebar). The regular logo is used on light backgrounds.
+    """
+    return await _handle_branding_upload(
+        file=file,
+        db=db,
+        request=request,
+        field="dark_logo_url",
+        max_size=MAX_LOGO_SIZE,
+        allowed_types=ALLOWED_IMAGE_TYPES,
+        max_dim=512,
+        label="dark logo",
     )
 
 

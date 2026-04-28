@@ -2,6 +2,41 @@
 
 All notable changes to OraInvoice are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.0] - 2026-04-28
+
+### Added
+- Public landing page at `/` for unauthenticated visitors — hero section, 8 feature categories (26 features), pricing card ($60/month Mech Pro Plan), testimonials, CTA, responsive from 320px to 1920px
+- Public privacy policy page at `/privacy` — full NZ Privacy Act 2020 compliant default policy covering all 13 IPPs, with admin-editable custom content via Markdown
+- Public supported trades page at `/trades` — Automotive & Transport, General Invoicing (available), Plumbing & Gas, Electrical & Mechanical (coming soon)
+- Demo request flow: `POST /api/v1/public/demo-request` with honeypot bot filtering, Redis rate limiting (5/hr/IP), SMTP email failover
+- Privacy policy admin editor: new "Privacy Policy" tab in Global Admin Settings with Markdown editor, preview, and reset to default
+- Privacy policy API: `GET /api/v1/public/privacy-policy` (public) and `PUT /api/v1/admin/privacy-policy` (global_admin)
+- Dark mode logo support: new `dark_logo_url` field in platform branding — upload via admin branding page, automatically used on dark/coloured backgrounds (landing page header, admin sidebar preview), regular logo used on light backgrounds
+- Migration 0164: add `dark_logo_url` column to `platform_branding`
+- Shared public page components: LandingHeader (sticky nav, mobile hamburger), LandingFooter (4-column responsive), DemoRequestModal (form with honeypot)
+- Landing page module: `app/modules/landing/` with router, schemas, public + admin endpoints
+- Plumbing service types: trade-family-gated service type management
+- Job card attachments: file upload/download for job cards
+- Job card invoice appendix: HTML snapshot of job card appended to invoice PDF
+- 44 backend tests for landing page (unit, integration, RBAC, validation)
+- 4 property-based tests (Hypothesis, 100 examples each): demo form validation, rate limiting, honeypot rejection, privacy policy round-trip
+
+### Fixed
+- ISSUE-144: `get_todays_bookings` referenced non-existent `bookings.customer_id` column — crashed entire dashboard widgets endpoint. Fixed to use `b.customer_name` directly.
+- ISSUE-145: Rate limiter `except Exception` handler called `self.app()` a second time after response already sent — caused ASGI double-response crash. Fixed to `raise` instead of retrying.
+- Public pages unable to scroll due to global `overflow: hidden` on html/body/#root — added `public-page` CSS class override applied by each public page on mount
+- Landing page logo too small (h-8 → h-12)
+- Mech Pro Plan price corrected from $99 to $60 NZD/month excluding GST
+
+## [1.1.1] - 2026-04-28
+
+### Fixed
+- Invoice vehicle FK fix: `create_invoice()` no longer crashes with `ForeignKeyViolationError` when creating invoices with org-scoped vehicles. Added `_resolve_vehicle_type()` helper that checks `global_vehicles` first, then `org_vehicles`, and routes linking/metadata logic to the correct table.
+- Invoice vehicle FK fix: `update_invoice()` now correctly updates `org_vehicles` metadata (service_due_date, wof_expiry) instead of silently skipping when the vehicle is org-scoped.
+- Invoice vehicle FK fix: duplicate-link detection now works for org vehicles (queries `org_vehicle_id` column instead of only `global_vehicle_id`).
+- Invoice vehicle FK fix: odometer recording for org vehicles updates `OrgVehicle.odometer_last_recorded` directly (bypasses `record_odometer_reading()` which only supports global vehicles).
+- Items catalogue GST badge: table now correctly shows "Incl." / "Excl." / "Exempt" instead of showing "Incl." for all non-exempt items. Added missing `gst_inclusive` field to the frontend `Item` interface.
+
 ## [1.1.0] - 2026-04-26
 
 ### Added

@@ -5,6 +5,7 @@ import apiClient from '@/api/client'
 export interface PlatformBranding {
   platform_name: string
   logo_url: string | null
+  dark_logo_url: string | null
   favicon_url: string | null
   primary_colour: string
   secondary_colour: string
@@ -17,6 +18,7 @@ export interface PlatformBranding {
 const DEFAULTS: PlatformBranding = {
   platform_name: 'OraInvoice',
   logo_url: null,
+  dark_logo_url: null,
   favicon_url: null,
   primary_colour: '#2563EB',
   secondary_colour: '#1E40AF',

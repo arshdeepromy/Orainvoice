@@ -3,6 +3,11 @@ import apiClient from '../../api/client'
 import { Button, Input, Spinner, Modal } from '../../components/ui'
 import { useTenant } from '../../contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
+import ServiceTypeSelector from '../../components/service-types/ServiceTypeSelector'
+import type { FieldValue } from '../../components/service-types/ServiceTypeSelector'
+import AttachmentUploader from '@/components/attachments/AttachmentUploader'
+import type { Attachment } from '@/components/attachments/AttachmentUploader'
+import AttachmentList from '@/components/attachments/AttachmentList'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -490,15 +495,26 @@ export default function JobCardCreate() {
   const { tradeFamily } = useTenant()
   const { selectedBranchId } = useBranch()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+  const isPlumbing = (tradeFamily ?? 'automotive-transport') === 'plumbing-gas'
 
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [vehicle, setVehicle] = useState<Vehicle | null>(null)
   const [description, setDescription] = useState('')
-  const [lineItems, setLineItems] = useState<LineItem[]>([newLineItem()])
+  const [showLineItems, setShowLineItems] = useState(false)
+  const [lineItems, setLineItems] = useState<LineItem[]>([])
   const [notes, setNotes] = useState('')
+
+  /* Service type state (plumbing only) */
+  const [serviceTypeId, setServiceTypeId] = useState<string | null>(null)
+  const [serviceTypeValues, setServiceTypeValues] = useState<FieldValue[]>([])
 
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<FormErrors>({})
+
+  /* Attachment state */
+  const [savedJobCardId, setSavedJobCardId] = useState<string | null>(null)
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [attachmentError, setAttachmentError] = useState('')
 
   /* --- Catalogue data --- */
   const [catalogueItems, setCatalogueItems] = useState<CatalogueItem[]>([])
@@ -536,6 +552,13 @@ export default function JobCardCreate() {
   }, [])
 
   /* --- Line item management --- */
+  const handleShowLineItems = () => {
+    setShowLineItems(true)
+    if (lineItems.length === 0) {
+      setLineItems([newLineItem()])
+    }
+  }
+
   const addLineItem = () => {
     setLineItems((prev) => [...prev, newLineItem()])
     if (errors.items) {
@@ -553,7 +576,11 @@ export default function JobCardCreate() {
   const removeLineItem = (index: number) => {
     setLineItems((prev) => {
       const next = prev.filter((_, i) => i !== index)
-      return next.length === 0 ? [newLineItem()] : next
+      // If all items removed, hide the section
+      if (next.length === 0) {
+        setShowLineItems(false)
+      }
+      return next
     })
   }
 
@@ -563,12 +590,34 @@ export default function JobCardCreate() {
     0
   )
 
+  /* --- Attachment handlers --- */
+  const handleUploadComplete = useCallback((attachment: Attachment) => {
+    setAttachments((prev) => [...prev, attachment])
+    setAttachmentError('')
+  }, [])
+
+  const handleUploadError = useCallback((error: string) => {
+    setAttachmentError(error)
+  }, [])
+
+  const handleDeleteAttachment = useCallback(
+    async (attachmentId: string) => {
+      if (!savedJobCardId) return
+      try {
+        await apiClient.delete(`/job-cards/${savedJobCardId}/attachments/${attachmentId}`)
+        setAttachments((prev) => prev.filter((a) => a.id !== attachmentId))
+      } catch {
+        setAttachmentError('Failed to delete attachment. Please try again.')
+      }
+    },
+    [savedJobCardId],
+  )
+
   /* --- Validation --- */
   const validate = (): boolean => {
     const errs: FormErrors = {}
     if (!customer) errs.customer = 'Please select or create a customer'
-    const filledItems = lineItems.filter((li) => li.description.trim())
-    if (filledItems.length === 0) errs.items = 'Add at least one line item with a description'
+    // Line items are optional - no validation required
     setErrors(errs)
     return Object.keys(errs).length === 0
   }
@@ -590,15 +639,26 @@ export default function JobCardCreate() {
           ...(li.catalogue_item_id ? { catalogue_item_id: li.catalogue_item_id } : {}),
         }))
 
-      await apiClient.post('/job-cards', {
+      const res = await apiClient.post<{ id: string }>('/job-cards', {
         customer_id: customer?.id,
         branch_id: selectedBranchId || undefined,
         ...(isAutomotive && vehicle?.id ? { vehicle_id: vehicle.id } : {}),
         description: description.trim(),
         notes: notes.trim() || undefined,
         line_items,
+        ...(isPlumbing && serviceTypeId
+          ? {
+              service_type_id: serviceTypeId,
+              service_type_values: serviceTypeValues.length > 0 ? serviceTypeValues : undefined,
+            }
+          : {}),
       })
-      window.location.href = '/job-cards'
+      const newId = res.data?.id
+      if (newId) {
+        setSavedJobCardId(newId)
+      } else {
+        window.location.href = '/job-cards'
+      }
     } catch {
       setErrors({ submit: 'Failed to create job card. Please try again.' })
     } finally {
@@ -630,52 +690,87 @@ export default function JobCardCreate() {
         </section>
         )}
 
+        {/* Service Type (plumbing only) */}
+        {isPlumbing && (
+          <section aria-labelledby="section-service-type">
+            <h2 id="section-service-type" className="sr-only">Service Type</h2>
+            <ServiceTypeSelector
+              serviceTypeId={serviceTypeId}
+              serviceTypeValues={serviceTypeValues}
+              onServiceTypeChange={setServiceTypeId}
+              onValuesChange={setServiceTypeValues}
+            />
+          </section>
+        )}
+
         {/* Description */}
         <div>
           <Input label="Job description" placeholder="Brief summary of the job…" value={description}
             onChange={(e) => setDescription(e.target.value)} />
         </div>
 
-        {/* Line Items */}
+        {/* Line Items - Collapsible Section */}
         <section aria-labelledby="section-line-items">
-          <h2 id="section-line-items" className="text-lg font-medium text-gray-900 mb-3">Line Items</h2>
-
-          {errors.items && <p className="text-sm text-red-600 mb-3" role="alert">{errors.items}</p>}
-
-          <div className="overflow-visible">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-200 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  <th className="py-2 px-2">Item Details</th>
-                  <th className="py-2 px-2 w-24 text-right">Qty</th>
-                  <th className="py-2 px-2 w-32 text-right">Rate</th>
-                  <th className="py-2 px-2 w-28 text-right">Amount</th>
-                  <th className="py-2 px-2 w-12"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {lineItems.map((item, index) => (
-                  <LineItemRow
-                    key={item.key}
-                    item={item}
-                    index={index}
-                    catalogueItems={catalogueItems}
-                    onChange={updateLineItem}
-                    onRemove={removeLineItem}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="flex items-center justify-between mt-3">
-            <Button size="sm" variant="secondary" onClick={addLineItem}>
-              + Add Row
-            </Button>
-            <div className="text-sm font-medium text-gray-700">
-              Subtotal: <span className="text-gray-900">{formatNZD(subtotal)}</span>
+          {!showLineItems ? (
+            /* Collapsed state - show "Add Line Item" button */
+            <div>
+              <Button variant="secondary" onClick={handleShowLineItems}>
+                + Add Line Item
+              </Button>
+              <p className="mt-2 text-sm text-gray-500">Line items are optional. Click to add parts, services, or labour.</p>
             </div>
-          </div>
+          ) : (
+            /* Expanded state - show line items table */
+            <>
+              <div className="flex items-center justify-between mb-3">
+                <h2 id="section-line-items" className="text-lg font-medium text-gray-900">Line Items</h2>
+                <button
+                  type="button"
+                  onClick={() => setShowLineItems(false)}
+                  className="text-sm text-gray-500 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded px-2 py-1"
+                >
+                  Hide
+                </button>
+              </div>
+
+              {errors.items && <p className="text-sm text-red-600 mb-3" role="alert">{errors.items}</p>}
+
+              <div className="overflow-visible">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                      <th className="py-2 px-2">Item Details</th>
+                      <th className="py-2 px-2 w-24 text-right">Qty</th>
+                      <th className="py-2 px-2 w-32 text-right">Rate</th>
+                      <th className="py-2 px-2 w-28 text-right">Amount</th>
+                      <th className="py-2 px-2 w-12"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lineItems.map((item, index) => (
+                      <LineItemRow
+                        key={item.key}
+                        item={item}
+                        index={index}
+                        catalogueItems={catalogueItems}
+                        onChange={updateLineItem}
+                        onRemove={removeLineItem}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex items-center justify-between mt-3">
+                <Button size="sm" variant="secondary" onClick={addLineItem}>
+                  + Add Row
+                </Button>
+                <div className="text-sm font-medium text-gray-700">
+                  Subtotal: <span className="text-gray-900">{formatNZD(subtotal)}</span>
+                </div>
+              </div>
+            </>
+          )}
         </section>
 
         {/* Notes */}
@@ -687,6 +782,53 @@ export default function JobCardCreate() {
             placeholder="Internal notes about this job…" />
         </div>
 
+        {/* Attachments */}
+        <section aria-labelledby="section-attachments">
+          <h2 id="section-attachments" className="text-lg font-medium text-gray-900 mb-3">Attachments</h2>
+
+          {savedJobCardId ? (
+            /* Job card saved — uploader is active */
+            <div className="space-y-3">
+              <AttachmentUploader
+                jobCardId={savedJobCardId}
+                onUploadComplete={handleUploadComplete}
+                onError={handleUploadError}
+              />
+              {attachmentError && (
+                <p className="text-sm text-red-600" role="alert">{attachmentError}</p>
+              )}
+              <AttachmentList
+                attachments={attachments}
+                onDelete={handleDeleteAttachment}
+              />
+            </div>
+          ) : (
+            /* Job card not yet saved — show info message */
+            <div className="rounded-lg border-2 border-dashed border-gray-200 bg-gray-50 p-6 text-center">
+              <svg
+                className="mx-auto h-10 w-10 text-gray-300 mb-2"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                aria-hidden="true"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                />
+              </svg>
+              <p className="text-sm text-gray-500">
+                Save the job card first to attach photos and documents.
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                Images (JPEG, PNG, WebP, GIF) and PDFs up to 50MB
+              </p>
+            </div>
+          )}
+        </section>
+
         {/* Submit error */}
         {errors.submit && (
           <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
@@ -696,9 +838,30 @@ export default function JobCardCreate() {
 
         {/* Actions */}
         <div className="flex gap-3 pt-2">
-          <Button onClick={handleSave} loading={saving}>Create Job Card</Button>
-          <Button variant="secondary" onClick={() => { window.location.href = '/job-cards' }}>Cancel</Button>
+          {savedJobCardId ? (
+            /* Job card already created — show "Done" to go to list or "View" to go to detail */
+            <>
+              <Button onClick={() => { window.location.href = `/job-cards/${savedJobCardId}` }}>
+                View Job Card
+              </Button>
+              <Button variant="secondary" onClick={() => { window.location.href = '/job-cards' }}>
+                Back to List
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button onClick={handleSave} loading={saving}>Create Job Card</Button>
+              <Button variant="secondary" onClick={() => { window.location.href = '/job-cards' }}>Cancel</Button>
+            </>
+          )}
         </div>
+
+        {/* Success banner after save */}
+        {savedJobCardId && (
+          <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700" role="status">
+            Job card created successfully. You can now attach files or view the job card.
+          </div>
+        )}
       </div>
     </div>
   )

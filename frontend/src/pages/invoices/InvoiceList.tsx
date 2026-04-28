@@ -1405,7 +1405,7 @@ export default function InvoiceList() {
                           </div>
                           <div className="flex items-center gap-1.5">
                             <span className="text-xs text-gray-400 uppercase tracking-wider">Vehicle</span>
-                            <span className="text-gray-900">{[invoice.vehicle?.year, invoice.vehicle?.make, invoice.vehicle?.model].filter(Boolean).join(' ') || '—'}</span>
+                            <span className="text-gray-900">{[invoice.vehicle?.year || invoice.vehicle_year, invoice.vehicle?.make || invoice.vehicle_make, invoice.vehicle?.model || invoice.vehicle_model].filter(Boolean).join(' ') || '—'}</span>
                           </div>
                           {(invoice.vehicle?.odometer || invoice.vehicle_odometer) ? (
                             <div className="flex items-center gap-1.5">

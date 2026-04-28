@@ -1,0 +1,381 @@
+{% autoescape true %}
+<div class="jc-appendix">
+<style>
+  .jc-appendix {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-size: 10pt;
+    color: #333;
+    line-height: 1.45;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .jc-appendix .jc-header-title {
+    font-size: 22pt;
+    font-weight: 800;
+    color: #1a1a1a;
+    letter-spacing: -0.5px;
+    margin: 0;
+  }
+  .jc-appendix .jc-header-ref {
+    font-size: 10pt;
+    color: #888;
+    margin-top: 2px;
+  }
+  .jc-appendix .jc-section-title {
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #888;
+    letter-spacing: 0.6px;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 3px;
+    margin-bottom: 6px;
+    margin-top: 16px;
+  }
+  .jc-appendix .jc-customer-box {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-top: 14px;
+  }
+  .jc-appendix .jc-customer-label {
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #2563eb;
+    margin-bottom: 4px;
+  }
+  .jc-appendix .jc-customer-name {
+    font-size: 11pt;
+    font-weight: 700;
+    color: #1a1a1a;
+  }
+  .jc-appendix .jc-customer-detail {
+    font-size: 9pt;
+    color: #555;
+    margin-top: 2px;
+  }
+  .jc-appendix .jc-vehicle-bar {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 8px 14px;
+    margin-top: 14px;
+  }
+  .jc-appendix .jc-vehicle-bar table {
+    font-size: 9pt;
+  }
+  .jc-appendix .jc-vehicle-bar table td {
+    padding: 1px 18px 1px 0;
+    vertical-align: top;
+  }
+  .jc-appendix .jc-vlbl {
+    color: #9ca3af;
+    font-size: 7.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .jc-appendix .jc-rego-tag {
+    background: #fef9c3;
+    padding: 2px 7px;
+    border-radius: 3px;
+    font-family: monospace;
+    font-weight: 800;
+    font-size: 9pt;
+    color: #1a1a1a;
+  }
+  .jc-appendix .jc-service-box {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-top: 6px;
+  }
+  .jc-appendix .jc-service-name {
+    font-size: 10pt;
+    font-weight: 700;
+    color: #1a1a1a;
+    margin-bottom: 6px;
+  }
+  .jc-appendix .jc-service-field-lbl {
+    font-size: 8.5pt;
+    color: #888;
+  }
+  .jc-appendix .jc-service-field-val {
+    font-size: 9pt;
+    color: #1a1a1a;
+    font-weight: 600;
+  }
+  .jc-appendix .jc-items-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 9pt;
+    margin-top: 6px;
+    margin-bottom: 14px;
+  }
+  .jc-appendix .jc-items-table thead th {
+    background: #3b5bdb;
+    color: #fff;
+    padding: 8px 12px;
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .jc-appendix .jc-items-table thead th:first-child {
+    border-radius: 6px 0 0 0;
+  }
+  .jc-appendix .jc-items-table thead th:last-child {
+    border-radius: 0 6px 0 0;
+  }
+  .jc-appendix .jc-items-table tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .jc-appendix .jc-items-table tbody tr:nth-child(even) td {
+    background: #fafafa;
+  }
+  .jc-appendix .jc-time-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 9pt;
+    margin-top: 6px;
+    margin-bottom: 14px;
+  }
+  .jc-appendix .jc-time-table thead th {
+    background: #3b5bdb;
+    color: #fff;
+    padding: 8px 12px;
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .jc-appendix .jc-time-table thead th:first-child {
+    border-radius: 6px 0 0 0;
+  }
+  .jc-appendix .jc-time-table thead th:last-child {
+    border-radius: 0 6px 0 0;
+  }
+  .jc-appendix .jc-time-table tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .jc-appendix .jc-time-table tbody tr:nth-child(even) td {
+    background: #fafafa;
+  }
+  .jc-appendix .jc-attachment-img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+    margin-bottom: 4px;
+  }
+  .jc-appendix .jc-attachment-caption {
+    font-size: 8pt;
+    color: #888;
+    margin-bottom: 12px;
+  }
+  .jc-appendix .jc-attachment-placeholder {
+    font-size: 9pt;
+    color: #999;
+    font-style: italic;
+    margin-bottom: 12px;
+  }
+  .jc-appendix .jc-notes-text {
+    font-size: 9pt;
+    color: #555;
+  }
+  .jc-appendix .jc-meta-text {
+    font-size: 8.5pt;
+    color: #888;
+    margin-top: 2px;
+  }
+  .jc-appendix .jc-footer-meta {
+    margin-top: 16px;
+    padding-top: 10px;
+    border-top: 1px solid #eee;
+  }
+</style>
+
+<!-- ============================================================ -->
+<!--  HEADER                                                       -->
+<!-- ============================================================ -->
+<div style="margin-bottom: 18px;">
+  <div class="jc-header-title">Job Card Summary</div>
+  {% if reference %}
+  <div class="jc-header-ref"># {{ reference }}</div>
+  {% endif %}
+</div>
+
+<!-- ============================================================ -->
+<!--  CUSTOMER INFORMATION                                         -->
+<!-- ============================================================ -->
+{% if customer and (customer.name or customer.phone or customer.email or customer.address) %}
+<div class="jc-customer-box">
+  <div class="jc-customer-label">Customer</div>
+  {% if customer.name %}
+  <div class="jc-customer-name">{{ customer.name }}</div>
+  {% endif %}
+  {% if customer.phone %}
+  <div class="jc-customer-detail">{{ customer.phone }}</div>
+  {% endif %}
+  {% if customer.email %}
+  <div class="jc-customer-detail">{{ customer.email }}</div>
+  {% endif %}
+  {% if customer.address %}
+  <div class="jc-customer-detail">{{ customer.address }}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ============================================================ -->
+<!--  VEHICLE REGISTRATION (automotive-transport only)             -->
+<!-- ============================================================ -->
+{% if trade_family == 'automotive-transport' and vehicle_rego %}
+<div class="jc-vehicle-bar">
+  <table>
+    <tr>
+      <td>
+        <div class="jc-vlbl">Rego</div>
+        <span class="jc-rego-tag">{{ vehicle_rego }}</span>
+      </td>
+    </tr>
+  </table>
+</div>
+{% endif %}
+
+<!-- ============================================================ -->
+<!--  SERVICE TYPE                                                 -->
+<!-- ============================================================ -->
+{% if service_type_name %}
+<div class="jc-section-title">Service Type</div>
+<div class="jc-service-box">
+  <div class="jc-service-name">{{ service_type_name }}</div>
+  {% if service_type_values %}
+  <table style="width: 100%; font-size: 9pt;">
+    {% for field in service_type_values %}
+    <tr>
+      <td style="padding: 3px 12px 3px 0; width: 40%;" class="jc-service-field-lbl">{{ field.label }}</td>
+      <td style="padding: 3px 0;" class="jc-service-field-val">{{ field.value }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ============================================================ -->
+<!--  LINE ITEMS                                                   -->
+<!-- ============================================================ -->
+{% if line_items %}
+<div class="jc-section-title">Line Items</div>
+<table class="jc-items-table">
+  <thead>
+    <tr>
+      <th style="text-align: left;">Type</th>
+      <th style="text-align: left;">Description</th>
+      <th style="text-align: right; width: 65px;">Qty</th>
+      <th style="text-align: right; width: 80px;">Unit Price</th>
+      <th style="text-align: right; width: 90px;">Line Total</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for item in line_items %}
+    <tr>
+      <td style="color: #1a1a1a; text-transform: capitalize;">{{ item.item_type }}</td>
+      <td style="color: #1a1a1a;">{{ item.description }}</td>
+      <td style="text-align: right; color: #1a1a1a;">{{ item.quantity }}</td>
+      <td style="text-align: right; color: #1a1a1a;">{{ "%.2f" | format(item.unit_price | float) }}</td>
+      <td style="text-align: right; color: #1a1a1a; font-weight: 600;">{{ "%.2f" | format(item.line_total | float) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<!-- ============================================================ -->
+<!--  TIME TRACKING                                                -->
+<!-- ============================================================ -->
+{% if time_entries %}
+<div class="jc-section-title">Time Tracking</div>
+<table class="jc-time-table">
+  <thead>
+    <tr>
+      <th style="text-align: left;">Staff</th>
+      <th style="text-align: left;">Start</th>
+      <th style="text-align: left;">Stop</th>
+      <th style="text-align: right; width: 90px;">Duration</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for entry in time_entries %}
+    <tr>
+      <td style="color: #1a1a1a;">{{ entry.staff_name }}</td>
+      <td style="color: #1a1a1a;">{{ entry.start_time }}</td>
+      <td style="color: #1a1a1a;">{{ entry.stop_time }}</td>
+      <td style="text-align: right; color: #1a1a1a; font-weight: 600;">{{ entry.duration }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<!-- ============================================================ -->
+<!--  ATTACHMENTS                                                  -->
+<!-- ============================================================ -->
+{% if has_attachments %}
+  {% if image_attachments %}
+  <div class="jc-section-title">Attachments</div>
+  {% for img in image_attachments %}
+    {% if img.is_missing %}
+    <div class="jc-attachment-placeholder">[Image unavailable: {{ img.filename }}]</div>
+    {% else %}
+    <img src="{{ img.data_uri }}" alt="{{ img.filename }}" class="jc-attachment-img">
+    <div class="jc-attachment-caption">{{ img.filename }}</div>
+    {% endif %}
+  {% endfor %}
+  {% endif %}
+
+  {% if pdf_attachments %}
+  <div class="jc-section-title">PDF Attachments</div>
+  <ul style="font-size: 9pt; color: #555; margin: 6px 0 14px 18px;">
+    {% for pdf in pdf_attachments %}
+    <li>{{ pdf.filename }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+{% endif %}
+
+<!-- ============================================================ -->
+<!--  NOTES                                                        -->
+<!-- ============================================================ -->
+{% if notes %}
+<div class="jc-section-title">Notes</div>
+<p class="jc-notes-text">{{ notes }}</p>
+{% endif %}
+
+<!-- ============================================================ -->
+<!--  FOOTER META: dates + assigned staff                          -->
+<!-- ============================================================ -->
+<div class="jc-footer-meta">
+  {% if assigned_to_name %}
+  <div class="jc-meta-text"><strong>Assigned to:</strong> {{ assigned_to_name }}</div>
+  {% endif %}
+  {% if created_at %}
+  <div class="jc-meta-text"><strong>Created:</strong> {{ created_at }}</div>
+  {% endif %}
+  {% if updated_at %}
+  <div class="jc-meta-text"><strong>Updated:</strong> {{ updated_at }}</div>
+  {% endif %}
+</div>
+
+</div>
+{% endautoescape %}

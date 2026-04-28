@@ -1,0 +1,448 @@
+"""Service layer for job card attachments.
+
+Handles file upload, compression, encryption, storage quota enforcement,
+and CRUD operations for job card attachments.
+
+Requirements: 2.1, 2.2, 3.1, 4.1, 4.2, 4.3, 5.1, 5.2, 5.3, 5.4
+"""
+
+from __future__ import annotations
+
+import io
+import os
+import uuid
+import zlib
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.encryption import envelope_encrypt, envelope_decrypt
+from app.core.storage_manager import StorageManager
+from app.modules.job_cards.attachment_models import JobCardAttachment
+from app.modules.job_cards.models import JobCard
+from app.modules.auth.models import User
+
+
+# File storage configuration
+UPLOAD_BASE = Path(os.environ.get("UPLOAD_DIR", "/app/uploads"))
+ATTACHMENT_CATEGORY = "job-card-attachments"
+
+# Maximum file size: 50 MB
+MAX_FILE_SIZE = 50 * 1024 * 1024
+
+# Accepted MIME types (Requirement 2.1)
+ALLOWED_MIME_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "application/pdf",
+}
+
+# Image extensions for compression
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+# Compression flags (matching uploads router)
+COMP_ZLIB = b"\x01"
+COMP_IMAGE = b"\x02"
+
+# MIME type to extension mapping
+MIME_TO_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "application/pdf": ".pdf",
+}
+
+
+def _compress_image(content: bytes, ext: str) -> tuple[bytes, str]:
+    """Compress and resize an image.
+    
+    Requirement 4.1: Resize to max 2048px on longest edge,
+    convert to JPEG at 82% quality (except PNG which stays PNG).
+    """
+    from PIL import Image
+    
+    img = Image.open(io.BytesIO(content))
+    
+    # Convert RGBA/P/LA to RGB for JPEG output
+    if img.mode in ("RGBA", "P", "LA"):
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        if img.mode == "P":
+            img = img.convert("RGBA")
+        bg.paste(img, mask=img.split()[-1] if "A" in img.mode else None)
+        img = bg
+    
+    # Resize if larger than 2048px
+    w, h = img.size
+    if max(w, h) > 2048:
+        r = 2048 / max(w, h)
+        img = img.resize((int(w * r), int(h * r)), Image.LANCZOS)
+    
+    buf = io.BytesIO()
+    if ext.lower() == ".png":
+        img.save(buf, format="PNG", optimize=True)
+        return buf.getvalue(), ".png"
+    
+    # For all other image types, convert to JPEG
+    img.save(buf, format="JPEG", quality=82, optimize=True)
+    return buf.getvalue(), ".jpg"
+
+
+def _store_file(
+    content: bytes,
+    filename: str,
+    org_id: str,
+    mime_type: str,
+) -> tuple[str, int]:
+    """Compress, encrypt, and store a file on disk.
+    
+    Returns (file_key, file_size).
+    
+    Requirements: 4.1, 4.2, 4.3
+    """
+    ext = MIME_TO_EXT.get(mime_type, Path(filename).suffix.lower() or ".bin")
+    
+    # Compress based on file type
+    if ext in IMAGE_EXTS:
+        try:
+            processed, ext = _compress_image(content, ext)
+            flag = COMP_IMAGE
+        except Exception:
+            # Fallback to zlib if image processing fails
+            processed = zlib.compress(content, 6)
+            flag = COMP_ZLIB
+    else:
+        # PDF and other files use zlib compression (Requirement 4.2)
+        processed = zlib.compress(content, 6)
+        flag = COMP_ZLIB
+    
+    # Encrypt the compressed content (Requirement 4.3)
+    encrypted = envelope_encrypt(processed)
+    
+    # Generate unique file key
+    file_key = f"{ATTACHMENT_CATEGORY}/{org_id}/{uuid.uuid4().hex}{ext}"
+    dest = UPLOAD_BASE / file_key
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Write flag byte + encrypted content
+    dest.write_bytes(flag + encrypted)
+    
+    file_size = len(flag) + len(encrypted)
+    return file_key, file_size
+
+
+def _read_file(file_key: str) -> bytes:
+    """Read, decrypt, and decompress a file from disk.
+    
+    Returns the original file content.
+    """
+    fp = UPLOAD_BASE / file_key
+    if not fp.is_file():
+        raise ValueError("File not found")
+    
+    # Validate path to prevent directory traversal
+    try:
+        fp.resolve().relative_to(UPLOAD_BASE.resolve())
+    except ValueError:
+        raise ValueError("Access denied")
+    
+    raw = fp.read_bytes()
+    if len(raw) < 2:
+        raise ValueError("Corrupt file")
+    
+    flag, blob = raw[0:1], raw[1:]
+    
+    # Decrypt
+    try:
+        decrypted = envelope_decrypt(blob)
+    except Exception:
+        raise ValueError("Decryption failed")
+    
+    # Decompress if needed
+    if flag == COMP_ZLIB:
+        return zlib.decompress(decrypted)
+    else:
+        # COMP_IMAGE: already decompressed image data
+        return decrypted
+
+
+def _delete_file(file_key: str) -> None:
+    """Delete a file from disk."""
+    fp = UPLOAD_BASE / file_key
+    
+    # Validate path to prevent directory traversal
+    try:
+        fp.resolve().relative_to(UPLOAD_BASE.resolve())
+    except ValueError:
+        raise ValueError("Access denied")
+    
+    if fp.is_file():
+        fp.unlink()
+
+
+async def upload_attachment(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    job_card_id: uuid.UUID,
+    file_content: bytes,
+    filename: str,
+    mime_type: str,
+) -> dict:
+    """Upload a file attachment to a job card.
+    
+    Validates file type and size, compresses and encrypts the file,
+    checks storage quota, creates the database record, and increments
+    storage usage.
+    
+    Requirements: 2.1, 2.2, 3.1, 4.1, 4.2, 4.3, 5.1, 5.2, 5.3
+    
+    Returns:
+        dict with attachment metadata
+        
+    Raises:
+        ValueError: Invalid file type, file too large, or job card not found
+        HTTPException: Storage quota exceeded (from StorageManager)
+    """
+    org_id_str = str(org_id)
+    
+    # Validate file type (Requirement 2.1, 2.2)
+    if mime_type not in ALLOWED_MIME_TYPES:
+        raise ValueError(
+            f"Invalid file type '{mime_type}'. "
+            "Accepted types: JPEG, PNG, WebP, GIF, PDF"
+        )
+    
+    # Validate file size (Requirement 3.1)
+    if len(file_content) > MAX_FILE_SIZE:
+        raise ValueError(
+            f"File too large. Maximum size is 50 MB, "
+            f"received {len(file_content) / (1024 * 1024):.1f} MB"
+        )
+    
+    if not file_content:
+        raise ValueError("Empty file")
+    
+    # Validate job card exists and belongs to org
+    result = await db.execute(
+        select(JobCard).where(
+            JobCard.id == job_card_id,
+            JobCard.org_id == org_id,
+        )
+    )
+    job_card = result.scalar_one_or_none()
+    if job_card is None:
+        raise ValueError("Job card not found in this organisation")
+    
+    # Store file (compress + encrypt)
+    file_key, file_size = _store_file(
+        file_content, filename, org_id_str, mime_type
+    )
+    
+    # Check and enforce storage quota (Requirement 5.1, 5.2)
+    sm = StorageManager(db)
+    await sm.enforce_quota(org_id_str, file_size)
+    
+    # Create attachment record
+    attachment = JobCardAttachment(
+        job_card_id=job_card_id,
+        org_id=org_id,
+        file_key=file_key,
+        file_name=filename,
+        file_size=file_size,
+        mime_type=mime_type,
+        uploaded_by=user_id,
+    )
+    db.add(attachment)
+    await db.flush()
+    
+    # Increment storage usage (Requirement 5.3)
+    await sm.increment_usage(org_id_str, file_size)
+    
+    # Refresh to get server-generated values
+    await db.refresh(attachment)
+    
+    return {
+        "id": attachment.id,
+        "job_card_id": attachment.job_card_id,
+        "file_key": attachment.file_key,
+        "file_name": attachment.file_name,
+        "file_size": attachment.file_size,
+        "mime_type": attachment.mime_type,
+        "uploaded_by": attachment.uploaded_by,
+        "uploaded_at": attachment.uploaded_at,
+    }
+
+
+async def list_attachments(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    job_card_id: uuid.UUID,
+) -> list[dict]:
+    """List all attachments for a job card with uploader name.
+    
+    Returns:
+        List of attachment dicts with uploader_name included
+    """
+    result = await db.execute(
+        select(
+            JobCardAttachment.id,
+            JobCardAttachment.job_card_id,
+            JobCardAttachment.file_key,
+            JobCardAttachment.file_name,
+            JobCardAttachment.file_size,
+            JobCardAttachment.mime_type,
+            JobCardAttachment.uploaded_by,
+            JobCardAttachment.uploaded_at,
+            User.first_name,
+            User.last_name,
+        )
+        .join(User, User.id == JobCardAttachment.uploaded_by, isouter=True)
+        .where(
+            JobCardAttachment.job_card_id == job_card_id,
+            JobCardAttachment.org_id == org_id,
+        )
+        .order_by(JobCardAttachment.uploaded_at.desc())
+    )
+    
+    attachments = []
+    for row in result:
+        first = row.first_name or ""
+        last = row.last_name or ""
+        uploader_name = f"{first} {last}".strip() or None
+        
+        attachments.append({
+            "id": row.id,
+            "job_card_id": row.job_card_id,
+            "file_key": row.file_key,
+            "file_name": row.file_name,
+            "file_size": row.file_size,
+            "mime_type": row.mime_type,
+            "uploaded_by": row.uploaded_by,
+            "uploaded_by_name": uploader_name,
+            "uploaded_at": row.uploaded_at,
+        })
+    
+    return attachments
+
+
+async def get_attachment(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    job_card_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+) -> dict:
+    """Get a single attachment record.
+    
+    Returns:
+        Attachment dict
+        
+    Raises:
+        ValueError: Attachment not found
+    """
+    result = await db.execute(
+        select(JobCardAttachment).where(
+            JobCardAttachment.id == attachment_id,
+            JobCardAttachment.job_card_id == job_card_id,
+            JobCardAttachment.org_id == org_id,
+        )
+    )
+    attachment = result.scalar_one_or_none()
+    
+    if attachment is None:
+        raise ValueError("Attachment not found")
+    
+    return {
+        "id": attachment.id,
+        "job_card_id": attachment.job_card_id,
+        "file_key": attachment.file_key,
+        "file_name": attachment.file_name,
+        "file_size": attachment.file_size,
+        "mime_type": attachment.mime_type,
+        "uploaded_by": attachment.uploaded_by,
+        "uploaded_at": attachment.uploaded_at,
+    }
+
+
+def download_attachment(org_id: uuid.UUID, file_key: str) -> bytes:
+    """Download and decrypt an attachment file.
+    
+    Validates that the file_key belongs to the specified org to prevent
+    unauthorized access.
+    
+    Returns:
+        Decrypted file content as bytes
+        
+    Raises:
+        ValueError: File not found, access denied, or decryption failed
+    """
+    org_id_str = str(org_id)
+    
+    # Validate file_key belongs to this org (security check)
+    expected_prefix = f"{ATTACHMENT_CATEGORY}/{org_id_str}/"
+    if not file_key.startswith(expected_prefix):
+        raise ValueError("Access denied")
+    
+    return _read_file(file_key)
+
+
+async def delete_attachment(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    job_card_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+) -> dict:
+    """Delete an attachment file and database record.
+    
+    Deletes the file from disk, removes the database record, and
+    decrements the organisation's storage usage.
+    
+    Requirement 5.4
+    
+    Returns:
+        dict with deletion confirmation and storage freed
+        
+    Raises:
+        ValueError: Attachment not found
+    """
+    org_id_str = str(org_id)
+    
+    # Get attachment record
+    result = await db.execute(
+        select(JobCardAttachment).where(
+            JobCardAttachment.id == attachment_id,
+            JobCardAttachment.job_card_id == job_card_id,
+            JobCardAttachment.org_id == org_id,
+        )
+    )
+    attachment = result.scalar_one_or_none()
+    
+    if attachment is None:
+        raise ValueError("Attachment not found")
+    
+    file_key = attachment.file_key
+    file_size = attachment.file_size
+    
+    # Delete file from disk
+    try:
+        _delete_file(file_key)
+    except ValueError:
+        # File may already be deleted, continue with DB cleanup
+        pass
+    
+    # Delete database record
+    await db.delete(attachment)
+    await db.flush()
+    
+    # Decrement storage usage (Requirement 5.4)
+    sm = StorageManager(db)
+    await sm.decrement_usage(org_id_str, file_size)
+    
+    return {
+        "message": "Attachment deleted",
+        "storage_freed_bytes": file_size,
+    }

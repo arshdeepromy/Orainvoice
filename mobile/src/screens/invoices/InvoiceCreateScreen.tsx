@@ -125,93 +125,101 @@ export default function InvoiceCreateScreen() {
   }
 
   return (
-    <div className="flex flex-col gap-4 p-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
-          New Invoice
-        </h1>
-        <MobileButton
-          variant="ghost"
-          size="sm"
-          onClick={() => navigate(-1)}
-        >
-          Cancel
-        </MobileButton>
+    <div className="flex min-h-full flex-col">
+      {/* Scrollable form content */}
+      <div className="flex flex-col gap-4 p-4">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
+            New Invoice
+          </h1>
+          <MobileButton
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate(-1)}
+          >
+            Cancel
+          </MobileButton>
+        </div>
+
+        {/* API error */}
+        {apiError && (
+          <div
+            className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300"
+            role="alert"
+          >
+            {apiError}
+          </div>
+        )}
+
+        {/* Customer selection */}
+        <MobileFormField label="Customer" required error={errors.customer}>
+          <button
+            type="button"
+            onClick={() => setShowCustomerPicker(true)}
+            className="flex min-h-[44px] w-full items-center rounded-lg border border-gray-300 px-3 py-2 text-left text-base dark:border-gray-600 dark:bg-gray-800"
+          >
+            {customerName ? (
+              <span className="text-gray-900 dark:text-gray-100">{customerName}</span>
+            ) : (
+              <span className="text-gray-400 dark:text-gray-500">Select customer…</span>
+            )}
+          </button>
+        </MobileFormField>
+
+        {/* Due date */}
+        <MobileInput
+          label="Due Date"
+          type="date"
+          required
+          value={dueDate}
+          onChange={(e) => {
+            setDueDate(e.target.value)
+            setErrors((prev) => ({ ...prev, due_date: undefined }))
+          }}
+          error={errors.due_date}
+        />
+
+        {/* Line items */}
+        {errors.line_items && (
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            {errors.line_items}
+          </p>
+        )}
+        <LineItemEditor
+          items={lineItems}
+          onChange={handleLineItemsChange}
+          discount={discount}
+          onDiscountChange={setDiscount}
+          onAddItem={() => setShowItemPicker(true)}
+        />
+
+        {/* Notes */}
+        <MobileFormField label="Notes">
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Optional notes…"
+            rows={3}
+            className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
+          />
+        </MobileFormField>
       </div>
 
-      {/* API error */}
-      {apiError && (
-        <div
-          className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300"
-          role="alert"
+      {/* Spacer pushes footer to bottom when content is short */}
+      <div className="flex-1" />
+
+      {/* Sticky submit footer */}
+      <div className="sticky bottom-0 border-t border-gray-100 bg-white px-4 py-3 dark:border-gray-800 dark:bg-gray-900">
+        <MobileButton
+          variant="primary"
+          fullWidth
+          onClick={handleSubmit}
+          isLoading={isSubmitting}
         >
-          {apiError}
-        </div>
-      )}
-
-      {/* Customer selection */}
-      <MobileFormField label="Customer" required error={errors.customer}>
-        <button
-          type="button"
-          onClick={() => setShowCustomerPicker(true)}
-          className="flex min-h-[44px] w-full items-center rounded-lg border border-gray-300 px-3 py-2 text-left text-base dark:border-gray-600 dark:bg-gray-800"
-        >
-          {customerName ? (
-            <span className="text-gray-900 dark:text-gray-100">{customerName}</span>
-          ) : (
-            <span className="text-gray-400 dark:text-gray-500">Select customer…</span>
-          )}
-        </button>
-      </MobileFormField>
-
-      {/* Due date */}
-      <MobileInput
-        label="Due Date"
-        type="date"
-        required
-        value={dueDate}
-        onChange={(e) => {
-          setDueDate(e.target.value)
-          setErrors((prev) => ({ ...prev, due_date: undefined }))
-        }}
-        error={errors.due_date}
-      />
-
-      {/* Line items */}
-      {errors.line_items && (
-        <p className="text-sm text-red-600 dark:text-red-400" role="alert">
-          {errors.line_items}
-        </p>
-      )}
-      <LineItemEditor
-        items={lineItems}
-        onChange={handleLineItemsChange}
-        discount={discount}
-        onDiscountChange={setDiscount}
-        onAddItem={() => setShowItemPicker(true)}
-      />
-
-      {/* Notes */}
-      <MobileFormField label="Notes">
-        <textarea
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          placeholder="Optional notes…"
-          rows={3}
-          className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
-        />
-      </MobileFormField>
-
-      {/* Submit */}
-      <MobileButton
-        variant="primary"
-        fullWidth
-        onClick={handleSubmit}
-        isLoading={isSubmitting}
-      >
-        Create Invoice
-      </MobileButton>
+          Create Invoice
+        </MobileButton>
+      </div>
 
       {/* Pickers */}
       <CustomerPicker

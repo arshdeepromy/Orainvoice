@@ -195,6 +195,7 @@ def create_app() -> FastAPI:
     from app.modules.vehicles import models as _vehicle_models  # noqa: F401
     from app.modules.billing import models as _billing_models  # noqa: F401
     from app.modules.job_cards import models as _job_card_models  # noqa: F401
+    from app.modules.service_types import models as _service_type_models  # noqa: F401
     from app.modules.staff import models as _staff_models  # noqa: F401
     from app.modules.sms_chat import models as _sms_chat_models  # noqa: F401
     from app.modules.ha import models as _ha_models  # noqa: F401
@@ -229,6 +230,7 @@ def create_app() -> FastAPI:
     from app.modules.notifications.router import router as notifications_router
     from app.modules.quotes.router import router as quotes_router
     from app.modules.job_cards.router import router as job_cards_router
+    from app.modules.job_cards.attachment_router import router as job_card_attachments_router
     from app.modules.bookings.router import router as bookings_router
     from app.modules.time_tracking.router import router as time_tracking_router
     from app.modules.inventory.router import router as inventory_router
@@ -253,10 +255,14 @@ def create_app() -> FastAPI:
     app.include_router(billing_router, prefix="/api/v1/billing", tags=["billing"])
     app.include_router(catalogue_router, prefix="/api/v1/catalogue", tags=["catalogue"])
     app.include_router(fluid_oil_router, prefix="/api/v1/catalogue/fluids", tags=["catalogue-fluids"])
+
+    from app.modules.service_types.router import router as service_types_router
+    app.include_router(service_types_router, prefix="/api/v1/service-types", tags=["service-types"])
     app.include_router(storage_router, prefix="/api/v1/storage", tags=["storage"])
     app.include_router(notifications_router, prefix="/api/v1/notifications", tags=["notifications"])
     app.include_router(quotes_router, prefix="/api/v1/quotes", tags=["quotes"])
     app.include_router(job_cards_router, prefix="/api/v1/job-cards", tags=["job-cards"])
+    app.include_router(job_card_attachments_router, prefix="/api/v1/job-cards", tags=["job-card-attachments"])
     app.include_router(bookings_router, prefix="/api/v1/bookings", tags=["bookings"])
     app.include_router(time_tracking_router, prefix="/api/v1/job-cards", tags=["time-tracking"])
     app.include_router(inventory_router, prefix="/api/v1/inventory", tags=["inventory"])
@@ -584,6 +590,12 @@ def create_app() -> FastAPI:
     # --- Public (no-auth) payment page ---
     from app.modules.payments.public_router import router as public_payment_router
     app.include_router(public_payment_router, prefix="/api/v1/public", tags=["public-payments"])
+
+    # --- Landing page (public demo request + privacy policy, admin privacy editor) ---
+    from app.modules.landing.router import public_router as landing_public_router
+    from app.modules.landing.router import admin_router as landing_admin_router
+    app.include_router(landing_public_router, prefix="/api/v1/public", tags=["public-landing"])
+    app.include_router(landing_admin_router, prefix="/api/v1/admin", tags=["admin"])
 
     @app.get("/health")
     async def health_check():

@@ -187,17 +187,19 @@ class RateLimitMiddleware:
                 )
                 await self.app(scope, receive, send)
         except Exception as exc:
-            # Unexpected error (likely a bug) — log with full traceback but don't block
+            # Unexpected error — log with full traceback and re-raise.
+            # ISSUE-145 fix: never call self.app() again here because
+            # _apply_rate_limits may have already dispatched a response
+            # via self.app(). Calling it a second time causes an ASGI
+            # double-response crash.
             path = request.url.path
             logger.exception(
-                "Rate limiter unexpected error — allowing request through: %s (error: %s: %s)",
+                "Rate limiter unexpected error — failing open: %s (error: %s: %s)",
                 path,
                 type(exc).__name__,
                 exc,
             )
-            # Fail open for unexpected errors to avoid blocking legitimate requests
-            # due to bugs in the rate limiter itself
-            await self.app(scope, receive, send)
+            raise
 
     async def _apply_rate_limits(
         self, scope: Scope, receive: Receive, send: Send, request: Request, redis: Redis,

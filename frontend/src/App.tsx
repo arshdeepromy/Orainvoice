@@ -114,11 +114,16 @@ const PortalPage = lazy(() => import('@/pages/portal/PortalPage').then(m => ({ d
 /* Invoice payment page (public, token-based — lazy to keep Stripe bundles out of main chunk) */
 const InvoicePaymentPage = lazy(() => import('@/pages/public/InvoicePaymentPage'))
 
+/* Public marketing pages (lazy-loaded — only needed for unauthenticated visitors) */
+const LandingPage = lazy(() => import('@/pages/public/LandingPage'))
+const PrivacyPage = lazy(() => import('@/pages/public/PrivacyPage'))
+const TradesPage = lazy(() => import('@/pages/public/TradesPage'))
+
 /* Catalogue pages */
 const CataloguePage = lazy(() => import('@/pages/catalogue/CataloguePage'))
 
 /* Items page */
-const ItemsPage = lazy(() => import('@/pages/items/ItemsCatalogue'))
+const ItemsPage = lazy(() => import('@/pages/items/ItemsPage'))
 
 /* Onboarding */
 const OnboardingWizard = lazy(() => import('@/pages/onboarding/OnboardingWizard').then(m => ({ default: m.OnboardingWizard })))
@@ -280,8 +285,13 @@ function AppRoutes() {
 
   return (
     <Routes>
-      {/* Guest routes */}
+      {/* Public pages — accessible regardless of auth state */}
+      <Route path="/privacy" element={<SafePage name="privacy"><PrivacyPage /></SafePage>} />
+      <Route path="/trades" element={<SafePage name="trades"><TradesPage /></SafePage>} />
+
+      {/* Guest routes — authenticated users are redirected by role */}
       <Route element={<GuestOnly />}>
+        <Route path="/" element={<SafePage name="landing"><LandingPage /></SafePage>} />
         <Route path="/login" element={<SafePage name="login"><Login /></SafePage>} />
         <Route path="/mfa-verify" element={<SafePage name="mfa-verify"><MfaVerify /></SafePage>} />
         <Route path="/forgot-password" element={<SafePage name="forgot-password"><PasswordResetRequest /></SafePage>} />

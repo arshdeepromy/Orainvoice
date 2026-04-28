@@ -26,6 +26,7 @@ interface ItemData {
   description: string | null
   default_price: string
   is_gst_exempt: boolean
+  gst_inclusive: boolean
   category: string | null
   is_active: boolean
   created_at: string
@@ -54,6 +55,7 @@ const itemArb: fc.Arbitrary<ItemData> = fc.record({
     .float({ min: Math.fround(0.01), max: Math.fround(99999.99), noNaN: true })
     .map((n) => n.toFixed(2)),
   is_gst_exempt: fc.boolean(),
+  gst_inclusive: fc.boolean(),
   category: fc.option(safeCategoryArb, { nil: null }),
   is_active: fc.boolean(),
   created_at: fc.constant('2026-01-01T00:00:00Z'),
@@ -110,8 +112,8 @@ describe('Property 8: Items page displays all table columns', () => {
             // Column 2: Price (ex-GST) — shows $<price>
             expect(cells[2].textContent).toContain(item.default_price)
 
-            // Column 3: GST Exempt — Badge shows "Exempt" or "Incl."
-            const gstText = item.is_gst_exempt ? 'Exempt' : 'Incl.'
+            // Column 3: GST Exempt — Badge shows "Exempt", "Incl.", or "Excl."
+            const gstText = item.is_gst_exempt ? 'Exempt' : item.gst_inclusive ? 'Incl.' : 'Excl.'
             expect(cells[3].textContent).toContain(gstText)
 
             // Column 4: Status — Badge shows "Active" or "Inactive"

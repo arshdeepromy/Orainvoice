@@ -23,6 +23,20 @@ html, body, #root {
   overflow: hidden;
 }
 
+/* Public marketing pages (landing, privacy, trades) need normal document
+   scrolling. Each public page component adds this class to <html> on mount. */
+html.public-page,
+html.public-page body,
+html.public-page #root {
+  height: auto;
+  overflow: visible;
+}
+
+/* Smooth scroll for anchor links on public pages (landing page #features, #pricing) */
+html {
+  scroll-behavior: smooth;
+}
+
 /* Global form element styling */
 @layer base {
   select {

@@ -480,5 +480,13 @@
   {% endif %}
 </div>
 
+<!-- ============================================================ -->
+<!--  JOB CARD APPENDIX (second page)                              -->
+<!-- ============================================================ -->
+{% if job_card_appendix_html %}
+<div style="page-break-before: always;"></div>
+{{ job_card_appendix_html | safe }}
+{% endif %}
+
 </body>
 </html>

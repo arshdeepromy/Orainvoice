@@ -12,6 +12,7 @@ interface Item {
   description: string | null
   default_price: string
   is_gst_exempt: boolean
+  gst_inclusive: boolean
   category: string | null
   is_active: boolean
   created_at: string
@@ -110,7 +111,7 @@ export default function ItemsCatalogue() {
       default_price: item.default_price,
       category: item.category || '',
       is_gst_exempt: item.is_gst_exempt,
-      gst_mode: item.is_gst_exempt ? 'exempt' : (item as any).gst_inclusive ? 'inclusive' : 'exclusive',
+      gst_mode: item.is_gst_exempt ? 'exempt' : item.gst_inclusive ? 'inclusive' : 'exclusive',
       is_active: item.is_active,
     })
     setFormError('')
@@ -246,8 +247,10 @@ export default function ItemsCatalogue() {
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
                         {item.is_gst_exempt ? (
                           <Badge variant="neutral">Exempt</Badge>
-                        ) : (
+                        ) : item.gst_inclusive ? (
                           <Badge variant="success">Incl.</Badge>
+                        ) : (
+                          <Badge variant="info">Excl.</Badge>
                         )}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-center">

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 class BrandingUpdate(BaseModel):
     platform_name: str | None = Field(None, min_length=1, max_length=100)
     logo_url: str | None = None
+    dark_logo_url: str | None = None
     favicon_url: str | None = None
     primary_colour: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     secondary_colour: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
@@ -29,6 +30,7 @@ class BrandingResponse(BaseModel):
     id: UUID
     platform_name: str
     logo_url: str | None = None
+    dark_logo_url: str | None = None
     favicon_url: str | None = None
     primary_colour: str
     secondary_colour: str
@@ -48,6 +50,7 @@ class PublicBrandingResponse(BaseModel):
     """Public-facing branding for login/signup/public pages."""
     platform_name: str
     logo_url: str | None = None
+    dark_logo_url: str | None = None
     favicon_url: str | None = None
     primary_colour: str
     secondary_colour: str

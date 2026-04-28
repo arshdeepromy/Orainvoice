@@ -2,7 +2,7 @@
 import { useNavigate, useParams } from 'react-router-dom'
 import type { Quote, QuoteLineItem } from '@shared/types/quote'
 import { useApiDetail } from '@/hooks/useApiDetail'
-import { MobileButton, MobileBadge, MobileSpinner, MobileCard, MobileToast } from '@/components/ui'
+import { MobileButton, MobileBadge, MobileCard, MobileToast, DetailScreenSkeleton } from '@/components/ui'
 import type { BadgeVariant } from '@/components/ui'
 import apiClient from '@/api/client'
 
@@ -134,11 +134,7 @@ export default function QuoteDetailScreen() {
   }, [id, navigate])
 
   if (isLoading) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <MobileSpinner size="md" />
-      </div>
-    )
+    return <DetailScreenSkeleton />
   }
 
   if (error || !quote) {

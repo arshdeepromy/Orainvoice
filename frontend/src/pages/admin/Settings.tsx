@@ -8,6 +8,7 @@ import { DataTable, type Column } from '@/components/ui/DataTable'
 import { ToastContainer, useToast } from '@/components/ui/Toast'
 import { Modal } from '@/components/ui/Modal'
 import apiClient from '@/api/client'
+import axios from 'axios'
 
 /* ── Types ── */
 
@@ -725,12 +726,189 @@ function SignupBillingTab({ onToast }: { onToast: (v: 'success' | 'error', msg: 
   )
 }
 
+/* ── Simple Markdown-to-HTML renderer (matches PrivacyPage) ── */
+
+function renderMarkdownToHtml(markdown: string): string {
+  let html = markdown
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+  html = html.replace(/^### (.+)$/gm, '<h3 class="mt-8 mb-3 text-xl font-semibold text-gray-900">$1</h3>')
+  html = html.replace(/^## (.+)$/gm, '<h2 class="mt-10 mb-4 text-2xl font-bold text-gray-900">$1</h2>')
+  html = html.replace(/^# (.+)$/gm, '<h1 class="mt-12 mb-6 text-3xl font-bold text-gray-900">$1</h1>')
+
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
+
+  html = html.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    '<a href="$2" class="text-blue-600 underline hover:text-blue-500" target="_blank" rel="noopener noreferrer">$1</a>',
+  )
+
+  html = html.replace(/^- (.+)$/gm, '<li class="ml-6 list-disc text-gray-700">$1</li>')
+  html = html.replace(/^\d+\. (.+)$/gm, '<li class="ml-6 list-decimal text-gray-700">$1</li>')
+
+  html = html.replace(
+    /(<li class="ml-6 list-disc[^"]*">[\s\S]*?<\/li>\n?)+/g,
+    (match) => `<ul class="my-3 space-y-1">${match}</ul>`,
+  )
+  html = html.replace(
+    /(<li class="ml-6 list-decimal[^"]*">[\s\S]*?<\/li>\n?)+/g,
+    (match) => `<ol class="my-3 space-y-1">${match}</ol>`,
+  )
+
+  html = html
+    .split('\n')
+    .map((line) => {
+      const trimmed = line.trim()
+      if (!trimmed) return ''
+      if (trimmed.startsWith('<')) return trimmed
+      return `<p class="mb-4 leading-relaxed text-gray-700">${trimmed}</p>`
+    })
+    .join('\n')
+
+  return html
+}
+
+/* ── Privacy Policy Tab ── */
+
+function PrivacyPolicyTab({ onToast }: { onToast: (v: 'success' | 'error', msg: string) => void }) {
+  const [content, setContent] = useState('')
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [error, setError] = useState(false)
+  const [showPreview, setShowPreview] = useState(false)
+
+  const fetchPolicy = useCallback(async (signal?: AbortSignal) => {
+    setLoading(true)
+    setError(false)
+    try {
+      const res = await axios.get<{ content?: string | null; last_updated?: string | null }>(
+        '/api/v1/public/privacy-policy',
+        { signal },
+      )
+      setContent(res.data?.content ?? '')
+      setLastUpdated(res.data?.last_updated ?? null)
+    } catch (err) {
+      if (!(signal?.aborted)) {
+        setError(true)
+      }
+    } finally {
+      if (!(signal?.aborted)) {
+        setLoading(false)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchPolicy(controller.signal)
+    return () => controller.abort()
+  }, [fetchPolicy])
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!content.trim()) {
+      onToast('error', 'Privacy policy content cannot be empty')
+      return
+    }
+    setSaving(true)
+    try {
+      const res = await apiClient.put<{ success?: boolean; last_updated?: string | null }>(
+        '/admin/privacy-policy',
+        { content },
+      )
+      setLastUpdated(res.data?.last_updated ?? null)
+      onToast('success', 'Privacy policy updated')
+    } catch {
+      onToast('error', 'Failed to update privacy policy')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleReset = async () => {
+    setResetting(true)
+    try {
+      await apiClient.put('/admin/privacy-policy', { content: '' })
+      setContent('')
+      setLastUpdated(null)
+      onToast('success', 'Privacy policy reset to default — the public page will show the built-in NZ Privacy Act policy')
+    } catch {
+      onToast('error', 'Failed to reset privacy policy')
+    } finally {
+      setResetting(false)
+    }
+  }
+
+  if (loading) return <div className="flex justify-center py-12"><Spinner label="Loading privacy policy" /></div>
+  if (error) return <AlertBanner variant="error" title="Failed to load privacy policy">Could not load privacy policy content.</AlertBanner>
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900">Privacy Policy Editor</h2>
+          <p className="text-sm text-gray-500">
+            {lastUpdated
+              ? `Last updated: ${formatDate(lastUpdated)}`
+              : 'Using default built-in policy'}
+          </p>
+        </div>
+        <div className="flex gap-3">
+          <Button variant="secondary" onClick={() => setShowPreview(!showPreview)}>
+            {showPreview ? 'Hide preview' : 'Preview'}
+          </Button>
+          <Button variant="secondary" onClick={handleReset} loading={resetting}>
+            Reset to Default
+          </Button>
+        </div>
+      </div>
+
+      {showPreview && content.trim() && (
+        <div className="rounded-lg border border-gray-200 bg-white p-6" role="region" aria-label="Privacy policy preview">
+          <h3 className="text-sm font-medium text-gray-700 mb-3">Markdown Preview</h3>
+          <div
+            className="prose prose-gray max-w-none text-base leading-relaxed"
+            dangerouslySetInnerHTML={{ __html: renderMarkdownToHtml(content) }}
+          />
+        </div>
+      )}
+
+      <form onSubmit={handleSave} className="space-y-4">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="privacy-policy-editor" className="text-sm font-medium text-gray-700">
+            Policy content (Markdown)
+          </label>
+          <textarea
+            id="privacy-policy-editor"
+            className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm
+              focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-h-[300px] font-mono"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder="Enter privacy policy content in Markdown format…"
+          />
+          <p className="text-sm text-gray-500">
+            Supports headings (#, ##, ###), bold (**text**), italic (*text*), links [text](url), and lists (- item, 1. item).
+            Leave empty and reset to use the built-in default NZ Privacy Act 2020 policy.
+          </p>
+        </div>
+        <Button type="submit" loading={saving}>Save privacy policy</Button>
+      </form>
+    </div>
+  )
+}
+
 export function Settings() {
   const { toasts, addToast, dismissToast } = useToast()
 
   const tabs = [
     { id: 'vehicle-db', label: 'Vehicle DB', content: <VehicleDbTab onToast={addToast} /> },
     { id: 'terms', label: 'T&C', content: <TermsTab onToast={addToast} /> },
+    { id: 'privacy-policy', label: 'Privacy Policy', content: <PrivacyPolicyTab onToast={addToast} /> },
     { id: 'announcements', label: 'Announcements', content: <AnnouncementsTab onToast={addToast} /> },
     { id: 'billing', label: 'Signup Billing', content: <SignupBillingTab onToast={addToast} /> },
   ]

@@ -50,6 +50,8 @@ The `watch-build.sh` watcher inside the container may not reliably detect change
 - Adding a new enum/role value in Python code but the database CHECK constraint still has the old list
 - Adding a new column in a migration but the SQLAlchemy model references it before the migration runs
 - Modifying frontend source files but not rebuilding — the browser serves the old cached bundle from nginx
+- **Deploying code to Pi prod without syncing `alembic/versions/`** — the model references a column that doesn't exist in the prod DB, causing `AttributeError` at runtime. Always sync migrations when deploying to Pi.
+- **Syncing only the changed `.py` files to Pi but missing the migration** — even if the code change is "just a bugfix", check if any migration was created since the last deploy. The entrypoint runs `alembic upgrade head` automatically, but only if the migration files are present on disk.
 
 ## When Creating New Roles, Enum Values, or Constraints
 

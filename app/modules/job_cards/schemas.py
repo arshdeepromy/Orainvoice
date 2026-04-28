@@ -38,7 +38,10 @@ class JobCardItemCreate(BaseModel):
 
 
 class JobCardCreate(BaseModel):
-    """Request body for POST /api/v1/job-cards."""
+    """Request body for POST /api/v1/job-cards.
+
+    Requirements: 6.3
+    """
 
     customer_id: uuid.UUID
     vehicle_rego: str | None = None
@@ -48,10 +51,17 @@ class JobCardCreate(BaseModel):
     description: str | None = None
     notes: str | None = None
     line_items: list[JobCardItemCreate] = Field(default_factory=list)
+    service_type_id: str | None = Field(None, description="Optional service type UUID")
+    service_type_values: list[dict] | None = Field(
+        None, description="Optional list of field values for the selected service type"
+    )
 
 
 class JobCardUpdate(BaseModel):
-    """Request body for PUT /api/v1/job-cards/{id}."""
+    """Request body for PUT /api/v1/job-cards/{id}.
+
+    Requirements: 6.3
+    """
 
     customer_id: uuid.UUID | None = None
     vehicle_rego: str | None = None
@@ -62,6 +72,10 @@ class JobCardUpdate(BaseModel):
     description: str | None = None
     notes: str | None = None
     line_items: list[JobCardItemCreate] | None = None
+    service_type_id: str | None = Field(None, description="Optional service type UUID")
+    service_type_values: list[dict] | None = Field(
+        None, description="Optional list of field values for the selected service type"
+    )
 
 
 class JobCardItemResponse(BaseModel):
@@ -88,7 +102,10 @@ class CustomerSummary(BaseModel):
 
 
 class JobCardResponse(BaseModel):
-    """Response schema for a job card."""
+    """Response schema for a job card.
+
+    Requirements: 6.3, 6.4, 7.4
+    """
 
     id: uuid.UUID
     org_id: uuid.UUID
@@ -105,6 +122,9 @@ class JobCardResponse(BaseModel):
     active_timer: dict | None = None
     total_time_seconds: int = 0
     is_timer_active: bool = False
+    service_type_id: str | None = None
+    service_type_name: str | None = None
+    service_type_values: list[dict] | None = None
     created_by: uuid.UUID
     created_at: datetime
     updated_at: datetime

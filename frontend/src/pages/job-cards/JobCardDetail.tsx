@@ -3,6 +3,10 @@ import { useParams, useNavigate } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Modal } from '../../components/ui'
 import { useTenant } from '../../contexts/TenantContext'
+import { getDialCodeForCountry, getCountryCodeFromName } from '../../components/ui/PhoneInput'
+import AttachmentUploader from '@/components/attachments/AttachmentUploader'
+import type { Attachment } from '@/components/attachments/AttachmentUploader'
+import AttachmentList from '@/components/attachments/AttachmentList'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -54,8 +58,24 @@ interface JobCardDetailData {
   active_timer: TimeEntry | null
   is_timer_active: boolean
   invoice_id: string | null
+  service_type_id: string | null
+  service_type_name: string | null
+  service_type_values: ServiceTypeFieldValue[] | null
   created_at: string
   updated_at: string
+}
+
+interface ServiceTypeFieldValue {
+  field_id: string
+  label: string
+  field_type: string
+  value_text: string | null
+  value_array: string[] | null
+}
+
+/** Attachment with uploader name from the list endpoint. */
+interface AttachmentWithMeta extends Attachment {
+  uploaded_by_name?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -95,6 +115,23 @@ const STATUS_CONFIG: Record<JobCardStatus, { label: string; variant: BadgeVarian
 
 function formatCurrency(value: number | null | undefined): string {
   return (value ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2 })
+}
+
+/**
+ * Format a phone number with the org's country dial code.
+ * If the phone already starts with '+', return as-is.
+ */
+function formatPhoneWithDialCode(phone: string, addressCountry: string | null): string {
+  if (!phone) return ''
+  // Already has a country code prefix
+  if (phone.startsWith('+')) return phone
+  const countryCode = addressCountry
+    ? (addressCountry.length === 2 ? addressCountry.toUpperCase() : getCountryCodeFromName(addressCountry))
+    : 'NZ'
+  const dialCode = getDialCodeForCountry(countryCode)
+  // Strip leading 0 (local format) before prepending dial code
+  const cleaned = phone.startsWith('0') ? phone.slice(1) : phone
+  return `${dialCode} ${cleaned}`
 }
 
 /** Valid status transitions: Open → In Progress → Completed → Invoiced */
@@ -138,7 +175,7 @@ function useElapsedTimer(activeTimer: TimeEntry | null): number {
 export default function JobCardDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { tradeFamily } = useTenant()
+  const { tradeFamily, settings } = useTenant()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
   const [jobCard, setJobCard] = useState<JobCardDetailData | null>(null)
@@ -153,6 +190,20 @@ export default function JobCardDetail() {
 
   /* Convert modal */
   const [convertModalOpen, setConvertModalOpen] = useState(false)
+
+  /* Attachment state */
+  const [attachments, setAttachments] = useState<AttachmentWithMeta[]>([])
+  const [attachmentError, setAttachmentError] = useState('')
+
+  /* Lightbox state */
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
+  const [lightboxAlt, setLightboxAlt] = useState('')
+
+  const closeLightbox = useCallback(() => {
+    if (lightboxUrl) URL.revokeObjectURL(lightboxUrl)
+    setLightboxUrl(null)
+    setLightboxAlt('')
+  }, [lightboxUrl])
 
   /* Timer elapsed display */
   const timerElapsed = useElapsedTimer(jobCard?.active_timer ?? null)
@@ -184,6 +235,9 @@ export default function JobCardDetail() {
         assigned_to_name: (data.assigned_to_name ?? null) as string | null,
         is_timer_active: (data.is_timer_active ?? false) as boolean,
         vehicle_rego: (data.vehicle_rego ?? null) as string | null,
+        service_type_id: (data.service_type_id ?? null) as string | null,
+        service_type_name: (data.service_type_name ?? null) as string | null,
+        service_type_values: (data.service_type_values ?? null) as ServiceTypeFieldValue[] | null,
       } as JobCardDetailData)
     } catch {
       setError('Failed to load job card. Please try again.')
@@ -193,6 +247,81 @@ export default function JobCardDetail() {
   }, [id])
 
   useEffect(() => { fetchJobCard() }, [fetchJobCard])
+
+  /* ---- Fetch attachments ---- */
+  useEffect(() => {
+    if (!id) return
+    const controller = new AbortController()
+    const fetchAttachments = async () => {
+      try {
+        const res = await apiClient.get<{ attachments: AttachmentWithMeta[]; total: number }>(
+          `/job-cards/${id}/attachments`,
+          { signal: controller.signal },
+        )
+        setAttachments(res.data?.attachments ?? [])
+      } catch {
+        if (!controller.signal.aborted) {
+          setAttachments([])
+        }
+      }
+    }
+    fetchAttachments()
+    return () => controller.abort()
+  }, [id])
+
+  /* ---- Attachment handlers ---- */
+  const handleUploadComplete = useCallback((attachment: Attachment) => {
+    setAttachments((prev) => [...prev, attachment as AttachmentWithMeta])
+    setAttachmentError('')
+  }, [])
+
+  const handleUploadError = useCallback((error: string) => {
+    setAttachmentError(error)
+  }, [])
+
+  const handleDeleteAttachment = useCallback(
+    async (attachmentId: string) => {
+      if (!id) return
+      try {
+        await apiClient.delete(`/job-cards/${id}/attachments/${attachmentId}`)
+        setAttachments((prev) => prev.filter((a) => a.id !== attachmentId))
+      } catch {
+        setAttachmentError('Failed to delete attachment. Please try again.')
+      }
+    },
+    [id],
+  )
+
+  const handleAttachmentClick = useCallback(async (attachment: AttachmentWithMeta) => {
+    if (attachment.mime_type?.startsWith('image/')) {
+      // Fetch image via apiClient (with auth) and create blob URL for lightbox
+      try {
+        const res = await apiClient.get(
+          `/job-cards/${attachment.job_card_id}/attachments/${attachment.id}`,
+          { responseType: 'blob' },
+        )
+        const url = URL.createObjectURL(res.data as Blob)
+        setLightboxUrl(url)
+        setLightboxAlt(attachment.file_name ?? 'Image attachment')
+      } catch {
+        // Fallback
+        setLightboxUrl(null)
+      }
+    } else {
+      // PDFs and other files: fetch as blob and open in new tab
+      try {
+        const res = await apiClient.get(
+          `/job-cards/${attachment.job_card_id}/attachments/${attachment.id}`,
+          { responseType: 'blob' },
+        )
+        const url = URL.createObjectURL(res.data as Blob)
+        window.open(url, '_blank', 'noopener,noreferrer')
+        setTimeout(() => URL.revokeObjectURL(url), 10_000)
+      } catch {
+        // Silent fail
+      }
+    }
+  }, [])
 
   /* ---- Status transition ---- */
   const handleStatusTransition = async (newStatus: JobCardStatus) => {
@@ -289,6 +418,8 @@ export default function JobCardDetail() {
   const canConvert = jobCard.status === 'completed'
   const isTimerActive = jobCard.is_timer_active || (!!jobCard.active_timer && !jobCard.active_timer.stopped_at)
   const canTimer = jobCard.status === 'open' || jobCard.status === 'in_progress'
+  /** Job card is locked from modifications when completed or invoiced. */
+  const isLocked = jobCard.status === 'completed' || jobCard.status === 'invoiced'
   const totalTimeDisplay = (jobCard.total_time_seconds ?? 0) + (isTimerActive ? timerElapsed : 0)
   const items = jobCard.items ?? []
   const timeEntries = jobCard.time_entries ?? []
@@ -343,7 +474,11 @@ export default function JobCardDetail() {
                 {jobCard.customer.first_name} {jobCard.customer.last_name}
               </p>
               {jobCard.customer.email && <p className="text-sm text-gray-600">{jobCard.customer.email}</p>}
-              {jobCard.customer.phone && <p className="text-sm text-gray-600">{jobCard.customer.phone}</p>}
+              {jobCard.customer.phone && (
+                <p className="text-sm text-gray-600">
+                  {formatPhoneWithDialCode(jobCard.customer.phone, settings?.addressCountry ?? null)}
+                </p>
+              )}
               {jobCard.customer.address && <p className="text-sm text-gray-600 mt-1">{jobCard.customer.address}</p>}
             </>
           ) : (
@@ -362,6 +497,32 @@ export default function JobCardDetail() {
         </section>
         )}
       </div>
+
+      {/* Service Type (shown when present, regardless of trade family — historical data) */}
+      {jobCard.service_type_name && (
+        <section className="mb-6">
+          <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Service Type</h2>
+          <div className="rounded-lg border border-gray-200 p-4">
+            <p className="font-medium text-gray-900">{jobCard.service_type_name}</p>
+            {(jobCard.service_type_values ?? []).length > 0 && (
+              <dl className="mt-3 space-y-2">
+                {(jobCard.service_type_values ?? []).map((fv) => (
+                  <div key={fv.field_id} className="flex flex-col sm:flex-row sm:gap-2">
+                    <dt className="text-sm font-medium text-gray-500 sm:w-40 shrink-0">
+                      {fv.label ?? 'Field'}
+                    </dt>
+                    <dd className="text-sm text-gray-900">
+                      {fv.field_type === 'multi_select' && fv.value_array
+                        ? (fv.value_array ?? []).join(', ') || '—'
+                        : fv.value_text ?? '—'}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* Assigned To */}
       <section className="mb-6">
@@ -501,6 +662,37 @@ export default function JobCardDetail() {
         </section>
       )}
 
+      {/* Attachments */}
+      <section className="mb-6" aria-labelledby="section-attachments">
+        <h2 id="section-attachments" className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">Attachments</h2>
+
+        {/* Upload new attachments — hidden when job card is locked */}
+        {!isLocked && (
+          <div className="mb-3">
+            <AttachmentUploader
+              jobCardId={jobCard.id}
+              onUploadComplete={handleUploadComplete}
+              onError={handleUploadError}
+            />
+          </div>
+        )}
+
+        {attachmentError && (
+          <p className="mb-3 text-sm text-red-600" role="alert">{attachmentError}</p>
+        )}
+
+        {/* Attachment list — read-only when locked (no delete buttons) */}
+        <AttachmentList
+          attachments={attachments}
+          onDelete={isLocked ? undefined : handleDeleteAttachment}
+          onImageClick={handleAttachmentClick}
+          readOnly={isLocked}
+        />
+        {attachments.length === 0 && (
+          <p className="text-sm text-gray-500">No attachments.</p>
+        )}
+      </section>
+
       {/* Meta */}
       <section className="mb-6">
         <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Details</h2>
@@ -529,6 +721,34 @@ export default function JobCardDetail() {
           </Button>
         </div>
       </Modal>
+
+      {/* Image Lightbox Modal */}
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          role="dialog"
+          aria-label="Image preview"
+          onClick={closeLightbox}
+          onKeyDown={(e) => { if (e.key === 'Escape') closeLightbox() }}
+        >
+          <button
+            type="button"
+            className="absolute top-4 right-4 rounded-full bg-black/50 p-2 text-white hover:bg-black/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white transition-colors z-10"
+            onClick={(e) => { e.stopPropagation(); closeLightbox() }}
+            aria-label="Close image preview"
+          >
+            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+          <img
+            src={lightboxUrl}
+            alt={lightboxAlt}
+            className="max-h-[85vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
     </div>
   )
 }

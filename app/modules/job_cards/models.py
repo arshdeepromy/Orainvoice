@@ -78,6 +78,9 @@ class JobCard(Base):
     branch_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("branches.id"), nullable=True
     )
+    service_type_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("service_types.id"), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -101,6 +104,7 @@ class JobCard(Base):
         cascade="all, delete-orphan",
         order_by="JobCardItem.sort_order",
     )
+    service_type = relationship("ServiceType")
 
 
 # ---------------------------------------------------------------------------

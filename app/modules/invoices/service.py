@@ -9,6 +9,7 @@ import logging
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Any
 
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -376,6 +377,40 @@ async def _maybe_create_stripe_payment_intent(
         )
 
 
+async def _resolve_vehicle_type(
+    db: AsyncSession, vehicle_id: uuid.UUID, org_id: uuid.UUID
+) -> tuple[str, Any] | None:
+    """Determine whether *vehicle_id* refers to a global or org-scoped vehicle.
+
+    Returns ``("global", vehicle_record)`` when found in ``global_vehicles``,
+    ``("org", vehicle_record)`` when found in ``org_vehicles`` (scoped to
+    *org_id*), or ``None`` when the ID does not exist in either table.
+    """
+    from app.modules.admin.models import GlobalVehicle
+    from app.modules.vehicles.models import OrgVehicle
+
+    # Check global_vehicles first
+    result = await db.execute(
+        select(GlobalVehicle).where(GlobalVehicle.id == vehicle_id)
+    )
+    gv = result.scalar_one_or_none()
+    if gv is not None:
+        return ("global", gv)
+
+    # Fall back to org_vehicles (scoped by org_id for multi-tenant safety)
+    result = await db.execute(
+        select(OrgVehicle).where(
+            OrgVehicle.id == vehicle_id,
+            OrgVehicle.org_id == org_id,
+        )
+    )
+    ov = result.scalar_one_or_none()
+    if ov is not None:
+        return ("org", ov)
+
+    return None
+
+
 async def create_invoice(
     db: AsyncSession,
     *,
@@ -676,26 +711,65 @@ async def create_invoice(
         ip_address=ip_address,
     )
 
-    # Auto-link customer to vehicle if global_vehicle_id provided and not already linked
+    # Resolve vehicle type (global vs org) before auto-link logic
+    vehicle_type: str | None = None
+    vehicle_record = None
     if global_vehicle_id:
-        existing_link = await db.execute(
-            select(CustomerVehicle).where(
-                CustomerVehicle.org_id == org_id,
-                CustomerVehicle.customer_id == customer_id,
-                CustomerVehicle.global_vehicle_id == global_vehicle_id,
+        resolution = await _resolve_vehicle_type(db, global_vehicle_id, org_id)
+        if resolution is not None:
+            vehicle_type, vehicle_record = resolution
+
+    # Auto-link customer to vehicle if global_vehicle_id provided and not already linked
+    if global_vehicle_id and vehicle_type is not None:
+        # Duplicate-link detection: query correct FK column based on vehicle type
+        if vehicle_type == "org":
+            existing_link = await db.execute(
+                select(CustomerVehicle).where(
+                    CustomerVehicle.org_id == org_id,
+                    CustomerVehicle.customer_id == customer_id,
+                    CustomerVehicle.org_vehicle_id == global_vehicle_id,
+                )
             )
-        )
+        else:
+            existing_link = await db.execute(
+                select(CustomerVehicle).where(
+                    CustomerVehicle.org_id == org_id,
+                    CustomerVehicle.customer_id == customer_id,
+                    CustomerVehicle.global_vehicle_id == global_vehicle_id,
+                )
+            )
         if existing_link.scalar_one_or_none() is None:
-            # Create the link
-            cv = CustomerVehicle(
-                org_id=org_id,
-                customer_id=customer_id,
-                global_vehicle_id=global_vehicle_id,
-            )
+            # Create the link using correct FK column based on vehicle type
+            if vehicle_type == "org":
+                cv = CustomerVehicle(
+                    org_id=org_id,
+                    customer_id=customer_id,
+                    org_vehicle_id=global_vehicle_id,
+                )
+            else:
+                cv = CustomerVehicle(
+                    org_id=org_id,
+                    customer_id=customer_id,
+                    global_vehicle_id=global_vehicle_id,
+                )
             db.add(cv)
             await db.flush()
             
-            # Audit log for the link
+            # Audit log for the link — use correct FK key in after_value
+            if vehicle_type == "org":
+                link_after_value = {
+                    "customer_id": str(customer_id),
+                    "org_vehicle_id": str(global_vehicle_id),
+                    "linked_via": "invoice_creation",
+                    "invoice_id": str(invoice.id),
+                }
+            else:
+                link_after_value = {
+                    "customer_id": str(customer_id),
+                    "global_vehicle_id": str(global_vehicle_id),
+                    "linked_via": "invoice_creation",
+                    "invoice_id": str(invoice.id),
+                }
             await write_audit_log(
                 session=db,
                 org_id=org_id,
@@ -704,49 +778,63 @@ async def create_invoice(
                 entity_type="customer_vehicle",
                 entity_id=cv.id,
                 before_value=None,
-                after_value={
-                    "customer_id": str(customer_id),
-                    "global_vehicle_id": str(global_vehicle_id),
-                    "linked_via": "invoice_creation",
-                    "invoice_id": str(invoice.id),
-                },
+                after_value=link_after_value,
                 ip_address=ip_address,
             )
 
     # Record odometer reading if provided and vehicle is linked
     if vehicle_odometer and vehicle_odometer > 0 and global_vehicle_id:
-        from app.modules.vehicles.service import record_odometer_reading
-        await record_odometer_reading(
-            db,
-            global_vehicle_id=global_vehicle_id,
-            reading_km=vehicle_odometer,
-            source="invoice",
-            recorded_by=user_id,
-            invoice_id=invoice.id,
-            org_id=org_id,
-            notes=f"Invoice {invoice_number or 'draft'}",
-        )
+        if vehicle_type == "org":
+            # Org vehicles: update odometer_last_recorded directly
+            # (record_odometer_reading only supports global vehicles via odometer_readings FK)
+            vehicle_record.odometer_last_recorded = vehicle_odometer
+            await db.flush()
+        else:
+            # Global vehicles: use existing record_odometer_reading call
+            from app.modules.vehicles.service import record_odometer_reading
+            await record_odometer_reading(
+                db,
+                global_vehicle_id=global_vehicle_id,
+                reading_km=vehicle_odometer,
+                source="invoice",
+                recorded_by=user_id,
+                invoice_id=invoice.id,
+                org_id=org_id,
+                notes=f"Invoice {invoice_number or 'draft'}",
+            )
 
     # Update service due date on the vehicle if provided
     if vehicle_service_due_date and global_vehicle_id:
-        from app.modules.admin.models import GlobalVehicle
-        gv_result = await db.execute(
-            select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
-        )
-        gv = gv_result.scalar_one_or_none()
-        if gv:
-            gv.service_due_date = vehicle_service_due_date
-
-    # Update WOF expiry on the vehicle if provided
-    if vehicle_wof_expiry_date and global_vehicle_id:
-        from app.modules.admin.models import GlobalVehicle
-        if not vehicle_service_due_date:
+        if vehicle_type == "org":
+            # Org vehicles: update directly on the already-resolved record
+            vehicle_record.service_due_date = vehicle_service_due_date
+            await db.flush()
+        else:
+            # Global vehicles: existing query and update
+            from app.modules.admin.models import GlobalVehicle
             gv_result = await db.execute(
                 select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
             )
             gv = gv_result.scalar_one_or_none()
-        if gv:
-            gv.wof_expiry = vehicle_wof_expiry_date
+            if gv:
+                gv.service_due_date = vehicle_service_due_date
+
+    # Update WOF expiry on the vehicle if provided
+    if vehicle_wof_expiry_date and global_vehicle_id:
+        if vehicle_type == "org":
+            # Org vehicles: update directly on the already-resolved record
+            vehicle_record.wof_expiry = vehicle_wof_expiry_date
+            await db.flush()
+        else:
+            # Global vehicles: existing query and update
+            from app.modules.admin.models import GlobalVehicle
+            if not vehicle_service_due_date:
+                gv_result = await db.execute(
+                    select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
+                )
+                gv = gv_result.scalar_one_or_none()
+            if gv:
+                gv.wof_expiry = vehicle_wof_expiry_date
 
     # Auto-generate Stripe PaymentIntent when issuing with stripe gateway
     if status == "issued":
@@ -799,6 +887,7 @@ def _invoice_to_dict(invoice: Invoice, line_items: list[LineItem]) -> dict:
         "fluid_usage": (invoice.invoice_data_json or {}).get("fluid_usage", []),
         "payment_page_url": invoice.payment_page_url,
         "payment_gateway": (invoice.invoice_data_json or {}).get("payment_gateway"),
+        "job_card_appendix_html": invoice.job_card_appendix_html,
     }
 
 
@@ -1304,6 +1393,7 @@ async def get_invoice(
             }
 
     # Include vehicle details from global vehicle table (rego, make, model, year, odometer, WOF expiry)
+    # Falls back to org_vehicles if not found in global_vehicles
     if invoice.vehicle_rego:
         from app.modules.admin.models import GlobalVehicle
         gv_result = await db.execute(
@@ -1322,6 +1412,37 @@ async def get_invoice(
                 "odometer": getattr(gv, "odometer_last_recorded", None),
                 "service_due_date": gv.service_due_date.isoformat() if getattr(gv, "service_due_date", None) else None,
             }
+        else:
+            # Fallback: check org_vehicles for org-scoped vehicles
+            from app.modules.vehicles.models import OrgVehicle
+            ov_result = await db.execute(
+                select(OrgVehicle).where(
+                    OrgVehicle.org_id == invoice.org_id,
+                    func.upper(OrgVehicle.rego) == invoice.vehicle_rego.upper(),
+                )
+            )
+            ov = ov_result.scalar_one_or_none()
+            if ov:
+                result["vehicle"] = {
+                    "rego": ov.rego,
+                    "make": ov.make,
+                    "model": ov.model,
+                    "year": ov.year,
+                    "wof_expiry": ov.wof_expiry.isoformat() if getattr(ov, "wof_expiry", None) else None,
+                    "odometer": getattr(ov, "odometer_last_recorded", None),
+                    "service_due_date": ov.service_due_date.isoformat() if getattr(ov, "service_due_date", None) else None,
+                }
+            elif invoice.vehicle_make or invoice.vehicle_model or invoice.vehicle_year:
+                # Last resort: use the flat fields stored on the invoice itself
+                result["vehicle"] = {
+                    "rego": invoice.vehicle_rego,
+                    "make": invoice.vehicle_make,
+                    "model": invoice.vehicle_model,
+                    "year": invoice.vehicle_year,
+                    "wof_expiry": None,
+                    "odometer": invoice.vehicle_odometer,
+                    "service_due_date": None,
+                }
 
     # Enrich additional vehicles from invoice_data_json with GlobalVehicle data
     additional_vehicles_raw = (invoice.invoice_data_json or {}).get("additional_vehicles", [])
@@ -1974,29 +2095,49 @@ async def update_invoice(
 
     await db.flush()
 
-    # Update service due date on the vehicle if provided
+    # Resolve vehicle type before metadata updates (Task 5.1)
     vehicle_service_due_date = updates.get("vehicle_service_due_date")
-    global_vehicle_id = updates.get("global_vehicle_id")
-    if vehicle_service_due_date and global_vehicle_id:
-        from app.modules.admin.models import GlobalVehicle
-        gv_result = await db.execute(
-            select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
-        )
-        gv = gv_result.scalar_one_or_none()
-        if gv:
-            gv.service_due_date = vehicle_service_due_date
-
-    # Update WOF expiry on the vehicle if provided
     vehicle_wof_expiry_date = updates.get("vehicle_wof_expiry_date")
-    if vehicle_wof_expiry_date and global_vehicle_id:
-        from app.modules.admin.models import GlobalVehicle
-        if not vehicle_service_due_date:
+    global_vehicle_id = updates.get("global_vehicle_id")
+    vehicle_type = None
+    vehicle_record = None
+    if global_vehicle_id and (vehicle_service_due_date or vehicle_wof_expiry_date):
+        resolution = await _resolve_vehicle_type(db, global_vehicle_id, org_id)
+        if resolution is not None:
+            vehicle_type, vehicle_record = resolution
+
+    # Update service due date on the vehicle if provided (Task 5.2)
+    if vehicle_service_due_date and global_vehicle_id and vehicle_type is not None:
+        if vehicle_type == "org":
+            # Org vehicles: update directly on the already-resolved record
+            vehicle_record.service_due_date = vehicle_service_due_date
+            await db.flush()
+        else:
+            # Global vehicles: existing query and update
+            from app.modules.admin.models import GlobalVehicle
             gv_result = await db.execute(
                 select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
             )
             gv = gv_result.scalar_one_or_none()
-        if gv:
-            gv.wof_expiry = vehicle_wof_expiry_date
+            if gv:
+                gv.service_due_date = vehicle_service_due_date
+
+    # Update WOF expiry on the vehicle if provided (Task 5.3)
+    if vehicle_wof_expiry_date and global_vehicle_id and vehicle_type is not None:
+        if vehicle_type == "org":
+            # Org vehicles: update directly on the already-resolved record
+            vehicle_record.wof_expiry = vehicle_wof_expiry_date
+            await db.flush()
+        else:
+            # Global vehicles: existing query and update
+            from app.modules.admin.models import GlobalVehicle
+            if not vehicle_service_due_date:
+                gv_result = await db.execute(
+                    select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
+                )
+                gv = gv_result.scalar_one_or_none()
+            if gv:
+                gv.wof_expiry = vehicle_wof_expiry_date
 
     # Recalculate totals if discount, line items, or financial fields changed
     needs_recalc = (
@@ -3453,6 +3594,7 @@ async def generate_invoice_pdf(
         payment_terms=payment_terms,
         terms_and_conditions=terms_and_conditions,
         colours=colour_context,
+        job_card_appendix_html=invoice_dict.get("job_card_appendix_html"),
         **i18n_ctx,
     )
 

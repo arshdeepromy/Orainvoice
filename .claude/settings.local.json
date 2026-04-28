@@ -24,7 +24,21 @@
       "Bash(docker ps --format \"table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}\")",
       "Bash(docker-compose ps)",
       "Bash(npx tsc *)",
-      "Bash(./node_modules/.bin/tsc --noEmit)"
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml exec app alembic current 2>&1')",
+      "Bash(ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml exec -T postgres psql -U postgres -d workshoppro -c \"\\\\d invoices\" 2>&1 | grep -i \"job_card\"')",
+      "Bash(ssh nerdy@192.168.1.90 'cd ~/invoicing && git log --oneline -5')",
+      "Bash(ssh nerdy@192.168.1.90 'grep -n \"job_card_appendix_html\" ~/invoicing/app/modules/invoices/models.py 2>/dev/null')",
+      "Bash(ssh nerdy@192.168.1.90 'grep -n \"job_card_appendix_html\" ~/invoicing/app/modules/invoices/service.py 2>/dev/null | head -10')",
+      "Bash(ssh nerdy@192.168.1.90 'docker exec invoicing-app-1 grep -n \"job_card_appendix_html\" /app/app/modules/invoices/models.py 2>/dev/null')",
+      "Bash(ssh nerdy@192.168.1.90 'docker exec invoicing-app-1 python -c \"from app.modules.invoices.models import Invoice; print\\(hasattr\\(Invoice, '\\\\''job_card_appendix_html'\\\\''\\)\\)\" 2>&1')",
+      "Bash(ssh nerdy@192.168.1.90 'docker exec invoicing-app-1 python -c \" *)",
+      "Bash(ssh nerdy@192.168.1.90 'docker compose -f docker-compose.yml -f docker-compose.pi.yml logs app --tail 50 2>/dev/null | grep -A5 \"job_card_appendix_html\\\\|AttributeError\" | head -40')",
+      "Bash(ssh nerdy@192.168.1.90 'docker compose -f docker-compose.yml -f docker-compose.pi.yml logs app --since 1h 2>&1 | grep -B2 \"job_card_appendix_html\\\\|AttributeError\" | head -40')",
+      "Bash(ssh nerdy@192.168.1.90 'docker compose -f docker-compose.yml -f docker-compose.pi.yml logs app --tail 200 2>&1 | grep -B5 -A20 \"AttributeError\\\\|job_card_appendix\" | head -80')",
+      "Bash(ssh nerdy@192.168.1.90 'docker compose -f docker-compose.yml -f docker-compose.pi.yml logs app 2>&1 | grep -c \".\" && docker compose -f docker-compose.yml -f docker-compose.pi.yml logs app 2>&1 | tail -100 | grep -B2 -A10 \"Error\\\\|error\\\\|Exception\\\\|exception\" | head -60')",
+      "Bash(ssh nerdy@192.168.1.90 'docker logs invoicing-app-1 2>&1 | tail -100')",
+      "Bash(ssh nerdy@192.168.1.90 'docker exec invoicing-postgres-1 psql -U postgres -d workshoppro -c \"SELECT id, message, module, function_name, created_at, traceback FROM error_logs WHERE id = '\\\\''c53a278d-956c-47e8-a42b-f6d7b0408491'\\\\'' LIMIT 1;\" 2>&1')"
     ],
     "deny": []
   }

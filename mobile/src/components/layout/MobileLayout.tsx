@@ -40,6 +40,7 @@ export function MobileLayout({ children }: { children: ReactNode }) {
 
       {/* Scrollable content area */}
       <main
+        id="main-scroll"
         className={`flex flex-1 flex-col overflow-y-auto ${
           showAppShell && !isKiosk ? 'pb-[calc(56px+env(safe-area-inset-bottom))]' : ''
         }`}

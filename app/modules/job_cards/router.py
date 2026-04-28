@@ -110,6 +110,8 @@ async def create_job_card_endpoint(
             notes=payload.notes,
             line_items_data=line_items_data,
             ip_address=ip_address,
+            service_type_id=payload.service_type_id,
+            service_type_values=payload.service_type_values,
         )
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -327,6 +329,10 @@ async def update_job_card_endpoint(
             }
             for li in payload.line_items
         ]
+    if payload.service_type_id is not None:
+        updates["service_type_id"] = payload.service_type_id
+    if payload.service_type_values is not None:
+        updates["service_type_values"] = payload.service_type_values
 
     try:
         result = await update_job_card(

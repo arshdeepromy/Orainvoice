@@ -236,20 +236,18 @@ async def get_todays_bookings(
     params: dict = {"org_id": str(org_id), "today": date.today()}
     sql = sa_text("""
         SELECT b.id AS booking_id, b.start_time AS scheduled_time,
-               COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS customer_name,
+               COALESCE(b.customer_name, 'Walk-in') AS customer_name,
                b.vehicle_rego
         FROM bookings b
-        LEFT JOIN customers c ON b.customer_id = c.id
         WHERE b.org_id = :org_id AND b.start_time::date = :today
         ORDER BY b.start_time ASC
     """)
     if branch_id is not None:
         sql = sa_text("""
             SELECT b.id AS booking_id, b.start_time AS scheduled_time,
-                   COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS customer_name,
+                   COALESCE(b.customer_name, 'Walk-in') AS customer_name,
                    b.vehicle_rego
             FROM bookings b
-            LEFT JOIN customers c ON b.customer_id = c.id
             WHERE b.org_id = :org_id AND b.start_time::date = :today AND b.branch_id = :branch_id
             ORDER BY b.start_time ASC
         """)

@@ -36,6 +36,9 @@ class PlatformBranding(Base):
     logo_url: Mapped[str | None] = mapped_column(
         String(500), nullable=True,
     )
+    dark_logo_url: Mapped[str | None] = mapped_column(
+        String(500), nullable=True,
+    )
     favicon_url: Mapped[str | None] = mapped_column(
         String(500), nullable=True,
     )

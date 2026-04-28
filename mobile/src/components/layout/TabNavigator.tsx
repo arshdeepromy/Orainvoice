@@ -41,9 +41,13 @@ export function TabNavigator() {
 
   const handleTabPress = useCallback(
     (tab: TabConfig) => {
+      if (tab.id === activeTabId) {
+        document.getElementById('main-scroll')?.scrollTo({ top: 0, behavior: 'smooth' })
+        return
+      }
       navigate(tab.path)
     },
-    [navigate],
+    [navigate, activeTabId],
   )
 
   return (

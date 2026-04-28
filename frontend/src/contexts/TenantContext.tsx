@@ -40,6 +40,8 @@ export interface TenantSettings {
   branding: OrgBranding
   gst: GstSettings
   invoice: InvoiceSettings
+  /** ISO country code (e.g. 'NZ', 'AU') or full name from org settings. */
+  addressCountry: string | null
 }
 
 interface TenantContextValue {
@@ -111,6 +113,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         trade_family: string | null
         trade_category: string | null
         sidebar_display_mode?: string
+        address_country?: string | null
       }>('/org/settings', { signal })
 
       const data = res.data
@@ -136,6 +139,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
           payment_terms_text: data.payment_terms_text,
           terms_and_conditions: data.terms_and_conditions,
         },
+        addressCountry: data.address_country ?? null,
       }
 
       setSettings(tenant)

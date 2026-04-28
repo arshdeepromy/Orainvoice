@@ -1,4 +1,5 @@
 import { render, screen, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -18,7 +19,7 @@ vi.mock('@/api/client', () => {
 import apiClient from '@/api/client'
 import ServiceCatalogue from '../pages/catalogue/ServiceCatalogue'
 import PartsCatalogue from '../pages/catalogue/PartsCatalogue'
-import LabourRates from '../pages/items/LabourRates
+import LabourRates from '../pages/items/LabourRates'
 import CataloguePage from '../pages/catalogue/CataloguePage'
 
 /* ------------------------------------------------------------------ */
@@ -292,35 +293,60 @@ describe('LabourRates', () => {
 /*  CataloguePage tests                                                */
 /* ------------------------------------------------------------------ */
 
-describe('CataloguePage', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+let mockTradeFamily: string | null = null
 
-  it('renders heading and tabs for services and parts', async () => {
+vi.mock('@/contexts/TenantContext', () => ({
+  useTenant: () => ({ tradeFamily: mockTradeFamily }),
+}))
+
+describe('CataloguePage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockTradeFamily = null // defaults to automotive via ?? fallback
+  })
+
+  it('renders heading and Parts/Fluids tabs for automotive orgs (no Services tab)', async () => {
     ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { services: [], total: 0 },
+      data: { parts: [], total: 0 },
     })
+    render(<MemoryRouter><CataloguePage /></MemoryRouter>)
+    expect(screen.getByRole('heading', { name: 'Catalogue' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Parts' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Fluids / Oils' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Services' })).not.toBeInTheDocument()
+  })
+
+  it('defaults to parts tab', async () => {
+    ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { parts: [], total: 0 },
+    })
+    render(<MemoryRouter><CataloguePage /></MemoryRouter>)
+    const partsTab = screen.getByRole('tab', { name: 'Parts' })
+    expect(partsTab).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('switches to fluids tab on click', async () => {
+    ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { parts: [], total: 0 },
+    })
+    render(<MemoryRouter><CataloguePage /></MemoryRouter>)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('tab', { name: 'Fluids / Oils' }))
+    expect(screen.getByRole('tab', { name: 'Fluids / Oils' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('shows empty state for plumbing-gas orgs (Req 5.2)', () => {
+    mockTradeFamily = 'plumbing-gas'
     render(<CataloguePage />)
     expect(screen.getByRole('heading', { name: 'Catalogue' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Services' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Parts' })).toBeInTheDocument()
+    expect(screen.getByText('No catalogue sections available for your trade type. Manage your items on the Items page.')).toBeInTheDocument()
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument()
   })
 
-  it('defaults to services tab', async () => {
-    ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { services: [], total: 0 },
-    })
+  it('shows empty state for unknown trade families', () => {
+    mockTradeFamily = 'construction'
     render(<CataloguePage />)
-    const servicesTab = screen.getByRole('tab', { name: 'Services' })
-    expect(servicesTab).toHaveAttribute('aria-selected', 'true')
-  })
-
-  it('switches to parts tab on click', async () => {
-    ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { services: [], total: 0, parts: [], labour_rates: [] },
-    })
-    render(<CataloguePage />)
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('tab', { name: 'Parts' }))
-    expect(screen.getByRole('tab', { name: 'Parts' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('No catalogue sections available for your trade type. Manage your items on the Items page.')).toBeInTheDocument()
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument()
   })
 })
