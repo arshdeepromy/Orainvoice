@@ -68,7 +68,7 @@ Port 2222
 AuthorizedKeysFile /ha_keys/authorized_keys
 PasswordAuthentication no
 PubkeyAuthentication yes
-PermitRootLogin no
+PermitRootLogin prohibit-password
 EOF
 /usr/sbin/sshd 2>/dev/null || echo "  WARNING: sshd failed to start (non-fatal)"
 
