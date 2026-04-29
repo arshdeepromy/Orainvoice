@@ -2405,6 +2405,16 @@ async def wizard_setup(
                     async with vs_session.begin():
                         await vs_svc.save_config(vs_session, vs_request)
 
+                # Start the periodic volume sync task immediately
+                if primary_vs_body.get("enabled"):
+                    try:
+                        async with async_session_factory() as start_session:
+                            async with start_session.begin():
+                                await vs_svc.start_periodic_sync(start_session)
+                        logger.info("Wizard: started periodic volume sync task")
+                    except Exception as sync_start_exc:
+                        logger.warning("Wizard: could not start periodic sync (non-fatal): %s", sync_start_exc)
+
                 steps.append(WizardSetupStepResult(
                     step=step_name,
                     status="completed",
