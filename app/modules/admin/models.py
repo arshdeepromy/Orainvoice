@@ -120,6 +120,7 @@ class Organisation(Base):
     trade_category_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
+    country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
     timezone: Mapped[str] = mapped_column(
         String(50), nullable=False, server_default="'UTC'"
     )
