@@ -89,6 +89,8 @@ interface LineItem {
   tax_rate: number
   amount: number
   gst_inclusive?: boolean
+  /** Original GST-inclusive unit price (before back-calculation to ex-GST rate). */
+  inclusive_price?: number
 }
 
 interface FormErrors {
@@ -454,6 +456,7 @@ function ItemTableRow({
       tax_rate: taxRate,
       tax_id: taxId,
       gst_inclusive: isGstInclusive,
+      inclusive_price: isGstInclusive ? catalogueItem.default_price : undefined,
     })
     setShowItemDropdown(false)
     setItemSearch('')
@@ -1009,7 +1012,20 @@ export default function InvoiceCreate() {
     ? (subTotal * discountValue / 100) 
     : discountValue
   const afterDiscount = subTotal - discountAmount
-  const taxAmount = lineItems.reduce((sum, item) => sum + (item.amount * item.tax_rate / 100), 0)
+  // For GST-inclusive items, derive GST from the inclusive price to avoid
+  // rounding errors. Ex: $150 incl → GST = $150 - ($150/1.15) = $19.57
+  // instead of $130.43 × 0.15 = $19.56 (loses 1 cent).
+  const taxAmount = lineItems.reduce((sum, item) => {
+    if (item.tax_rate <= 0) return sum
+    if (item.gst_inclusive && item.inclusive_price) {
+      // Reconstruct the inclusive total for the line (qty × inclusive unit price)
+      const inclTotal = Math.round(item.quantity * item.inclusive_price * 100) / 100
+      // GST = inclusive - ex-GST amount
+      const gst = Math.round((inclTotal - item.amount) * 100) / 100
+      return sum + gst
+    }
+    return sum + Math.round(item.amount * item.tax_rate) / 100
+  }, 0)
   const total = afterDiscount + taxAmount + shippingCharges + adjustment
 
   // Line item management
@@ -1069,6 +1085,7 @@ export default function InvoiceCreate() {
       tax_id: taxId,
       amount: rate,
       gst_inclusive: isGstInclusive,
+      inclusive_price: isGstInclusive ? sellPrice : undefined,
     }
     setLineItems(prev => {
       const emptyIdx = prev.findIndex(isEmptyLine)
@@ -1233,6 +1250,8 @@ export default function InvoiceCreate() {
       tax_id: item.tax_id,
       tax_rate: item.tax_rate,
       amount: item.amount,
+      gst_inclusive: item.gst_inclusive || false,
+      inclusive_price: item.inclusive_price || undefined,
     })),
   })
 

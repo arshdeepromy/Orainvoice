@@ -170,18 +170,52 @@ def _calculate_invoice_totals(
 
     # Calculate GST only on non-exempt items (proportional after discount)
     taxable_subtotal = Decimal("0")
+    # Track GST-inclusive items separately for correct rounding
+    inclusive_gst_total = Decimal("0")
+    non_inclusive_taxable = Decimal("0")
     for i, item in enumerate(line_items_data):
         if not item.get("is_gst_exempt", False):
-            taxable_subtotal += line_totals[i]
+            if item.get("gst_inclusive") and item.get("inclusive_price"):
+                # For GST-inclusive items, derive GST from the inclusive price
+                # to avoid rounding errors. GST = inclusive - ex-GST
+                incl_price = Decimal(str(item["inclusive_price"]))
+                qty = Decimal(str(item["quantity"]))
+                incl_total = (qty * incl_price).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+                ex_gst = line_totals[i]
+                inclusive_gst_total += incl_total - ex_gst
+                taxable_subtotal += line_totals[i]
+            else:
+                non_inclusive_taxable += line_totals[i]
+                taxable_subtotal += line_totals[i]
 
     if subtotal > 0 and taxable_subtotal > 0:
         # Proportion of discount applied to taxable items
         taxable_ratio = taxable_subtotal / subtotal
-        taxable_after_discount = taxable_subtotal - (discount_amount * taxable_ratio)
-        taxable_after_discount = max(taxable_after_discount, Decimal("0"))
-        gst_amount = (taxable_after_discount * gst_rate / Decimal("100")).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        )
+        discount_on_taxable = discount_amount * taxable_ratio
+
+        # GST on non-inclusive taxable items (standard calculation)
+        if non_inclusive_taxable > 0:
+            non_incl_ratio = non_inclusive_taxable / taxable_subtotal if taxable_subtotal > 0 else Decimal("0")
+            non_incl_after_discount = non_inclusive_taxable - (discount_on_taxable * non_incl_ratio)
+            non_incl_after_discount = max(non_incl_after_discount, Decimal("0"))
+            gst_amount += (non_incl_after_discount * gst_rate / Decimal("100")).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+
+        # GST on inclusive items (already calculated from inclusive price)
+        if inclusive_gst_total > 0:
+            if discount_amount > 0 and taxable_subtotal > 0:
+                incl_ratio = (taxable_subtotal - non_inclusive_taxable) / taxable_subtotal
+                discount_on_inclusive = discount_on_taxable * incl_ratio
+                # Scale down the inclusive GST proportionally
+                incl_subtotal = taxable_subtotal - non_inclusive_taxable
+                if incl_subtotal > 0:
+                    scale = max(Decimal("0"), (incl_subtotal - discount_on_inclusive) / incl_subtotal)
+                    gst_amount += (inclusive_gst_total * scale).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+                else:
+                    gst_amount += inclusive_gst_total.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+            else:
+                gst_amount += inclusive_gst_total.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     total = (discounted_subtotal + gst_amount).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
