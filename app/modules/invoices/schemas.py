@@ -50,6 +50,8 @@ class LineItemCreate(BaseModel):
     discount_type: str | None = Field(default=None, pattern=r"^(percentage|fixed)$")
     discount_value: Decimal | None = Field(default=None, ge=0)
     is_gst_exempt: bool = False
+    gst_inclusive: bool = False
+    inclusive_price: Decimal | None = Field(default=None, ge=0)
     warranty_note: str | None = None
     sort_order: int = 0
 

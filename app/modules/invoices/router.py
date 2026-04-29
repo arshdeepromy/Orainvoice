@@ -126,6 +126,8 @@ async def create_invoice_endpoint(
             "discount_type": li.discount_type,
             "discount_value": li.discount_value,
             "is_gst_exempt": li.is_gst_exempt,
+            "gst_inclusive": li.gst_inclusive,
+            "inclusive_price": li.inclusive_price,
             "warranty_note": li.warranty_note,
             "sort_order": li.sort_order,
         }
