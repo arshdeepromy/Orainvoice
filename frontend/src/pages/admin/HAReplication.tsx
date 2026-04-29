@@ -2282,7 +2282,7 @@ export function HAReplication() {
               {/* PRIMARY: Show Init when no publication, Stop when publication exists */}
               {config.role === 'primary' && !replication?.publication_name && (
                 <Button variant="primary" size="sm" onClick={() => openModal('init-replication')}>
-                  Initialize Replication
+                  Create Publication
                 </Button>
               )}
               {config.role === 'primary' && replication?.publication_name && (
@@ -2291,22 +2291,17 @@ export function HAReplication() {
                 </Button>
               )}
 
-              {/* STANDBY: Show Init when no subscription, Stop when subscription exists */}
-              {config.role === 'standby' && !replication?.subscription_name && (
-                <Button variant="primary" size="sm" onClick={() => openModal('init-replication')}>
-                  Initialize Replication
-                </Button>
-              )}
+              {/* STANDBY: Stop when subscription exists */}
               {config.role === 'standby' && replication?.subscription_name && (
                 <Button variant="secondary" size="sm" onClick={() => openModal('stop-replication')}>
                   Stop Replication
                 </Button>
               )}
 
-              {/* STANDBY: Re-sync (only when subscription exists) */}
-              {config.role === 'standby' && replication?.subscription_name && (
+              {/* STANDBY: Re-sync (always available — creates subscription if missing) */}
+              {config.role === 'standby' && (
                 <Button variant="secondary" size="sm" onClick={() => openModal('resync')}>
-                  Trigger Re-sync
+                  {replication?.subscription_name ? 'Trigger Re-sync' : 'Initialize Replication'}
                 </Button>
               )}
 
