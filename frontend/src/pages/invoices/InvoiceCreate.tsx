@@ -1834,7 +1834,7 @@ export default function InvoiceCreate() {
                 Upload Files
                 <input type="file" multiple onChange={handleFileChange} className="hidden" />
               </label>
-              <span className="text-sm text-gray-500">You can upload a maximum of 5 files, 5MB each</span>
+              <span className="text-sm text-gray-500">You can upload a maximum of 5 files, 20MB each</span>
             </div>
             {attachments.length > 0 && (
               <div className="mt-3 space-y-2">

@@ -35,7 +35,7 @@ The job card attachment system (`app/modules/job_cards/attachment_router.py`, `a
 ### Req 2: Backend — Upload endpoint
 
 - 2.1: `POST /api/v1/invoices/{invoice_id}/attachments` — upload a single file attachment
-- 2.2: Accept `UploadFile` (multipart/form-data), max 5 MB per file
+- 2.2: Accept `UploadFile` (multipart/form-data), max 20 MB per file (compressed on disk via existing upload system — images resized + optimized, PDFs zlib-compressed)
 - 2.3: Allowed MIME types: `image/jpeg`, `image/png`, `image/webp`, `image/gif`, `application/pdf`
 - 2.4: Store file using the existing encrypted upload system (compress + encrypt, same as `app/modules/uploads/router.py`)
 - 2.5: Create `invoice_attachments` row with metadata
@@ -118,7 +118,7 @@ The job card attachment system (`app/modules/job_cards/attachment_router.py`, `a
 
 ## Acceptance Criteria
 
-- [ ] User can upload up to 5 files (5MB each) when creating or editing an invoice
+- [ ] User can upload up to 5 files (20MB each) when creating or editing an invoice
 - [ ] Uploaded files appear in the invoice detail view with download/preview capability
 - [ ] Emailed invoices include the uploaded files as additional email attachments
 - [ ] Files are encrypted at rest and org-scoped
