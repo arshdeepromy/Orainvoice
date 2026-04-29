@@ -308,6 +308,9 @@ class ReplicationManager:
             )
 
         # --- Check if subscription already exists locally ---
+        # If it exists, verify it's actually functional (slot exists on primary).
+        # If the slot is missing (e.g., after a Reset HA on the primary), drop
+        # the broken subscription and recreate it.
         try:
             conn = await ReplicationManager._get_raw_conn()
             try:
@@ -319,15 +322,66 @@ class ReplicationManager:
                 await conn.close()
 
             if existing:
-                logger.info(
-                    "Subscription '%s' already exists — skipping creation",
-                    ReplicationManager.SUBSCRIPTION_NAME,
-                )
-                return {
-                    "status": "ok",
-                    "subscription": ReplicationManager.SUBSCRIPTION_NAME,
-                    "message": "Subscription already exists",
-                }
+                # Verify the subscription is functional by checking if the
+                # replication slot exists on the primary
+                slot_ok = False
+                try:
+                    import asyncpg as _asyncpg
+                    peer_conn = await _asyncpg.connect(primary_conn_str, timeout=5)
+                    try:
+                        slot = await peer_conn.fetchval(
+                            "SELECT slot_name FROM pg_replication_slots WHERE slot_name = $1",
+                            ReplicationManager.SUBSCRIPTION_NAME,
+                        )
+                        slot_ok = slot is not None
+                    finally:
+                        await peer_conn.close()
+                except Exception as slot_check_exc:
+                    logger.warning(
+                        "Could not verify slot on primary (will drop and recreate): %s",
+                        slot_check_exc,
+                    )
+
+                if slot_ok:
+                    logger.info(
+                        "Subscription '%s' exists and slot is valid on primary — skipping creation",
+                        ReplicationManager.SUBSCRIPTION_NAME,
+                    )
+                    return {
+                        "status": "ok",
+                        "subscription": ReplicationManager.SUBSCRIPTION_NAME,
+                        "message": "Subscription already exists",
+                    }
+                else:
+                    # Subscription exists but slot is missing — drop and recreate
+                    logger.warning(
+                        "Subscription '%s' exists but replication slot is missing on primary — "
+                        "dropping broken subscription and recreating",
+                        ReplicationManager.SUBSCRIPTION_NAME,
+                    )
+                    try:
+                        await ReplicationManager._exec_autocommit(
+                            db,
+                            f"ALTER SUBSCRIPTION {ReplicationManager.SUBSCRIPTION_NAME} DISABLE",
+                        )
+                        await ReplicationManager._exec_autocommit(
+                            db,
+                            f"ALTER SUBSCRIPTION {ReplicationManager.SUBSCRIPTION_NAME} SET (slot_name = NONE)",
+                        )
+                        await ReplicationManager._exec_autocommit(
+                            db,
+                            f"DROP SUBSCRIPTION {ReplicationManager.SUBSCRIPTION_NAME}",
+                        )
+                        logger.info("Dropped broken subscription '%s'", ReplicationManager.SUBSCRIPTION_NAME)
+                    except Exception as drop_exc:
+                        logger.error("Failed to drop broken subscription: %s", drop_exc)
+                        raise RuntimeError(
+                            f"Subscription exists but its replication slot is missing on the primary. "
+                            f"Attempted to drop and recreate but failed: {drop_exc}. "
+                            f"Try running 'Reset HA' on this node first."
+                        ) from drop_exc
+        except RuntimeError:
+            raise
         except Exception as exc:
             logger.warning("Could not check for existing subscription: %s", exc)
             # Continue — the CREATE will fail if it exists, which we handle below
