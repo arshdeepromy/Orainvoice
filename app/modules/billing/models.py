@@ -19,6 +19,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -145,6 +146,12 @@ class BillingReceipt(Base):
     __table_args__ = (
         Index("ix_billing_receipts_org_id", "org_id"),
         Index("ix_billing_receipts_billing_date", "billing_date"),
+        Index(
+            "uq_billing_receipts_stripe_pi",
+            "stripe_payment_intent_id",
+            unique=True,
+            postgresql_where=text("stripe_payment_intent_id IS NOT NULL"),
+        ),
     )
 
     # Relationships
