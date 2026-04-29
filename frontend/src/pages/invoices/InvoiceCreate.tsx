@@ -1348,8 +1348,8 @@ export default function InvoiceCreate() {
         })
       }
 
-      // 4. Send email (fire-and-forget — don't block UI)
-      apiClient.post(`/invoices/${invoiceId}/email`).catch(() => {})
+      // 4. The cash payment endpoint auto-sends the updated invoice email,
+      //    so no separate email call is needed here.
 
       // Fetch final state to pass to detail page
       const finalRes = await apiClient.get(`/invoices/${invoiceId}`)
