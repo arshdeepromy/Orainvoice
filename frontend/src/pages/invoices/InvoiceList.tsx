@@ -386,6 +386,13 @@ export default function InvoiceList() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
 
+  // Sync selectedId when route param changes (e.g. navigating from /invoices/new to /invoices/:id)
+  useEffect(() => {
+    if (routeId && routeId !== selectedId) {
+      setSelectedId(routeId)
+    }
+  }, [routeId])
+
   /* --- Action states --- */
   const [actionLoading, setActionLoading] = useState('')
   const [actionMessage, setActionMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null)
