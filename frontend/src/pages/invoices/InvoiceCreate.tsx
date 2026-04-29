@@ -727,7 +727,7 @@ export default function InvoiceCreate() {
   const { id: editId } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const isEditMode = Boolean(editId)
-  const { settings, tradeFamily } = useTenant()
+  const { settings, tradeFamily, refetch: refetchTenant } = useTenant()
   const { selectedBranchId } = useBranch()
   const { user } = useAuth()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
@@ -1264,6 +1264,8 @@ export default function InvoiceCreate() {
           terms_and_conditions: termsAndConditions.trim(),
         })
         setSaveTermsAsDefault(false)
+        // Refresh tenant context so next invoice picks up the new default
+        refetchTenant()
       } catch {
         // Non-blocking
       }
@@ -1350,6 +1352,8 @@ export default function InvoiceCreate() {
 
       // 4. The cash payment endpoint auto-sends the updated invoice email,
       //    so no separate email call is needed here.
+
+      await maybeSaveTermsAsDefault()
 
       // Fetch final state to pass to detail page
       const finalRes = await apiClient.get(`/invoices/${invoiceId}`)
