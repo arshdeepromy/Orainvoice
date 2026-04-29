@@ -2264,31 +2264,64 @@ export function HAReplication() {
             )}
           </section>
 
-          {/* Actions */}
+          {/* Actions — context-aware based on role and replication state */}
           <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
             <h2 className="text-lg font-medium text-gray-900">Actions</h2>
+
+            {/* Replication status context line */}
+            <p className="text-sm text-gray-500">
+              {replication?.publication_name && config.role === 'primary'
+                ? `Publication "${replication.publication_name}" is active with ${replication.tables_published ?? 0} tables.`
+                : replication?.subscription_name && config.role === 'standby'
+                  ? `Subscription "${replication.subscription_name}" is ${replication.subscription_status ?? 'unknown'}.`
+                  : 'No replication objects configured on this node.'}
+            </p>
+
             <div className="flex flex-wrap gap-3">
+              {/* PRIMARY: Show Init when no publication, Stop when publication exists */}
+              {config.role === 'primary' && !replication?.publication_name && (
+                <Button variant="primary" size="sm" onClick={() => openModal('init-replication')}>
+                  Initialize Replication
+                </Button>
+              )}
+              {config.role === 'primary' && replication?.publication_name && (
+                <Button variant="secondary" size="sm" onClick={() => openModal('stop-replication')}>
+                  Stop Replication
+                </Button>
+              )}
+
+              {/* STANDBY: Show Init when no subscription, Stop when subscription exists */}
+              {config.role === 'standby' && !replication?.subscription_name && (
+                <Button variant="primary" size="sm" onClick={() => openModal('init-replication')}>
+                  Initialize Replication
+                </Button>
+              )}
+              {config.role === 'standby' && replication?.subscription_name && (
+                <Button variant="secondary" size="sm" onClick={() => openModal('stop-replication')}>
+                  Stop Replication
+                </Button>
+              )}
+
+              {/* STANDBY: Re-sync (only when subscription exists) */}
+              {config.role === 'standby' && replication?.subscription_name && (
+                <Button variant="secondary" size="sm" onClick={() => openModal('resync')}>
+                  Trigger Re-sync
+                </Button>
+              )}
+
+              {/* Role change */}
               {config.role === 'standby' && (
                 <Button variant="primary" size="sm" onClick={() => openModal('promote')}>
                   Promote to Primary
                 </Button>
               )}
               {config.role === 'primary' && (
-                <Button variant="danger" size="sm" onClick={() => openModal('demote')}>
+                <Button variant="secondary" size="sm" onClick={() => openModal('demote')}>
                   Demote to Standby
                 </Button>
               )}
-              <Button variant="secondary" size="sm" onClick={() => openModal('init-replication')}>
-                Initialize Replication
-              </Button>
-              <Button variant="danger" size="sm" onClick={() => openModal('stop-replication')}>
-                Stop Replication
-              </Button>
-              {config.role === 'standby' && (
-                <Button variant="secondary" size="sm" onClick={() => openModal('resync')}>
-                  Trigger Re-sync
-                </Button>
-              )}
+
+              {/* Maintenance */}
               {!config.maintenance_mode ? (
                 <Button variant="secondary" size="sm" onClick={() => openModal('maintenance-enter')}>
                   Enter Maintenance Mode
