@@ -154,8 +154,23 @@ export function SetupWizard() {
     }
 
     try {
+      // For branding step: upload logo file to server first (blob URLs don't persist)
+      let stepData = skip ? {} : buildStepPayload(currentStep, wizardData)
+      if (currentStep === 1 && !skip && wizardData.logoFile) {
+        const formData = new FormData()
+        formData.append('file', wizardData.logoFile)
+        const uploadRes = await apiClient.post('/api/v2/setup-wizard/upload-logo', formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+        const serverUrl = uploadRes.data?.url ?? ''
+        if (serverUrl) {
+          stepData = { ...stepData, logo_url: serverUrl }
+          updateWizardData({ logoUrl: serverUrl })
+        }
+      }
+
       await apiClient.post(`/api/v2/setup-wizard/step/${apiStepNumber(currentStep)}`, {
-        data: skip ? {} : buildStepPayload(currentStep, wizardData),
+        data: stepData,
         skip,
       })
 

@@ -28,14 +28,19 @@ def filter_tables_for_truncation(all_table_names: list[str]) -> list[str]:
     Excludes ``ha_config`` — it stores per-node HA state and must survive
     truncation so the node can still identify itself after a data wipe.
 
+    Excludes ``alembic_version`` — each node manages its own migration
+    state independently. Truncating it would cause the node to re-run
+    all migrations on next startup.
+
     Note: ``dead_letter_queue`` is intentionally *not* excluded here.
     It is excluded from the *publication* (so it is not replicated) but
     it should still be truncated during standby init / re-sync so the
-    standby starts clean.  Only ``ha_config`` needs to survive truncation.
+    standby starts clean.  Only ``ha_config`` and ``alembic_version``
+    need to survive truncation.
 
     This is a pure function extracted for testability.
     """
-    return [t for t in all_table_names if t != "ha_config"]
+    return [t for t in all_table_names if t not in ("ha_config", "alembic_version")]
 
 
 class ReplicationManager:
@@ -169,33 +174,40 @@ class ReplicationManager:
                     # Check if excluded tables leaked into the publication (legacy fix)
                     excluded_count = await conn.fetchval(
                         "SELECT COUNT(*) FROM pg_publication_tables "
-                        "WHERE pubname = $1 AND tablename IN ('ha_config', 'dead_letter_queue', 'ha_event_log')",
+                        "WHERE pubname = $1 AND tablename IN ('ha_config', 'dead_letter_queue', 'ha_event_log', 'alembic_version')",
                         ReplicationManager.PUBLICATION_NAME,
                     )
                     if not excluded_count:
-                        logger.info("Publication '%s' already exists (ha_config, dead_letter_queue, ha_event_log excluded)", ReplicationManager.PUBLICATION_NAME)
+                        logger.info("Publication '%s' already exists (ha_config, dead_letter_queue, ha_event_log, alembic_version excluded)", ReplicationManager.PUBLICATION_NAME)
                         return {
                             "status": "ok",
                             "publication": ReplicationManager.PUBLICATION_NAME,
                             "message": "Publication already exists",
                         }
                     # Excluded table(s) found in the publication — need to recreate
-                    logger.info("Recreating publication to exclude ha_config, dead_letter_queue, and ha_event_log")
+                    logger.info("Recreating publication to exclude ha_config, dead_letter_queue, ha_event_log, and alembic_version")
                     await conn.execute(
                         f"DROP PUBLICATION {ReplicationManager.PUBLICATION_NAME}",
                     )
 
-                # Get all public tables except ha_config, dead_letter_queue, and ha_event_log.
+                # Get all public tables except ha_config, dead_letter_queue, ha_event_log,
+                # and alembic_version.
                 # dead_letter_queue is excluded so that after failover the new
                 # primary starts with an empty dead-letter table, preventing
                 # re-processing of partially-executed jobs from the old primary.
                 # ha_event_log is excluded because it stores per-node event
                 # history that should not be replicated between nodes.
+                # alembic_version is excluded because DDL (schema changes) are
+                # NOT replicated by logical replication — each node must run
+                # migrations independently. If alembic_version were replicated,
+                # the standby would think it's at the latest migration without
+                # the actual schema changes being applied, breaking replication
+                # when new columns are referenced.
                 tbl_list = await conn.fetchval(
                     "SELECT string_agg(tablename, ', ') "
                     "FROM pg_tables "
                     "WHERE schemaname = 'public' "
-                    "AND tablename NOT IN ('ha_config', 'dead_letter_queue', 'ha_event_log')",
+                    "AND tablename NOT IN ('ha_config', 'dead_letter_queue', 'ha_event_log', 'alembic_version')",
                 )
                 if not tbl_list:
                     raise RuntimeError("No tables found in public schema")
@@ -206,7 +218,7 @@ class ReplicationManager:
             finally:
                 await conn.close()
 
-            logger.info("Publication '%s' created (ha_config, dead_letter_queue, ha_event_log excluded)", ReplicationManager.PUBLICATION_NAME)
+            logger.info("Publication '%s' created (ha_config, dead_letter_queue, ha_event_log, alembic_version excluded)", ReplicationManager.PUBLICATION_NAME)
             return {"status": "ok", "publication": ReplicationManager.PUBLICATION_NAME}
         except RuntimeError:
             raise
@@ -851,3 +863,83 @@ class ReplicationManager:
         except Exception as exc:
             logger.error("Failed to clean up orphaned slot on primary: %s", exc)
             return False
+
+    # ------------------------------------------------------------------
+    # Publication Refresh (add new tables after migrations)
+    # ------------------------------------------------------------------
+
+    # Tables that must NEVER be in the publication.
+    EXCLUDED_TABLES: set[str] = {"ha_config", "dead_letter_queue", "ha_event_log", "alembic_version"}
+
+    @staticmethod
+    async def refresh_publication(db: AsyncSession) -> dict:
+        """Add any new tables to the publication that were created by migrations.
+
+        PostgreSQL logical replication does NOT replicate DDL. When a migration
+        creates a new table on the primary, it must be explicitly added to the
+        publication. This method compares the set of public tables against the
+        publication membership and adds any missing ones.
+
+        Also detects tables that should be excluded but leaked into the
+        publication (e.g. alembic_version) and removes them.
+
+        Returns a dict with added/removed table lists.
+        """
+        try:
+            conn = await ReplicationManager._get_raw_conn()
+            try:
+                # Check publication exists
+                pub_exists = await conn.fetchval(
+                    "SELECT pubname FROM pg_publication WHERE pubname = $1",
+                    ReplicationManager.PUBLICATION_NAME,
+                )
+                if not pub_exists:
+                    return {"status": "skipped", "message": "No publication exists on this node"}
+
+                # Get all public tables
+                all_tables = set(await conn.fetch(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                ))
+                all_table_names = {r["tablename"] for r in all_tables}
+
+                # Get tables currently in the publication
+                pub_tables = set(await conn.fetch(
+                    "SELECT tablename FROM pg_publication_tables WHERE pubname = $1",
+                    ReplicationManager.PUBLICATION_NAME,
+                ))
+                pub_table_names = {r["tablename"] for r in pub_tables}
+
+                # Tables that should be in the publication
+                should_publish = all_table_names - ReplicationManager.EXCLUDED_TABLES
+
+                # Tables to add (in DB but not in publication, and not excluded)
+                to_add = should_publish - pub_table_names
+
+                # Tables to remove (in publication but should be excluded)
+                to_remove = pub_table_names & ReplicationManager.EXCLUDED_TABLES
+
+                if to_add:
+                    add_list = ", ".join(sorted(to_add))
+                    await conn.execute(
+                        f"ALTER PUBLICATION {ReplicationManager.PUBLICATION_NAME} ADD TABLE {add_list}"
+                    )
+                    logger.info("Added %d tables to publication: %s", len(to_add), add_list)
+
+                if to_remove:
+                    remove_list = ", ".join(sorted(to_remove))
+                    await conn.execute(
+                        f"ALTER PUBLICATION {ReplicationManager.PUBLICATION_NAME} DROP TABLE {remove_list}"
+                    )
+                    logger.info("Removed %d excluded tables from publication: %s", len(to_remove), remove_list)
+
+                return {
+                    "status": "ok",
+                    "tables_added": sorted(to_add),
+                    "tables_removed": sorted(to_remove),
+                    "total_published": len(pub_table_names) + len(to_add) - len(to_remove),
+                }
+            finally:
+                await conn.close()
+        except Exception as exc:
+            logger.error("Failed to refresh publication: %s", exc)
+            raise RuntimeError(f"Failed to refresh publication: {exc}") from exc

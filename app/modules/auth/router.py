@@ -2542,6 +2542,7 @@ async def confirm_signup_payment(
         stripe_customer_id=stripe_customer_id,
         storage_quota_gb=storage_quota_gb,
         trade_category_id=trade_category_id,
+        country_code=country_code,
         settings=initial_settings,
     )
     db.add(org)

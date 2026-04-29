@@ -266,6 +266,7 @@ async def get_org_settings(
 
     return {
         "org_name": org.name,
+        "country_code": org.country_code or settings_data.get("address_country"),
         "trade_family": trade_family,
         "trade_category": trade_category,
         **{key: settings_data.get(key) for key in SETTINGS_JSONB_KEYS},

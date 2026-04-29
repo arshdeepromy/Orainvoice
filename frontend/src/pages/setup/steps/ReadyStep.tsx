@@ -70,7 +70,7 @@ export function ReadyStep({ data, onGoToStep }: ReadyStepProps) {
         const d = res.data
         setOrgData({
           name: d?.org_name ?? d?.name ?? '',
-          country_code: d?.country_code ?? null,
+          country_code: d?.country_code ?? d?.address_country ?? null,
           trade_category_name: d?.trade_category ?? null,
           trade_family_name: d?.trade_family ?? null,
           phone: d?.phone ?? null,

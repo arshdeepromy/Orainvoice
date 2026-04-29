@@ -73,7 +73,22 @@ EOF
 /usr/sbin/sshd 2>/dev/null || echo "  WARNING: sshd failed to start (non-fatal)"
 
 if [ "$ROLE" = "standby" ]; then
-    echo "==> Standby node detected — skipping migrations (data comes from replication)"
+    echo "==> Standby node — running schema migrations only (data comes from replication)..."
+    # Standby nodes must run migrations for DDL changes (ALTER TABLE, CREATE TABLE)
+    # because PostgreSQL logical replication does NOT replicate DDL.
+    # The alembic_version table is excluded from the publication, so each node
+    # tracks its own migration state independently.
+    MAX_RETRIES=5
+    RETRY_COUNT=0
+    until alembic upgrade head; do
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        if [ "$RETRY_COUNT" -ge "$MAX_RETRIES" ]; then
+            echo "  WARNING: standby migrations failed after $MAX_RETRIES attempts (non-fatal)"
+            break
+        fi
+        echo "  Migration attempt $RETRY_COUNT/$MAX_RETRIES failed — retrying in 3s..."
+        sleep 3
+    done
 else
     echo "==> Running database migrations..."
 
@@ -111,6 +126,49 @@ asyncio.run(fix())
         echo "  Migration attempt $RETRY_COUNT/$MAX_RETRIES failed — retrying in 3s..."
         sleep 3
     done
+
+    # After migrations, refresh the publication to include any new tables.
+    # PostgreSQL logical replication does NOT replicate DDL, so new tables
+    # created by migrations must be explicitly added to the publication.
+    # This is a no-op if no publication exists (standalone/standby nodes).
+    echo "==> Refreshing HA publication (if active)..."
+    python -c "
+import asyncio, os
+async def refresh():
+    import asyncpg
+    url = os.environ.get('DATABASE_URL', '').replace('+asyncpg', '').replace('postgresql+asyncpg', 'postgresql')
+    if not url:
+        url = 'postgresql://postgres:postgres@postgres:5432/workshoppro'
+    try:
+        conn = await asyncpg.connect(url.replace('postgresql+asyncpg://', 'postgresql://'), timeout=5)
+        # Check if publication exists
+        pub = await conn.fetchval(\"SELECT pubname FROM pg_publication WHERE pubname = 'orainvoice_ha_pub'\")
+        if not pub:
+            print('  No publication found — skipping refresh')
+            await conn.close()
+            return
+        # Get all public tables minus excluded ones
+        excluded = ('ha_config', 'dead_letter_queue', 'ha_event_log', 'alembic_version')
+        all_tables = {r['tablename'] for r in await conn.fetch(\"SELECT tablename FROM pg_tables WHERE schemaname = 'public'\")}
+        pub_tables = {r['tablename'] for r in await conn.fetch(\"SELECT tablename FROM pg_publication_tables WHERE pubname = 'orainvoice_ha_pub'\")}
+        should_publish = all_tables - set(excluded)
+        to_add = should_publish - pub_tables
+        to_remove = pub_tables & set(excluded)
+        if to_add:
+            add_list = ', '.join(sorted(to_add))
+            await conn.execute(f'ALTER PUBLICATION orainvoice_ha_pub ADD TABLE {add_list}')
+            print(f'  Added {len(to_add)} new tables to publication: {add_list}')
+        if to_remove:
+            remove_list = ', '.join(sorted(to_remove))
+            await conn.execute(f'ALTER PUBLICATION orainvoice_ha_pub DROP TABLE {remove_list}')
+            print(f'  Removed {len(to_remove)} excluded tables from publication: {remove_list}')
+        if not to_add and not to_remove:
+            print(f'  Publication up to date ({len(pub_tables)} tables)')
+        await conn.close()
+    except Exception as e:
+        print(f'  Warning: publication refresh failed (non-fatal): {e}')
+asyncio.run(refresh())
+" 2>&1 || true
 fi
 
 # In development, seed demo data only on first run

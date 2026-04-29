@@ -746,6 +746,31 @@ async def replication_stop(request: Request):
 
 
 @admin_router.post(
+    "/refresh-publication",
+    summary="Refresh publication — add new tables created by migrations",
+    responses={
+        200: {"description": "Publication refreshed"},
+        400: {"description": "Refresh failed"},
+    },
+)
+async def refresh_publication():
+    """Add any new tables to the publication that were created by migrations.
+
+    Should be called after running ``alembic upgrade head`` on the primary.
+    Also removes any excluded tables that leaked into the publication.
+    """
+    from app.modules.ha.replication import ReplicationManager
+    from app.core.database import async_session_factory
+
+    try:
+        async with async_session_factory() as db:
+            result = await ReplicationManager.refresh_publication(db)
+        return result
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@admin_router.post(
     "/reset",
     summary="Reset HA — drop all replication objects and set role to standalone",
     responses={

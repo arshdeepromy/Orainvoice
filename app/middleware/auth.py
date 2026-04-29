@@ -108,6 +108,7 @@ PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/v1/org/accounting/callback/",
     "/api/v2/portal/",
     "/api/v2/public/",
+    "/api/v2/setup-wizard/org-logo/",
 )
 
 # Portal prefixes that require token expiry validation (REM-15).

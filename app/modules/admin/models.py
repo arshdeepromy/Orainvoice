@@ -137,6 +137,11 @@ class Organisation(Base):
         String(20), server_default="standard", nullable=True
     )
 
+    # Org-level logo stored in PostgreSQL (same pattern as platform_branding)
+    logo_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    logo_content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    logo_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

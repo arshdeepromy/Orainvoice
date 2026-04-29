@@ -90,16 +90,27 @@ function BrandingTab() {
   const update = (field: keyof BrandingForm, value: string) =>
     setForm((prev) => ({ ...prev, [field]: value }))
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (!['image/png', 'image/svg+xml'].includes(file.type)) {
-      addToast('error', 'Logo must be PNG or SVG')
+    if (!['image/png', 'image/svg+xml', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      addToast('error', 'Logo must be PNG, JPG, WebP, or SVG')
       return
     }
-    const reader = new FileReader()
-    reader.onload = () => setForm((prev) => ({ ...prev, logo_url: reader.result as string }))
-    reader.readAsDataURL(file)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await apiClient.post('/api/v2/setup-wizard/upload-logo', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      const serverUrl = res.data?.url ?? ''
+      if (serverUrl) {
+        setForm((prev) => ({ ...prev, logo_url: serverUrl }))
+        addToast('success', 'Logo uploaded')
+      }
+    } catch {
+      addToast('error', 'Failed to upload logo')
+    }
   }
 
   const save = async () => {
