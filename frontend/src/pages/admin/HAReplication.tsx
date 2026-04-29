@@ -419,6 +419,10 @@ export function HAReplication() {
   const [syncSaveSuccess, setSyncSaveSuccess] = useState(false)
   const [syncFormInitialized, setSyncFormInitialized] = useState(false)
 
+  // Collapsible section state
+  const [configSectionOpen, setConfigSectionOpen] = useState(false)
+  const [volumeSyncSectionOpen, setVolumeSyncSectionOpen] = useState(false)
+
   const fetchData = useCallback(async () => {
     const [cfg, hist, repl, slotsData, failover, volStatus, volHistory] = await Promise.all([
       safeFetch<HAConfig | null>('/ha/identity', null),
@@ -1238,8 +1242,56 @@ export function HAReplication() {
         <AlertBanner variant="success">{actionSuccess}</AlertBanner>
       )}
 
-      {/* ── Setup Guide (collapsible) — only show when HA is configured ── */}
-      {hasHaConfig && <SetupGuide configured={true} />}
+      {/* ── Alert Banners (split-brain, auto-promote) ── */}
+      {config && config.role !== 'standalone' && (
+        <>
+          {/* Split-Brain Critical Alert Banner */}
+          {failoverStatus?.split_brain_detected && (
+            <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm font-medium text-red-800">
+                  🚨 SPLIT-BRAIN DETECTED: This node's data may be stale. Writes are blocked until the conflict is resolved.
+                </p>
+                {failoverStatus?.is_stale_primary && (
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => openModal('demote-and-sync')}
+                  >
+                    Demote and Sync
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Auto-Promote Countdown / Status Banner */}
+          {failoverStatus?.promoted_at && config.role === 'primary' && (
+            <div className="rounded-lg border border-green-300 bg-green-50 px-4 py-3">
+              <p className="text-sm font-medium text-green-800">
+                ✓ This node has been automatically promoted to primary
+              </p>
+            </div>
+          )}
+          {failoverStatus?.auto_promote_enabled &&
+            failoverStatus?.seconds_until_auto_promote != null &&
+            failoverStatus?.peer_unreachable_seconds != null && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+              <p className="text-sm font-medium text-amber-800">
+                ⚠ Primary unreachable for {Math.round(failoverStatus?.peer_unreachable_seconds ?? 0)} seconds, auto-promote in {Math.round(failoverStatus?.seconds_until_auto_promote ?? 0)} seconds
+              </p>
+            </div>
+          )}
+          {!failoverStatus?.auto_promote_enabled &&
+            failoverStatus?.peer_unreachable_seconds != null && (
+            <div className="rounded-lg border border-gray-300 bg-gray-50 px-4 py-3">
+              <p className="text-sm font-medium text-gray-700">
+                Primary unreachable for {Math.round(failoverStatus?.peer_unreachable_seconds ?? 0)} seconds. Auto-promote is disabled.
+              </p>
+            </div>
+          )}
+        </>
+      )}
 
       {/* ── 5-Step HA Setup Wizard (Task 8.1–8.6, 8.9) ── */}
       {/* Show wizard when: no HA config, or wizard explicitly activated */}
@@ -1941,294 +1993,13 @@ export function HAReplication() {
         </section>
       )}
 
-      {/* ── Configuration Form ── */}
-      <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
-        <h2 className="text-lg font-medium text-gray-900">
-          {config ? 'Node Configuration' : 'Configure HA'}
-        </h2>
-        {!config && (
-          <p className="text-sm text-gray-500">
-            HA is not configured yet. Fill in the details below to set up this node.
-          </p>
-        )}
-
-        {saveError && <AlertBanner variant="error">{saveError}</AlertBanner>}
-        {saveSuccess && <AlertBanner variant="success">Configuration saved</AlertBanner>}
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Input
-            label="Node Name"
-            placeholder="e.g. Pi-Main"
-            value={formNodeName}
-            onChange={(e) => setFormNodeName(e.target.value)}
-          />
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
-            <select
-              value={formRole}
-              onChange={(e) => setFormRole(e.target.value)}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="standalone">Standalone</option>
-              <option value="primary">Primary</option>
-              <option value="standby">Standby</option>
-            </select>
-          </div>
-          <Input
-            label="Peer Endpoint"
-            placeholder="http://192.168.x.x:8999"
-            value={formPeerEndpoint}
-            onChange={(e) => setFormPeerEndpoint(e.target.value)}
-          />
-          <Input
-            label="Heartbeat Interval (seconds)"
-            type="number"
-            value={String(formHeartbeatInterval)}
-            onChange={(e) => setFormHeartbeatInterval(Number(e.target.value) || 10)}
-          />
-          <Input
-            label="Failover Timeout (seconds)"
-            type="number"
-            value={String(formFailoverTimeout)}
-            onChange={(e) => setFormFailoverTimeout(Number(e.target.value) || 90)}
-          />
-          <label className="flex items-center gap-2 text-sm text-gray-700 sm:col-span-2 pt-2">
-            <input
-              type="checkbox"
-              checked={formAutoPromote}
-              onChange={(e) => setFormAutoPromote(e.target.checked)}
-              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
-            Enable auto-promote (standby auto-promotes when primary is unreachable)
-          </label>
-          <p className="text-xs text-amber-700 sm:col-span-2 -mt-1 pl-6">
-            Note: If the primary is also unreachable by the standby (full partition), split-brain detection will be inactive until connectivity is restored.
-          </p>
-          <div className="sm:col-span-2">
-            <Input
-              label="Heartbeat Secret"
-              type="password"
-              placeholder={config?.heartbeat_secret_configured ? '••••••••  (leave blank to keep existing)' : 'Shared HMAC secret for heartbeat signing'}
-              value={formHeartbeatSecret}
-              onChange={(e) => setFormHeartbeatSecret(e.target.value)}
-              helperText={config?.heartbeat_secret_configured
-                ? '✓ Secret stored — leave blank to keep existing value. Must be identical on both nodes.'
-                : 'Required for secure heartbeat signing. Must be identical on both nodes.'}
-            />
-          </div>
-          <Input
-            label="Local LAN IP"
-            placeholder="e.g. 192.168.1.90 (auto-detected if blank)"
-            value={formLocalLanIp}
-            onChange={(e) => setFormLocalLanIp(e.target.value)}
-            helperText="Used for View Connection Info. Auto-detected if blank."
-          />
-          <Input
-            label="Local PostgreSQL Port"
-            type="number"
-            placeholder="5432"
-            value={formLocalPgPort}
-            onChange={(e) => setFormLocalPgPort(e.target.value)}
-            helperText="The host port mapped to PostgreSQL. Defaults to 5432 if blank."
-          />
-        </div>
-
-        <div className="flex justify-end pt-2">
-          <Button
-            onClick={handleSaveConfig}
-            loading={saving}
-            disabled={!formNodeName.trim()}
-          >
-            {config ? 'Update Configuration' : 'Save Configuration'}
-          </Button>
-        </div>
-      </section>
-
-      {/* ── Peer Database Settings ── */}
-      <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
-        <h2 className="text-lg font-medium text-gray-900">Peer Database Settings</h2>
-        <p className="text-sm text-gray-500">
-          Configure the peer node's PostgreSQL connection for replication.
-          {config?.peer_db_configured && (
-            <span className="ml-1 text-green-600 font-medium">✓ Credentials stored</span>
-          )}
-        </p>
-
-        {testResult && (
-          <AlertBanner variant={testResult.ok ? 'success' : 'error'}>
-            {testResult.message}
-          </AlertBanner>
-        )}
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Input
-            label="Host"
-            placeholder="e.g. host.docker.internal or 192.168.1.x"
-            value={formPeerDbHost}
-            onChange={(e) => setFormPeerDbHost(e.target.value)}
-          />
-          <Input
-            label="Port"
-            type="number"
-            value={String(formPeerDbPort)}
-            onChange={(e) => setFormPeerDbPort(Number(e.target.value) || 5432)}
-          />
-          <Input
-            label="Database Name"
-            placeholder="e.g. workshoppro"
-            value={formPeerDbName}
-            onChange={(e) => setFormPeerDbName(e.target.value)}
-          />
-          <Input
-            label="User"
-            placeholder="e.g. postgres"
-            value={formPeerDbUser}
-            onChange={(e) => setFormPeerDbUser(e.target.value)}
-          />
-          <Input
-            label="Password"
-            type="password"
-            placeholder={config?.peer_db_configured ? '••••••••  (leave blank to keep existing)' : 'Enter password'}
-            value={formPeerDbPassword}
-            onChange={(e) => setFormPeerDbPassword(e.target.value)}
-          />
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">SSL Mode</label>
-            <select
-              value={formPeerDbSslmode}
-              onChange={(e) => setFormPeerDbSslmode(e.target.value)}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="disable">Disable (no SSL)</option>
-              <option value="require">Require (encrypted, no cert verification)</option>
-              <option value="verify-ca">Verify CA (encrypted + verify server cert)</option>
-              <option value="verify-full">Verify Full (encrypted + verify cert + hostname)</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3 pt-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={handleTestConnection}
-            loading={testingConnection}
-            disabled={!formPeerDbHost || !formPeerDbName || !formPeerDbUser || !formPeerDbPassword}
-          >
-            Test Connection
-          </Button>
-          <span className="text-xs text-gray-400">
-            Credentials are saved with the main configuration above. Test first, then save.
-          </span>
-        </div>
-      </section>
-
-      {/* ── Replication User Management ── */}
-      <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
-        <h2 className="text-lg font-medium text-gray-900">Replication User</h2>
-        <p className="text-sm text-gray-500">
-          Create a dedicated PostgreSQL user with minimal privileges for replication.
-          Run this on the node whose database the peer will connect to.
-        </p>
-
-        {replUserResult && (
-          <AlertBanner variant={replUserResult.ok ? 'success' : 'error'}>
-            {replUserResult.message}
-          </AlertBanner>
-        )}
-
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Input
-            label="Username"
-            placeholder="replicator"
-            value={replUserName}
-            onChange={(e) => setReplUserName(e.target.value)}
-          />
-          <Input
-            label="Password"
-            type="password"
-            placeholder="Strong password for replication user"
-            value={replUserPassword}
-            onChange={(e) => setReplUserPassword(e.target.value)}
-          />
-          <div className="flex items-end gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={handleCreateReplUser}
-              loading={creatingReplUser}
-              disabled={!replUserName.trim() || !replUserPassword}
-            >
-              Create / Update User
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={handleViewConnectionInfo}
-              loading={fetchingDbInfo}
-            >
-              View Connection Info
-            </Button>
-          </div>
-        </div>
-        <p className="text-xs text-gray-400">
-          This creates a user with REPLICATION + SELECT privileges on the local database.
-          Use this username and password in the peer node's "Peer Database Settings" above.
-        </p>
-      </section>
-
-      {/* ── Status & Actions (only when configured) ── */}
+      {/* ── Cluster Overview & Monitoring (only when configured) ── */}
       {config && config.role !== 'standalone' && (
         <>
-          {/* Split-Brain Critical Alert Banner */}
-          {failoverStatus?.split_brain_detected && (
-            <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3">
-              <div className="flex items-start justify-between gap-3">
-                <p className="text-sm font-medium text-red-800">
-                  🚨 SPLIT-BRAIN DETECTED: This node's data may be stale. Writes are blocked until the conflict is resolved.
-                </p>
-                {failoverStatus?.is_stale_primary && (
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={() => openModal('demote-and-sync')}
-                  >
-                    Demote and Sync
-                  </Button>
-                )}
-              </div>
-            </div>
-          )}
 
-          {/* Auto-Promote Countdown / Status Banner */}
-          {failoverStatus?.promoted_at && config.role === 'primary' && (
-            <div className="rounded-lg border border-green-300 bg-green-50 px-4 py-3">
-              <p className="text-sm font-medium text-green-800">
-                ✓ This node has been automatically promoted to primary
-              </p>
-            </div>
-          )}
-          {failoverStatus?.auto_promote_enabled &&
-            failoverStatus?.seconds_until_auto_promote != null &&
-            failoverStatus?.peer_unreachable_seconds != null && (
-            <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
-              <p className="text-sm font-medium text-amber-800">
-                ⚠ Primary unreachable for {Math.round(failoverStatus?.peer_unreachable_seconds ?? 0)} seconds, auto-promote in {Math.round(failoverStatus?.seconds_until_auto_promote ?? 0)} seconds
-              </p>
-            </div>
-          )}
-          {!failoverStatus?.auto_promote_enabled &&
-            failoverStatus?.peer_unreachable_seconds != null && (
-            <div className="rounded-lg border border-gray-300 bg-gray-50 px-4 py-3">
-              <p className="text-sm font-medium text-gray-700">
-                Primary unreachable for {Math.round(failoverStatus?.peer_unreachable_seconds ?? 0)} seconds. Auto-promote is disabled.
-              </p>
-            </div>
-          )}
-
-          {/* Cluster Status */}
+          {/* Cluster Overview */}
           <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
-            <h2 className="text-lg font-medium text-gray-900">Cluster Status</h2>
+            <h2 className="text-lg font-medium text-gray-900">Cluster Overview</h2>
 
             {lagSeconds != null && lagSeconds > 30 && (
               <AlertBanner variant="warning" title="Replication Lagging">
@@ -2297,28 +2068,59 @@ export function HAReplication() {
                 </dl>
               </div>
             </div>
-          </section>
 
-          {/* Replication Health Check */}
-          <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-medium text-gray-900">Replication Health</h2>
-              {healthCheck && (
-                <Badge
-                  variant={
-                    healthCheck.status === 'healthy' ? 'success'
-                      : healthCheck.status === 'warning' ? 'warning'
-                      : healthCheck.status === 'critical' ? 'error'
-                      : 'neutral'
-                  }
-                >
-                  {healthCheck.status === 'healthy' ? 'Healthy'
-                    : healthCheck.status === 'warning' ? 'Warning'
-                    : healthCheck.status === 'critical' ? 'Critical'
-                    : 'Unknown'}
-                </Badge>
-              )}
-            </div>
+            {/* ── Compact Replication Metrics Row ── */}
+            {replication && (
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-md border border-gray-100 bg-gray-50 px-4 py-3 text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-500">Subscription</span>
+                  <Badge variant={replication.is_healthy ? 'success' : 'error'}>
+                    {replication.subscription_status ?? 'none'}
+                  </Badge>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-500">Connected</span>
+                  <span
+                    className={`inline-block h-2 w-2 rounded-full ${
+                      replication.subscription_connected ? 'bg-green-500' : 'bg-red-500'
+                    }`}
+                  />
+                  <span className={`text-xs ${
+                    replication.subscription_connected ? 'text-green-700' : 'text-red-700'
+                  }`}>
+                    {replication.subscription_connected ? 'Yes' : 'No'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-500">Lag</span>
+                  <span className="font-medium text-gray-900">{formatLag(replication.replication_lag_seconds)}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-500">Last Replicated</span>
+                  <span className="text-gray-900">{formatTime(replication.last_replicated_at)}</span>
+                </div>
+                {healthCheck && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-500">Health Check</span>
+                    <Badge
+                      variant={
+                        healthCheck.status === 'healthy' ? 'success'
+                          : healthCheck.status === 'warning' ? 'warning'
+                          : healthCheck.status === 'critical' ? 'error'
+                          : 'neutral'
+                      }
+                    >
+                      {healthCheck.status === 'healthy' ? 'Healthy'
+                        : healthCheck.status === 'warning' ? 'Warning'
+                        : healthCheck.status === 'critical' ? 'Critical'
+                        : 'Unknown'}
+                    </Badge>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Replication Health Details (inline when Critical/Warning) ── */}
 
             {/* Data Freshness Warning Banner */}
             {replication?.last_msg_receipt_time && (() => {
@@ -2448,61 +2250,40 @@ export function HAReplication() {
             )}
           </section>
 
-          {/* Replication Details */}
-          {replication && (
-            <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-3">
-              <h2 className="text-lg font-medium text-gray-900">Replication Details</h2>
-              <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
-                <div>
-                  <dt className="text-gray-500">Publication</dt>
-                  <dd className="font-mono text-xs">{replication.publication_name ?? '—'}</dd>
-                </div>
-                <div>
-                  <dt className="text-gray-500">Subscription</dt>
-                  <dd className="font-mono text-xs">{replication.subscription_name ?? '—'}</dd>
-                </div>
-                <div>
-                  <dt className="text-gray-500">Status</dt>
-                  <dd>
-                    <Badge variant={replication.is_healthy ? 'success' : 'error'}>
-                      {replication.subscription_status ?? 'none'}
-                    </Badge>
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-gray-500">Connected</dt>
-                  <dd className="flex items-center gap-1.5">
-                    <span
-                      className={`inline-block h-2 w-2 rounded-full ${
-                        replication.subscription_connected ? 'bg-green-500' : 'bg-red-500'
-                      }`}
-                    />
-                    <span className={`text-xs ${
-                      replication.subscription_connected ? 'text-green-700' : 'text-red-700'
-                    }`}>
-                      {replication.subscription_connected ? 'Yes' : 'No'}
-                    </span>
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-gray-500">Tables Published</dt>
-                  <dd>{replication.tables_published}</dd>
-                </div>
-                <div>
-                  <dt className="text-gray-500">Lag</dt>
-                  <dd>{formatLag(replication.replication_lag_seconds)}</dd>
-                </div>
-                <div>
-                  <dt className="text-gray-500">Last Replicated</dt>
-                  <dd>{formatTime(replication.last_replicated_at)}</dd>
-                </div>
-                <div>
-                  <dt className="text-gray-500">Last Msg Send</dt>
-                  <dd className="text-xs">{formatTime(replication.last_msg_send_time)}</dd>
-                </div>
-              </dl>
-            </section>
-          )}
+          {/* Actions */}
+          <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
+            <h2 className="text-lg font-medium text-gray-900">Actions</h2>
+            <div className="flex flex-wrap gap-3">
+              {config.role === 'standby' && (
+                <Button variant="primary" size="sm" onClick={() => openModal('promote')}>
+                  Promote to Primary
+                </Button>
+              )}
+              {config.role === 'primary' && (
+                <Button variant="danger" size="sm" onClick={() => openModal('demote')}>
+                  Demote to Standby
+                </Button>
+              )}
+              <Button variant="secondary" size="sm" onClick={() => openModal('init-replication')}>
+                Initialize Replication
+              </Button>
+              <Button variant="danger" size="sm" onClick={() => openModal('stop-replication')}>
+                Stop Replication
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => openModal('resync')}>
+                Trigger Re-sync
+              </Button>
+              {!config.maintenance_mode ? (
+                <Button variant="secondary" size="sm" onClick={() => openModal('maintenance-enter')}>
+                  Enter Maintenance Mode
+                </Button>
+              ) : (
+                <Button variant="secondary" size="sm" onClick={() => openModal('maintenance-exit')}>
+                  Exit Maintenance Mode
+                </Button>
+              )}
+            </div>
+          </section>
 
           {/* Replication Slots */}
           {slots.length > 0 && (
@@ -2574,41 +2355,6 @@ export function HAReplication() {
             </section>
           )}
 
-          {/* Actions */}
-          <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
-            <h2 className="text-lg font-medium text-gray-900">Actions</h2>
-            <div className="flex flex-wrap gap-3">
-              {config.role === 'standby' && (
-                <Button variant="primary" size="sm" onClick={() => openModal('promote')}>
-                  Promote to Primary
-                </Button>
-              )}
-              {config.role === 'primary' && (
-                <Button variant="danger" size="sm" onClick={() => openModal('demote')}>
-                  Demote to Standby
-                </Button>
-              )}
-              <Button variant="secondary" size="sm" onClick={() => openModal('init-replication')}>
-                Initialize Replication
-              </Button>
-              <Button variant="danger" size="sm" onClick={() => openModal('stop-replication')}>
-                Stop Replication
-              </Button>
-              <Button variant="secondary" size="sm" onClick={() => openModal('resync')}>
-                Trigger Re-sync
-              </Button>
-              {!config.maintenance_mode ? (
-                <Button variant="secondary" size="sm" onClick={() => openModal('maintenance-enter')}>
-                  Enter Maintenance Mode
-                </Button>
-              ) : (
-                <Button variant="secondary" size="sm" onClick={() => openModal('maintenance-exit')}>
-                  Exit Maintenance Mode
-                </Button>
-              )}
-            </div>
-          </section>
-
           {/* Heartbeat History */}
           {history.length > 0 && (
             <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-3">
@@ -2657,231 +2403,514 @@ export function HAReplication() {
         </>
       )}
 
-      {/* ── Volume Data Replication Configuration ── */}
-      <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
-        <h2 className="text-lg font-medium text-gray-900">Volume Data Replication</h2>
-        <p className="text-sm text-gray-500">
-          Configure rsync-based replication of upload volumes and compliance files from the primary to the standby node.
-        </p>
-
-        {syncSaveError && <AlertBanner variant="error">{syncSaveError}</AlertBanner>}
-        {syncSaveSuccess && <AlertBanner variant="success">Volume sync configuration saved</AlertBanner>}
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Input
-            label="Standby SSH Host"
-            placeholder="e.g. 192.168.1.100"
-            value={syncFormHost}
-            onChange={(e) => setSyncFormHost(e.target.value)}
-          />
-          <Input
-            label="SSH Port"
-            type="number"
-            value={String(syncFormPort)}
-            onChange={(e) => setSyncFormPort(Number(e.target.value) || 22)}
-          />
-          <div className="sm:col-span-2">
-            <Input
-              label="SSH Key Path"
-              placeholder="e.g. /root/.ssh/id_rsa"
-              value={syncFormKeyPath}
-              onChange={(e) => setSyncFormKeyPath(e.target.value)}
-              helperText="Filesystem path to the SSH private key on this server."
-            />
-          </div>
-          <Input
-            label="Remote Upload Path"
-            placeholder="/app/uploads/"
-            value={syncFormUploadPath}
-            onChange={(e) => setSyncFormUploadPath(e.target.value)}
-          />
-          <Input
-            label="Remote Compliance Path"
-            placeholder="/app/compliance_files/"
-            value={syncFormCompliancePath}
-            onChange={(e) => setSyncFormCompliancePath(e.target.value)}
-          />
-          <Input
-            label="Sync Interval (minutes)"
-            type="number"
-            value={String(syncFormInterval)}
-            onChange={(e) => setSyncFormInterval(Number(e.target.value) || 5)}
-            helperText="How often to sync files (1–1440 minutes)."
-          />
-          <label className="flex items-center gap-2 text-sm text-gray-700 pt-6">
-            <input
-              type="checkbox"
-              checked={syncFormEnabled}
-              onChange={(e) => setSyncFormEnabled(e.target.checked)}
-              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
-            Enable automatic sync
-          </label>
-        </div>
-
-        <div className="flex justify-end pt-2">
-          <Button
-            onClick={handleSaveSyncConfig}
-            loading={syncSaving}
-            disabled={!syncFormHost.trim()}
+      {/* ── Collapsible: Configuration ── */}
+      <section className="rounded-lg border border-gray-200 bg-white">
+        <button
+          type="button"
+          onClick={() => setConfigSectionOpen(!configSectionOpen)}
+          className="flex w-full items-center justify-between px-6 py-4 text-left"
+        >
+          <span className="text-sm font-medium text-gray-900">
+            Configuration
+            {hasHaConfig && <span className="ml-2 text-xs text-gray-400">(Node, Peer Database, Replication User)</span>}
+          </span>
+          <svg
+            className={`h-5 w-5 text-gray-400 transition-transform ${configSectionOpen ? 'rotate-180' : ''}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor"
           >
-            {volumeSyncConfig ? 'Update Sync Configuration' : 'Save Sync Configuration'}
-          </Button>
-        </div>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        {(configSectionOpen || !hasHaConfig) && (
+          <div className="border-t border-gray-200 space-y-6 p-6">
+            {/* Node Configuration */}
+            <div className="space-y-4">
+              <h2 className="text-lg font-medium text-gray-900">
+                {config ? 'Node Configuration' : 'Configure HA'}
+              </h2>
+              {!config && (
+                <p className="text-sm text-gray-500">
+                  HA is not configured yet. Fill in the details below to set up this node.
+                </p>
+              )}
+
+              {saveError && <AlertBanner variant="error">{saveError}</AlertBanner>}
+              {saveSuccess && <AlertBanner variant="success">Configuration saved</AlertBanner>}
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Input
+                  label="Node Name"
+                  placeholder="e.g. Pi-Main"
+                  value={formNodeName}
+                  onChange={(e) => setFormNodeName(e.target.value)}
+                />
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
+                  <select
+                    value={formRole}
+                    onChange={(e) => setFormRole(e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="standalone">Standalone</option>
+                    <option value="primary">Primary</option>
+                    <option value="standby">Standby</option>
+                  </select>
+                </div>
+                <Input
+                  label="Peer Endpoint"
+                  placeholder="http://192.168.x.x:8999"
+                  value={formPeerEndpoint}
+                  onChange={(e) => setFormPeerEndpoint(e.target.value)}
+                />
+                <Input
+                  label="Heartbeat Interval (seconds)"
+                  type="number"
+                  value={String(formHeartbeatInterval)}
+                  onChange={(e) => setFormHeartbeatInterval(Number(e.target.value) || 10)}
+                />
+                <Input
+                  label="Failover Timeout (seconds)"
+                  type="number"
+                  value={String(formFailoverTimeout)}
+                  onChange={(e) => setFormFailoverTimeout(Number(e.target.value) || 90)}
+                />
+                <label className="flex items-center gap-2 text-sm text-gray-700 sm:col-span-2 pt-2">
+                  <input
+                    type="checkbox"
+                    checked={formAutoPromote}
+                    onChange={(e) => setFormAutoPromote(e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  Enable auto-promote (standby auto-promotes when primary is unreachable)
+                </label>
+                <p className="text-xs text-amber-700 sm:col-span-2 -mt-1 pl-6">
+                  Note: If the primary is also unreachable by the standby (full partition), split-brain detection will be inactive until connectivity is restored.
+                </p>
+                <div className="sm:col-span-2">
+                  <Input
+                    label="Heartbeat Secret"
+                    type="password"
+                    placeholder={config?.heartbeat_secret_configured ? '••••••••  (leave blank to keep existing)' : 'Shared HMAC secret for heartbeat signing'}
+                    value={formHeartbeatSecret}
+                    onChange={(e) => setFormHeartbeatSecret(e.target.value)}
+                    helperText={config?.heartbeat_secret_configured
+                      ? '✓ Secret stored — leave blank to keep existing value. Must be identical on both nodes.'
+                      : 'Required for secure heartbeat signing. Must be identical on both nodes.'}
+                  />
+                </div>
+                <Input
+                  label="Local LAN IP"
+                  placeholder="e.g. 192.168.1.90 (auto-detected if blank)"
+                  value={formLocalLanIp}
+                  onChange={(e) => setFormLocalLanIp(e.target.value)}
+                  helperText="Used for View Connection Info. Auto-detected if blank."
+                />
+                <Input
+                  label="Local PostgreSQL Port"
+                  type="number"
+                  placeholder="5432"
+                  value={formLocalPgPort}
+                  onChange={(e) => setFormLocalPgPort(e.target.value)}
+                  helperText="The host port mapped to PostgreSQL. Defaults to 5432 if blank."
+                />
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <Button
+                  onClick={handleSaveConfig}
+                  loading={saving}
+                  disabled={!formNodeName.trim()}
+                >
+                  {config ? 'Update Configuration' : 'Save Configuration'}
+                </Button>
+              </div>
+            </div>
+
+            {/* Peer Database Settings */}
+            <div className="space-y-4 border-t border-gray-200 pt-6">
+              <h2 className="text-lg font-medium text-gray-900">Peer Database Settings</h2>
+              <p className="text-sm text-gray-500">
+                Configure the peer node's PostgreSQL connection for replication.
+                {config?.peer_db_configured && (
+                  <span className="ml-1 text-green-600 font-medium">✓ Credentials stored</span>
+                )}
+              </p>
+
+              {testResult && (
+                <AlertBanner variant={testResult.ok ? 'success' : 'error'}>
+                  {testResult.message}
+                </AlertBanner>
+              )}
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Input
+                  label="Host"
+                  placeholder="e.g. host.docker.internal or 192.168.1.x"
+                  value={formPeerDbHost}
+                  onChange={(e) => setFormPeerDbHost(e.target.value)}
+                />
+                <Input
+                  label="Port"
+                  type="number"
+                  value={String(formPeerDbPort)}
+                  onChange={(e) => setFormPeerDbPort(Number(e.target.value) || 5432)}
+                />
+                <Input
+                  label="Database Name"
+                  placeholder="e.g. workshoppro"
+                  value={formPeerDbName}
+                  onChange={(e) => setFormPeerDbName(e.target.value)}
+                />
+                <Input
+                  label="User"
+                  placeholder="e.g. postgres"
+                  value={formPeerDbUser}
+                  onChange={(e) => setFormPeerDbUser(e.target.value)}
+                />
+                <Input
+                  label="Password"
+                  type="password"
+                  placeholder={config?.peer_db_configured ? '••••••••  (leave blank to keep existing)' : 'Enter password'}
+                  value={formPeerDbPassword}
+                  onChange={(e) => setFormPeerDbPassword(e.target.value)}
+                />
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">SSL Mode</label>
+                  <select
+                    value={formPeerDbSslmode}
+                    onChange={(e) => setFormPeerDbSslmode(e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="disable">Disable (no SSL)</option>
+                    <option value="require">Require (encrypted, no cert verification)</option>
+                    <option value="verify-ca">Verify CA (encrypted + verify server cert)</option>
+                    <option value="verify-full">Verify Full (encrypted + verify cert + hostname)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 pt-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleTestConnection}
+                  loading={testingConnection}
+                  disabled={!formPeerDbHost || !formPeerDbName || !formPeerDbUser || !formPeerDbPassword}
+                >
+                  Test Connection
+                </Button>
+                <span className="text-xs text-gray-400">
+                  Credentials are saved with the main configuration above. Test first, then save.
+                </span>
+              </div>
+            </div>
+
+            {/* Replication User */}
+            <div className="space-y-4 border-t border-gray-200 pt-6">
+              <h2 className="text-lg font-medium text-gray-900">Replication User</h2>
+              <p className="text-sm text-gray-500">
+                Create a dedicated PostgreSQL user with minimal privileges for replication.
+                Run this on the node whose database the peer will connect to.
+              </p>
+
+              {replUserResult && (
+                <AlertBanner variant={replUserResult.ok ? 'success' : 'error'}>
+                  {replUserResult.message}
+                </AlertBanner>
+              )}
+
+              <div className="grid gap-4 sm:grid-cols-3">
+                <Input
+                  label="Username"
+                  placeholder="replicator"
+                  value={replUserName}
+                  onChange={(e) => setReplUserName(e.target.value)}
+                />
+                <Input
+                  label="Password"
+                  type="password"
+                  placeholder="Strong password for replication user"
+                  value={replUserPassword}
+                  onChange={(e) => setReplUserPassword(e.target.value)}
+                />
+                <div className="flex items-end gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleCreateReplUser}
+                    loading={creatingReplUser}
+                    disabled={!replUserName.trim() || !replUserPassword}
+                  >
+                    Create / Update User
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleViewConnectionInfo}
+                    loading={fetchingDbInfo}
+                  >
+                    View Connection Info
+                  </Button>
+                </div>
+              </div>
+              <p className="text-xs text-gray-400">
+                This creates a user with REPLICATION + SELECT privileges on the local database.
+                Use this username and password in the peer node's "Peer Database Settings" above.
+              </p>
+            </div>
+          </div>
+        )}
       </section>
 
-      {/* ── Volume Sync Status Card ── */}
-      {volumeSyncConfig && (
-        <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-medium text-gray-900">Sync Status</h2>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={handleTriggerSync}
-              loading={syncTriggering}
-              disabled={syncTriggering || (volumeSyncStatus?.sync_in_progress ?? false)}
-            >
-              {(syncTriggering || (volumeSyncStatus?.sync_in_progress ?? false)) ? (
-                <span className="flex items-center gap-2">
-                  <Spinner size="sm" />
-                  Syncing…
-                </span>
-              ) : (
-                'Sync Now'
-              )}
-            </Button>
-          </div>
+      {/* ── Collapsible: Volume Sync ── */}
+      <section className="rounded-lg border border-gray-200 bg-white">
+        <button
+          type="button"
+          onClick={() => setVolumeSyncSectionOpen(!volumeSyncSectionOpen)}
+          className="flex w-full items-center justify-between px-6 py-4 text-left"
+        >
+          <span className="text-sm font-medium text-gray-900">
+            Volume Data Replication
+            {volumeSyncConfig?.enabled && <span className="ml-2 text-xs text-green-600">● Enabled</span>}
+          </span>
+          <svg
+            className={`h-5 w-5 text-gray-400 transition-transform ${volumeSyncSectionOpen ? 'rotate-180' : ''}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
 
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <div className="rounded-md border border-gray-200 p-4 space-y-1">
-              <dt className="text-sm text-gray-500">Last Sync</dt>
-              <dd className="text-sm font-medium text-gray-900">
-                {formatTime(volumeSyncStatus?.last_sync_time ?? null)}
-              </dd>
+        {volumeSyncSectionOpen && (
+          <div className="border-t border-gray-200 space-y-6 p-6">
+            {/* Volume Sync Config */}
+            <div className="space-y-4">
+              <p className="text-sm text-gray-500">
+                Configure rsync-based replication of upload volumes and compliance files from the primary to the standby node.
+              </p>
+
+              {syncSaveError && <AlertBanner variant="error">{syncSaveError}</AlertBanner>}
+              {syncSaveSuccess && <AlertBanner variant="success">Volume sync configuration saved</AlertBanner>}
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Input
+                  label="Standby SSH Host"
+                  placeholder="e.g. 192.168.1.100"
+                  value={syncFormHost}
+                  onChange={(e) => setSyncFormHost(e.target.value)}
+                />
+                <Input
+                  label="SSH Port"
+                  type="number"
+                  value={String(syncFormPort)}
+                  onChange={(e) => setSyncFormPort(Number(e.target.value) || 22)}
+                />
+                <div className="sm:col-span-2">
+                  <Input
+                    label="SSH Key Path"
+                    placeholder="e.g. /root/.ssh/id_rsa"
+                    value={syncFormKeyPath}
+                    onChange={(e) => setSyncFormKeyPath(e.target.value)}
+                    helperText="Filesystem path to the SSH private key on this server."
+                  />
+                </div>
+                <Input
+                  label="Remote Upload Path"
+                  placeholder="/app/uploads/"
+                  value={syncFormUploadPath}
+                  onChange={(e) => setSyncFormUploadPath(e.target.value)}
+                />
+                <Input
+                  label="Remote Compliance Path"
+                  placeholder="/app/compliance_files/"
+                  value={syncFormCompliancePath}
+                  onChange={(e) => setSyncFormCompliancePath(e.target.value)}
+                />
+                <Input
+                  label="Sync Interval (minutes)"
+                  type="number"
+                  value={String(syncFormInterval)}
+                  onChange={(e) => setSyncFormInterval(Number(e.target.value) || 5)}
+                  helperText="How often to sync files (1–1440 minutes)."
+                />
+                <label className="flex items-center gap-2 text-sm text-gray-700 pt-6">
+                  <input
+                    type="checkbox"
+                    checked={syncFormEnabled}
+                    onChange={(e) => setSyncFormEnabled(e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  Enable automatic sync
+                </label>
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <Button
+                  onClick={handleSaveSyncConfig}
+                  loading={syncSaving}
+                  disabled={!syncFormHost.trim()}
+                >
+                  {volumeSyncConfig ? 'Update Sync Configuration' : 'Save Sync Configuration'}
+                </Button>
+              </div>
             </div>
 
-            <div className="rounded-md border border-gray-200 p-4 space-y-1">
-              <dt className="text-sm text-gray-500">Last Result</dt>
-              <dd>
-                {volumeSyncStatus?.last_sync_result ? (
-                  <Badge variant={volumeSyncStatus.last_sync_result === 'success' ? 'success' : 'error'}>
-                    {volumeSyncStatus.last_sync_result}
-                  </Badge>
+            {/* Sync Status */}
+            {volumeSyncConfig && (
+              <div className="space-y-4 border-t border-gray-200 pt-6">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-medium text-gray-900">Sync Status</h2>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={handleTriggerSync}
+                    loading={syncTriggering}
+                    disabled={syncTriggering || (volumeSyncStatus?.sync_in_progress ?? false)}
+                  >
+                    {(syncTriggering || (volumeSyncStatus?.sync_in_progress ?? false)) ? (
+                      <span className="flex items-center gap-2">
+                        <Spinner size="sm" />
+                        Syncing…
+                      </span>
+                    ) : (
+                      'Sync Now'
+                    )}
+                  </Button>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="rounded-md border border-gray-200 p-4 space-y-1">
+                    <dt className="text-sm text-gray-500">Last Sync</dt>
+                    <dd className="text-sm font-medium text-gray-900">
+                      {formatTime(volumeSyncStatus?.last_sync_time ?? null)}
+                    </dd>
+                  </div>
+
+                  <div className="rounded-md border border-gray-200 p-4 space-y-1">
+                    <dt className="text-sm text-gray-500">Last Result</dt>
+                    <dd>
+                      {volumeSyncStatus?.last_sync_result ? (
+                        <Badge variant={volumeSyncStatus.last_sync_result === 'success' ? 'success' : 'error'}>
+                          {volumeSyncStatus.last_sync_result}
+                        </Badge>
+                      ) : (
+                        <span className="text-sm text-gray-400">—</span>
+                      )}
+                    </dd>
+                  </div>
+
+                  <div className="rounded-md border border-gray-200 p-4 space-y-1">
+                    <dt className="text-sm text-gray-500">Next Scheduled Sync</dt>
+                    <dd className="text-sm font-medium text-gray-900">
+                      {formatTime(volumeSyncStatus?.next_scheduled_sync ?? null)}
+                    </dd>
+                  </div>
+
+                  <div className="rounded-md border border-gray-200 p-4 space-y-1">
+                    <dt className="text-sm text-gray-500">File Count</dt>
+                    <dd className="text-sm font-medium text-gray-900">
+                      {(volumeSyncStatus?.total_file_count ?? 0).toLocaleString()}
+                    </dd>
+                  </div>
+
+                  <div className="rounded-md border border-gray-200 p-4 space-y-1">
+                    <dt className="text-sm text-gray-500">Total Size</dt>
+                    <dd className="text-sm font-medium text-gray-900">
+                      {formatBytes(volumeSyncStatus?.total_size_bytes ?? 0)}
+                    </dd>
+                  </div>
+
+                  {(volumeSyncStatus?.sync_in_progress ?? false) && (
+                    <div className="rounded-md border border-blue-200 bg-blue-50 p-4 space-y-1">
+                      <dt className="text-sm text-blue-600">Status</dt>
+                      <dd className="flex items-center gap-2 text-sm font-medium text-blue-700">
+                        <Spinner size="sm" />
+                        Sync in progress…
+                      </dd>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Sync History */}
+            {volumeSyncConfig && (
+              <div className="space-y-3 border-t border-gray-200 pt-6">
+                <h2 className="text-lg font-medium text-gray-900">Sync History</h2>
+                {(volumeSyncHistory ?? []).length === 0 ? (
+                  <p className="text-sm text-gray-400">No sync history</p>
                 ) : (
-                  <span className="text-sm text-gray-400">—</span>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-left text-gray-500">
+                          <th className="pb-2 pr-4">Time</th>
+                          <th className="pb-2 pr-4">Status</th>
+                          <th className="pb-2 pr-4">Files</th>
+                          <th className="pb-2 pr-4">Bytes</th>
+                          <th className="pb-2 pr-4">Duration</th>
+                          <th className="pb-2">Error</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(volumeSyncHistory ?? []).map((entry) => {
+                          const durationSec =
+                            entry?.started_at && entry?.completed_at
+                              ? Math.round(
+                                  (new Date(entry.completed_at).getTime() -
+                                    new Date(entry.started_at).getTime()) /
+                                    1000
+                                )
+                              : null
+                          return (
+                            <tr key={entry?.id ?? ''} className="border-b border-gray-100">
+                              <td className="py-1.5 pr-4 text-gray-600">
+                                {formatTime(entry?.started_at ?? null)}
+                              </td>
+                              <td className="py-1.5 pr-4">
+                                <Badge
+                                  variant={
+                                    entry?.status === 'success'
+                                      ? 'success'
+                                      : entry?.status === 'failure'
+                                        ? 'error'
+                                        : entry?.status === 'running'
+                                          ? 'info'
+                                          : 'neutral'
+                                  }
+                                >
+                                  {entry?.status ?? 'unknown'}
+                                </Badge>
+                              </td>
+                              <td className="py-1.5 pr-4 text-gray-600">
+                                {(entry?.files_transferred ?? 0).toLocaleString()}
+                              </td>
+                              <td className="py-1.5 pr-4 text-gray-600">
+                                {formatBytes(entry?.bytes_transferred ?? 0)}
+                              </td>
+                              <td className="py-1.5 pr-4 text-gray-600">
+                                {durationSec != null
+                                  ? durationSec < 60
+                                    ? `${durationSec}s`
+                                    : `${Math.floor(durationSec / 60)}m ${durationSec % 60}s`
+                                  : '—'}
+                              </td>
+                              <td className="py-1.5 text-red-600 text-xs">
+                                {entry?.error_message ?? ''}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
-              </dd>
-            </div>
-
-            <div className="rounded-md border border-gray-200 p-4 space-y-1">
-              <dt className="text-sm text-gray-500">Next Scheduled Sync</dt>
-              <dd className="text-sm font-medium text-gray-900">
-                {formatTime(volumeSyncStatus?.next_scheduled_sync ?? null)}
-              </dd>
-            </div>
-
-            <div className="rounded-md border border-gray-200 p-4 space-y-1">
-              <dt className="text-sm text-gray-500">File Count</dt>
-              <dd className="text-sm font-medium text-gray-900">
-                {(volumeSyncStatus?.total_file_count ?? 0).toLocaleString()}
-              </dd>
-            </div>
-
-            <div className="rounded-md border border-gray-200 p-4 space-y-1">
-              <dt className="text-sm text-gray-500">Total Size</dt>
-              <dd className="text-sm font-medium text-gray-900">
-                {formatBytes(volumeSyncStatus?.total_size_bytes ?? 0)}
-              </dd>
-            </div>
-
-            {(volumeSyncStatus?.sync_in_progress ?? false) && (
-              <div className="rounded-md border border-blue-200 bg-blue-50 p-4 space-y-1">
-                <dt className="text-sm text-blue-600">Status</dt>
-                <dd className="flex items-center gap-2 text-sm font-medium text-blue-700">
-                  <Spinner size="sm" />
-                  Sync in progress…
-                </dd>
               </div>
             )}
           </div>
-        </section>
-      )}
-
-      {/* ── Volume Sync History Table ── */}
-      {volumeSyncConfig && (
-        <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-3">
-          <h2 className="text-lg font-medium text-gray-900">Sync History</h2>
-          {(volumeSyncHistory ?? []).length === 0 ? (
-            <p className="text-sm text-gray-400">No sync history</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left text-gray-500">
-                    <th className="pb-2 pr-4">Time</th>
-                    <th className="pb-2 pr-4">Status</th>
-                    <th className="pb-2 pr-4">Files</th>
-                    <th className="pb-2 pr-4">Bytes</th>
-                    <th className="pb-2 pr-4">Duration</th>
-                    <th className="pb-2">Error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(volumeSyncHistory ?? []).map((entry) => {
-                    const durationSec =
-                      entry?.started_at && entry?.completed_at
-                        ? Math.round(
-                            (new Date(entry.completed_at).getTime() -
-                              new Date(entry.started_at).getTime()) /
-                              1000
-                          )
-                        : null
-                    return (
-                      <tr key={entry?.id ?? ''} className="border-b border-gray-100">
-                        <td className="py-1.5 pr-4 text-gray-600">
-                          {formatTime(entry?.started_at ?? null)}
-                        </td>
-                        <td className="py-1.5 pr-4">
-                          <Badge
-                            variant={
-                              entry?.status === 'success'
-                                ? 'success'
-                                : entry?.status === 'failure'
-                                  ? 'error'
-                                  : entry?.status === 'running'
-                                    ? 'info'
-                                    : 'neutral'
-                            }
-                          >
-                            {entry?.status ?? 'unknown'}
-                          </Badge>
-                        </td>
-                        <td className="py-1.5 pr-4 text-gray-600">
-                          {(entry?.files_transferred ?? 0).toLocaleString()}
-                        </td>
-                        <td className="py-1.5 pr-4 text-gray-600">
-                          {formatBytes(entry?.bytes_transferred ?? 0)}
-                        </td>
-                        <td className="py-1.5 pr-4 text-gray-600">
-                          {durationSec != null
-                            ? durationSec < 60
-                              ? `${durationSec}s`
-                              : `${Math.floor(durationSec / 60)}m ${durationSec % 60}s`
-                            : '—'}
-                        </td>
-                        <td className="py-1.5 text-red-600 text-xs">
-                          {entry?.error_message ?? ''}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      )}
+        )}
+      </section>
 
       {/* ── HA Event Log Table (Task 8.8) ── */}
       {hasHaConfig && (
@@ -3017,6 +3046,9 @@ export function HAReplication() {
           )}
         </section>
       )}
+
+      {/* ── Setup Guide (collapsed by default) ── */}
+      <SetupGuide configured={hasHaConfig} />
 
       {/* ── Action Confirmation Modal ── */}
       <Modal
