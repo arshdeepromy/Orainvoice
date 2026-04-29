@@ -166,6 +166,29 @@ class ReplicationStatusResponse(BaseModel):
     last_replicated_at: str | None = None
     tables_published: int
     is_healthy: bool
+    subscription_connected: bool = Field(
+        default=False,
+        description="True when pg_stat_subscription shows an active worker (pid IS NOT NULL)",
+    )
+    last_msg_receipt_time: str | None = Field(
+        default=None,
+        description="ISO timestamp of last WAL message received from publisher",
+    )
+    last_msg_send_time: str | None = Field(
+        default=None,
+        description="ISO timestamp of last WAL message sent by publisher",
+    )
+
+
+class ReplicationHealthCheckResponse(BaseModel):
+    """Response for GET /api/v1/ha/replication/health-check."""
+
+    status: str = Field(description="'healthy' | 'warning' | 'critical' | 'unknown'")
+    local_counts: dict = Field(default_factory=dict, description="Row counts for key tables on this node")
+    peer_counts: dict | None = Field(default=None, description="Row counts for key tables on peer node, or None if unreachable")
+    mismatched_tables: list[str] = Field(default_factory=list, description="Tables where counts differ significantly")
+    error: str | None = None
+    checked_at: str = Field(description="ISO 8601 timestamp of when the check was performed")
 
 
 class ReplicationSlot(BaseModel):

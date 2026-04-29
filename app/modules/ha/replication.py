@@ -574,6 +574,9 @@ class ReplicationManager:
         last_replicated: str | None = None
         tables_published: int = 0
         is_healthy: bool = False
+        subscription_connected: bool = False
+        last_msg_receipt_time: str | None = None
+        last_msg_send_time: str | None = None
 
         try:
             # Check publication (only exists on primary)
@@ -615,7 +618,7 @@ class ReplicationManager:
             logger.debug("Could not query subscription info: %s", exc)
 
         try:
-            # Get lag and last message time from pg_stat_subscription
+            # Get lag, last message times, and connection status from pg_stat_subscription
             # Use GREATEST of send and receipt times for more accurate lag
             # (last_msg_send_time updates on keepalives; last_msg_receipt_time
             # updates only when data arrives — GREATEST gives the most recent
@@ -624,7 +627,10 @@ class ReplicationManager:
                 text(
                     "SELECT "
                     "  EXTRACT(EPOCH FROM (now() - GREATEST(last_msg_send_time, last_msg_receipt_time))) AS lag_seconds, "
-                    "  GREATEST(last_msg_send_time, last_msg_receipt_time) "
+                    "  GREATEST(last_msg_send_time, last_msg_receipt_time), "
+                    "  pid IS NOT NULL AS connected, "
+                    "  last_msg_receipt_time, "
+                    "  last_msg_send_time "
                     "FROM pg_stat_subscription "
                     "WHERE subname = :name"
                 ),
@@ -634,6 +640,9 @@ class ReplicationManager:
             if row:
                 lag_seconds = float(row[0]) if row[0] is not None else None
                 last_replicated = row[1].isoformat() if row[1] is not None else None
+                subscription_connected = bool(row[2]) if row[2] is not None else False
+                last_msg_receipt_time = row[3].isoformat() if row[3] is not None else None
+                last_msg_send_time = row[4].isoformat() if row[4] is not None else None
         except Exception as exc:
             logger.debug("Could not query replication lag: %s", exc)
 
@@ -653,6 +662,9 @@ class ReplicationManager:
             last_replicated_at=last_replicated,
             tables_published=tables_published,
             is_healthy=is_healthy,
+            subscription_connected=subscription_connected,
+            last_msg_receipt_time=last_msg_receipt_time,
+            last_msg_send_time=last_msg_send_time,
         )
 
     @staticmethod

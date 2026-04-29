@@ -49,6 +49,18 @@ interface ReplicationStatus {
   last_replicated_at: string | null
   tables_published: number
   is_healthy: boolean
+  subscription_connected: boolean
+  last_msg_receipt_time: string | null
+  last_msg_send_time: string | null
+}
+
+interface ReplicationHealthCheck {
+  status: string // healthy | warning | critical | unknown
+  local_counts: Record<string, number>
+  peer_counts: Record<string, number> | null
+  mismatched_tables: string[]
+  error: string | null
+  checked_at: string
 }
 
 interface FailoverStatus {
@@ -384,6 +396,10 @@ export function HAReplication() {
   // Track whether initial form state has been populated
   const [formInitialized, setFormInitialized] = useState(false)
 
+  // Replication health check state
+  const [healthCheck, setHealthCheck] = useState<ReplicationHealthCheck | null>(null)
+  const [healthCheckLoading, setHealthCheckLoading] = useState(false)
+
   // Volume sync state
   const [volumeSyncConfig, setVolumeSyncConfig] = useState<VolumeSyncConfig | null>(null)
   const [volumeSyncStatus, setVolumeSyncStatus] = useState<VolumeSyncStatus | null>(null)
@@ -469,6 +485,40 @@ export function HAReplication() {
     const interval = setInterval(fetchData, 10_000)
     return () => clearInterval(interval)
   }, [fetchData])
+
+  /* ---- Health check polling (30s interval) ---- */
+  useEffect(() => {
+    if (!config || config.role === 'standalone') return
+
+    const controller = new AbortController()
+    let intervalId: ReturnType<typeof setInterval> | null = null
+
+    const fetchHealthCheck = async () => {
+      setHealthCheckLoading(true)
+      try {
+        const res = await apiClient.get<ReplicationHealthCheck>('/ha/replication/health-check', {
+          signal: controller.signal,
+        })
+        setHealthCheck(res.data ?? null)
+      } catch (err: unknown) {
+        if (!controller.signal.aborted) {
+          setHealthCheck(null)
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setHealthCheckLoading(false)
+        }
+      }
+    }
+
+    fetchHealthCheck()
+    intervalId = setInterval(fetchHealthCheck, 30_000)
+
+    return () => {
+      controller.abort()
+      if (intervalId) clearInterval(intervalId)
+    }
+  }, [config])
 
   /* ---- Save config ---- */
   const handleSaveConfig = async () => {
@@ -2249,6 +2299,155 @@ export function HAReplication() {
             </div>
           </section>
 
+          {/* Replication Health Check */}
+          <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-medium text-gray-900">Replication Health</h2>
+              {healthCheck && (
+                <Badge
+                  variant={
+                    healthCheck.status === 'healthy' ? 'success'
+                      : healthCheck.status === 'warning' ? 'warning'
+                      : healthCheck.status === 'critical' ? 'error'
+                      : 'neutral'
+                  }
+                >
+                  {healthCheck.status === 'healthy' ? 'Healthy'
+                    : healthCheck.status === 'warning' ? 'Warning'
+                    : healthCheck.status === 'critical' ? 'Critical'
+                    : 'Unknown'}
+                </Badge>
+              )}
+            </div>
+
+            {/* Data Freshness Warning Banner */}
+            {replication?.last_msg_receipt_time && (() => {
+              const receiptAge = (Date.now() - new Date(replication.last_msg_receipt_time ?? '').getTime()) / 1000
+              if (receiptAge > 300) {
+                return (
+                  <AlertBanner variant="warning" title="Data may be stale">
+                    No data received from publisher in {Math.round(receiptAge / 60)} minutes. Replication may be broken.
+                  </AlertBanner>
+                )
+              }
+              return null
+            })()}
+
+            {/* Subscription Connection Status */}
+            {replication && replication.subscription_name && (
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="rounded-md border border-gray-200 p-4 space-y-1">
+                  <dt className="text-sm text-gray-500">Subscription Connected</dt>
+                  <dd className="flex items-center gap-2">
+                    <span
+                      className={`inline-block h-2.5 w-2.5 rounded-full ${
+                        replication.subscription_connected ? 'bg-green-500' : 'bg-red-500'
+                      }`}
+                    />
+                    <span className={`text-sm font-medium ${
+                      replication.subscription_connected ? 'text-green-700' : 'text-red-700'
+                    }`}>
+                      {replication.subscription_connected ? 'Connected' : 'Disconnected'}
+                    </span>
+                  </dd>
+                </div>
+
+                <div className="rounded-md border border-gray-200 p-4 space-y-1">
+                  <dt className="text-sm text-gray-500">Last Data Received</dt>
+                  <dd>
+                    {replication.last_msg_receipt_time ? (() => {
+                      const ageSeconds = (Date.now() - new Date(replication.last_msg_receipt_time ?? '').getTime()) / 1000
+                      const color = ageSeconds < 60 ? 'text-green-700'
+                        : ageSeconds < 300 ? 'text-yellow-700'
+                        : 'text-red-700'
+                      const label = ageSeconds < 60 ? `${Math.round(ageSeconds)}s ago`
+                        : ageSeconds < 3600 ? `${Math.round(ageSeconds / 60)}m ago`
+                        : `${Math.round(ageSeconds / 3600)}h ago`
+                      return <span className={`text-sm font-medium ${color}`}>{label}</span>
+                    })() : (
+                      <span className="text-sm text-gray-400">—</span>
+                    )}
+                  </dd>
+                </div>
+
+                <div className="rounded-md border border-gray-200 p-4 space-y-1">
+                  <dt className="text-sm text-gray-500">Last Replicated At</dt>
+                  <dd className="text-sm font-medium text-gray-900">
+                    {replication.last_msg_receipt_time
+                      ? formatTime(replication.last_msg_receipt_time)
+                      : '—'}
+                  </dd>
+                </div>
+              </div>
+            )}
+
+            {/* Health Check Row Count Comparison */}
+            {healthCheckLoading && !healthCheck && (
+              <div className="py-4">
+                <Spinner size="sm" label="Running health check…" />
+              </div>
+            )}
+
+            {healthCheck && (
+              <div className="space-y-3">
+                {healthCheck.error && (
+                  <p className="text-sm text-red-600">{healthCheck.error}</p>
+                )}
+
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-gray-500">
+                        <th className="pb-2 pr-4">Table</th>
+                        <th className="pb-2 pr-4 text-right">Local</th>
+                        <th className="pb-2 pr-4 text-right">Peer</th>
+                        <th className="pb-2 text-right">Diff</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.keys(healthCheck.local_counts ?? {}).map((table) => {
+                        const localVal = (healthCheck.local_counts ?? {})[table] ?? 0
+                        const peerVal = healthCheck.peer_counts ? ((healthCheck.peer_counts ?? {})[table] ?? 0) : null
+                        const isMismatched = (healthCheck.mismatched_tables ?? []).includes(table)
+                        const diff = peerVal != null ? localVal - peerVal : null
+                        return (
+                          <tr
+                            key={table}
+                            className={`border-b border-gray-100 ${
+                              isMismatched
+                                ? healthCheck.status === 'critical'
+                                  ? 'bg-red-50'
+                                  : 'bg-yellow-50'
+                                : ''
+                            }`}
+                          >
+                            <td className="py-2 pr-4 font-mono text-xs">{table}</td>
+                            <td className="py-2 pr-4 text-right tabular-nums">{(localVal ?? 0).toLocaleString()}</td>
+                            <td className="py-2 pr-4 text-right tabular-nums">
+                              {peerVal != null ? (peerVal ?? 0).toLocaleString() : (
+                                <span className="text-gray-400">unreachable</span>
+                              )}
+                            </td>
+                            <td className={`py-2 text-right tabular-nums ${
+                              isMismatched ? 'font-medium text-red-600' : 'text-gray-500'
+                            }`}>
+                              {diff != null ? (diff > 0 ? `+${diff}` : String(diff)) : '—'}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <p className="text-xs text-gray-400">
+                  Last checked: {formatTime(healthCheck.checked_at ?? null)}
+                  {healthCheckLoading && ' — refreshing…'}
+                </p>
+              </div>
+            )}
+          </section>
+
           {/* Replication Details */}
           {replication && (
             <section className="rounded-lg border border-gray-200 bg-white p-6 space-y-3">
@@ -2271,6 +2470,21 @@ export function HAReplication() {
                   </dd>
                 </div>
                 <div>
+                  <dt className="text-gray-500">Connected</dt>
+                  <dd className="flex items-center gap-1.5">
+                    <span
+                      className={`inline-block h-2 w-2 rounded-full ${
+                        replication.subscription_connected ? 'bg-green-500' : 'bg-red-500'
+                      }`}
+                    />
+                    <span className={`text-xs ${
+                      replication.subscription_connected ? 'text-green-700' : 'text-red-700'
+                    }`}>
+                      {replication.subscription_connected ? 'Yes' : 'No'}
+                    </span>
+                  </dd>
+                </div>
+                <div>
                   <dt className="text-gray-500">Tables Published</dt>
                   <dd>{replication.tables_published}</dd>
                 </div>
@@ -2281,6 +2495,10 @@ export function HAReplication() {
                 <div>
                   <dt className="text-gray-500">Last Replicated</dt>
                   <dd>{formatTime(replication.last_replicated_at)}</dd>
+                </div>
+                <div>
+                  <dt className="text-gray-500">Last Msg Send</dt>
+                  <dd className="text-xs">{formatTime(replication.last_msg_send_time)}</dd>
                 </div>
               </dl>
             </section>

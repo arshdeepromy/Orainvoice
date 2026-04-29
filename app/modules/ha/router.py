@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session, async_session_factory
@@ -37,6 +38,7 @@ from app.modules.ha.schemas import (
     PeerDBTestRequest,
     PromoteRequest,
     PublicStatusResponse,
+    ReplicationHealthCheckResponse,
     ReplicationStatusResponse,
     WizardAuthenticateRequest,
     WizardAuthenticateResponse,
@@ -507,6 +509,126 @@ async def replication_status(db: AsyncSession = Depends(get_db_session)):
     except Exception as exc:
         logger.error("Replication status error: %s", exc)
         return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+@admin_router.get(
+    "/replication/health-check",
+    response_model=ReplicationHealthCheckResponse,
+    summary="Compare row counts between local and peer databases",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+)
+async def replication_health_check(db: AsyncSession = Depends(get_db_session)):
+    """Query row counts of key tables on local and peer databases and compare them.
+
+    Returns a health status based on count differences:
+    - healthy: all counts match (within 5% tolerance for large tables)
+    - warning: counts differ by more than 5% but less than 50%
+    - critical: counts differ by more than 50% or peer is unreachable
+    - unknown: peer DB not configured
+    """
+    import asyncio
+    import asyncpg
+
+    checked_at = datetime.now(timezone.utc).isoformat()
+    key_tables = ["users", "customers", "invoices", "organisations"]
+
+    # --- Query local counts ---
+    local_counts: dict[str, int] = {}
+    try:
+        for table in key_tables:
+            result = await db.execute(
+                text(f"SELECT COUNT(*) FROM {table}")  # noqa: S608 — table names are hardcoded
+            )
+            local_counts[table] = result.scalar() or 0
+    except Exception as exc:
+        logger.error("Health check — failed to query local counts: %s", exc)
+        return ReplicationHealthCheckResponse(
+            status="unknown",
+            local_counts=local_counts,
+            peer_counts=None,
+            mismatched_tables=[],
+            error=f"Failed to query local database: {exc}",
+            checked_at=checked_at,
+        )
+
+    # --- Query peer counts ---
+    peer_db_url = await get_peer_db_url(db)
+    if not peer_db_url:
+        return ReplicationHealthCheckResponse(
+            status="unknown",
+            local_counts=local_counts,
+            peer_counts=None,
+            mismatched_tables=[],
+            error="Peer database not configured",
+            checked_at=checked_at,
+        )
+
+    peer_counts: dict[str, int] = {}
+    try:
+        # Convert SQLAlchemy-style URL to plain postgresql:// for asyncpg
+        dsn = peer_db_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        conn = await asyncio.wait_for(asyncpg.connect(dsn), timeout=5.0)
+        try:
+            for table in key_tables:
+                row = await conn.fetchval(f"SELECT COUNT(*) FROM {table}")  # noqa: S608
+                peer_counts[table] = row or 0
+        finally:
+            await conn.close()
+    except asyncio.TimeoutError:
+        return ReplicationHealthCheckResponse(
+            status="critical",
+            local_counts=local_counts,
+            peer_counts=None,
+            mismatched_tables=[],
+            error="Peer database connection timed out (5s)",
+            checked_at=checked_at,
+        )
+    except Exception as exc:
+        return ReplicationHealthCheckResponse(
+            status="critical",
+            local_counts=local_counts,
+            peer_counts=None,
+            mismatched_tables=[],
+            error=f"Peer database unreachable: {exc}",
+            checked_at=checked_at,
+        )
+
+    # --- Compare counts ---
+    mismatched: list[str] = []
+    worst_status = "healthy"
+
+    for table in key_tables:
+        local_val = local_counts.get(table, 0)
+        peer_val = peer_counts.get(table, 0)
+        max_val = max(local_val, peer_val)
+
+        if local_val == peer_val:
+            continue  # exact match
+
+        if max_val == 0:
+            continue  # both zero
+
+        diff_pct = abs(local_val - peer_val) / max_val * 100
+
+        if diff_pct > 50:
+            mismatched.append(table)
+            worst_status = "critical"
+        elif diff_pct > 5:
+            mismatched.append(table)
+            if worst_status != "critical":
+                worst_status = "warning"
+
+    return ReplicationHealthCheckResponse(
+        status=worst_status,
+        local_counts=local_counts,
+        peer_counts=peer_counts,
+        mismatched_tables=mismatched,
+        error=None,
+        checked_at=checked_at,
+    )
 
 
 @admin_router.post(
