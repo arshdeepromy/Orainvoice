@@ -1275,14 +1275,16 @@ export default function InvoiceCreate() {
     setSaving(true)
     try {
       if (isEditMode && editId) {
-        await apiClient.put(`/invoices/${editId}`, buildPayload('draft'))
+        const res = await apiClient.put(`/invoices/${editId}`, buildPayload('draft'))
         await maybeSaveTermsAsDefault()
-        navigate(`/invoices/${editId}`)
+        const inv = (res.data as any)?.invoice || res.data
+        navigate(`/invoices/${editId}`, { state: { invoice: inv } })
       } else {
         const res = await apiClient.post('/invoices', buildPayload('draft'))
         await maybeSaveTermsAsDefault()
-        const newId = (res.data as any)?.id || (res.data as any)?.invoice?.id
-        navigate(newId ? `/invoices/${newId}` : '/invoices')
+        const inv = (res.data as any)?.invoice || res.data
+        const newId = inv?.id
+        navigate(newId ? `/invoices/${newId}` : '/invoices', newId ? { state: { invoice: inv } } : undefined)
       }
     } catch (err: unknown) {
       const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to save draft. Please try again.')
@@ -1297,14 +1299,16 @@ export default function InvoiceCreate() {
     setSaving(true)
     try {
       if (isEditMode && editId) {
-        await apiClient.put(`/invoices/${editId}`, buildPayload('sent'))
+        const res = await apiClient.put(`/invoices/${editId}`, buildPayload('sent'))
         await maybeSaveTermsAsDefault()
-        navigate(`/invoices/${editId}`)
+        const inv = (res.data as any)?.invoice || res.data
+        navigate(`/invoices/${editId}`, { state: { invoice: inv } })
       } else {
         const res = await apiClient.post('/invoices', buildPayload('sent'))
         await maybeSaveTermsAsDefault()
-        const newId = (res.data as any)?.id || (res.data as any)?.invoice?.id
-        navigate(newId ? `/invoices/${newId}` : '/invoices')
+        const inv = (res.data as any)?.invoice || res.data
+        const newId = inv?.id
+        navigate(newId ? `/invoices/${newId}` : '/invoices', newId ? { state: { invoice: inv } } : undefined)
       }
     } catch (err: unknown) {
       const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to send invoice. Please try again.')
@@ -1347,8 +1351,12 @@ export default function InvoiceCreate() {
       // 4. Send email (fire-and-forget — don't block UI)
       apiClient.post(`/invoices/${invoiceId}/email`).catch(() => {})
 
+      // Fetch final state to pass to detail page
+      const finalRes = await apiClient.get(`/invoices/${invoiceId}`)
+      const finalInv = (finalRes.data as any)?.invoice || finalRes.data
+
       setPaidModalOpen(false)
-      navigate(`/invoices/${invoiceId}`)
+      navigate(`/invoices/${invoiceId}`, { state: { invoice: finalInv } })
     } catch {
       setErrors({ submit: 'Failed to process. Please try again.' })
     } finally {

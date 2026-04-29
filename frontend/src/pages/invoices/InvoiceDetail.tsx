@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Modal } from '../../components/ui'
 import { ModuleGate } from '../../components/common/ModuleGate'
@@ -253,6 +253,7 @@ const PRINT_STYLES = `
 export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const { tradeFamily } = useTenant()
   const { isEnabled: isModuleEnabled } = useModules()
   const smsEnabled = isModuleEnabled('sms')
@@ -313,7 +314,6 @@ export default function InvoiceDetail() {
     setError('')
     try {
       const res = await apiClient.get(`/invoices/${id}`)
-      // API wraps response in { invoice: {...} }
       const data = res.data?.invoice || res.data
       setInvoice(data)
     } catch {
@@ -323,7 +323,20 @@ export default function InvoiceDetail() {
     }
   }, [id])
 
-  useEffect(() => { fetchInvoice() }, [fetchInvoice])
+  // Use router state for instant display, then refresh in background
+  useEffect(() => {
+    const passedInvoice = (location.state as { invoice?: Record<string, unknown> } | null)?.invoice
+    if (passedInvoice) {
+      setInvoice(passedInvoice)
+      setLoading(false)
+      // Clear the state so browser back/forward doesn't reuse stale data
+      window.history.replaceState({}, '')
+      // Still refresh in background to get the latest (e.g. payment status)
+      fetchInvoice()
+    } else {
+      fetchInvoice()
+    }
+  }, [fetchInvoice, location.state])
 
   /* ---- Fetch org Stripe Connect status ---- */
   useEffect(() => {
