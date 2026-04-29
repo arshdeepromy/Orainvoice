@@ -1186,7 +1186,8 @@ export function HAReplication() {
   const lagSeconds = replication?.replication_lag_seconds ?? null
   const isStandbyInit = modalAction === 'init-replication' && config?.role === 'standby'
   const isDemoteAndSync = modalAction === 'demote-and-sync'
-  const needsConfirmText = modalAction && (['promote', 'demote', 'resync', 'stop-replication', 'demote-and-sync'].includes(modalAction) || isStandbyInit)
+  const needsConfirmText = modalAction && (['promote', 'demote', 'resync', 'stop-replication', 'demote-and-sync', 'reset-ha'].includes(modalAction) || isStandbyInit)
+  const needsReason = modalAction && ['promote', 'demote', 'resync', 'demote-and-sync'].includes(modalAction)
   const showForceCheckbox = modalAction === 'promote' && lagSeconds != null && lagSeconds > 5
 
   // Determine if replication is broken (for recovery options)
@@ -3133,12 +3134,14 @@ export function HAReplication() {
 
           {needsConfirmText && (
             <>
-              <Input
-                label="Reason"
-                placeholder="e.g. Rolling update, maintenance"
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-              />
+              {needsReason && (
+                <Input
+                  label="Reason"
+                  placeholder="e.g. Rolling update, maintenance"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                />
+              )}
               {showForceCheckbox && (
                 <label className="flex items-center gap-2 text-sm text-amber-700">
                   <input
@@ -3166,7 +3169,7 @@ export function HAReplication() {
             <Button
               variant={modalAction === 'demote' || modalAction === 'resync' || modalAction === 'stop-replication' || modalAction === 'demote-and-sync' || modalAction === 'reset-ha' ? 'danger' : 'primary'}
               size="sm"
-              disabled={needsConfirmText ? (confirmText !== 'CONFIRM' || !reason.trim()) : false}
+              disabled={needsConfirmText ? (confirmText !== 'CONFIRM' || (needsReason && !reason.trim())) : false}
               loading={actionLoading}
               onClick={handleAction}
             >
