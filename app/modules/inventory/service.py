@@ -668,9 +668,14 @@ async def generate_purchase_order_pdf(
         "phone": settings.get("phone", ""),
         "email": settings.get("email", ""),
         "gst_number": settings.get("gst_number", ""),
-        "logo_url": settings.get("logo_url", ""),
+        "logo_url": None,
         "primary_colour": settings.get("primary_colour", "#1a1a1a"),
     }
+
+    # Resolve logo for PDF rendering (base64 data URI for WeasyPrint)
+    if org:
+        from app.core.pdf_utils import resolve_logo_for_pdf
+        org_ctx["logo_url"] = resolve_logo_for_pdf(org)
 
     from datetime import datetime, timezone
 

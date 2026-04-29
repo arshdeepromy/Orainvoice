@@ -691,7 +691,7 @@ async def generate_quote_pdf(
     settings = org.settings or {}
     org_context = {
         "name": org.name,
-        "logo_url": settings.get("logo_url"),
+        "logo_url": None,
         "primary_colour": settings.get("primary_colour", "#1a1a1a"),
         "secondary_colour": settings.get("secondary_colour"),
         "address": settings.get("address"),
@@ -700,6 +700,10 @@ async def generate_quote_pdf(
         "gst_number": settings.get("gst_number"),
         "invoice_footer": settings.get("invoice_footer"),
     }
+
+    # Resolve logo for PDF rendering (base64 data URI for WeasyPrint)
+    from app.core.pdf_utils import resolve_logo_for_pdf
+    org_context["logo_url"] = resolve_logo_for_pdf(org)
 
     gst_percentage = settings.get("gst_percentage", 15)
     terms_and_conditions = settings.get("terms_and_conditions", "")

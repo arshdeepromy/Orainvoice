@@ -85,7 +85,7 @@ async def generate_service_history_pdf(
     settings = org.settings or {}
     org_context = {
         "name": org.name,
-        "logo_url": settings.get("logo_url"),
+        "logo_url": None,
         "address": ", ".join(
             filter(
                 None,
@@ -104,6 +104,10 @@ async def generate_service_history_pdf(
         "email": settings.get("email"),
         "gst_number": settings.get("gst_number"),
     }
+
+    # Resolve logo for PDF rendering (base64 data URI for WeasyPrint)
+    from app.core.pdf_utils import resolve_logo_for_pdf
+    org_context["logo_url"] = resolve_logo_for_pdf(org)
 
     # ------------------------------------------------------------------
     # 2. Fetch vehicle (global or org-scoped)
@@ -368,7 +372,7 @@ async def email_service_history_report(
 
     org_context = {
         "name": org_name,
-        "logo_url": settings.get("logo_url"),
+        "logo_url": None,
         "address": ", ".join(
             filter(
                 None,
@@ -386,6 +390,11 @@ async def email_service_history_report(
         "phone": settings.get("phone"),
         "email": settings.get("email"),
     }
+
+    # Resolve logo for PDF rendering
+    if org:
+        from app.core.pdf_utils import resolve_logo_for_pdf
+        org_context["logo_url"] = resolve_logo_for_pdf(org)
 
     vehicle_context = {
         "rego": rego,
