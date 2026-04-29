@@ -746,6 +746,104 @@ async def replication_stop(request: Request):
 
 
 @admin_router.post(
+    "/reset",
+    summary="Reset HA — drop all replication objects and set role to standalone",
+    responses={
+        200: {"description": "HA reset to standalone"},
+        400: {"description": "Reset failed"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Global_Admin role required"},
+    },
+)
+async def reset_ha(request: Request):
+    """Drop all replication objects (publication + subscription) and reset
+    the node's role to standalone.
+
+    This is the "nuclear option" for when HA is broken and you want to
+    start completely fresh. Does NOT delete data — only removes replication
+    objects and resets the ha_config role.
+
+    Requires typing CONFIRM in the frontend modal.
+    """
+    from app.modules.ha.event_log import log_ha_event
+
+    errors: list[str] = []
+
+    # --- Drop publication (if primary) ---
+    try:
+        await ReplicationManager.drop_publication(None)
+    except Exception as exc:
+        errors.append(f"drop publication: {exc}")
+
+    # --- Drop subscription (if standby) ---
+    try:
+        await ReplicationManager.drop_subscription(None)
+    except Exception as exc:
+        errors.append(f"drop subscription: {exc}")
+
+    # --- Drop orphaned replication slots ---
+    try:
+        conn = await ReplicationManager._get_raw_conn()
+        try:
+            slots = await conn.fetch(
+                "SELECT slot_name, active FROM pg_replication_slots"
+            )
+            for slot in slots:
+                if not slot["active"]:
+                    await conn.execute(
+                        f"SELECT pg_drop_replication_slot('{slot['slot_name']}')"
+                    )
+        finally:
+            await conn.close()
+    except Exception as exc:
+        errors.append(f"drop slots: {exc}")
+
+    # --- Reset ha_config role to standalone ---
+    try:
+        async with async_session_factory() as db:
+            async with db.begin():
+                from app.modules.ha.models import HAConfig
+                from sqlalchemy import select as _sel
+
+                result = await db.execute(_sel(HAConfig).limit(1))
+                cfg = result.scalars().first()
+                if cfg:
+                    cfg.role = "standalone"
+                    cfg.promoted_at = None
+                    from app.modules.ha.middleware import set_node_role
+                    set_node_role("standalone", cfg.peer_endpoint)
+    except Exception as exc:
+        errors.append(f"reset config: {exc}")
+
+    # --- Stop heartbeat service ---
+    try:
+        from app.modules.ha.service import _heartbeat_service
+        if _heartbeat_service is not None:
+            await _heartbeat_service.stop()
+    except Exception:
+        pass
+
+    # --- Log event ---
+    try:
+        await log_ha_event(
+            event_type="config_change",
+            severity="warning",
+            message="HA reset to standalone — all replication objects dropped",
+            details={"errors": errors} if errors else None,
+        )
+    except Exception:
+        pass
+
+    if errors:
+        return {
+            "status": "ok",
+            "message": "HA reset to standalone (some cleanup errors — see details)",
+            "errors": errors,
+        }
+    return {"status": "ok", "message": "HA reset to standalone — all replication objects removed"}
+
+
+@admin_router.post(
     "/test-db-connection",
     summary="Test peer database connection",
     responses={

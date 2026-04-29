@@ -74,7 +74,7 @@ interface FailoverStatus {
   peer_role?: string
 }
 
-type ModalAction = 'promote' | 'demote' | 'init-replication' | 'stop-replication' | 'resync' | 'maintenance-enter' | 'maintenance-exit' | 'demote-and-sync' | null
+type ModalAction = 'promote' | 'demote' | 'init-replication' | 'stop-replication' | 'resync' | 'maintenance-enter' | 'maintenance-exit' | 'demote-and-sync' | 'reset-ha' | null
 
 interface VolumeSyncConfig {
   id: string
@@ -624,7 +624,7 @@ export function HAReplication() {
 
   const handleAction = async () => {
     if (!modalAction) return
-    const needsConfirm = ['promote', 'demote', 'resync', 'stop-replication', 'demote-and-sync'].includes(modalAction)
+    const needsConfirm = ['promote', 'demote', 'resync', 'stop-replication', 'demote-and-sync', 'reset-ha'].includes(modalAction)
       || (modalAction === 'init-replication' && config?.role === 'standby')
     if (needsConfirm && confirmText !== 'CONFIRM') return
 
@@ -659,6 +659,9 @@ export function HAReplication() {
           break
         case 'demote-and-sync':
           await apiClient.post('/ha/demote-and-sync', { confirmation_text: 'CONFIRM', reason })
+          break
+        case 'reset-ha':
+          await apiClient.post('/ha/reset')
           break
       }
       closeModal()
@@ -1204,6 +1207,7 @@ export function HAReplication() {
     'maintenance-enter': 'Enter Maintenance Mode',
     'maintenance-exit': 'Exit Maintenance Mode',
     'demote-and-sync': 'Role Conflict Detected',
+    'reset-ha': 'Reset HA to Standalone',
   }
 
   const modalDescriptions: Record<string, string> = {
@@ -1217,6 +1221,7 @@ export function HAReplication() {
     'maintenance-enter': 'This will put the node in maintenance mode. Heartbeat checks will report maintenance status.',
     'maintenance-exit': 'This will take the node out of maintenance mode and resume normal operation.',
     'demote-and-sync': 'This node was previously primary but another node has been promoted more recently. To restore the cluster to a healthy state, this node will be demoted to standby and will sync all data from the new primary.',
+    'reset-ha': 'This will drop all replication objects (publication, subscription, replication slots) and reset this node to standalone mode. Your data will NOT be deleted — only the replication configuration is removed. You can re-run the setup wizard afterwards.',
   }
 
   if (loading) {
@@ -2079,17 +2084,26 @@ export function HAReplication() {
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-gray-500">Connected</span>
-                  <span
-                    className={`inline-block h-2 w-2 rounded-full ${
-                      replication.subscription_connected ? 'bg-green-500' : 'bg-red-500'
-                    }`}
-                  />
-                  <span className={`text-xs ${
-                    replication.subscription_connected ? 'text-green-700' : 'text-red-700'
-                  }`}>
-                    {replication.subscription_connected ? 'Yes' : 'No'}
-                  </span>
+                  <span className="text-gray-500">{config.role === 'primary' ? 'Role' : 'Connected'}</span>
+                  {config.role === 'primary' ? (
+                    <>
+                      <span className="inline-block h-2 w-2 rounded-full bg-blue-500" />
+                      <span className="text-xs text-blue-700">Publisher</span>
+                    </>
+                  ) : (
+                    <>
+                      <span
+                        className={`inline-block h-2 w-2 rounded-full ${
+                          replication.subscription_connected ? 'bg-green-500' : 'bg-red-500'
+                        }`}
+                      />
+                      <span className={`text-xs ${
+                        replication.subscription_connected ? 'text-green-700' : 'text-red-700'
+                      }`}>
+                        {replication.subscription_connected ? 'Yes' : 'No'}
+                      </span>
+                    </>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-gray-500">Lag</span>
@@ -2135,8 +2149,8 @@ export function HAReplication() {
               return null
             })()}
 
-            {/* Subscription Connection Status */}
-            {replication && replication.subscription_name && (
+            {/* Subscription Connection Status — role-aware */}
+            {replication && replication.subscription_name && config.role === 'standby' && (
               <div className="grid gap-4 sm:grid-cols-3">
                 <div className="rounded-md border border-gray-200 p-4 space-y-1">
                   <dt className="text-sm text-gray-500">Subscription Connected</dt>
@@ -2284,6 +2298,9 @@ export function HAReplication() {
                   Exit Maintenance Mode
                 </Button>
               )}
+              <Button variant="danger" size="sm" onClick={() => openModal('reset-ha')}>
+                Reset HA
+              </Button>
             </div>
           </section>
 
@@ -3114,7 +3131,7 @@ export function HAReplication() {
               {isDemoteAndSync ? 'Dismiss' : 'Cancel'}
             </Button>
             <Button
-              variant={modalAction === 'demote' || modalAction === 'resync' || modalAction === 'stop-replication' || modalAction === 'demote-and-sync' ? 'danger' : 'primary'}
+              variant={modalAction === 'demote' || modalAction === 'resync' || modalAction === 'stop-replication' || modalAction === 'demote-and-sync' || modalAction === 'reset-ha' ? 'danger' : 'primary'}
               size="sm"
               disabled={needsConfirmText ? (confirmText !== 'CONFIRM' || !reason.trim()) : false}
               loading={actionLoading}
