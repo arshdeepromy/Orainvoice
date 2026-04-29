@@ -645,9 +645,29 @@ async def replication_resync(
 ):
     """Drop and re-create the subscription with ``copy_data=true`` for a full re-sync.
 
+    **SAFETY: Only allowed on standby nodes.** Running this on a primary
+    would truncate all production data. The backend rejects the request
+    if the node's role is 'primary'.
+
     Uses the same session-free pattern as replication_init to avoid
     idle_in_transaction_session_timeout killing the connection.
     """
+    # --- Safety check: NEVER allow resync on primary ---
+    try:
+        async with async_session_factory() as check_db:
+            async with check_db.begin():
+                cfg = await HAService.get_config(check_db)
+                if cfg and cfg.role == "primary":
+                    return JSONResponse(
+                        status_code=400,
+                        content={
+                            "detail": "Re-sync is not allowed on a primary node — it would truncate all data. "
+                                      "Run re-sync on the standby node instead."
+                        },
+                    )
+    except Exception:
+        pass  # If we can't check, proceed with caution (peer_db_url check below will catch unconfigured nodes)
+
     # --- Phase 1: read peer_db_url using a short-lived session -----------
     peer_db_url = None
     try:

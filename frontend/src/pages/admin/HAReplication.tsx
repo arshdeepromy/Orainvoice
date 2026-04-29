@@ -2270,9 +2270,11 @@ export function HAReplication() {
               <Button variant="danger" size="sm" onClick={() => openModal('stop-replication')}>
                 Stop Replication
               </Button>
-              <Button variant="secondary" size="sm" onClick={() => openModal('resync')}>
-                Trigger Re-sync
-              </Button>
+              {config.role === 'standby' && (
+                <Button variant="secondary" size="sm" onClick={() => openModal('resync')}>
+                  Trigger Re-sync
+                </Button>
+              )}
               {!config.maintenance_mode ? (
                 <Button variant="secondary" size="sm" onClick={() => openModal('maintenance-enter')}>
                   Enter Maintenance Mode
