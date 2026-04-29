@@ -308,18 +308,18 @@ export default function InvoiceDetail() {
   }, [])
 
   /* ---- Fetch invoice ---- */
-  const fetchInvoice = useCallback(async () => {
+  const fetchInvoice = useCallback(async (showSpinner = true) => {
     if (!id) return
-    setLoading(true)
+    if (showSpinner) setLoading(true)
     setError('')
     try {
       const res = await apiClient.get(`/invoices/${id}`)
       const data = res.data?.invoice || res.data
       setInvoice(data)
     } catch {
-      setError('Failed to load invoice. Please try again.')
+      if (showSpinner) setError('Failed to load invoice. Please try again.')
     } finally {
-      setLoading(false)
+      if (showSpinner) setLoading(false)
     }
   }, [id])
 
@@ -331,10 +331,10 @@ export default function InvoiceDetail() {
       setLoading(false)
       // Clear the state so browser back/forward doesn't reuse stale data
       window.history.replaceState({}, '')
-      // Still refresh in background to get the latest (e.g. payment status)
-      fetchInvoice()
+      // Silent background refresh to pick up server-side changes
+      fetchInvoice(false)
     } else {
-      fetchInvoice()
+      fetchInvoice(true)
     }
   }, [fetchInvoice, location.state])
 

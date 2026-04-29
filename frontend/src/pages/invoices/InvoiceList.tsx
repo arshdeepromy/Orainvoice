@@ -475,18 +475,18 @@ export default function InvoiceList() {
   }, [selectedId, selectedBranchId])
 
   /* --- Fetch invoice detail --- */
-  const fetchDetail = useCallback(async (invoiceId: string) => {
-    setDetailLoading(true)
+  const fetchDetail = useCallback(async (invoiceId: string, showSpinner = true) => {
+    if (showSpinner) setDetailLoading(true)
     setDetailError('')
     try {
       const res = await apiClient.get(`/invoices/${invoiceId}`)
       const d = (res.data as any)?.invoice || res.data
       setInvoice(d)
     } catch {
-      setDetailError('Failed to load invoice details.')
-      setInvoice(null)
+      if (showSpinner) setDetailError('Failed to load invoice details.')
+      if (showSpinner) setInvoice(null)
     } finally {
-      setDetailLoading(false)
+      if (showSpinner) setDetailLoading(false)
     }
   }, [])
 
@@ -507,8 +507,20 @@ export default function InvoiceList() {
 
   /* --- Load detail when selection changes --- */
   useEffect(() => {
-    if (selectedId) fetchDetail(selectedId)
-  }, [selectedId, fetchDetail])
+    if (!selectedId) return
+    // Use router state for instant display when navigating from create/edit
+    const passedInvoice = (location.state as { invoice?: Record<string, unknown> } | null)?.invoice
+    if (passedInvoice && String((passedInvoice as any)?.id) === selectedId) {
+      setInvoice(passedInvoice as any)
+      setDetailLoading(false)
+      // Clear state so back/forward doesn't reuse stale data
+      window.history.replaceState({}, '')
+      // Silent background refresh for server-side updates
+      fetchDetail(selectedId, false)
+    } else {
+      fetchDetail(selectedId)
+    }
+  }, [selectedId, fetchDetail, location.state])
 
   /* --- Clear action message after 4s --- */
   useEffect(() => {
