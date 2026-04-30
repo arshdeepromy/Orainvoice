@@ -192,6 +192,7 @@ def create_app() -> FastAPI:
     from app.modules.catalogue import fluid_oil_models as _fluid_oil_models  # noqa: F401
     from app.modules.inventory import models as _inventory_models  # noqa: F401
     from app.modules.invoices import models as _invoice_models  # noqa: F401
+    from app.modules.invoices import attachment_models as _invoice_attachment_models  # noqa: F401
     from app.modules.vehicles import models as _vehicle_models  # noqa: F401
     from app.modules.billing import models as _billing_models  # noqa: F401
     from app.modules.job_cards import models as _job_card_models  # noqa: F401
@@ -252,6 +253,8 @@ def create_app() -> FastAPI:
     app.include_router(customers_router, prefix="/api/v1/customers", tags=["customers"])
     app.include_router(vehicles_router, prefix="/api/v1/vehicles", tags=["vehicles"])
     app.include_router(invoices_router, prefix="/api/v1/invoices", tags=["invoices"])
+    from app.modules.invoices.attachment_router import router as invoice_attachment_router
+    app.include_router(invoice_attachment_router, prefix="/api/v1/invoices", tags=["invoice-attachments"])
     app.include_router(payments_router, prefix="/api/v1/payments", tags=["payments"])
     app.include_router(billing_router, prefix="/api/v1/billing", tags=["billing"])
     app.include_router(catalogue_router, prefix="/api/v1/catalogue", tags=["catalogue"])

@@ -151,6 +151,13 @@ function formatDate(date: Date): string {
   return date.toISOString().split('T')[0]
 }
 
+/** Format bytes into a human-readable file size string (e.g. "1.2 MB") */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 function calculateDueDate(invoiceDate: string, terms: string): string {
   const date = new Date(invoiceDate)
   const daysMap: Record<string, number> = {
@@ -826,6 +833,8 @@ export default function InvoiceCreate() {
   
   // Attachments
   const [attachments, setAttachments] = useState<File[]>([])
+  const [existingAttachments, setExistingAttachments] = useState<{ id: string; file_name: string; file_size: number; mime_type: string; created_at: string }[]>([])
+  const [uploading, setUploading] = useState(false)
   
   // Payment gateway
   const [paymentGateway, setPaymentGateway] = useState('cash')
@@ -854,6 +863,16 @@ export default function InvoiceCreate() {
       .catch(() => {})
     return () => controller.abort()
   }, [])
+
+  // Fetch existing attachments when editing an invoice
+  useEffect(() => {
+    if (!editId) return
+    const controller = new AbortController()
+    apiClient.get<{ attachments: { id: string; file_name: string; file_size: number; mime_type: string; created_at: string }[]; total: number }>(`/invoices/${editId}/attachments`, { signal: controller.signal })
+      .then(res => setExistingAttachments(res.data?.attachments ?? []))
+      .catch(() => {})
+    return () => controller.abort()
+  }, [editId])
 
   // Load existing invoice for edit mode
   useEffect(() => {
@@ -1173,12 +1192,29 @@ export default function InvoiceCreate() {
   // File handling
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      setAttachments(prev => [...prev, ...Array.from(e.target.files!)])
+      const totalAllowed = 5 - existingAttachments.length
+      const newFiles = Array.from(e.target.files)
+      setAttachments(prev => {
+        const remaining = totalAllowed - prev.length
+        if (remaining <= 0) return prev
+        return [...prev, ...newFiles.slice(0, remaining)]
+      })
     }
   }
 
   const removeAttachment = (index: number) => {
     setAttachments(prev => prev.filter((_, i) => i !== index))
+  }
+
+  // Delete an existing (server-side) attachment
+  const deleteExistingAttachment = async (attachmentId: string) => {
+    if (!editId) return
+    try {
+      await apiClient.delete(`/invoices/${editId}/attachments/${attachmentId}`)
+      setExistingAttachments(prev => prev.filter(a => a.id !== attachmentId))
+    } catch {
+      // Non-blocking — attachment may already be deleted
+    }
   }
 
   // Validation
@@ -1272,6 +1308,25 @@ export default function InvoiceCreate() {
     }
   }
 
+  // Upload attachments sequentially after invoice is saved
+  const uploadAttachments = async (invoiceId: string) => {
+    if (attachments.length === 0) return
+    setUploading(true)
+    for (const file of attachments) {
+      try {
+        const formData = new FormData()
+        formData.append('file', file)
+        await apiClient.post(`/invoices/${invoiceId}/attachments`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+      } catch {
+        console.warn(`Failed to upload attachment: ${file.name}`)
+      }
+    }
+    setAttachments([])
+    setUploading(false)
+  }
+
   const handleSaveDraft = async () => {
     if (!validate()) return
     setSaving(true)
@@ -1279,6 +1334,7 @@ export default function InvoiceCreate() {
       if (isEditMode && editId) {
         const res = await apiClient.put(`/invoices/${editId}`, buildPayload('draft'))
         await maybeSaveTermsAsDefault()
+        await uploadAttachments(editId)
         const inv = (res.data as any)?.invoice || res.data
         navigate(`/invoices/${editId}`, { state: { invoice: inv } })
       } else {
@@ -1286,6 +1342,7 @@ export default function InvoiceCreate() {
         await maybeSaveTermsAsDefault()
         const inv = (res.data as any)?.invoice || res.data
         const newId = inv?.id
+        if (newId) await uploadAttachments(newId)
         navigate(newId ? `/invoices/${newId}` : '/invoices', newId ? { state: { invoice: inv } } : undefined)
       }
     } catch (err: unknown) {
@@ -1303,6 +1360,7 @@ export default function InvoiceCreate() {
       if (isEditMode && editId) {
         const res = await apiClient.put(`/invoices/${editId}`, buildPayload('sent'))
         await maybeSaveTermsAsDefault()
+        await uploadAttachments(editId)
         const inv = (res.data as any)?.invoice || res.data
         navigate(`/invoices/${editId}`, { state: { invoice: inv } })
       } else {
@@ -1310,6 +1368,7 @@ export default function InvoiceCreate() {
         await maybeSaveTermsAsDefault()
         const inv = (res.data as any)?.invoice || res.data
         const newId = inv?.id
+        if (newId) await uploadAttachments(newId)
         navigate(newId ? `/invoices/${newId}` : '/invoices', newId ? { state: { invoice: inv } } : undefined)
       }
     } catch (err: unknown) {
@@ -1333,6 +1392,9 @@ export default function InvoiceCreate() {
         invoiceId = (res.data as any)?.id || (res.data as any)?.invoice?.id
       }
       if (!invoiceId) throw new Error('No invoice ID')
+
+      // 1b. Upload attachments before issuing (so they're included in the email)
+      await uploadAttachments(invoiceId)
 
       // 2. Issue the invoice (assigns number, sets status to issued)
       await apiClient.put(`/invoices/${invoiceId}/issue`)
@@ -1826,16 +1888,50 @@ export default function InvoiceCreate() {
           {/* Attach Files */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Attach File(s) to Invoice</label>
-            <div className="flex items-center gap-4">
-              <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
-                <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                </svg>
-                Upload Files
-                <input type="file" multiple onChange={handleFileChange} className="hidden" />
-              </label>
-              <span className="text-sm text-gray-500">You can upload a maximum of 5 files, 20MB each</span>
-            </div>
+
+            {/* Existing attachments (from server) */}
+            {existingAttachments.length > 0 && (
+              <div className="mb-3 space-y-2">
+                {existingAttachments.map((att) => (
+                  <div key={att.id} className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 rounded-md px-3 py-2 border border-gray-200">
+                    <svg className="h-4 w-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                    </svg>
+                    <span className="flex-1 truncate">{att.file_name}</span>
+                    <span className="text-xs text-gray-400 shrink-0">{formatFileSize(att.file_size ?? 0)}</span>
+                    <button
+                      type="button"
+                      onClick={() => deleteExistingAttachment(att.id)}
+                      className="text-red-500 hover:text-red-700 shrink-0"
+                      aria-label={`Delete ${att.file_name}`}
+                    >
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* File picker for new attachments */}
+            {(existingAttachments.length + attachments.length) < 5 && (
+              <div className="flex items-center gap-4">
+                <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+                  <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                  Upload Files
+                  <input type="file" multiple onChange={handleFileChange} className="hidden" />
+                </label>
+                <span className="text-sm text-gray-500">
+                  You can upload a maximum of {5 - existingAttachments.length - attachments.length} more file{(5 - existingAttachments.length - attachments.length) !== 1 ? 's' : ''}, 20MB each
+                </span>
+              </div>
+            )}
+            {(existingAttachments.length + attachments.length) >= 5 && (
+              <p className="text-sm text-gray-500">Maximum of 5 attachments reached.</p>
+            )}
             {attachments.length > 0 && (
               <div className="mt-3 space-y-2">
                 {attachments.map((file, index) => (
@@ -1844,9 +1940,16 @@ export default function InvoiceCreate() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
                     <span>{file.name}</span>
+                    <span className="text-xs text-gray-400">{formatFileSize(file.size)}</span>
                     <button type="button" onClick={() => removeAttachment(index)} className="text-red-500 hover:text-red-700">✕</button>
                   </div>
                 ))}
+              </div>
+            )}
+            {uploading && (
+              <div className="mt-3 flex items-center gap-2 text-sm text-blue-600">
+                <Spinner size="sm" />
+                <span>Uploading attachments...</span>
               </div>
             )}
           </div>

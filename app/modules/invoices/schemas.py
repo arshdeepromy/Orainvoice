@@ -278,6 +278,7 @@ class InvoiceResponse(BaseModel):
     fluid_usage: list[dict] = Field(default_factory=list)
     payment_page_url: str | None = None
     payment_gateway: str | None = None
+    attachment_count: int = 0
     created_by: uuid.UUID
     created_at: datetime
     updated_at: datetime
@@ -508,6 +509,7 @@ class InvoiceSearchResult(BaseModel):
     status: str
     issue_date: date | None = None
     has_stripe_payment: bool = False
+    attachment_count: int = 0
 
 
 class InvoiceListResponse(BaseModel):

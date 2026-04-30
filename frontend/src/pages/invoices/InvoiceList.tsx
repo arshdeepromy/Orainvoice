@@ -19,6 +19,7 @@ import {
 import POSReceiptPreview from '../../components/pos/POSReceiptPreview'
 import { invoiceToReceiptData } from '../../utils/invoiceReceiptMapper'
 import { resolveTemplateStyles } from '@/utils/invoiceTemplateStyles'
+import AttachmentList from '@/components/invoices/AttachmentList'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -42,6 +43,7 @@ interface InvoiceSummary {
   created_at?: string
   branch_id?: string | null
   has_stripe_payment?: boolean
+  attachment_count?: number
 }
 
 interface InvoiceListResponse {
@@ -165,6 +167,7 @@ interface InvoiceDetailData {
   org_gst_number?: string
   payment_terms?: string
   salesperson_name?: string
+  attachment_count?: number
 }
 
 /* ------------------------------------------------------------------ */
@@ -953,6 +956,9 @@ export default function InvoiceList() {
                     </span>
                   )}
                   {dueLabel && <span className={dueLabel.className}>{dueLabel.text}</span>}
+                  {(inv.attachment_count ?? 0) > 0 && (
+                    <span className="text-gray-400 text-xs">📎 {inv.attachment_count}</span>
+                  )}
                 </div>
               </button>
             )
@@ -1626,6 +1632,11 @@ export default function InvoiceList() {
               </div>
 
               {/* Vehicle info is now inside the invoice card above */}
+
+              {/* ---- Attachments ---- */}
+              {(invoice?.attachment_count ?? 0) > 0 && (
+                <AttachmentList invoiceId={invoice.id} isDraft={invoice?.status === 'draft'} />
+              )}
 
               {/* ---- Payment History ---- */}
               {(invoice.payments || []).length > 0 && (

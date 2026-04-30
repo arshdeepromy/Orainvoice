@@ -1573,6 +1573,10 @@ async def get_invoice(
         for cn in credit_notes
     ]
 
+    # Include attachment count for badge display (Req 8.5, 9.2)
+    from app.modules.invoices.attachment_service import get_attachment_count
+    result["attachment_count"] = await get_attachment_count(db, org_id=org_id, invoice_id=invoice_id)
+
     return result
 
 
@@ -2592,6 +2596,18 @@ async def search_invoices(
         > 0
     ).label("has_stripe_payment")
 
+    # Correlated subquery: attachment count per invoice (Req 8.5, 9.2)
+    from app.modules.invoices.attachment_models import InvoiceAttachment
+    attachment_count_subq = (
+        select(sa_func.count(InvoiceAttachment.id))
+        .where(
+            InvoiceAttachment.invoice_id == Invoice.id,
+            InvoiceAttachment.org_id == org_id,
+        )
+        .correlate(Invoice)
+        .scalar_subquery()
+    ).label("attachment_count")
+
     # Data query — select only the fields needed for the list view
     data_q = (
         select(
@@ -2604,6 +2620,7 @@ async def search_invoices(
             Invoice.status,
             Invoice.issue_date,
             has_stripe_payment,
+            attachment_count_subq,
         )
         .join(Customer, Invoice.customer_id == Customer.id, isouter=True)
         .where(*base_filter)
@@ -2628,6 +2645,7 @@ async def search_invoices(
                 "status": row.status,
                 "issue_date": row.issue_date,
                 "has_stripe_payment": row.has_stripe_payment,
+                "attachment_count": row.attachment_count,
             }
         )
 
@@ -3752,6 +3770,39 @@ async def email_invoice(
             "No active email provider configured. Please set up an email provider in Admin > Email Providers."
         )
 
+    # Load invoice attachments for inclusion in the email
+    from app.modules.invoices.attachment_service import (
+        download_attachment,
+        list_attachments,
+    )
+
+    invoice_attachments = await list_attachments(
+        db, org_id=org_id, invoice_id=invoice_id
+    )
+
+    # Download each attachment, tracking cumulative email size (PDF + attachments).
+    # Stop adding when total would exceed 25 MB.  Log and skip on failure.
+    EMAIL_SIZE_LIMIT = 25 * 1024 * 1024  # 25 MB
+    total_email_size = len(pdf_bytes)
+    attachment_data: list[tuple[str, str, bytes]] = []  # (filename, mime_type, data)
+    attachments_skipped_size = False
+
+    for att in invoice_attachments:
+        try:
+            data = download_attachment(org_id, att["file_key"])
+        except Exception:
+            logger.warning(
+                "Failed to load attachment %s for invoice email, skipping",
+                att["id"],
+            )
+            continue
+
+        if total_email_size + len(data) > EMAIL_SIZE_LIMIT:
+            attachments_skipped_size = True
+            break
+        total_email_size += len(data)
+        attachment_data.append((att["file_name"], att["mime_type"], data))
+
     # Build the email message (reusable across provider attempts)
     def _build_message(from_name: str, from_email: str) -> MIMEMultipart:
         msg = MIMEMultipart("mixed")
@@ -3771,6 +3822,10 @@ async def email_invoice(
             f"Thank you for your business.\n\n"
             f"{org_name}\n"
         )
+        if attachments_skipped_size:
+            body += (
+                "\nNote: Some attachments were too large to include in this email.\n"
+            )
         msg.attach(MIMEText(body, "plain"))
 
         pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
@@ -3778,6 +3833,15 @@ async def email_invoice(
             "Content-Disposition", "attachment", filename=f"{inv_number}.pdf"
         )
         msg.attach(pdf_attachment)
+
+        # Attach invoice attachments (after the PDF)
+        for fname, mtype, fdata in attachment_data:
+            part = MIMEApplication(fdata, Name=fname)
+            part.add_header(
+                "Content-Disposition", "attachment", filename=fname
+            )
+            msg.attach(part)
+
         return msg
 
     # Try each provider in priority order until one succeeds
