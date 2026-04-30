@@ -1,4 +1,9 @@
 @import 'tailwindcss';
+/* Import Konsta UI theme (provides iOS + Material Design component styles) */
+@import 'konsta/react/theme.css';
+
+/* Reference tailwind.config.js for theme extensions and content paths */
+@config '../tailwind.config.js';
 
 /* Mobile base styles */
 

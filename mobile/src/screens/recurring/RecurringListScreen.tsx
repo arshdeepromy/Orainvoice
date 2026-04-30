@@ -1,9 +1,22 @@
-﻿import { useNavigate } from 'react-router-dom'
-import { useApiList } from '@/hooks/useApiList'
-import { MobileList, MobileCard, MobileBadge, MobileSearchBar, MobileSpinner } from '@/components/ui'
-import type { BadgeVariant } from '@/components/ui'
-import { PullRefresh } from '@/components/gestures/PullRefresh'
+﻿import { useState, useCallback, useRef, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
+import {
+  Page,
+  Searchbar,
+  List,
+  ListItem,
+  Block,
+  Preloader,
+  Chip,
+} from 'konsta/react'
 import { ModuleGate } from '@/components/common/ModuleGate'
+import { PullRefresh } from '@/components/gestures/PullRefresh'
+import StatusBadge from '@/components/konsta/StatusBadge'
+import apiClient from '@/api/client'
+
+/* ------------------------------------------------------------------ */
+/* Types                                                              */
+/* ------------------------------------------------------------------ */
 
 interface RecurringInvoice {
   id: string
@@ -14,97 +27,191 @@ interface RecurringInvoice {
   status: string
 }
 
-const statusVariant: Record<string, BadgeVariant> = {
-  active: 'paid',
-  paused: 'draft',
-  cancelled: 'cancelled',
-}
+const PAGE_SIZE = 25
 
-function formatCurrency(n: number) {
-  return `$${Number(n ?? 0).toFixed(2)}`
+/* ------------------------------------------------------------------ */
+/* Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function formatNZD(value: number | null | undefined): string {
+  return `NZD${Number(value ?? 0).toLocaleString('en-NZ', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
 }
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return 'N/A'
   try {
-    return new Date(dateStr).toLocaleDateString('en-NZ', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    })
+    return new Date(dateStr).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })
   } catch {
     return dateStr
   }
 }
 
-function RecurringListContent() {
+function frequencyChipColors(freq: string) {
+  switch (freq) {
+    case 'weekly':
+      return { fillBgIos: 'bg-blue-100', fillBgMaterial: 'bg-blue-100', fillTextIos: 'text-blue-700', fillTextMaterial: 'text-blue-700' }
+    case 'monthly':
+      return { fillBgIos: 'bg-green-100', fillBgMaterial: 'bg-green-100', fillTextIos: 'text-green-700', fillTextMaterial: 'text-green-700' }
+    case 'quarterly':
+      return { fillBgIos: 'bg-purple-100', fillBgMaterial: 'bg-purple-100', fillTextIos: 'text-purple-700', fillTextMaterial: 'text-purple-700' }
+    case 'yearly':
+      return { fillBgIos: 'bg-amber-100', fillBgMaterial: 'bg-amber-100', fillTextIos: 'text-amber-700', fillTextMaterial: 'text-amber-700' }
+    default:
+      return { fillBgIos: 'bg-gray-100', fillBgMaterial: 'bg-gray-100', fillTextIos: 'text-gray-700', fillTextMaterial: 'text-gray-700' }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Main Component                                                     */
+/* ------------------------------------------------------------------ */
+
+function RecurringContent() {
   const navigate = useNavigate()
-  const { items, isLoading, isRefreshing, search, setSearch, refresh, hasMore, loadMore } =
-    useApiList<RecurringInvoice>({ endpoint: '/api/v2/recurring', dataKey: 'items' })
+  const [search, setSearch] = useState('')
+  const [items, setItems] = useState<RecurringInvoice[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const abortRef = useRef<AbortController | null>(null)
+
+  const fetchData = useCallback(
+    async (isRefresh: boolean, signal: AbortSignal) => {
+      if (isRefresh) setIsRefreshing(true)
+      else setIsLoading(true)
+      setError(null)
+
+      try {
+        const params: Record<string, string | number> = { offset: 0, limit: PAGE_SIZE }
+        if (search.trim()) params.search = search.trim()
+
+        const res = await apiClient.get<{ items?: RecurringInvoice[]; total?: number }>(
+          '/api/v2/recurring',
+          { params, signal },
+        )
+        setItems(res.data?.items ?? [])
+      } catch (err: unknown) {
+        if ((err as { name?: string })?.name !== 'CanceledError') {
+          setError('Failed to load recurring invoices')
+        }
+      } finally {
+        setIsLoading(false)
+        setIsRefreshing(false)
+      }
+    },
+    [search],
+  )
+
+  useEffect(() => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    fetchData(false, controller.signal)
+    return () => controller.abort()
+  }, [fetchData])
+
+  const handleRefresh = useCallback(async () => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    await fetchData(true, controller.signal)
+  }, [fetchData])
+
+  const handleSearchChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value),
+    [],
+  )
+  const handleSearchClear = useCallback(() => setSearch(''), [])
 
   if (isLoading && items.length === 0) {
     return (
-      <div className="flex h-64 items-center justify-center">
-        <MobileSpinner size="md" />
-      </div>
+      <Page data-testid="recurring-page">
+        <div className="flex flex-1 items-center justify-center p-8">
+          <Preloader />
+        </div>
+      </Page>
     )
   }
 
   return (
-    <div className="flex flex-col gap-4 p-4">
-      <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Recurring Invoices</h1>
-      <MobileSearchBar value={search} onChange={setSearch} placeholder="Search recurring..." />
-      <PullRefresh onRefresh={refresh} isRefreshing={isRefreshing}>
-        <MobileList
-          items={items}
-          isLoading={isLoading}
-          isRefreshing={isRefreshing}
-          hasMore={hasMore}
-          onRefresh={refresh}
-          onLoadMore={loadMore}
-          emptyMessage="No recurring invoices found"
-          renderItem={(r) => (
-            <MobileCard
-              key={r.id}
-              onClick={() => navigate(`/recurring/${r.id}`)}
-              className="cursor-pointer"
-            >
-              <div className="flex items-start justify-between">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                    {r.customer_name ?? 'Unknown Customer'}
-                  </p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {(r.frequency ?? 'monthly').charAt(0).toUpperCase() + (r.frequency ?? 'monthly').slice(1)} · Next: {formatDate(r.next_run_date)}
-                  </p>
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                    {formatCurrency(r.amount)}
-                  </span>
-                  <MobileBadge
-                    label={(r.status ?? 'active').charAt(0).toUpperCase() + (r.status ?? 'active').slice(1)}
-                    variant={statusVariant[r.status] ?? 'info'}
-                  />
-                </div>
+    <Page data-testid="recurring-page">
+      <PullRefresh onRefresh={handleRefresh} isRefreshing={isRefreshing}>
+        <div className="flex flex-col pb-24">
+          <div className="px-4 pt-3">
+            <Searchbar
+              value={search}
+              onChange={handleSearchChange}
+              onClear={handleSearchClear}
+              placeholder="Search recurring…"
+              data-testid="recurring-searchbar"
+            />
+          </div>
+
+          {error && (
+            <Block>
+              <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300">
+                {error}
+                <button type="button" onClick={() => handleRefresh()} className="ml-2 font-medium underline">Retry</button>
               </div>
-            </MobileCard>
+            </Block>
           )}
-        />
+
+          {items.length === 0 && !isLoading ? (
+            <Block className="text-center">
+              <p className="text-sm text-gray-400 dark:text-gray-500">No recurring invoices found</p>
+            </Block>
+          ) : (
+            <List strongIos outlineIos dividersIos data-testid="recurring-list">
+              {items.map((r) => (
+                <ListItem
+                  key={r.id}
+                  link
+                  onClick={() => navigate(`/recurring/${r.id}`)}
+                  title={
+                    <span className="font-bold text-gray-900 dark:text-gray-100">
+                      {r.customer_name ?? 'Unknown Customer'}
+                    </span>
+                  }
+                  subtitle={
+                    <span className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                      <Chip className="text-xs" colors={frequencyChipColors(r.frequency ?? 'monthly')}>
+                        {(r.frequency ?? 'monthly').charAt(0).toUpperCase() + (r.frequency ?? 'monthly').slice(1)}
+                      </Chip>
+                      <span>Next: {formatDate(r.next_run_date)}</span>
+                    </span>
+                  }
+                  after={
+                    <div className="flex flex-col items-end gap-1">
+                      <span className="text-base font-semibold tabular-nums text-gray-900 dark:text-gray-100">
+                        {formatNZD(r.amount)}
+                      </span>
+                      <StatusBadge status={r.status ?? 'active'} size="sm" />
+                    </div>
+                  }
+                  data-testid={`recurring-item-${r.id}`}
+                />
+              ))}
+            </List>
+          )}
+        </div>
       </PullRefresh>
-    </div>
+    </Page>
   )
 }
 
 /**
- * Recurring invoice list — customer name, amount, frequency, next run date.
+ * Recurring Invoices screen — list with frequency badge.
+ * ModuleGate `recurring_invoices`.
  *
- * Requirements: 34.1, 34.3
+ * Requirements: 39.1, 39.2, 39.3, 55.1
  */
 export default function RecurringListScreen() {
   return (
     <ModuleGate moduleSlug="recurring_invoices">
-      <RecurringListContent />
+      <RecurringContent />
     </ModuleGate>
   )
 }

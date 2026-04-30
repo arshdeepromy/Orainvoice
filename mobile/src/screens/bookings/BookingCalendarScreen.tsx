@@ -1,9 +1,25 @@
-﻿import { useState, useCallback, useMemo } from 'react'
+﻿import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import {
+  Page,
+  Block,
+  BlockTitle,
+  Card,
+  List,
+  ListItem,
+  ListInput,
+  Button,
+  Preloader,
+  Sheet,
+} from 'konsta/react'
 import type { Booking } from '@shared/types/booking'
-import { useApiList } from '@/hooks/useApiList'
-import { MobileCard, MobileButton, MobileListItem, MobileBadge, MobileSpinner } from '@/components/ui'
+import { KonstaNavbar } from '@/components/konsta/KonstaNavbar'
+import StatusBadge from '@/components/konsta/StatusBadge'
+import KonstaFAB from '@/components/konsta/KonstaFAB'
+import HapticButton from '@/components/konsta/HapticButton'
+import { ModuleGate } from '@/components/common/ModuleGate'
 import { PullRefresh } from '@/components/gestures/PullRefresh'
+import apiClient from '@/api/client'
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                            */
@@ -11,7 +27,6 @@ import { PullRefresh } from '@/components/gestures/PullRefresh'
 
 function formatTime(timeStr: string): string {
   if (!timeStr) return ''
-  // Handle both ISO datetime and HH:MM time strings
   try {
     if (timeStr.includes('T')) {
       return new Date(timeStr).toLocaleTimeString('en-NZ', {
@@ -34,13 +49,6 @@ function formatDuration(minutes: number): string {
   return `${h}h ${m}m`
 }
 
-const statusVariant: Record<Booking['status'], 'active' | 'info' | 'paid' | 'cancelled'> = {
-  scheduled: 'info',
-  confirmed: 'active',
-  completed: 'paid',
-  cancelled: 'cancelled',
-}
-
 function getDaysInMonth(year: number, month: number): number {
   return new Date(year, month + 1, 0).getDate()
 }
@@ -56,12 +64,16 @@ const MONTH_NAMES = [
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
+/* ------------------------------------------------------------------ */
+/* Main component                                                      */
+/* ------------------------------------------------------------------ */
+
 /**
- * Booking calendar screen — calendar view with bookings.
- * Tap date to show day list. Pull-to-refresh.
- * Wrapped in ModuleGate at the route level.
+ * Booking calendar screen — calendar view + list of bookings for selected date.
+ * FAB for "+ New Booking". Tap booking opens edit sheet.
+ * "Create Job from Booking" action. Long-press menu for rescheduling.
  *
- * Requirements: 21.1, 21.2, 21.5
+ * Requirements: 30.1, 30.2, 30.3, 30.4, 30.5, 30.6
  */
 export default function BookingCalendarScreen() {
   const navigate = useNavigate()
@@ -72,18 +84,63 @@ export default function BookingCalendarScreen() {
     today.toISOString().split('T')[0],
   )
 
-  const {
-    items: bookings,
-    isLoading,
-    isRefreshing,
-    refresh,
-  } = useApiList<Booking>({
-    endpoint: '/api/v1/bookings',
-    dataKey: 'items',
-    pageSize: 100,
-  })
+  const [bookings, setBookings] = useState<Booking[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  // Group bookings by date
+  // Edit sheet state
+  const [editBooking, setEditBooking] = useState<Booking | null>(null)
+  const [showEditSheet, setShowEditSheet] = useState(false)
+  const [rescheduleDate, setRescheduleDate] = useState('')
+  const [isActionLoading, setIsActionLoading] = useState(false)
+  const [toast, setToast] = useState<{ message: string; variant: 'success' | 'error' } | null>(null)
+
+  // Long-press state
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const abortRef = useRef<AbortController | null>(null)
+
+  // ── Fetch bookings ─────────────────────────────────────────────────
+  const fetchBookings = useCallback(
+    async (signal: AbortSignal, refresh = false) => {
+      if (refresh) setIsRefreshing(true)
+      else setIsLoading(true)
+      setError(null)
+
+      try {
+        const res = await apiClient.get<{ items?: Booking[]; total?: number }>(
+          '/api/v1/bookings',
+          { params: { limit: 200 }, signal },
+        )
+        setBookings(res.data?.items ?? [])
+      } catch (err: unknown) {
+        if ((err as { name?: string })?.name !== 'CanceledError') {
+          setError('Failed to load bookings')
+        }
+      } finally {
+        setIsLoading(false)
+        setIsRefreshing(false)
+      }
+    },
+    [],
+  )
+
+  useEffect(() => {
+    const controller = new AbortController()
+    abortRef.current = controller
+    fetchBookings(controller.signal)
+    return () => controller.abort()
+  }, [fetchBookings])
+
+  const handleRefresh = useCallback(async () => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    await fetchBookings(controller.signal, true)
+  }, [fetchBookings])
+
+  // ── Group bookings by date ─────────────────────────────────────────
   const bookingsByDate = useMemo(() => {
     const map: Record<string, Booking[]> = {}
     for (const b of bookings) {
@@ -97,6 +154,7 @@ export default function BookingCalendarScreen() {
 
   const selectedBookings = bookingsByDate[selectedDate] ?? []
 
+  // ── Month navigation ───────────────────────────────────────────────
   const handlePrevMonth = useCallback(() => {
     if (viewMonth === 0) {
       setViewMonth(11)
@@ -115,7 +173,7 @@ export default function BookingCalendarScreen() {
     }
   }, [viewMonth])
 
-  // Build calendar grid
+  // ── Calendar grid ──────────────────────────────────────────────────
   const daysInMonth = getDaysInMonth(viewYear, viewMonth)
   const firstDay = getFirstDayOfMonth(viewYear, viewMonth)
   const todayStr = today.toISOString().split('T')[0]
@@ -124,146 +182,339 @@ export default function BookingCalendarScreen() {
   for (let i = 0; i < firstDay; i++) calendarDays.push(null)
   for (let d = 1; d <= daysInMonth; d++) calendarDays.push(d)
 
+  // ── Booking actions ────────────────────────────────────────────────
+  const handleBookingTap = useCallback((booking: Booking) => {
+    setEditBooking(booking)
+    setRescheduleDate(booking.date?.split('T')[0] ?? '')
+    setShowEditSheet(true)
+  }, [])
+
+  const handleLongPress = useCallback((booking: Booking) => {
+    setEditBooking(booking)
+    setRescheduleDate(booking.date?.split('T')[0] ?? '')
+    setShowEditSheet(true)
+  }, [])
+
+  const handleReschedule = useCallback(async () => {
+    if (!editBooking || !rescheduleDate) return
+    setIsActionLoading(true)
+    try {
+      await apiClient.put(`/api/v1/bookings/${editBooking.id}`, {
+        ...editBooking,
+        date: rescheduleDate,
+      })
+      setToast({ message: 'Booking rescheduled', variant: 'success' })
+      setShowEditSheet(false)
+      await handleRefresh()
+    } catch {
+      setToast({ message: 'Failed to reschedule', variant: 'error' })
+    } finally {
+      setIsActionLoading(false)
+    }
+  }, [editBooking, rescheduleDate, handleRefresh])
+
+  const handleCreateJobFromBooking = useCallback(async () => {
+    if (!editBooking) return
+    setIsActionLoading(true)
+    try {
+      const res = await apiClient.post('/api/v1/job-cards', {
+        customer_id: editBooking.customer_id,
+        description: editBooking.service_type ?? `Booking on ${editBooking.date}`,
+      })
+      const jobId = res.data?.id
+      setShowEditSheet(false)
+      if (jobId) navigate(`/job-cards/${jobId}`)
+    } catch {
+      setToast({ message: 'Failed to create job', variant: 'error' })
+    } finally {
+      setIsActionLoading(false)
+    }
+  }, [editBooking, navigate])
+
+  const handleDeleteBooking = useCallback(async () => {
+    if (!editBooking) return
+    setIsActionLoading(true)
+    try {
+      await apiClient.delete(`/api/v1/bookings/${editBooking.id}`)
+      setToast({ message: 'Booking deleted', variant: 'success' })
+      setShowEditSheet(false)
+      await handleRefresh()
+    } catch {
+      setToast({ message: 'Failed to delete booking', variant: 'error' })
+    } finally {
+      setIsActionLoading(false)
+    }
+  }, [editBooking, handleRefresh])
+
   return (
-    <PullRefresh onRefresh={refresh} isRefreshing={isRefreshing}>
-      <div className="flex flex-col gap-4 p-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
-            Bookings
-          </h1>
-          <MobileButton
-            variant="primary"
-            size="sm"
-            onClick={() => navigate('/bookings/new')}
-            icon={
-              <svg
-                className="h-4 w-4"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-            }
-          >
-            New
-          </MobileButton>
-        </div>
+    <ModuleGate moduleSlug="bookings">
+      <Page data-testid="booking-calendar-page">
+        <KonstaNavbar title="Bookings" />
 
-        {/* Month navigation */}
-        <MobileCard>
-          <div className="flex items-center justify-between">
-            <button
-              type="button"
-              onClick={handlePrevMonth}
-              className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-gray-600 active:bg-gray-100 dark:text-gray-400 dark:active:bg-gray-700"
-              aria-label="Previous month"
-            >
-              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="m15 18-6-6 6-6" />
-              </svg>
-            </button>
-            <span className="text-base font-semibold text-gray-900 dark:text-gray-100">
-              {MONTH_NAMES[viewMonth]} {viewYear}
-            </span>
-            <button
-              type="button"
-              onClick={handleNextMonth}
-              className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-gray-600 active:bg-gray-100 dark:text-gray-400 dark:active:bg-gray-700"
-              aria-label="Next month"
-            >
-              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="m9 18 6-6-6-6" />
-              </svg>
-            </button>
-          </div>
-
-          {/* Day labels */}
-          <div className="mt-3 grid grid-cols-7 gap-1 text-center">
-            {DAY_LABELS.map((d) => (
-              <span key={d} className="text-xs font-medium text-gray-500 dark:text-gray-400">
-                {d}
-              </span>
-            ))}
-          </div>
-
-          {/* Calendar grid */}
-          <div className="mt-1 grid grid-cols-7 gap-1">
-            {calendarDays.map((day, idx) => {
-              if (day === null) {
-                return <div key={`empty-${idx}`} className="h-10" />
-              }
-              const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-              const hasBookings = !!bookingsByDate[dateStr]?.length
-              const isSelected = dateStr === selectedDate
-              const isToday = dateStr === todayStr
-
-              return (
-                <button
-                  key={dateStr}
-                  type="button"
-                  onClick={() => setSelectedDate(dateStr)}
-                  className={`flex h-10 flex-col items-center justify-center rounded-lg text-sm transition-colors ${
-                    isSelected
-                      ? 'bg-blue-600 text-white dark:bg-blue-500'
-                      : isToday
-                        ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'
-                        : 'text-gray-900 active:bg-gray-100 dark:text-gray-100 dark:active:bg-gray-700'
+        <PullRefresh onRefresh={handleRefresh} isRefreshing={isRefreshing}>
+          <div className="flex flex-col pb-24">
+            {/* Toast */}
+            {toast && (
+              <Block>
+                <div
+                  className={`rounded-lg p-3 text-sm ${
+                    toast.variant === 'success'
+                      ? 'bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                      : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
                   }`}
-                  aria-label={`${day} ${MONTH_NAMES[viewMonth]}`}
-                  aria-pressed={isSelected}
+                  role="alert"
                 >
-                  {day}
-                  {hasBookings && (
-                    <span
-                      className={`mt-0.5 h-1 w-1 rounded-full ${
-                        isSelected ? 'bg-white' : 'bg-blue-500 dark:bg-blue-400'
-                      }`}
-                    />
-                  )}
-                </button>
-              )
-            })}
-          </div>
-        </MobileCard>
+                  {toast.message}
+                  <button type="button" className="ml-2 text-xs underline" onClick={() => setToast(null)}>
+                    Dismiss
+                  </button>
+                </div>
+              </Block>
+            )}
 
-        {/* Selected day bookings */}
-        <div>
-          <h2 className="mb-2 text-base font-semibold text-gray-900 dark:text-gray-100">
-            {selectedDate === todayStr ? 'Today' : selectedDate}
-          </h2>
-          {isLoading ? (
-            <div className="flex justify-center py-4">
-              <MobileSpinner size="sm" />
-            </div>
-          ) : selectedBookings.length === 0 ? (
-            <p className="py-4 text-center text-sm text-gray-400 dark:text-gray-500">
-              No bookings for this date
-            </p>
-          ) : (
-            <div className="flex flex-col">
-              {selectedBookings.map((booking) => (
-                <MobileListItem
-                  key={booking.id}
-                  title={booking.customer_name ?? 'Unknown'}
-                  subtitle={`${formatTime(booking.start_time)} · ${formatDuration(booking.duration_minutes)}${booking.service_type ? ` · ${booking.service_type}` : ''}`}
-                  trailing={
-                    <MobileBadge
-                      label={booking.status ?? 'scheduled'}
-                      variant={statusVariant[booking.status] ?? 'info'}
-                    />
+            {/* Error */}
+            {error && (
+              <Block>
+                <div
+                  role="alert"
+                  className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300"
+                >
+                  {error}
+                  <button type="button" onClick={() => handleRefresh()} className="ml-2 font-medium underline">
+                    Retry
+                  </button>
+                </div>
+              </Block>
+            )}
+
+            {/* ── Calendar ──────────────────────────────────────────── */}
+            <Card className="mx-4 mt-2" data-testid="booking-calendar">
+              {/* Month navigation */}
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={handlePrevMonth}
+                  className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-gray-600 active:bg-gray-100 dark:text-gray-400 dark:active:bg-gray-700"
+                  aria-label="Previous month"
+                >
+                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <path d="m15 18-6-6 6-6" />
+                  </svg>
+                </button>
+                <span className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                  {MONTH_NAMES[viewMonth]} {viewYear}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleNextMonth}
+                  className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-gray-600 active:bg-gray-100 dark:text-gray-400 dark:active:bg-gray-700"
+                  aria-label="Next month"
+                >
+                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <path d="m9 18 6-6-6-6" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Day labels */}
+              <div className="mt-3 grid grid-cols-7 gap-1 text-center">
+                {DAY_LABELS.map((d) => (
+                  <span key={d} className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                    {d}
+                  </span>
+                ))}
+              </div>
+
+              {/* Calendar grid */}
+              <div className="mt-1 grid grid-cols-7 gap-1">
+                {calendarDays.map((day, idx) => {
+                  if (day === null) {
+                    return <div key={`empty-${idx}`} className="h-10" />
                   }
-                />
-              ))}
+                  const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+                  const hasBookings = !!bookingsByDate[dateStr]?.length
+                  const isSelected = dateStr === selectedDate
+                  const isToday = dateStr === todayStr
+
+                  return (
+                    <button
+                      key={dateStr}
+                      type="button"
+                      onClick={() => setSelectedDate(dateStr)}
+                      className={`flex h-10 flex-col items-center justify-center rounded-lg text-sm transition-colors ${
+                        isSelected
+                          ? 'bg-primary text-white'
+                          : isToday
+                            ? 'bg-primary/10 text-primary'
+                            : 'text-gray-900 active:bg-gray-100 dark:text-gray-100 dark:active:bg-gray-700'
+                      }`}
+                      aria-label={`${day} ${MONTH_NAMES[viewMonth]}`}
+                      aria-pressed={isSelected}
+                    >
+                      {day}
+                      {hasBookings && (
+                        <span
+                          className={`mt-0.5 h-1 w-1 rounded-full ${
+                            isSelected ? 'bg-white' : 'bg-primary'
+                          }`}
+                        />
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            </Card>
+
+            {/* ── Selected day bookings ──────────────────────────────── */}
+            <BlockTitle>
+              {selectedDate === todayStr ? 'Today' : selectedDate}
+            </BlockTitle>
+
+            {isLoading ? (
+              <div className="flex justify-center py-4">
+                <Preloader />
+              </div>
+            ) : selectedBookings.length === 0 ? (
+              <Block>
+                <p className="text-center text-sm text-gray-400 dark:text-gray-500">
+                  No bookings for this date
+                </p>
+              </Block>
+            ) : (
+              <List strongIos outlineIos dividersIos data-testid="booking-list">
+                {selectedBookings.map((booking) => (
+                  <ListItem
+                    key={booking.id}
+                    link
+                    onClick={() => handleBookingTap(booking)}
+                    onMouseDown={() => {
+                      longPressTimerRef.current = setTimeout(() => {
+                        handleLongPress(booking)
+                      }, 500)
+                    }}
+                    onMouseUp={() => {
+                      if (longPressTimerRef.current) {
+                        clearTimeout(longPressTimerRef.current)
+                        longPressTimerRef.current = null
+                      }
+                    }}
+                    onTouchStart={() => {
+                      longPressTimerRef.current = setTimeout(() => {
+                        handleLongPress(booking)
+                      }, 500)
+                    }}
+                    onTouchEnd={() => {
+                      if (longPressTimerRef.current) {
+                        clearTimeout(longPressTimerRef.current)
+                        longPressTimerRef.current = null
+                      }
+                    }}
+                    title={
+                      <span className="font-medium text-gray-900 dark:text-gray-100">
+                        {booking.customer_name ?? 'Unknown'}
+                      </span>
+                    }
+                    subtitle={
+                      <span className="text-xs text-gray-500 dark:text-gray-400">
+                        {formatTime(booking.start_time)} · {formatDuration(booking.duration_minutes)}
+                        {booking.service_type ? ` · ${booking.service_type}` : ''}
+                      </span>
+                    }
+                    after={
+                      <StatusBadge status={booking.status ?? 'scheduled'} size="sm" />
+                    }
+                  />
+                ))}
+              </List>
+            )}
+          </div>
+        </PullRefresh>
+
+        {/* ── FAB: + New Booking ─────────────────────────────────────── */}
+        <KonstaFAB
+          label="+ New Booking"
+          onClick={() => navigate('/bookings/new')}
+        />
+
+        {/* ── Edit/Reschedule Sheet ──────────────────────────────────── */}
+        <Sheet
+          opened={showEditSheet}
+          onBackdropClick={() => setShowEditSheet(false)}
+          data-testid="booking-edit-sheet"
+        >
+          <div className="p-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                Booking Details
+              </h3>
+              <Button clear small onClick={() => setShowEditSheet(false)}>
+                Close
+              </Button>
             </div>
-          )}
-        </div>
-      </div>
-    </PullRefresh>
+
+            {editBooking && (
+              <div className="mt-3 flex flex-col gap-3">
+                <div className="text-sm">
+                  <p className="font-medium text-gray-900 dark:text-gray-100">
+                    {editBooking.customer_name ?? 'Unknown'}
+                  </p>
+                  <p className="text-gray-500 dark:text-gray-400">
+                    {formatTime(editBooking.start_time)} · {formatDuration(editBooking.duration_minutes)}
+                  </p>
+                  {editBooking.service_type && (
+                    <p className="text-gray-500 dark:text-gray-400">{editBooking.service_type}</p>
+                  )}
+                  {editBooking.notes && (
+                    <p className="mt-1 text-gray-500 dark:text-gray-400">{editBooking.notes}</p>
+                  )}
+                </div>
+
+                {/* Reschedule date picker */}
+                <BlockTitle className="mt-2">Reschedule</BlockTitle>
+                <List strongIos outlineIos>
+                  <ListInput
+                    label="New Date"
+                    type="date"
+                    value={rescheduleDate}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setRescheduleDate(e.target.value)
+                    }
+                  />
+                </List>
+
+                <div className="flex flex-col gap-2">
+                  <HapticButton
+                    large
+                    onClick={handleReschedule}
+                    disabled={isActionLoading}
+                    className="w-full"
+                  >
+                    {isActionLoading ? 'Saving…' : 'Reschedule'}
+                  </HapticButton>
+                  <Button
+                    outline
+                    large
+                    onClick={handleCreateJobFromBooking}
+                    disabled={isActionLoading}
+                    className="w-full"
+                  >
+                    Create Job from Booking
+                  </Button>
+                  <Button
+                    outline
+                    large
+                    onClick={handleDeleteBooking}
+                    disabled={isActionLoading}
+                    className="w-full text-red-500 border-red-500"
+                  >
+                    Delete Booking
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </Sheet>
+      </Page>
+    </ModuleGate>
   )
 }

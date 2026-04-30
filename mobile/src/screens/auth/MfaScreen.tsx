@@ -1,9 +1,15 @@
 ﻿import { useState, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import {
+  Page,
+  Block,
+  List,
+  ListInput,
+  Segmented,
+  SegmentedButton,
+  Button,
+} from 'konsta/react'
 import { useAuth } from '@/contexts/AuthContext'
-import { MobileButton } from '@/components/ui/MobileButton'
-import { MobileInput } from '@/components/ui/MobileInput'
-import { MobileForm } from '@/components/ui/MobileForm'
 
 type MfaMethodType = 'totp' | 'sms' | 'backup_codes' | 'firebase'
 
@@ -22,14 +28,17 @@ const METHOD_DESCRIPTIONS: Record<MfaMethodType, string> = {
 }
 
 /**
- * MfaScreen — MFA method selection, code input, submit, error handling.
+ * MfaScreen — Konsta UI redesign with Segmented method selector, ListInput
+ * for code entry, and primary Verify button.
  *
- * Navigated to when backend returns MFA challenge after login.
- * On valid code: completes auth, navigates to Dashboard.
- * On invalid code: displays error, allows retry.
- * Supports TOTP, SMS, backup codes, and Firebase MFA.
+ * Business logic is preserved unchanged:
+ * - Redirects to /login if no MFA pending
+ * - Sets default method from AuthContext
+ * - On valid code: calls completeMfa/completeFirebaseMfa, navigates to /
+ * - On invalid code: displays error, clears code for retry
+ * - Supports TOTP, SMS, backup codes, and Firebase MFA
  *
- * Requirements: 3.1, 3.2, 3.3, 3.4, 3.5
+ * Requirements: 12.1, 12.2, 12.3, 12.4, 12.5
  */
 export default function MfaScreen() {
   const navigate = useNavigate()
@@ -79,15 +88,24 @@ export default function MfaScreen() {
       }
       navigate('/', { replace: true })
     } catch (err: unknown) {
-      const message = err instanceof Error
-        ? err.message
-        : 'Invalid verification code. Please try again.'
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Invalid verification code. Please try again.'
       setError(message)
       setCode('')
     } finally {
       setIsSubmitting(false)
     }
-  }, [canSubmit, isFirebase, code, selectedMethod, completeMfa, completeFirebaseMfa, navigate])
+  }, [
+    canSubmit,
+    isFirebase,
+    code,
+    selectedMethod,
+    completeMfa,
+    completeFirebaseMfa,
+    navigate,
+  ])
 
   const handleMethodChange = useCallback((method: string) => {
     setSelectedMethod(method)
@@ -95,37 +113,43 @@ export default function MfaScreen() {
     setError(null)
   }, [])
 
+  const handleFormSubmit = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault()
+      void handleSubmit()
+    },
+    [handleSubmit],
+  )
+
   if (!mfaPending) return null
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-gray-50 px-6 dark:bg-gray-900">
-      <div className="w-full max-w-sm">
-        {/* Header */}
-        <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/30">
-            <svg
-              className="h-8 w-8 text-blue-600 dark:text-blue-400"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-              <path d="M7 11V7a5 5 0 0110 0v4" />
-            </svg>
-          </div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-            Verify Your Identity
-          </h1>
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            {METHOD_DESCRIPTIONS[selectedMethod as MfaMethodType] ??
-              'Enter your verification code'}
-          </p>
+    <Page className="bg-white dark:bg-gray-900">
+      {/* Hero gradient header */}
+      <div className="bg-gradient-to-b from-slate-900 to-indigo-900 px-6 pb-10 pt-16 text-center">
+        <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-2xl bg-white/10 backdrop-blur-sm">
+          <svg
+            className="h-8 w-8 text-white"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+            <path d="M7 11V7a5 5 0 0110 0v4" />
+          </svg>
         </div>
+        <h1 className="text-2xl font-bold text-white">Verify Your Identity</h1>
+        <p className="mt-1 text-sm text-indigo-200">
+          {METHOD_DESCRIPTIONS[selectedMethod as MfaMethodType] ??
+            'Enter your verification code'}
+        </p>
+      </div>
 
+      <Block className="-mt-4 rounded-t-2xl bg-white pt-6 dark:bg-gray-900">
         {/* Error banner */}
         {error && (
           <div
@@ -136,60 +160,57 @@ export default function MfaScreen() {
           </div>
         )}
 
-        {/* Method selector — only show if multiple methods available */}
+        {/* Method selector — Segmented control when multiple methods available */}
         {mfaMethods.length > 1 && (
           <div className="mb-6">
             <p className="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">
               Verification method
             </p>
-            <div className="flex flex-col gap-2">
+            <Segmented strong>
               {mfaMethods.map((method) => (
-                <button
+                <SegmentedButton
                   key={method}
-                  type="button"
+                  active={selectedMethod === method}
                   onClick={() => handleMethodChange(method)}
-                  className={`flex min-h-[44px] items-center gap-3 rounded-lg border px-4 py-3 text-left text-sm transition-colors ${
-                    selectedMethod === method
-                      ? 'border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-400 dark:bg-blue-900/20 dark:text-blue-300'
-                      : 'border-gray-200 bg-white text-gray-700 active:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:active:bg-gray-700'
-                  }`}
                 >
-                  <MethodIcon method={method as MfaMethodType} />
-                  <span className="font-medium">
-                    {METHOD_LABELS[method as MfaMethodType] ?? method}
-                  </span>
-                </button>
+                  {METHOD_LABELS[method as MfaMethodType] ?? method}
+                </SegmentedButton>
               ))}
-            </div>
+            </Segmented>
           </div>
         )}
 
-        {/* Code input */}
-        <MobileForm onSubmit={handleSubmit}>
-          <MobileInput
-            label={isFirebase ? 'Firebase Token' : 'Verification Code'}
-            type="text"
-            inputMode={isFirebase ? 'text' : 'numeric'}
-            placeholder={isFirebase ? 'Paste Firebase token' : 'Enter code'}
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            required
-            autoComplete="one-time-code"
-            autoFocus
-          />
+        {/* Code input and submit */}
+        <form onSubmit={handleFormSubmit} noValidate>
+          <List strongIos outlineIos className="-mx-4 mb-4">
+            <ListInput
+              label="Verification Code"
+              type="text"
+              inputMode={isFirebase ? 'text' : 'numeric'}
+              placeholder={isFirebase ? 'Paste Firebase token' : 'Enter 6-digit code'}
+              value={code}
+              maxLength={isFirebase ? undefined : 6}
+              onInput={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setCode(e.target.value)
+              }
+              autoComplete="one-time-code"
+              autoFocus
+            />
+          </List>
 
-          <MobileButton
+          {/* Verify primary button */}
+          <Button
             type="submit"
-            fullWidth
-            isLoading={isSubmitting}
+            large
+            className="mb-3"
             disabled={!canSubmit}
           >
-            Verify
-          </MobileButton>
-        </MobileForm>
+            {isSubmitting ? 'Verifying…' : 'Verify'}
+          </Button>
+        </form>
 
-        {/* Back to login */}
-        <div className="mt-6 text-center">
+        {/* Back to login link */}
+        <div className="mt-4 text-center">
           <button
             type="button"
             onClick={() => navigate('/login', { replace: true })}
@@ -198,43 +219,7 @@ export default function MfaScreen() {
             Back to login
           </button>
         </div>
-      </div>
-    </div>
+      </Block>
+    </Page>
   )
-}
-
-/** Icon for each MFA method */
-function MethodIcon({ method }: { method: MfaMethodType }) {
-  const className = 'h-5 w-5 flex-shrink-0'
-
-  switch (method) {
-    case 'totp':
-      return (
-        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="10" />
-          <polyline points="12 6 12 12 16 14" />
-        </svg>
-      )
-    case 'sms':
-      return (
-        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
-        </svg>
-      )
-    case 'backup_codes':
-      return (
-        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <rect x="3" y="3" width="18" height="18" rx="2" />
-          <path d="M7 7h.01M7 12h.01M7 17h.01M12 7h5M12 12h5M12 17h5" />
-        </svg>
-      )
-    case 'firebase':
-      return (
-        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-        </svg>
-      )
-    default:
-      return null
-  }
 }

@@ -1,21 +1,21 @@
 ﻿import { useState, useCallback } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useTenant } from '@/contexts/TenantContext'
-import { MobileCard, MobileButton, MobileInput, MobileSpinner } from '@/components/ui'
+import { MobileCard, MobileButton, MobileInput } from '@/components/ui'
 import { ModuleGate } from '@/components/common/ModuleGate'
 import apiClient from '@/api/client'
 
+import { useBiometric } from '@/contexts/BiometricContext'
+
 /* ------------------------------------------------------------------ */
-/* Biometric toggle (safe import)                                     */
+/* Biometric toggle (safe wrapper)                                    */
 /* ------------------------------------------------------------------ */
 
 function useBiometricSafe() {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { useBiometric } = require('@/contexts/BiometricContext')
     return useBiometric()
   } catch {
-    return { isAvailable: false, isEnabled: false, toggleBiometric: async () => {} }
+    return { isAvailable: false, isEnabled: false, setEnabled: (_enabled: boolean) => {} } as const
   }
 }
 
@@ -181,7 +181,7 @@ function SettingsContent() {
             label="Biometric Login"
             description="Use Face ID / fingerprint to unlock"
             checked={biometric.isEnabled}
-            onChange={() => biometric.toggleBiometric()}
+            onChange={() => biometric.setEnabled(!biometric.isEnabled)}
           />
         </SettingsSection>
       )}

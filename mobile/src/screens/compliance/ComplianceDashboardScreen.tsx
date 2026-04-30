@@ -1,70 +1,87 @@
-﻿import { useState, useCallback, useMemo } from 'react'
+﻿import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { ComplianceDocument, ComplianceStatus } from '@shared/types/compliance'
-import { useApiList } from '@/hooks/useApiList'
-import { MobileCard, MobileListItem, MobileBadge, MobileButton, MobileSpinner } from '@/components/ui'
+import { Page, Card, List, ListItem, Block, Preloader, Chip } from 'konsta/react'
+import { ModuleGate } from '@/components/common/ModuleGate'
 import { PullRefresh } from '@/components/gestures/PullRefresh'
+import KonstaFAB from '@/components/konsta/KonstaFAB'
+import apiClient from '@/api/client'
 
-/* ------------------------------------------------------------------ */
-/* Helpers                                                            */
-/* ------------------------------------------------------------------ */
+interface ComplianceDocument {
+  id: string
+  name: string | null
+  document_type: string | null
+  expiry_date: string | null
+  status: string
+  file_url: string | null
+}
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return 'No expiry'
-  try {
-    return new Date(dateStr).toLocaleDateString('en-NZ', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    })
-  } catch {
-    return dateStr
+  try { return new Date(dateStr).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' }) }
+  catch { return dateStr }
+}
+
+function expiryPillColors(status: string) {
+  switch (status) {
+    case 'valid':
+      return { fillBgIos: 'bg-green-100', fillBgMaterial: 'bg-green-100', fillTextIos: 'text-green-700', fillTextMaterial: 'text-green-700' }
+    case 'expiring_soon':
+      return { fillBgIos: 'bg-amber-100', fillBgMaterial: 'bg-amber-100', fillTextIos: 'text-amber-700', fillTextMaterial: 'text-amber-700' }
+    case 'expired':
+      return { fillBgIos: 'bg-red-100', fillBgMaterial: 'bg-red-100', fillTextIos: 'text-red-700', fillTextMaterial: 'text-red-700' }
+    default:
+      return { fillBgIos: 'bg-gray-100', fillBgMaterial: 'bg-gray-100', fillTextIos: 'text-gray-700', fillTextMaterial: 'text-gray-700' }
   }
 }
 
-const statusVariant: Record<ComplianceStatus, 'paid' | 'overdue' | 'draft'> = {
-  valid: 'paid',
-  expiring_soon: 'draft',
-  expired: 'overdue',
-}
-
-const statusLabel: Record<ComplianceStatus, string> = {
+const statusLabel: Record<string, string> = {
   valid: 'Valid',
-  expiring_soon: 'Expiring Soon',
+  expiring_soon: 'Expiring',
   expired: 'Expired',
 }
 
-function isExpiringSoon(expiryDate: string | null): boolean {
-  if (!expiryDate) return false
-  const expiry = new Date(expiryDate)
-  const now = new Date()
-  const thirtyDays = 30 * 24 * 60 * 60 * 1000
-  return expiry.getTime() - now.getTime() <= thirtyDays && expiry.getTime() > now.getTime()
-}
-
-/**
- * Compliance dashboard screen — document categories, counts, expiry status.
- * Document list with name, type, expiry date, status. 30-day expiry badge.
- * Pull-to-refresh. Wrapped in ModuleGate at the route level.
- *
- * Requirements: 27.1, 27.4, 27.6, 27.7
- */
-export default function ComplianceDashboardScreen() {
+function ComplianceContent() {
   const navigate = useNavigate()
+  const [documents, setDocuments] = useState<ComplianceDocument[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
-  const {
-    items: documents,
-    isLoading,
-    isRefreshing,
-    refresh,
-  } = useApiList<ComplianceDocument>({
-    endpoint: '/api/v2/compliance-docs',
-    dataKey: 'items',
-    pageSize: 100,
-  })
+  const fetchDocs = useCallback(async (isRefresh: boolean, signal: AbortSignal) => {
+    if (isRefresh) setIsRefreshing(true); else setIsLoading(true)
+    setError(null)
+    try {
+      const res = await apiClient.get<{ items?: ComplianceDocument[]; total?: number }>('/api/v2/compliance-docs', { params: { offset: 0, limit: 100 }, signal })
+      setDocuments(res.data?.items ?? [])
+    } catch (err: unknown) {
+      if ((err as { name?: string })?.name !== 'CanceledError') setError('Failed to load documents')
+    } finally { setIsLoading(false); setIsRefreshing(false) }
+  }, [])
 
-  // Group by document type (category)
+  useEffect(() => {
+    abortRef.current?.abort()
+    const c = new AbortController(); abortRef.current = c
+    fetchDocs(false, c.signal)
+    return () => c.abort()
+  }, [fetchDocs])
+
+  const handleRefresh = useCallback(async () => {
+    abortRef.current?.abort()
+    const c = new AbortController(); abortRef.current = c
+    await fetchDocs(true, c.signal)
+  }, [fetchDocs])
+
+  const statusCounts = useMemo(() => {
+    const counts = { valid: 0, expiring_soon: 0, expired: 0 }
+    for (const doc of documents) {
+      const s = doc.status ?? 'valid'
+      if (s in counts) counts[s as keyof typeof counts]++
+    }
+    return counts
+  }, [documents])
+
   const categories = useMemo(() => {
     const map: Record<string, ComplianceDocument[]> = {}
     for (const doc of documents) {
@@ -75,153 +92,91 @@ export default function ComplianceDashboardScreen() {
     return map
   }, [documents])
 
-  // Status counts
-  const statusCounts = useMemo(() => {
-    const counts = { valid: 0, expiring_soon: 0, expired: 0 }
-    for (const doc of documents) {
-      const status = doc.status ?? 'valid'
-      if (counts[status] !== undefined) counts[status]++
-    }
-    return counts
-  }, [documents])
+  const filteredDocs = selectedCategory ? categories[selectedCategory] ?? [] : documents
 
-  const filteredDocs = selectedCategory
-    ? categories[selectedCategory] ?? []
-    : documents
-
-  const handleDocTap = useCallback(
-    (doc: ComplianceDocument) => {
-      // Open document preview if file_url exists
-      if (doc.file_url) {
-        window.open(doc.file_url, '_blank')
-      }
-    },
-    [],
-  )
+  if (isLoading && documents.length === 0) {
+    return (<Page data-testid="compliance-page"><div className="flex flex-1 items-center justify-center p-8"><Preloader /></div></Page>)
+  }
 
   return (
-    <PullRefresh onRefresh={refresh} isRefreshing={isRefreshing}>
-      <div className="flex flex-col gap-4 p-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
-            Compliance
-          </h1>
-          <MobileButton
-            variant="primary"
-            size="sm"
-            onClick={() => navigate('/compliance/upload')}
-            icon={
-              <svg
-                className="h-4 w-4"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-            }
-          >
-            Upload
-          </MobileButton>
-        </div>
-
-        {/* Status summary cards */}
-        <div className="grid grid-cols-3 gap-2">
-          <MobileCard padding="p-3">
-            <div className="flex flex-col items-center">
-              <span className="text-2xl font-bold text-green-600 dark:text-green-400">
-                {statusCounts.valid}
-              </span>
-              <span className="text-xs text-gray-500 dark:text-gray-400">Valid</span>
-            </div>
-          </MobileCard>
-          <MobileCard padding="p-3">
-            <div className="flex flex-col items-center">
-              <span className="text-2xl font-bold text-amber-600 dark:text-amber-400">
-                {statusCounts.expiring_soon}
-              </span>
-              <span className="text-xs text-gray-500 dark:text-gray-400">Expiring</span>
-            </div>
-          </MobileCard>
-          <MobileCard padding="p-3">
-            <div className="flex flex-col items-center">
-              <span className="text-2xl font-bold text-red-600 dark:text-red-400">
-                {statusCounts.expired}
-              </span>
-              <span className="text-xs text-gray-500 dark:text-gray-400">Expired</span>
-            </div>
-          </MobileCard>
-        </div>
-
-        {/* Category filter chips */}
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setSelectedCategory(null)}
-            className={`min-h-[36px] rounded-full px-3 py-1 text-sm font-medium transition-colors ${
-              selectedCategory === null
-                ? 'bg-blue-600 text-white dark:bg-blue-500'
-                : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
-            }`}
-          >
-            All ({documents.length})
-          </button>
-          {Object.entries(categories).map(([type, docs]) => (
-            <button
-              key={type}
-              type="button"
-              onClick={() => setSelectedCategory(type)}
-              className={`min-h-[36px] rounded-full px-3 py-1 text-sm font-medium transition-colors ${
-                selectedCategory === type
-                  ? 'bg-blue-600 text-white dark:bg-blue-500'
-                  : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
-              }`}
-            >
-              {type} ({docs.length})
-            </button>
-          ))}
-        </div>
-
-        {/* Document list */}
-        {isLoading ? (
-          <div className="flex justify-center py-8">
-            <MobileSpinner size="md" />
+    <Page data-testid="compliance-page">
+      <PullRefresh onRefresh={handleRefresh} isRefreshing={isRefreshing}>
+        <div className="flex flex-col pb-24">
+          {/* Summary cards */}
+          <div className="grid grid-cols-3 gap-2 px-4 pt-4">
+            <Card className="text-center" data-testid="valid-count">
+              <span className="text-2xl font-bold text-green-600 dark:text-green-400">{statusCounts.valid}</span>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Valid</p>
+            </Card>
+            <Card className="text-center" data-testid="expiring-count">
+              <span className="text-2xl font-bold text-amber-600 dark:text-amber-400">{statusCounts.expiring_soon}</span>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Expiring</p>
+            </Card>
+            <Card className="text-center" data-testid="expired-count">
+              <span className="text-2xl font-bold text-red-600 dark:text-red-400">{statusCounts.expired}</span>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Expired</p>
+            </Card>
           </div>
-        ) : filteredDocs.length === 0 ? (
-          <p className="py-8 text-center text-sm text-gray-400 dark:text-gray-500">
-            No compliance documents
-          </p>
-        ) : (
-          <div className="flex flex-col">
-            {filteredDocs.map((doc) => (
-              <MobileListItem
-                key={doc.id}
-                title={doc.name ?? 'Document'}
-                subtitle={`${doc.document_type ?? 'Unknown'} · Expires: ${formatDate(doc.expiry_date)}`}
-                trailing={
-                  <div className="flex flex-col items-end gap-1">
-                    <MobileBadge
-                      label={statusLabel[doc.status] ?? 'Valid'}
-                      variant={statusVariant[doc.status] ?? 'paid'}
-                    />
-                    {isExpiringSoon(doc.expiry_date) && (
-                      <span className="text-xs font-medium text-amber-600 dark:text-amber-400">
-                        30 days
-                      </span>
-                    )}
-                  </div>
-                }
-                onTap={() => handleDocTap(doc)}
-              />
+
+          {/* Category filter chips */}
+          <div className="flex flex-wrap gap-2 px-4 py-3" data-testid="category-chips">
+            <Chip
+              className={`cursor-pointer ${selectedCategory === null ? 'font-semibold' : ''}`}
+              colors={selectedCategory === null ? { fillBgIos: 'bg-primary', fillBgMaterial: 'bg-primary', fillTextIos: 'text-white', fillTextMaterial: 'text-white' } : undefined}
+              onClick={() => setSelectedCategory(null)}
+            >
+              All ({documents.length})
+            </Chip>
+            {Object.entries(categories).map(([type, docs]) => (
+              <Chip
+                key={type}
+                className={`cursor-pointer ${selectedCategory === type ? 'font-semibold' : ''}`}
+                colors={selectedCategory === type ? { fillBgIos: 'bg-primary', fillBgMaterial: 'bg-primary', fillTextIos: 'text-white', fillTextMaterial: 'text-white' } : undefined}
+                onClick={() => setSelectedCategory(type)}
+              >
+                {type} ({docs.length})
+              </Chip>
             ))}
           </div>
-        )}
-      </div>
-    </PullRefresh>
+
+          {error && (<Block><div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300">{error}</div></Block>)}
+
+          {/* Document list */}
+          {filteredDocs.length === 0 ? (
+            <Block className="text-center"><p className="text-sm text-gray-400 dark:text-gray-500">No compliance documents</p></Block>
+          ) : (
+            <List strongIos outlineIos dividersIos data-testid="compliance-list">
+              {filteredDocs.map((doc) => (
+                <ListItem key={doc.id}
+                  title={<span className="font-medium text-gray-900 dark:text-gray-100">{doc.name ?? 'Document'}</span>}
+                  subtitle={<span className="text-xs text-gray-500 dark:text-gray-400">{doc.document_type ?? 'Unknown'} · Expires: {formatDate(doc.expiry_date)}</span>}
+                  after={
+                    <Chip className="text-xs" colors={expiryPillColors(doc.status)}>
+                      {statusLabel[doc.status] ?? 'Valid'}
+                    </Chip>
+                  }
+                  data-testid={`compliance-doc-${doc.id}`}
+                />
+              ))}
+            </List>
+          )}
+        </div>
+      </PullRefresh>
+
+      <KonstaFAB label="+ Upload" onClick={() => navigate('/compliance/upload')} />
+    </Page>
+  )
+}
+
+/**
+ * Compliance Documents screen — expiry pills, Camera upload.
+ * ModuleGate `compliance_docs`.
+ * Requirements: 44.1, 44.2, 44.3, 44.4, 50.2, 55.1
+ */
+export default function ComplianceDashboardScreen() {
+  return (
+    <ModuleGate moduleSlug="compliance_docs">
+      <ComplianceContent />
+    </ModuleGate>
   )
 }

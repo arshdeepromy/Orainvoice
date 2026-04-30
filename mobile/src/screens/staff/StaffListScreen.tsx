@@ -1,49 +1,34 @@
-﻿import { useCallback } from 'react'
+﻿import { useState, useCallback, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { StaffMember } from '@shared/types/staff'
-import { useApiList } from '@/hooks/useApiList'
-import { MobileList, MobileListItem, MobileBadge } from '@/components/ui'
-import { SwipeAction } from '@/components/gestures/SwipeAction'
+import {
+  Page,
+  Searchbar,
+  List,
+  ListItem,
+  Block,
+  Preloader,
+  Chip,
+} from 'konsta/react'
+import { ModuleGate } from '@/components/common/ModuleGate'
 import { PullRefresh } from '@/components/gestures/PullRefresh'
+import apiClient from '@/api/client'
 
 /* ------------------------------------------------------------------ */
-/* Inline SVG icon components for swipe actions                       */
+/* Types                                                              */
 /* ------------------------------------------------------------------ */
 
-function PhoneIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" />
-    </svg>
-  )
+interface StaffMember {
+  id: string
+  first_name: string | null
+  last_name: string | null
+  email: string | null
+  phone: string | null
+  role: string
+  branch_name: string | null
+  is_active: boolean
 }
 
-function MailIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect width="20" height="16" x="2" y="4" rx="2" />
-      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
-    </svg>
-  )
-}
+const PAGE_SIZE = 25
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                            */
@@ -58,115 +43,171 @@ function roleLabel(role: string): string {
   return (role ?? 'staff').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-export function handleCall(phone: string | null) {
-  if (!phone) return
-  window.open(`tel:${phone}`, '_system')
+function roleChipColors(role: string) {
+  switch (role) {
+    case 'owner':
+    case 'org_admin':
+      return { fillBgIos: 'bg-purple-100', fillBgMaterial: 'bg-purple-100', fillTextIos: 'text-purple-700', fillTextMaterial: 'text-purple-700' }
+    case 'branch_admin':
+      return { fillBgIos: 'bg-blue-100', fillBgMaterial: 'bg-blue-100', fillTextIos: 'text-blue-700', fillTextMaterial: 'text-blue-700' }
+    case 'salesperson':
+      return { fillBgIos: 'bg-green-100', fillBgMaterial: 'bg-green-100', fillTextIos: 'text-green-700', fillTextMaterial: 'text-green-700' }
+    default:
+      return { fillBgIos: 'bg-gray-100', fillBgMaterial: 'bg-gray-100', fillTextIos: 'text-gray-700', fillTextMaterial: 'text-gray-700' }
+  }
 }
 
-export function handleEmail(email: string | null) {
-  if (!email) return
-  window.open(`mailto:${email}`, '_system')
+/* ------------------------------------------------------------------ */
+/* Main Component                                                     */
+/* ------------------------------------------------------------------ */
+
+function StaffContent() {
+  const navigate = useNavigate()
+  const [search, setSearch] = useState('')
+  const [items, setItems] = useState<StaffMember[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const abortRef = useRef<AbortController | null>(null)
+
+  const fetchStaff = useCallback(
+    async (isRefresh: boolean, signal: AbortSignal) => {
+      if (isRefresh) setIsRefreshing(true)
+      else setIsLoading(true)
+      setError(null)
+
+      try {
+        const params: Record<string, string | number> = { offset: 0, limit: PAGE_SIZE }
+        if (search.trim()) params.search = search.trim()
+
+        const res = await apiClient.get<{ items?: StaffMember[]; total?: number }>(
+          '/api/v2/staff',
+          { params, signal },
+        )
+        setItems(res.data?.items ?? [])
+      } catch (err: unknown) {
+        if ((err as { name?: string })?.name !== 'CanceledError') {
+          setError('Failed to load staff')
+        }
+      } finally {
+        setIsLoading(false)
+        setIsRefreshing(false)
+      }
+    },
+    [search],
+  )
+
+  useEffect(() => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    fetchStaff(false, controller.signal)
+    return () => controller.abort()
+  }, [fetchStaff])
+
+  const handleRefresh = useCallback(async () => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    await fetchStaff(true, controller.signal)
+  }, [fetchStaff])
+
+  const handleSearchChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value),
+    [],
+  )
+  const handleSearchClear = useCallback(() => setSearch(''), [])
+
+  if (isLoading && items.length === 0) {
+    return (
+      <Page data-testid="staff-page">
+        <div className="flex flex-1 items-center justify-center p-8">
+          <Preloader />
+        </div>
+      </Page>
+    )
+  }
+
+  return (
+    <Page data-testid="staff-page">
+      <PullRefresh onRefresh={handleRefresh} isRefreshing={isRefreshing}>
+        <div className="flex flex-col pb-24">
+          <div className="px-4 pt-3">
+            <Searchbar
+              value={search}
+              onChange={handleSearchChange}
+              onClear={handleSearchClear}
+              placeholder="Search staff…"
+              data-testid="staff-searchbar"
+            />
+          </div>
+
+          {error && (
+            <Block>
+              <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300">
+                {error}
+                <button type="button" onClick={() => handleRefresh()} className="ml-2 font-medium underline">Retry</button>
+              </div>
+            </Block>
+          )}
+
+          {items.length === 0 && !isLoading ? (
+            <Block className="text-center">
+              <p className="text-sm text-gray-400 dark:text-gray-500">No staff members found</p>
+            </Block>
+          ) : (
+            <List strongIos outlineIos dividersIos data-testid="staff-list">
+              {items.map((staff) => (
+                <ListItem
+                  key={staff.id}
+                  link
+                  onClick={() => navigate(`/staff/${staff.id}`)}
+                  title={
+                    <span className="font-bold text-gray-900 dark:text-gray-100">
+                      {displayName(staff)}
+                    </span>
+                  }
+                  subtitle={
+                    <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      {staff.branch_name && <span>{staff.branch_name}</span>}
+                      {staff.email && <span>{staff.email}</span>}
+                    </span>
+                  }
+                  after={
+                    <div className="flex flex-col items-end gap-1">
+                      <Chip
+                        className="text-xs"
+                        colors={roleChipColors(staff.role)}
+                      >
+                        {roleLabel(staff.role)}
+                      </Chip>
+                      <span className={`text-xs font-medium ${staff.is_active ? 'text-green-600 dark:text-green-400' : 'text-gray-400 dark:text-gray-500'}`}>
+                        {staff.is_active ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
+                  }
+                  data-testid={`staff-item-${staff.id}`}
+                />
+              ))}
+            </List>
+          )}
+        </div>
+      </PullRefresh>
+    </Page>
+  )
 }
 
 /**
- * Staff list screen — list with name, role, contact details.
- * Swipe actions for Call and Email. Pull-to-refresh.
- * Wrapped in ModuleGate at the route level.
+ * Staff screen — list with role badges (Chip), branch, status.
+ * ModuleGate `staff`.
  *
- * Requirements: 18.1, 18.3
+ * Requirements: 33.1, 33.2, 33.3, 55.1
  */
 export default function StaffListScreen() {
-  const navigate = useNavigate()
-
-  const {
-    items,
-    isLoading,
-    isRefreshing,
-    hasMore,
-    search,
-    setSearch,
-    refresh,
-    loadMore,
-  } = useApiList<StaffMember>({
-    endpoint: '/api/v2/staff',
-    dataKey: 'items',
-  })
-
-  const handleTap = useCallback(
-    (staff: StaffMember) => {
-      navigate(`/staff/${staff.id}`)
-    },
-    [navigate],
-  )
-
-  const renderItem = useCallback(
-    (staff: StaffMember) => {
-      const rightActions = [
-        ...(staff.phone
-          ? [
-              {
-                label: 'Call',
-                icon: PhoneIcon,
-                color: 'bg-green-500',
-                onAction: () => handleCall(staff.phone),
-              },
-            ]
-          : []),
-        ...(staff.email
-          ? [
-              {
-                label: 'Email',
-                icon: MailIcon,
-                color: 'bg-purple-500',
-                onAction: () => handleEmail(staff.email),
-              },
-            ]
-          : []),
-      ]
-
-      return (
-        <SwipeAction rightActions={rightActions}>
-          <MobileListItem
-            title={displayName(staff)}
-            subtitle={staff.email ?? staff.phone ?? undefined}
-            trailing={
-              <MobileBadge
-                label={roleLabel(staff.role)}
-                variant={staff.is_active ? 'active' : 'cancelled'}
-              />
-            }
-            onTap={() => handleTap(staff)}
-          />
-        </SwipeAction>
-      )
-    },
-    [handleTap],
-  )
-
   return (
-    <PullRefresh onRefresh={refresh} isRefreshing={isRefreshing}>
-      <div className="flex flex-col">
-        <div className="px-4 pb-1 pt-4">
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
-            Staff
-          </h1>
-        </div>
-
-        <MobileList<StaffMember>
-          items={items}
-          renderItem={renderItem}
-          onRefresh={refresh}
-          onLoadMore={loadMore}
-          isLoading={isLoading}
-          isRefreshing={isRefreshing}
-          hasMore={hasMore}
-          emptyMessage="No staff members found"
-          searchValue={search}
-          onSearchChange={setSearch}
-          searchPlaceholder="Search staff…"
-          keyExtractor={(s) => s.id}
-        />
-      </div>
-    </PullRefresh>
+    <ModuleGate moduleSlug="staff">
+      <StaffContent />
+    </ModuleGate>
   )
 }

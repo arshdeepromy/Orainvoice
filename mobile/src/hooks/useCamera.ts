@@ -82,15 +82,15 @@ export function useCamera(): UseCameraResult {
           '@capacitor/camera'
         )
         const photo = await Camera.getPhoto({
-          quality: 80,
+          quality: 85,
           allowEditing: false,
-          resultType: CameraResultType.DataUrl,
-          source: CameraSource.Camera,
+          resultType: CameraResultType.Uri,
+          source: CameraSource.Prompt,
           width: 1200,
           height: 1200,
         })
         return {
-          dataUrl: photo.dataUrl ?? '',
+          dataUrl: photo.webPath ?? photo.path ?? '',
           format: `image/${photo.format ?? 'jpeg'}`,
         }
       } catch {
@@ -122,15 +122,15 @@ export function useCamera(): UseCameraResult {
           '@capacitor/camera'
         )
         const photo = await Camera.getPhoto({
-          quality: 80,
+          quality: 85,
           allowEditing: false,
-          resultType: CameraResultType.DataUrl,
+          resultType: CameraResultType.Uri,
           source: CameraSource.Photos,
           width: 1200,
           height: 1200,
         })
         return {
-          dataUrl: photo.dataUrl ?? '',
+          dataUrl: photo.webPath ?? photo.path ?? '',
           format: `image/${photo.format ?? 'jpeg'}`,
         }
       } catch {

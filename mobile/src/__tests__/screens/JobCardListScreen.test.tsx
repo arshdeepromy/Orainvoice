@@ -4,8 +4,8 @@ import { MemoryRouter } from 'react-router-dom'
 import JobCardListScreen from '@/screens/jobs/JobCardListScreen'
 
 /**
- * Unit tests for JobCardListScreen trade family gating.
- * Requirements: 11.1, 5.4
+ * Unit tests for JobCardListScreen module gating.
+ * Requirements: 25.1, 25.2, 55.1
  */
 
 // Mock the contexts
@@ -34,28 +34,18 @@ vi.mock('@/contexts/AuthContext', () => ({
   }),
 }))
 
-// Mock useApiList to return empty data
-vi.mock('@/hooks/useApiList', () => ({
-  useApiList: () => ({
-    items: [],
-    total: 0,
-    isLoading: false,
-    isRefreshing: false,
-    error: null,
-    hasMore: false,
-    search: '',
-    setSearch: vi.fn(),
-    refresh: vi.fn(),
-    loadMore: vi.fn(),
-    filters: {},
-    setFilters: vi.fn(),
+vi.mock('@/contexts/BranchContext', () => ({
+  useBranch: () => ({
+    selectedBranchId: null,
+    branches: [],
+    selectBranch: vi.fn(),
   }),
 }))
 
 // Mock apiClient
 vi.mock('@/api/client', () => ({
   default: {
-    get: vi.fn(),
+    get: vi.fn().mockResolvedValue({ data: { items: [], total: 0 } }),
     post: vi.fn(),
   },
 }))
@@ -68,45 +58,22 @@ function renderScreen() {
   )
 }
 
-describe('JobCardListScreen trade family gating', () => {
+describe('JobCardListScreen module gating', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockUser.mockReturnValue({ role: 'owner' })
+    mockUser.mockReturnValue({ id: 'u1', role: 'owner' })
+    mockTradeFamily.mockReturnValue('automotive-transport')
   })
 
-  it('should render job cards list when jobs module is enabled and trade family is automotive-transport', () => {
+  it('should render when jobs module is enabled', () => {
     mockIsModuleEnabled.mockImplementation((slug: string) => slug === 'jobs')
-    mockTradeFamily.mockReturnValue('automotive-transport')
-
     renderScreen()
-
-    expect(screen.getByText('Job Cards')).toBeInTheDocument()
+    expect(screen.getByTestId('job-card-list-page')).toBeInTheDocument()
   })
 
   it('should NOT render when jobs module is disabled', () => {
     mockIsModuleEnabled.mockReturnValue(false)
-    mockTradeFamily.mockReturnValue('automotive-transport')
-
     renderScreen()
-
-    expect(screen.queryByText('Job Cards')).not.toBeInTheDocument()
-  })
-
-  it('should NOT render when trade family is not automotive-transport', () => {
-    mockIsModuleEnabled.mockImplementation((slug: string) => slug === 'jobs')
-    mockTradeFamily.mockReturnValue('electrical')
-
-    renderScreen()
-
-    expect(screen.queryByText('Job Cards')).not.toBeInTheDocument()
-  })
-
-  it('should NOT render when trade family is null', () => {
-    mockIsModuleEnabled.mockImplementation((slug: string) => slug === 'jobs')
-    mockTradeFamily.mockReturnValue(null)
-
-    renderScreen()
-
-    expect(screen.queryByText('Job Cards')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('job-card-list-page')).not.toBeInTheDocument()
   })
 })

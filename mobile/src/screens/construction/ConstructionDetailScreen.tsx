@@ -1,7 +1,8 @@
-﻿import { useNavigate, useParams } from 'react-router-dom'
+﻿import { useParams } from 'react-router-dom'
+import { Page, List, ListItem, Block, BlockTitle, Preloader } from 'konsta/react'
+import { KonstaNavbar } from '@/components/konsta/KonstaNavbar'
 import { useApiDetail } from '@/hooks/useApiDetail'
-import { MobileCard, MobileBadge, MobileSpinner } from '@/components/ui'
-import type { BadgeVariant } from '@/components/ui'
+import StatusBadge from '@/components/konsta/StatusBadge'
 
 interface ConstructionItem {
   id: string
@@ -24,40 +25,22 @@ interface ConstructionLineItem {
   amount: number
 }
 
-const statusVariant: Record<string, BadgeVariant> = {
-  draft: 'draft',
-  submitted: 'sent',
-  approved: 'paid',
-  rejected: 'overdue',
-  certified: 'info',
-}
-
-function formatCurrency(n: number) {
-  return `$${Number(n ?? 0).toFixed(2)}`
+function formatNZD(value: number | null | undefined): string {
+  return `NZD${Number(value ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function formatDate(dateStr: string): string {
   if (!dateStr) return ''
-  try {
-    return new Date(dateStr).toLocaleDateString('en-NZ', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    })
-  } catch {
-    return dateStr
-  }
+  try { return new Date(dateStr).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' }) }
+  catch { return dateStr }
 }
 
 /**
- * Construction detail screen — detail view for progress claims and variations
- * with full breakdown and approval status.
- *
- * Requirements: 32.4
+ * Construction detail — progress claims and variations with full breakdown.
+ * Requirements: 41.1, 41.2
  */
 export default function ConstructionDetailScreen() {
   const { id } = useParams<{ id: string }>()
-  const navigate = useNavigate()
 
   const { data: item, isLoading, error } = useApiDetail<ConstructionItem>({
     endpoint: `/api/v2/progress-claims/${id}`,
@@ -65,124 +48,77 @@ export default function ConstructionDetailScreen() {
 
   if (isLoading) {
     return (
-      <div className="flex h-64 items-center justify-center">
-        <MobileSpinner size="md" />
-      </div>
+      <Page data-testid="construction-detail-page">
+        <KonstaNavbar title="Detail" showBack />
+        <div className="flex flex-1 items-center justify-center p-8"><Preloader /></div>
+      </Page>
     )
   }
 
   if (error || !item) {
     return (
-      <div className="p-4 text-center text-red-600 dark:text-red-400">
-        {error ?? 'Item not found'}
-      </div>
+      <Page data-testid="construction-detail-page">
+        <KonstaNavbar title="Detail" showBack />
+        <Block><p className="text-center text-red-600 dark:text-red-400">{error ?? 'Item not found'}</p></Block>
+      </Page>
     )
   }
 
-  const status = item.status ?? 'draft'
   const lineItems: ConstructionLineItem[] = item.line_items ?? []
+  const typeLabel = item.type === 'claim' ? 'Progress Claim' : 'Variation'
 
   return (
-    <div className="flex flex-col gap-4 p-4">
-      {/* Back button */}
-      <button
-        type="button"
-        onClick={() => navigate(-1)}
-        className="flex min-h-[44px] items-center gap-1 self-start text-blue-600 dark:text-blue-400"
-        aria-label="Back"
-      >
-        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="m15 18-6-6 6-6" />
-        </svg>
-        Back
-      </button>
+    <Page data-testid="construction-detail-page">
+      <KonstaNavbar
+        title={item.number ?? typeLabel}
+        subtitle={item.project_name ?? 'No project'}
+        showBack
+      />
 
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
-            {item.number ?? (item.type === 'claim' ? 'Progress Claim' : 'Variation')}
-          </h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            {item.project_name ?? 'No project'}
-          </p>
-        </div>
-        <MobileBadge
-          label={status.charAt(0).toUpperCase() + status.slice(1)}
-          variant={statusVariant[status] ?? 'info'}
-        />
-      </div>
+      <div className="flex flex-col pb-24">
+        <Block className="flex justify-end">
+          <StatusBadge status={item.status ?? 'draft'} size="md" />
+        </Block>
 
-      {/* Details */}
-      <MobileCard>
-        <div className="flex flex-col gap-2 text-sm">
-          <div className="flex justify-between">
-            <span className="text-gray-500 dark:text-gray-400">Type</span>
-            <span className="font-medium capitalize text-gray-900 dark:text-gray-100">
-              {item.type === 'claim' ? 'Progress Claim' : 'Variation'}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-500 dark:text-gray-400">Created</span>
-            <span className="font-medium text-gray-900 dark:text-gray-100">
-              {formatDate(item.created_at)}
-            </span>
-          </div>
-          {item.approval_status && (
-            <div className="flex justify-between">
-              <span className="text-gray-500 dark:text-gray-400">Approval</span>
-              <span className="font-medium capitalize text-gray-900 dark:text-gray-100">
-                {item.approval_status}
-              </span>
-            </div>
-          )}
-        </div>
-      </MobileCard>
+        {/* Details */}
+        <BlockTitle>Details</BlockTitle>
+        <List strongIos outlineIos dividersIos>
+          <ListItem title="Type" after={typeLabel} />
+          <ListItem title="Created" after={formatDate(item.created_at)} />
+          {item.approval_status && <ListItem title="Approval" after={<span className="capitalize">{item.approval_status}</span>} />}
+        </List>
 
-      {/* Description */}
-      {item.description && (
-        <MobileCard>
-          <h2 className="mb-1 text-base font-semibold text-gray-900 dark:text-gray-100">
-            Description
-          </h2>
-          <p className="text-sm text-gray-700 dark:text-gray-300">{item.description}</p>
-        </MobileCard>
-      )}
-
-      {/* Line items breakdown */}
-      <MobileCard>
-        <h2 className="mb-2 text-base font-semibold text-gray-900 dark:text-gray-100">
-          Breakdown
-        </h2>
-        {lineItems.length === 0 ? (
-          <p className="text-sm text-gray-500 dark:text-gray-400">No line items</p>
-        ) : (
-          lineItems.map((li) => (
-            <div
-              key={li.id}
-              className="flex items-start justify-between border-b border-gray-100 py-2 last:border-b-0 dark:border-gray-700"
-            >
-              <div className="min-w-0 flex-1">
-                <p className="text-sm text-gray-900 dark:text-gray-100">
-                  {li.description || 'Item'}
-                </p>
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  {li.quantity ?? 0} × {formatCurrency(li.unit_price)}
-                </p>
-              </div>
-              <span className="ml-3 text-sm font-medium text-gray-900 dark:text-gray-100">
-                {formatCurrency(li.amount)}
-              </span>
-            </div>
-          ))
+        {/* Description */}
+        {item.description && (
+          <>
+            <BlockTitle>Description</BlockTitle>
+            <Block><p className="text-sm text-gray-700 dark:text-gray-300">{item.description}</p></Block>
+          </>
         )}
-        <div className="mt-2 flex justify-between border-t border-gray-200 pt-2 dark:border-gray-600">
-          <span className="font-semibold text-gray-900 dark:text-gray-100">Total</span>
-          <span className="font-semibold text-gray-900 dark:text-gray-100">
-            {formatCurrency(item.amount)}
-          </span>
-        </div>
-      </MobileCard>
-    </div>
+
+        {/* Breakdown */}
+        <BlockTitle>Breakdown ({lineItems.length})</BlockTitle>
+        {lineItems.length === 0 ? (
+          <Block><p className="text-sm text-gray-500 dark:text-gray-400">No line items</p></Block>
+        ) : (
+          <List strongIos outlineIos dividersIos>
+            {lineItems.map((li) => (
+              <ListItem key={li.id}
+                title={li.description || 'Item'}
+                subtitle={<span className="text-xs text-gray-500 dark:text-gray-400">{li.quantity ?? 0} × {formatNZD(li.unit_price)}</span>}
+                after={<span className="font-medium">{formatNZD(li.amount)}</span>}
+              />
+            ))}
+          </List>
+        )}
+
+        <Block>
+          <div className="flex justify-between border-t border-gray-200 pt-3 dark:border-gray-600">
+            <span className="font-semibold text-gray-900 dark:text-gray-100">Total</span>
+            <span className="font-semibold text-gray-900 dark:text-gray-100">{formatNZD(item.amount)}</span>
+          </div>
+        </Block>
+      </div>
+    </Page>
   )
 }

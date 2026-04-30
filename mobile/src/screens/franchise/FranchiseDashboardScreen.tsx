@@ -44,7 +44,7 @@ function FranchiseDashboardContent() {
             {locations.map((loc) => (
               <MobileCard
                 key={loc.id}
-                onClick={() => navigate(`/franchise/locations/${loc.id}`)}
+                onTap={() => navigate(`/franchise/locations/${loc.id}`)}
                 className="cursor-pointer"
               >
                 <div className="flex items-start justify-between">

@@ -89,6 +89,122 @@ export const TAB_CONFIGS: TabConfig[] = [
   },
 ]
 
+// ─── Dynamic 4th tab configs ────────────────────────────────────────────────
+
+const ICON_QUOTES =
+  'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01'
+const ICON_BOOKINGS =
+  'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z'
+const ICON_REPORTS =
+  'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z'
+
+// ─── Named tab exports for KonstaTabbar and buildTabs ───────────────────────
+
+export const HOME_TAB: TabConfig = {
+  id: 'home',
+  label: 'Home',
+  iconPath: ICON_DASHBOARD,
+  path: '/dashboard',
+  moduleSlug: null,
+  tradeFamily: null,
+  allowedRoles: [],
+}
+
+export const INVOICES_TAB: TabConfig = {
+  id: 'invoices',
+  label: 'Invoices',
+  iconPath: ICON_INVOICES,
+  path: '/invoices',
+  moduleSlug: null,
+  tradeFamily: null,
+  allowedRoles: [],
+}
+
+export const CUSTOMERS_TAB: TabConfig = {
+  id: 'customers',
+  label: 'Customers',
+  iconPath: ICON_CUSTOMERS,
+  path: '/customers',
+  moduleSlug: null,
+  tradeFamily: null,
+  allowedRoles: [],
+}
+
+export const JOBS_TAB: TabConfig = {
+  id: 'jobs',
+  label: 'Jobs',
+  iconPath: ICON_JOBS,
+  path: '/jobs',
+  moduleSlug: 'jobs',
+  tradeFamily: null,
+  allowedRoles: [],
+}
+
+export const QUOTES_TAB: TabConfig = {
+  id: 'quotes',
+  label: 'Quotes',
+  iconPath: ICON_QUOTES,
+  path: '/quotes',
+  moduleSlug: 'quotes',
+  tradeFamily: null,
+  allowedRoles: [],
+}
+
+export const BOOKINGS_TAB: TabConfig = {
+  id: 'bookings',
+  label: 'Bookings',
+  iconPath: ICON_BOOKINGS,
+  path: '/bookings',
+  moduleSlug: 'bookings',
+  tradeFamily: null,
+  allowedRoles: [],
+}
+
+export const REPORTS_TAB: TabConfig = {
+  id: 'reports',
+  label: 'Reports',
+  iconPath: ICON_REPORTS,
+  path: '/reports',
+  moduleSlug: null,
+  tradeFamily: null,
+  allowedRoles: [],
+}
+
+export const MORE_TAB: TabConfig = {
+  id: 'more',
+  label: 'More',
+  iconPath: ICON_MORE,
+  path: '/more',
+  moduleSlug: null,
+  tradeFamily: null,
+  allowedRoles: [],
+}
+
+/**
+ * Resolves the dynamic 4th tab based on which modules are enabled.
+ *
+ * Priority: Jobs → Quotes → Bookings → Reports (fallback).
+ *
+ * This function is exported for property-based testing.
+ *
+ * Requirements: 4.4, 4.5, 4.6, 4.7
+ */
+export function resolveFourthTab(enabledModules: string[]): TabConfig {
+  if (enabledModules.includes('jobs')) return JOBS_TAB
+  if (enabledModules.includes('quotes')) return QUOTES_TAB
+  if (enabledModules.includes('bookings')) return BOOKINGS_TAB
+  return REPORTS_TAB
+}
+
+/**
+ * Builds the full 5-tab array: Home, Invoices, Customers, <dynamic 4th>, More.
+ *
+ * Requirements: 4.1, 4.2, 4.3
+ */
+export function buildTabs(enabledModules: string[]): TabConfig[] {
+  return [HOME_TAB, INVOICES_TAB, CUSTOMERS_TAB, resolveFourthTab(enabledModules), MORE_TAB]
+}
+
 /**
  * Pure filtering function for navigation items.
  *

@@ -146,6 +146,11 @@ const InventoryDetailScreen = lazy(() =>
     default: () => <ScreenPlaceholder name="Inventory Detail" />,
   })),
 )
+const CatalogueItemsScreen = lazy(() =>
+  import('@/screens/inventory/CatalogueItemsScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Catalogue Items" />,
+  })),
+)
 
 // Staff
 const StaffListScreen = lazy(() =>
@@ -315,6 +320,30 @@ const FranchiseDashboardScreen = lazy(() =>
     default: () => <ScreenPlaceholder name="Franchise" />,
   })),
 )
+
+// Hospitality
+const FloorPlanScreen = lazy(() =>
+  import('@/screens/hospitality/FloorPlanScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Floor Plan" />,
+  })),
+)
+const KitchenDisplayScreen = lazy(() =>
+  import('@/screens/hospitality/KitchenDisplayScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Kitchen Display" />,
+  })),
+)
+
+// Assets
+const AssetListScreen = lazy(() =>
+  import('@/screens/assets/AssetListScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Assets" />,
+  })),
+)
+const AssetDetailScreen = lazy(() =>
+  import('@/screens/assets/AssetDetailScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Asset Detail" />,
+  })),
+)
 const LocationDetailScreen = lazy(() =>
   import('@/screens/franchise/LocationDetailScreen').catch(() => ({
     default: () => <ScreenPlaceholder name="Location Detail" />,
@@ -383,6 +412,13 @@ const SettingsScreen = lazy(() =>
   })),
 )
 
+// Portal
+const PortalScreen = lazy(() =>
+  import('@/screens/portal/PortalScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Portal" />,
+  })),
+)
+
 // Kiosk
 const KioskScreen = lazy(() =>
   import('@/screens/kiosk/KioskScreen').catch(() => ({
@@ -409,6 +445,31 @@ const ForgotPasswordScreen = lazy(() =>
 const BiometricLockScreen = lazy(() =>
   import('@/screens/auth/BiometricLockScreen').catch(() => ({
     default: () => <ScreenPlaceholder name="Biometric Lock" />,
+  })),
+)
+const SignupScreen = lazy(() =>
+  import('@/screens/auth/SignupScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Sign Up" />,
+  })),
+)
+const ResetPasswordScreen = lazy(() =>
+  import('@/screens/auth/ResetPasswordScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Reset Password" />,
+  })),
+)
+const VerifyEmailScreen = lazy(() =>
+  import('@/screens/auth/VerifyEmailScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Verify Email" />,
+  })),
+)
+const LandingScreen = lazy(() =>
+  import('@/screens/auth/LandingScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Landing" />,
+  })),
+)
+const PublicPaymentScreen = lazy(() =>
+  import('@/screens/auth/PublicPaymentScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Payment" />,
   })),
 )
 
@@ -472,6 +533,11 @@ export function StackRoutes() {
         <Route path="/mfa-verify" element={<MfaScreen />} />
         <Route path="/forgot-password" element={<ForgotPasswordScreen />} />
         <Route path="/biometric-lock" element={<BiometricLockScreen />} />
+        <Route path="/signup" element={<SignupScreen />} />
+        <Route path="/reset-password" element={<ResetPasswordScreen />} />
+        <Route path="/verify-email" element={<VerifyEmailScreen />} />
+        <Route path="/landing" element={<LandingScreen />} />
+        <Route path="/pay/:token" element={<PublicPaymentScreen />} />
 
         {/* Dashboard tab */}
         <Route path="/" element={<DashboardScreen />} />
@@ -479,6 +545,7 @@ export function StackRoutes() {
         {/* Invoices tab stack */}
         <Route path="/invoices" element={<InvoiceListScreen />} />
         <Route path="/invoices/new" element={<InvoiceCreateScreen />} />
+        <Route path="/invoices/:id/edit" element={<InvoiceCreateScreen />} />
         <Route path="/invoices/:id" element={<InvoiceDetailScreen />} />
         <Route path="/invoices/:id/pdf" element={<InvoicePDFScreen />} />
 
@@ -507,6 +574,7 @@ export function StackRoutes() {
         {/* Inventory */}
         <Route path="/inventory" element={<InventoryListScreen />} />
         <Route path="/inventory/:id" element={<InventoryDetailScreen />} />
+        <Route path="/items" element={<CatalogueItemsScreen />} />
 
         {/* Staff */}
         <Route path="/staff" element={<StaffListScreen />} />
@@ -567,6 +635,14 @@ export function StackRoutes() {
         <Route path="/franchise/locations/:id" element={<LocationDetailScreen />} />
         <Route path="/franchise/transfers" element={<StockTransferListScreen />} />
 
+        {/* Hospitality */}
+        <Route path="/floor-plan" element={<FloorPlanScreen />} />
+        <Route path="/kitchen" element={<KitchenDisplayScreen />} />
+
+        {/* Assets */}
+        <Route path="/assets" element={<AssetListScreen />} />
+        <Route path="/assets/:id" element={<AssetDetailScreen />} />
+
         {/* Recurring Invoices */}
         <Route path="/recurring" element={<RecurringListScreen />} />
         <Route path="/recurring/:id" element={<RecurringDetailScreen />} />
@@ -587,6 +663,9 @@ export function StackRoutes() {
 
         {/* Settings */}
         <Route path="/settings" element={<SettingsScreen />} />
+
+        {/* Portal */}
+        <Route path="/portal" element={<PortalScreen />} />
 
         {/* Kiosk */}
         <Route path="/kiosk" element={<KioskScreen />} />

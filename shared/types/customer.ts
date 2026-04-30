@@ -13,6 +13,8 @@ export interface CustomerCreate {
   last_name?: string
   email?: string
   phone?: string
+  mobile_phone?: string
+  work_phone?: string
   company?: string
   address?: string
 }

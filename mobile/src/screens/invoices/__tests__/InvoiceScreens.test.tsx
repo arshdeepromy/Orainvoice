@@ -62,6 +62,25 @@ vi.mock('@/contexts/TenantContext', () => ({
   }),
 }))
 
+vi.mock('@/hooks/useHaptics', () => ({
+  useHaptics: () => ({
+    light: vi.fn().mockResolvedValue(undefined),
+    medium: vi.fn().mockResolvedValue(undefined),
+    heavy: vi.fn().mockResolvedValue(undefined),
+    selection: vi.fn().mockResolvedValue(undefined),
+  }),
+}))
+
+vi.mock('@/contexts/BranchContext', () => ({
+  useBranch: () => ({
+    selectedBranchId: null,
+    branches: [],
+    selectBranch: vi.fn(),
+    isLoading: false,
+    isBranchLocked: false,
+  }),
+}))
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -132,7 +151,7 @@ const mockInvoices = [
 
 function mockInvoiceListResponse(invoices = mockInvoices) {
   mockGet.mockResolvedValue({
-    data: { invoices, total: invoices.length },
+    data: { items: invoices, total: invoices.length },
   })
 }
 
@@ -167,26 +186,27 @@ describe('InvoiceListScreen', () => {
     render(<InvoiceListScreen />, { wrapper: Wrapper })
 
     await waitFor(() => {
-      expect(screen.getByText('Draft')).toBeInTheDocument()
+      // StatusBadge uses STATUS_CONFIG which renders uppercase labels
+      expect(screen.getByText('DRAFT')).toBeInTheDocument()
     })
-    expect(screen.getByText('Paid')).toBeInTheDocument()
-    expect(screen.getByText('Overdue')).toBeInTheDocument()
+    expect(screen.getByText('PAID')).toBeInTheDocument()
+    expect(screen.getByText('OVERDUE')).toBeInTheDocument()
   })
 
-  it('displays total amounts', async () => {
+  it('displays total amounts in NZD format', async () => {
     mockInvoiceListResponse()
     const InvoiceListScreen = (await import('../InvoiceListScreen')).default
     render(<InvoiceListScreen />, { wrapper: Wrapper })
 
     await waitFor(() => {
-      expect(screen.getByText('$115.00')).toBeInTheDocument()
+      expect(screen.getByText('NZD115.00')).toBeInTheDocument()
     })
-    expect(screen.getByText('$220.00')).toBeInTheDocument()
-    expect(screen.getByText('$575.00')).toBeInTheDocument()
+    expect(screen.getByText('NZD220.00')).toBeInTheDocument()
+    expect(screen.getByText('NZD575.00')).toBeInTheDocument()
   })
 
   it('shows empty state when no invoices', async () => {
-    mockGet.mockResolvedValue({ data: { invoices: [], total: 0 } })
+    mockGet.mockResolvedValue({ data: { items: [], total: 0 } })
     const InvoiceListScreen = (await import('../InvoiceListScreen')).default
     render(<InvoiceListScreen />, { wrapper: Wrapper })
 
@@ -195,7 +215,7 @@ describe('InvoiceListScreen', () => {
     })
   })
 
-  it('navigates to new invoice screen when New button is tapped', async () => {
+  it('navigates to new invoice screen when FAB is tapped', async () => {
     mockInvoiceListResponse()
     const user = userEvent.setup()
     const InvoiceListScreen = (await import('../InvoiceListScreen')).default
@@ -205,7 +225,9 @@ describe('InvoiceListScreen', () => {
       expect(screen.getByText('INV-001')).toBeInTheDocument()
     })
 
-    await user.click(screen.getByRole('button', { name: /New/i }))
+    // FAB renders as a Konsta Fab component with text "+ New Invoice"
+    const fab = screen.getByTestId('konsta-fab')
+    await user.click(fab)
     expect(mockNavigate).toHaveBeenCalledWith('/invoices/new')
   })
 
@@ -215,12 +237,13 @@ describe('InvoiceListScreen', () => {
     render(<InvoiceListScreen />, { wrapper: Wrapper })
 
     await waitFor(() => {
-      expect(screen.getByRole('searchbox')).toBeInTheDocument()
+      expect(screen.getByPlaceholderText('Search invoices…')).toBeInTheDocument()
     })
-    expect(screen.getByPlaceholderText('Search invoices…')).toBeInTheDocument()
+    // Konsta Searchbar renders an input[type="text"] with the placeholder
+    expect(screen.getByTestId('invoice-searchbar')).toBeInTheDocument()
   })
 
-  it('renders Send swipe action for draft invoices', async () => {
+  it('renders Mark Sent swipe action for draft invoices', async () => {
     mockInvoiceListResponse([mockInvoices[0]]) // draft invoice only
     const InvoiceListScreen = (await import('../InvoiceListScreen')).default
     render(<InvoiceListScreen />, { wrapper: Wrapper })
@@ -229,8 +252,10 @@ describe('InvoiceListScreen', () => {
       expect(screen.getByText('INV-001')).toBeInTheDocument()
     })
 
-    const sendButtons = screen.getAllByRole('button', { name: 'Send' })
-    expect(sendButtons.length).toBeGreaterThan(0)
+    // Swipe action buttons are rendered but aria-hidden until swiped;
+    // verify they exist in the DOM via aria-label
+    const markSentButtons = screen.getAllByLabelText('Mark Sent')
+    expect(markSentButtons.length).toBeGreaterThan(0)
   })
 
   it('renders Payment swipe action for unpaid invoices', async () => {
@@ -242,7 +267,8 @@ describe('InvoiceListScreen', () => {
       expect(screen.getByText('INV-001')).toBeInTheDocument()
     })
 
-    const paymentButtons = screen.getAllByRole('button', { name: 'Payment' })
+    // Swipe action buttons are rendered but aria-hidden until swiped
+    const paymentButtons = screen.getAllByLabelText('Payment')
     expect(paymentButtons.length).toBeGreaterThan(0)
   })
 
@@ -255,7 +281,41 @@ describe('InvoiceListScreen', () => {
       expect(screen.getByText('INV-002')).toBeInTheDocument()
     })
 
-    expect(screen.queryByRole('button', { name: 'Payment' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Payment')).not.toBeInTheDocument()
+  })
+
+  // -------------------------------------------------------------------------
+  // Requirement 8.1 — Pull-to-refresh triggers API refetch
+  // -------------------------------------------------------------------------
+
+  it('re-fetches invoice data when refresh is triggered', async () => {
+    // Start with an error state so the Retry button is visible
+    mockGet.mockRejectedValue(new Error('Network error'))
+    const InvoiceListScreen = (await import('../InvoiceListScreen')).default
+    render(<InvoiceListScreen />, { wrapper: Wrapper })
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load invoices')).toBeInTheDocument()
+    })
+
+    // Now set up successful responses for the retry
+    mockGet.mockClear()
+    mockInvoiceListResponse()
+
+    // Click the Retry button — this calls handleRefresh (same as PullRefresh onRefresh)
+    await userEvent.click(screen.getByText('Retry'))
+
+    // Verify the invoices endpoint was re-fetched and data is displayed
+    await waitFor(() => {
+      expect(screen.getByText('INV-001')).toBeInTheDocument()
+    })
+
+    const invoiceCalls = mockGet.mock.calls.filter(
+      (call: unknown[]) =>
+        typeof call[0] === 'string' &&
+        (call[0] as string).includes('/invoices'),
+    )
+    expect(invoiceCalls.length).toBeGreaterThan(0)
   })
 })
 
@@ -285,7 +345,8 @@ describe('InvoiceDetailScreen', () => {
     render(<InvoiceDetailScreen />, { wrapper: Wrapper })
 
     await waitFor(() => {
-      expect(screen.getByText('Draft')).toBeInTheDocument()
+      // StatusBadge uses STATUS_CONFIG which renders uppercase labels
+      expect(screen.getByText('DRAFT')).toBeInTheDocument()
     })
   })
 
@@ -297,7 +358,7 @@ describe('InvoiceDetailScreen', () => {
     await waitFor(() => {
       expect(screen.getByText('Plumbing Service')).toBeInTheDocument()
     })
-    expect(screen.getByText(/2 × \$50\.00/)).toBeInTheDocument()
+    expect(screen.getByText(/2 × NZD50\.00/)).toBeInTheDocument()
   })
 
   it('renders totals section with subtotal, tax, and total', async () => {
@@ -308,8 +369,9 @@ describe('InvoiceDetailScreen', () => {
     await waitFor(() => {
       expect(screen.getByText('Subtotal')).toBeInTheDocument()
     })
-    expect(screen.getByText('Tax')).toBeInTheDocument()
-    expect(screen.getByText('Total')).toBeInTheDocument()
+    expect(screen.getByText('GST')).toBeInTheDocument()
+    // "Total" appears in both hero card and totals section
+    expect(screen.getAllByText('Total').length).toBeGreaterThanOrEqual(1)
   })
 
   it('renders payment history with amount paid and due', async () => {
@@ -390,7 +452,8 @@ describe('InvoiceDetailScreen', () => {
     await user.click(screen.getByRole('button', { name: /Record Payment/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('Record Payment', { selector: 'h3' })).toBeInTheDocument()
+      // Record Payment Sheet opens with a heading
+      expect(screen.getByTestId('record-payment-sheet')).toBeInTheDocument()
     })
   })
 })

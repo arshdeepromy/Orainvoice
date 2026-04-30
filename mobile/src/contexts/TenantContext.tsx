@@ -89,6 +89,19 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     }
   }, [isAuthenticated, user?.org_id, user?.role, fetchSettings])
 
+  // Propagate brand colours as CSS custom properties on the document root.
+  // This allows Tailwind's `var(--color-primary, #2563EB)` references and
+  // Konsta UI components to pick up the org's brand colours dynamically.
+  // When branding is null (logged out), reset to defaults so the fallback
+  // values in tailwind.config.js take effect.
+  useEffect(() => {
+    const root = document.documentElement
+    const primary = branding?.primary_colour || DEFAULT_PRIMARY
+    const secondary = branding?.secondary_colour || DEFAULT_SECONDARY
+    root.style.setProperty('--color-primary', primary)
+    root.style.setProperty('--color-secondary', secondary)
+  }, [branding])
+
   const value = useMemo<TenantContextValue>(
     () => ({
       branding,

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { MobileForm, MobileInput, MobileSelect, MobileButton } from '@/components/ui'
 import { CustomerPicker } from '@/components/common/CustomerPicker'
 import apiClient from '@/api/client'
+import type { Customer } from '@shared/types/customer'
 
 /* ------------------------------------------------------------------ */
 /* Service type options                                                */
@@ -39,6 +40,7 @@ export default function BookingCreateScreen() {
 
   const [customerId, setCustomerId] = useState('')
   const [customerName, setCustomerName] = useState('')
+  const [customerPickerOpen, setCustomerPickerOpen] = useState(false)
   const [date, setDate] = useState(new Date().toISOString().split('T')[0])
   const [startTime, setStartTime] = useState('09:00')
   const [duration, setDuration] = useState('60')
@@ -106,16 +108,30 @@ export default function BookingCreateScreen() {
       </h1>
 
       <MobileForm onSubmit={handleSubmit}>
-        <CustomerPicker
-          value={customerId}
-          displayValue={customerName}
-          onChange={(id, name) => {
-            setCustomerId(id)
-            setCustomerName(name)
-            setErrors((prev) => ({ ...prev, customer: '' }))
-          }}
-          error={errors.customer}
-        />
+        <div>
+          <button
+            type="button"
+            onClick={() => setCustomerPickerOpen(true)}
+            className="flex min-h-[44px] w-full items-center justify-between rounded-lg border border-gray-300 px-3 py-2 text-left dark:border-gray-600 dark:bg-gray-800"
+          >
+            <span className={customerName ? 'text-gray-900 dark:text-gray-100' : 'text-gray-400 dark:text-gray-500'}>
+              {customerName || 'Select a customer'}
+            </span>
+          </button>
+          {errors.customer && (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400">{errors.customer}</p>
+          )}
+          <CustomerPicker
+            isOpen={customerPickerOpen}
+            onClose={() => setCustomerPickerOpen(false)}
+            onSelect={(customer: Customer) => {
+              setCustomerId(customer.id)
+              const name = [customer.first_name, customer.last_name].filter(Boolean).join(' ') || 'Unnamed'
+              setCustomerName(name)
+              setErrors((prev) => ({ ...prev, customer: '' }))
+            }}
+          />
+        </div>
 
         <MobileInput
           label="Date"

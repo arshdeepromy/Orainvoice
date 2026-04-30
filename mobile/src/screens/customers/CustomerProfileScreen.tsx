@@ -1,17 +1,25 @@
 ﻿import type { ReactNode } from 'react'
 import { useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import {
+  Page,
+  Card,
+  Block,
+  List,
+  ListItem,
+  Sheet,
+  ListInput,
+  Preloader,
+  Segmented,
+  SegmentedButton,
+  BlockTitle,
+} from 'konsta/react'
 import { useApiDetail } from '@/hooks/useApiDetail'
 import { useApiList } from '@/hooks/useApiList'
-import {
-  MobileCard,
-  MobileButton,
-  MobileSpinner,
-  MobileListItem,
-  MobileBadge,
-  MobileModal,
-} from '@/components/ui'
-import { PullRefresh } from '@/components/gestures/PullRefresh'
+import { KonstaNavbar } from '@/components/konsta/KonstaNavbar'
+import StatusBadge from '@/components/konsta/StatusBadge'
+import HapticButton from '@/components/konsta/HapticButton'
+import { useModules } from '@/contexts/ModuleContext'
 import apiClient from '@/api/client'
 
 /* ------------------------------------------------------------------ */
@@ -78,23 +86,32 @@ interface LinkedInvoice {
   due_date: string
 }
 
-interface LinkedQuote {
+interface LinkedVehicle {
   id: string
-  quote_number?: string
-  status: string
-  total: number
-  created_at: string
+  rego: string
+  make?: string | null
+  model?: string | null
+  year?: number | null
+  colour?: string | null
 }
 
-interface LinkedJob {
-  id: string
-  title?: string
-  description?: string
-  status: string
-  created_at: string
+interface ReminderConfig {
+  id?: string
+  type: string
+  enabled: boolean
+  interval_days?: number | null
+  next_due?: string | null
 }
 
-type ProfileTab = 'invoices' | 'quotes' | 'jobs'
+interface HistoryEntry {
+  id?: string
+  action: string
+  description?: string | null
+  created_at: string
+  user_name?: string | null
+}
+
+type ProfileTab = 'profile' | 'invoices' | 'vehicles' | 'reminders' | 'history'
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                            */
@@ -109,11 +126,10 @@ function getDisplayName(c: CustomerProfile): string {
 
 function formatNZD(value: string | number | null | undefined): string {
   const num = typeof value === 'string' ? parseFloat(value) : (value ?? 0)
-  return new Intl.NumberFormat('en-NZ', {
-    style: 'currency',
-    currency: 'NZD',
+  return `NZD${Number(isNaN(num) ? 0 : num).toLocaleString('en-NZ', {
     minimumFractionDigits: 2,
-  }).format(isNaN(num) ? 0 : num)
+    maximumFractionDigits: 2,
+  })}`
 }
 
 function formatPaymentTerms(terms: string | null | undefined): string {
@@ -135,21 +151,17 @@ function formatAddress(addr: Address | null | undefined): string | null {
   return parts.length > 0 ? parts.join(', ') : null
 }
 
-function badgeVariant(status: string) {
-  const map: Record<string, 'paid' | 'overdue' | 'draft' | 'sent' | 'cancelled' | 'pending' | 'active' | 'info'> = {
-    paid: 'paid',
-    overdue: 'overdue',
-    draft: 'draft',
-    sent: 'sent',
-    cancelled: 'cancelled',
-    pending: 'pending',
-    active: 'active',
-    accepted: 'paid',
-    declined: 'cancelled',
-    completed: 'paid',
-    in_progress: 'info',
+function formatDate(dateStr: string | undefined | null): string {
+  if (!dateStr) return ''
+  try {
+    return new Date(dateStr).toLocaleDateString('en-NZ', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    })
+  } catch {
+    return dateStr ?? ''
   }
-  return map[status] ?? 'info'
 }
 
 const AVATAR_COLORS = [
@@ -178,14 +190,6 @@ function getInitials(c: CustomerProfile): string {
 /* Inline SVG icons                                                   */
 /* ------------------------------------------------------------------ */
 
-function BackIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="m15 18-6-6 6-6" />
-    </svg>
-  )
-}
-
 function PhoneIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -211,33 +215,45 @@ function MessageIcon({ className }: { className?: string }) {
   )
 }
 
-function MoreIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="1" />
-      <circle cx="12" cy="5" r="1" />
-      <circle cx="12" cy="19" r="1" />
-    </svg>
-  )
-}
-
 /* ------------------------------------------------------------------ */
 /* CustomerProfileScreen                                              */
 /* ------------------------------------------------------------------ */
 
 /**
- * Customer profile screen — Zoho Invoice-style detail view with
- * quick actions, financial summary, addresses, contact persons,
- * and linked invoices/quotes/jobs tabs.
+ * Customer profile screen — Konsta UI redesign with:
+ * - KonstaNavbar with back button and overflow menu
+ * - Header card: avatar initials, name, company, contact buttons
+ *   (call via tel:, email via mailto:, SMS via sms:)
+ * - Tabs using Konsta Segmented: Profile, Invoices, Vehicles
+ *   (if vehicles + automotive trade), Reminders, History
+ * - Profile tab: read-only fields with "Edit" button opening modal form
+ * - Invoices tab: list of customer's invoices with status and total
+ * - Vehicles tab: linked vehicles (only if vehicles module + automotive-transport trade)
+ * - Reminders tab: WOF/service reminder configuration
+ * - Calls GET /customers/:id, GET /invoices?customer_id=:id,
+ *   GET /vehicles?customer_id=:id with safe API consumption
+ *
+ * Requirements: 23.1, 23.2, 23.3, 23.4, 23.5, 23.6, 23.7
  */
 export default function CustomerProfileScreen() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const [activeTab, setActiveTab] = useState<ProfileTab>('invoices')
-  const [showMoreSheet, setShowMoreSheet] = useState(false)
+  const { isModuleEnabled, tradeFamily } = useModules()
+
+  const showVehiclesTab =
+    isModuleEnabled('vehicles') && tradeFamily === 'automotive-transport'
+
+  const [activeTab, setActiveTab] = useState<ProfileTab>('profile')
+  const [showEditSheet, setShowEditSheet] = useState(false)
+  const [showActionSheet, setShowActionSheet] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [toast, setToast] = useState<{
+    message: string
+    variant: 'success' | 'error'
+  } | null>(null)
 
+  /* ── API: Customer detail ─────────────────────────────────────── */
   const {
     data: customer,
     isLoading,
@@ -248,38 +264,33 @@ export default function CustomerProfileScreen() {
     enabled: !!id,
   })
 
-  // Linked invoices
+  /* ── API: Linked invoices ─────────────────────────────────────── */
   const invoiceList = useApiList<LinkedInvoice>({
     endpoint: '/api/v1/invoices',
     dataKey: 'invoices',
     initialFilters: { customer_id: id ?? '' },
   })
 
-  // Linked quotes
-  const quoteList = useApiList<LinkedQuote>({
-    endpoint: '/api/v1/quotes',
-    dataKey: 'quotes',
+  /* ── API: Linked vehicles ─────────────────────────────────────── */
+  const vehicleList = useApiList<LinkedVehicle>({
+    endpoint: '/api/v1/vehicles',
+    dataKey: 'vehicles',
     initialFilters: { customer_id: id ?? '' },
   })
 
-  // Linked jobs
-  const jobList = useApiList<LinkedJob>({
-    endpoint: '/api/v2/jobs',
-    dataKey: 'jobs',
-    initialFilters: { customer_id: id ?? '' },
+  /* ── API: Reminders ───────────────────────────────────────────── */
+  const reminderList = useApiList<ReminderConfig>({
+    endpoint: `/api/v1/customers/${id}/reminders`,
+    dataKey: 'reminders',
   })
 
-  const isRefreshing =
-    invoiceList.isRefreshing || quoteList.isRefreshing || jobList.isRefreshing
+  /* ── API: History ─────────────────────────────────────────────── */
+  const historyList = useApiList<HistoryEntry>({
+    endpoint: `/api/v1/customers/${id}/history`,
+    dataKey: 'history',
+  })
 
-  const handleRefresh = useCallback(async () => {
-    await Promise.all([
-      refetch(),
-      invoiceList.refresh(),
-      quoteList.refresh(),
-      jobList.refresh(),
-    ])
-  }, [refetch, invoiceList, quoteList, jobList])
+  /* ── Handlers ─────────────────────────────────────────────────── */
 
   const handleDelete = useCallback(async () => {
     if (!id) return
@@ -288,348 +299,324 @@ export default function CustomerProfileScreen() {
       await apiClient.delete(`/api/v1/customers/${id}`)
       navigate('/customers', { replace: true })
     } catch {
-      // Silently fail — user can retry
+      setToast({ message: 'Failed to delete customer', variant: 'error' })
     } finally {
       setIsDeleting(false)
       setShowDeleteConfirm(false)
-      setShowMoreSheet(false)
+      setShowActionSheet(false)
     }
   }, [id, navigate])
 
+  /* ── Loading state ────────────────────────────────────────────── */
+
   if (isLoading) {
     return (
-      <div className="flex flex-1 items-center justify-center p-8">
-        <MobileSpinner size="lg" />
-      </div>
+      <Page data-testid="customer-profile-page">
+        <KonstaNavbar title="Customer" showBack />
+        <div className="flex flex-1 items-center justify-center p-8">
+          <Preloader />
+        </div>
+      </Page>
     )
   }
 
   if (error || !customer) {
     return (
-      <div className="flex flex-col items-center gap-4 p-8">
-        <p className="text-gray-500 dark:text-gray-400">
-          {error ?? 'Customer not found'}
-        </p>
-        <MobileButton variant="secondary" onClick={() => navigate(-1)}>
-          Go Back
-        </MobileButton>
-      </div>
+      <Page data-testid="customer-profile-page">
+        <KonstaNavbar title="Customer" showBack />
+        <Block>
+          <div className="py-8 text-center text-red-600 dark:text-red-400">
+            {error ?? 'Customer not found'}
+          </div>
+        </Block>
+      </Page>
     )
   }
 
+  /* ── Derived data ─────────────────────────────────────────────── */
+
   const displayNameStr = getDisplayName(customer)
   const primaryPhone = customer.mobile_phone ?? customer.phone ?? null
-  const outstandingBalance = customer.outstanding_balance ?? '0.00'
   const billingAddr = formatAddress(customer.billing_address as Address | null)
   const shippingAddr = formatAddress(customer.shipping_address as Address | null)
   const contactPersons = (customer.contact_persons ?? []) as ContactPerson[]
-  const primaryContact = contactPersons.find((cp) => cp.is_primary) ?? contactPersons[0] ?? null
 
-  const tabs: { key: ProfileTab; label: string; count: number }[] = [
-    { key: 'invoices', label: 'Invoices', count: invoiceList.total },
-    { key: 'quotes', label: 'Quotes', count: quoteList.total },
-    { key: 'jobs', label: 'Jobs', count: jobList.total },
+  /* ── Build tab list ───────────────────────────────────────────── */
+
+  const tabs: { key: ProfileTab; label: string }[] = [
+    { key: 'profile', label: 'Profile' },
+    { key: 'invoices', label: 'Invoices' },
   ]
+  if (showVehiclesTab) {
+    tabs.push({ key: 'vehicles', label: 'Vehicles' })
+  }
+  tabs.push({ key: 'reminders', label: 'Reminders' })
+  tabs.push({ key: 'history', label: 'History' })
+
+  /* ── Overflow menu (•••) ──────────────────────────────────────── */
+
+  const overflowButton = (
+    <button
+      type="button"
+      onClick={() => setShowActionSheet(true)}
+      className="flex min-h-[44px] min-w-[44px] items-center justify-center text-lg text-primary"
+      aria-label="More actions"
+      data-testid="overflow-menu-button"
+    >
+      •••
+    </button>
+  )
 
   return (
-    <PullRefresh onRefresh={handleRefresh} isRefreshing={isRefreshing}>
-      <div className="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-900">
-        {/* Header bar */}
-        <div className="sticky top-0 z-20 flex items-center justify-between bg-white px-2 py-2 dark:bg-gray-800">
-          <button
-            type="button"
-            onClick={() => navigate(-1)}
-            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full text-gray-600 active:bg-gray-100 dark:text-gray-300 dark:active:bg-gray-700"
-            aria-label="Go back"
-          >
-            <BackIcon className="h-6 w-6" />
-          </button>
-          <h1 className="flex-1 truncate px-2 text-center text-lg font-semibold text-gray-900 dark:text-gray-100">
-            {displayNameStr}
-          </h1>
-          <button
-            type="button"
-            onClick={() => navigate(`/customers/${id}/edit`)}
-            className="flex min-h-[44px] items-center justify-center rounded-lg px-3 text-sm font-medium text-blue-600 active:bg-blue-50 dark:text-blue-400 dark:active:bg-gray-700"
-          >
-            Edit
-          </button>
-        </div>
+    <Page data-testid="customer-profile-page">
+      {/* ── Navbar ──────────────────────────────────────────────── */}
+      <KonstaNavbar
+        title={displayNameStr}
+        showBack
+        rightActions={overflowButton}
+      />
 
-        <div className="flex flex-col gap-4 p-4">
-          {/* Name + avatar + email */}
-          <div className="flex items-center gap-4">
+      <div className="flex flex-col gap-4 pb-24">
+        {/* ── Toast ───────────────────────────────────────────────── */}
+        {toast && (
+          <div
+            className={`mx-4 mt-2 rounded-lg p-3 text-sm ${
+              toast.variant === 'success'
+                ? 'bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+            }`}
+            role="alert"
+          >
+            {toast.message}
+            <button
+              type="button"
+              onClick={() => setToast(null)}
+              className="ml-2 font-medium underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {/* ── Header Card: Avatar, Name, Company, Contact Buttons ── */}
+        <Card className="mx-4 mt-2" data-testid="customer-header-card">
+          <div className="flex flex-col items-center gap-3 p-4">
+            {/* Avatar with initials */}
             <div
-              className={`flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-full text-lg font-bold text-white ${getAvatarColor(displayNameStr)}`}
+              className={`flex h-16 w-16 items-center justify-center rounded-full text-xl font-bold text-white ${getAvatarColor(displayNameStr)}`}
               aria-hidden="true"
+              data-testid="customer-avatar"
             >
               {getInitials(customer)}
             </div>
-            <div className="min-w-0 flex-1">
+
+            {/* Name and company */}
+            <div className="text-center">
+              <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100">
+                {displayNameStr}
+              </h2>
               {customer.company_name && (
-                <p className="text-lg font-bold text-gray-900 dark:text-gray-100">
+                <p className="text-sm text-gray-500 dark:text-gray-400">
                   {customer.company_name}
                 </p>
               )}
-              {!customer.company_name && (
-                <p className="text-lg font-bold text-gray-900 dark:text-gray-100">
-                  {displayNameStr}
-                </p>
-              )}
-              {customer.email && (
-                <p className="truncate text-sm text-gray-500 dark:text-gray-400">
-                  {customer.email}
-                </p>
-              )}
+            </div>
+
+            {/* Contact action buttons */}
+            <div className="flex gap-4 pt-1">
+              <ContactButton
+                icon={<PhoneIcon className="h-5 w-5" />}
+                label="Call"
+                disabled={!primaryPhone}
+                onTap={() =>
+                  primaryPhone && window.open(`tel:${primaryPhone}`, '_system')
+                }
+              />
+              <ContactButton
+                icon={<MailIcon className="h-5 w-5" />}
+                label="Email"
+                disabled={!customer.email}
+                onTap={() =>
+                  customer.email &&
+                  window.open(`mailto:${customer.email}`, '_system')
+                }
+              />
+              <ContactButton
+                icon={<MessageIcon className="h-5 w-5" />}
+                label="SMS"
+                disabled={!primaryPhone}
+                onTap={() =>
+                  primaryPhone && window.open(`sms:${primaryPhone}`, '_system')
+                }
+              />
             </div>
           </div>
+        </Card>
 
-          {/* Quick action buttons */}
-          <div className="flex justify-around">
-            <QuickActionButton
-              icon={<PhoneIcon className="h-5 w-5" />}
-              label="Call"
-              disabled={!primaryPhone}
-              onTap={() => primaryPhone && window.open(`tel:${primaryPhone}`, '_system')}
-            />
-            <QuickActionButton
-              icon={<MailIcon className="h-5 w-5" />}
-              label="Mail"
-              disabled={!customer.email}
-              onTap={() => customer.email && window.open(`mailto:${customer.email}`, '_system')}
-            />
-            <QuickActionButton
-              icon={<MessageIcon className="h-5 w-5" />}
-              label="Message"
-              disabled={!primaryPhone}
-              onTap={() => primaryPhone && window.open(`sms:${primaryPhone}`, '_system')}
-            />
-            <QuickActionButton
-              icon={<MoreIcon className="h-5 w-5" />}
-              label="More"
-              onTap={() => setShowMoreSheet(true)}
-            />
-          </div>
-
-          {/* Financial summary */}
-          <MobileCard>
-            <div className="flex">
-              <div className="flex-1 text-center">
-                <p className="text-xs font-medium uppercase text-gray-400 dark:text-gray-500">
-                  Outstanding Receivables
-                </p>
-                <p className="mt-1 text-lg font-bold text-gray-900 dark:text-gray-100">
-                  {formatNZD(outstandingBalance)}
-                </p>
-              </div>
-              <div className="mx-4 w-px bg-gray-200 dark:bg-gray-700" />
-              <div className="flex-1 text-center">
-                <p className="text-xs font-medium uppercase text-gray-400 dark:text-gray-500">
-                  Unused Credits
-                </p>
-                <p className="mt-1 text-lg font-bold text-gray-900 dark:text-gray-100">
-                  {formatNZD(0)}
-                </p>
-              </div>
-            </div>
-          </MobileCard>
-
-          {/* Payment terms */}
-          <MobileCard padding="px-4 py-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-500 dark:text-gray-400">Payment Terms</span>
-              <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                {formatPaymentTerms(customer.payment_terms)}
-              </span>
-            </div>
-          </MobileCard>
-
-          {/* Billing Address */}
-          {billingAddr && (
-            <MobileCard>
-              <p className="mb-1 text-xs font-medium uppercase text-gray-400 dark:text-gray-500">
-                Billing Address
-              </p>
-              <p className="text-sm text-gray-900 dark:text-gray-100">{billingAddr}</p>
-              {customer.phone && (
-                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                  {customer.phone}
-                </p>
-              )}
-            </MobileCard>
-          )}
-
-          {/* Shipping Address */}
-          {shippingAddr && (
-            <MobileCard>
-              <p className="mb-1 text-xs font-medium uppercase text-gray-400 dark:text-gray-500">
-                Shipping Address
-              </p>
-              <p className="text-sm text-gray-900 dark:text-gray-100">{shippingAddr}</p>
-            </MobileCard>
-          )}
-
-          {/* Primary Contact */}
-          {primaryContact && (
-            <MobileCard>
-              <p className="mb-2 text-xs font-medium uppercase text-gray-400 dark:text-gray-500">
-                Primary Contact
-              </p>
-              <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                {[primaryContact.salutation, primaryContact.first_name, primaryContact.last_name]
-                  .filter(Boolean)
-                  .join(' ')}
-              </p>
-              {primaryContact.email && (
-                <div className="mt-1 flex items-center gap-2">
-                  <MailIcon className="h-4 w-4 text-gray-400" />
-                  <a
-                    href={`mailto:${primaryContact.email}`}
-                    className="text-sm text-blue-600 dark:text-blue-400"
-                  >
-                    {primaryContact.email}
-                  </a>
-                </div>
-              )}
-              {(primaryContact.mobile_phone ?? primaryContact.work_phone) && (
-                <div className="mt-1 flex items-center gap-2">
-                  <PhoneIcon className="h-4 w-4 text-gray-400" />
-                  <a
-                    href={`tel:${primaryContact.mobile_phone ?? primaryContact.work_phone}`}
-                    className="text-sm text-blue-600 dark:text-blue-400"
-                  >
-                    {primaryContact.mobile_phone ?? primaryContact.work_phone}
-                  </a>
-                </div>
-              )}
-            </MobileCard>
-          )}
-
-          {/* Tabs — Invoices / Quotes / Jobs */}
-          <div className="flex border-b border-gray-200 dark:border-gray-700" role="tablist">
+        {/* ── Segmented Tab Bar ────────────────────────────────────── */}
+        <div className="px-4">
+          <Segmented strong data-testid="profile-tabs">
             {tabs.map((tab) => (
-              <button
+              <SegmentedButton
                 key={tab.key}
-                type="button"
-                role="tab"
-                aria-selected={activeTab === tab.key}
+                active={activeTab === tab.key}
                 onClick={() => setActiveTab(tab.key)}
-                className={`flex-1 min-h-[44px] py-3 text-center text-sm font-medium transition-colors ${
-                  activeTab === tab.key
-                    ? 'border-b-2 border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
-                    : 'text-gray-500 dark:text-gray-400'
-                }`}
+                data-testid={`tab-${tab.key}`}
               >
-                {tab.label} ({tab.count})
-              </button>
+                {tab.label}
+              </SegmentedButton>
             ))}
-          </div>
-
-          {/* Tab content */}
-          <div role="tabpanel">
-            {activeTab === 'invoices' && (
-              <LinkedInvoicesList
-                items={invoiceList.items}
-                isLoading={invoiceList.isLoading}
-                onTap={(inv) => navigate(`/invoices/${inv.id}`)}
-              />
-            )}
-            {activeTab === 'quotes' && (
-              <LinkedQuotesList
-                items={quoteList.items}
-                isLoading={quoteList.isLoading}
-                onTap={(q) => navigate(`/quotes/${q.id}`)}
-              />
-            )}
-            {activeTab === 'jobs' && (
-              <LinkedJobsList
-                items={jobList.items}
-                isLoading={jobList.isLoading}
-                onTap={(j) => navigate(`/jobs/${j.id}`)}
-              />
-            )}
-          </div>
+          </Segmented>
         </div>
 
-        {/* "More" bottom sheet */}
-        <MobileModal
-          isOpen={showMoreSheet}
-          onClose={() => setShowMoreSheet(false)}
-          title="Actions"
-        >
-          <div className="flex flex-col gap-1 pb-4">
-            <BottomSheetItem
-              label="New Transaction"
-              onTap={() => {
-                setShowMoreSheet(false)
+        {/* ── Tab Content ──────────────────────────────────────────── */}
+        <div role="tabpanel" data-testid={`tabpanel-${activeTab}`}>
+          {activeTab === 'profile' && (
+            <ProfileTabContent
+              customer={customer}
+              billingAddr={billingAddr}
+              shippingAddr={shippingAddr}
+              contactPersons={contactPersons}
+              onEdit={() => setShowEditSheet(true)}
+            />
+          )}
+          {activeTab === 'invoices' && (
+            <InvoicesTabContent
+              items={invoiceList.items}
+              isLoading={invoiceList.isLoading}
+              onTap={(inv) => navigate(`/invoices/${inv.id}`)}
+            />
+          )}
+          {activeTab === 'vehicles' && showVehiclesTab && (
+            <VehiclesTabContent
+              items={vehicleList.items}
+              isLoading={vehicleList.isLoading}
+              onTap={(v) => navigate(`/vehicles/${v.id}`)}
+            />
+          )}
+          {activeTab === 'reminders' && (
+            <RemindersTabContent
+              items={reminderList.items}
+              isLoading={reminderList.isLoading}
+            />
+          )}
+          {activeTab === 'history' && (
+            <HistoryTabContent
+              items={historyList.items}
+              isLoading={historyList.isLoading}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* ── Edit Customer Sheet ─────────────────────────────────── */}
+      <EditCustomerSheet
+        isOpen={showEditSheet}
+        onClose={() => setShowEditSheet(false)}
+        customer={customer}
+        customerId={id ?? ''}
+        onSuccess={async () => {
+          setShowEditSheet(false)
+          setToast({ message: 'Customer updated', variant: 'success' })
+          await refetch()
+        }}
+      />
+
+      {/* ── Actions Sheet ───────────────────────────────────────── */}
+      <Sheet
+        opened={showActionSheet}
+        onBackdropClick={() => setShowActionSheet(false)}
+        data-testid="actions-sheet"
+      >
+        <Block>
+          <h3 className="mb-3 text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Actions
+          </h3>
+          <List strongIos outlineIos dividersIos>
+            <ListItem
+              link
+              title="New Invoice"
+              onClick={() => {
+                setShowActionSheet(false)
                 navigate(`/invoices/new?customer_id=${id}`)
               }}
             />
-            <BottomSheetItem
-              label="Customer Statement"
-              onTap={() => {
-                setShowMoreSheet(false)
+            <ListItem
+              link
+              title="Customer Statement"
+              onClick={() => {
+                setShowActionSheet(false)
                 navigate(`/reports/customer-statement?customer_id=${id}`)
               }}
             />
-            <BottomSheetItem
-              label="Mark as Inactive"
-              onTap={() => {
-                setShowMoreSheet(false)
+            <ListItem
+              link
+              title="Delete Customer"
+              onClick={() => {
+                setShowActionSheet(false)
                 setShowDeleteConfirm(true)
               }}
+              className="text-red-600 dark:text-red-400"
             />
-            <BottomSheetItem
-              label="Delete"
-              danger
-              onTap={() => {
-                setShowMoreSheet(false)
-                setShowDeleteConfirm(true)
-              }}
-            />
+          </List>
+          <div className="mt-3">
+            <HapticButton
+              outline
+              large
+              onClick={() => setShowActionSheet(false)}
+              className="w-full"
+            >
+              Cancel
+            </HapticButton>
           </div>
-        </MobileModal>
+        </Block>
+      </Sheet>
 
-        {/* Delete confirmation modal */}
-        <MobileModal
-          isOpen={showDeleteConfirm}
-          onClose={() => setShowDeleteConfirm(false)}
-          title="Delete Customer"
-        >
-          <div className="flex flex-col gap-4 pb-4">
-            <p className="text-sm text-gray-600 dark:text-gray-300">
-              Are you sure you want to delete this customer? This action will anonymise
-              their data and cannot be undone.
-            </p>
-            <div className="flex gap-3">
-              <MobileButton
-                variant="secondary"
-                fullWidth
-                onClick={() => setShowDeleteConfirm(false)}
-              >
-                Cancel
-              </MobileButton>
-              <MobileButton
-                variant="danger"
-                fullWidth
-                isLoading={isDeleting}
-                onClick={handleDelete}
-              >
-                Delete
-              </MobileButton>
-            </div>
+      {/* ── Delete Confirmation Sheet ───────────────────────────── */}
+      <Sheet
+        opened={showDeleteConfirm}
+        onBackdropClick={() => setShowDeleteConfirm(false)}
+        data-testid="delete-confirm-sheet"
+      >
+        <Block>
+          <h3 className="mb-3 text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Delete Customer
+          </h3>
+          <p className="mb-4 text-sm text-gray-600 dark:text-gray-300">
+            Are you sure you want to delete this customer? This action will
+            anonymise their data and cannot be undone.
+          </p>
+          <div className="flex gap-3">
+            <HapticButton
+              outline
+              onClick={() => setShowDeleteConfirm(false)}
+              className="flex-1"
+            >
+              Cancel
+            </HapticButton>
+            <HapticButton
+              hapticStyle="heavy"
+              onClick={handleDelete}
+              disabled={isDeleting}
+              className="flex-1"
+              colors={{ fillBgIos: 'bg-red-500', fillBgMaterial: 'bg-red-500' }}
+            >
+              {isDeleting ? 'Deleting…' : 'Delete'}
+            </HapticButton>
           </div>
-        </MobileModal>
-      </div>
-    </PullRefresh>
+        </Block>
+      </Sheet>
+    </Page>
   )
 }
+
 
 /* ------------------------------------------------------------------ */
 /* Sub-components                                                     */
 /* ------------------------------------------------------------------ */
 
-function QuickActionButton({
+/** Contact action button (call, email, SMS) */
+function ContactButton({
   icon,
   label,
   disabled,
@@ -648,11 +635,12 @@ function QuickActionButton({
       className={`flex min-h-[44px] min-w-[44px] flex-col items-center gap-1 ${
         disabled
           ? 'opacity-30'
-          : 'text-blue-600 active:opacity-70 dark:text-blue-400'
+          : 'text-primary active:opacity-70'
       }`}
       aria-label={label}
+      data-testid={`contact-btn-${label.toLowerCase()}`}
     >
-      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-50 dark:bg-blue-900/30">
+      <div className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/10 dark:bg-primary/20">
         {icon}
       </div>
       <span className="text-xs font-medium">{label}</span>
@@ -660,31 +648,214 @@ function QuickActionButton({
   )
 }
 
-function BottomSheetItem({
-  label,
-  danger,
-  onTap,
+/* ------------------------------------------------------------------ */
+/* Profile Tab                                                        */
+/* ------------------------------------------------------------------ */
+
+function ProfileTabContent({
+  customer,
+  billingAddr,
+  shippingAddr,
+  contactPersons,
+  onEdit,
 }: {
-  label: string
-  danger?: boolean
-  onTap: () => void
+  customer: CustomerProfile
+  billingAddr: string | null
+  shippingAddr: string | null
+  contactPersons: ContactPerson[]
+  onEdit: () => void
 }) {
   return (
-    <button
-      type="button"
-      onClick={onTap}
-      className={`min-h-[44px] w-full rounded-lg px-4 py-3 text-left text-base font-medium active:bg-gray-100 dark:active:bg-gray-700 ${
-        danger
-          ? 'text-red-600 dark:text-red-400'
-          : 'text-gray-900 dark:text-gray-100'
-      }`}
-    >
-      {label}
-    </button>
+    <div className="flex flex-col gap-2">
+      {/* Edit button */}
+      <Block className="flex justify-end">
+        <HapticButton small outline onClick={onEdit} data-testid="edit-customer-btn">
+          Edit
+        </HapticButton>
+      </Block>
+
+      {/* Contact details */}
+      <BlockTitle>Contact Details</BlockTitle>
+      <List strongIos outlineIos dividersIos>
+        <ListItem
+          title="Name"
+          after={
+            <span className="text-sm text-gray-900 dark:text-gray-100">
+              {[customer.salutation, customer.first_name, customer.last_name]
+                .filter(Boolean)
+                .join(' ') || '—'}
+            </span>
+          }
+        />
+        {customer.company_name && (
+          <ListItem
+            title="Company"
+            after={
+              <span className="text-sm text-gray-900 dark:text-gray-100">
+                {customer.company_name}
+              </span>
+            }
+          />
+        )}
+        {customer.email && (
+          <ListItem
+            title="Email"
+            after={
+              <span className="text-sm text-primary">{customer.email}</span>
+            }
+          />
+        )}
+        {customer.phone && (
+          <ListItem
+            title="Phone"
+            after={
+              <span className="text-sm text-gray-900 dark:text-gray-100">
+                {customer.phone}
+              </span>
+            }
+          />
+        )}
+        {customer.mobile_phone && (
+          <ListItem
+            title="Mobile"
+            after={
+              <span className="text-sm text-gray-900 dark:text-gray-100">
+                {customer.mobile_phone}
+              </span>
+            }
+          />
+        )}
+        {customer.work_phone && (
+          <ListItem
+            title="Work Phone"
+            after={
+              <span className="text-sm text-gray-900 dark:text-gray-100">
+                {customer.work_phone}
+              </span>
+            }
+          />
+        )}
+      </List>
+
+      {/* Financial info */}
+      <BlockTitle>Financial</BlockTitle>
+      <List strongIos outlineIos dividersIos>
+        <ListItem
+          title="Outstanding"
+          after={
+            <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              {formatNZD(customer.outstanding_balance)}
+            </span>
+          }
+        />
+        <ListItem
+          title="Total Spend"
+          after={
+            <span className="text-sm text-gray-900 dark:text-gray-100">
+              {formatNZD(customer.total_spend)}
+            </span>
+          }
+        />
+        <ListItem
+          title="Payment Terms"
+          after={
+            <span className="text-sm text-gray-900 dark:text-gray-100">
+              {formatPaymentTerms(customer.payment_terms)}
+            </span>
+          }
+        />
+        <ListItem
+          title="Currency"
+          after={
+            <span className="text-sm text-gray-900 dark:text-gray-100">
+              {customer.currency ?? 'NZD'}
+            </span>
+          }
+        />
+      </List>
+
+      {/* Addresses */}
+      {(billingAddr || shippingAddr) && (
+        <>
+          <BlockTitle>Addresses</BlockTitle>
+          <List strongIos outlineIos dividersIos>
+            {billingAddr && (
+              <ListItem
+                title="Billing"
+                subtitle={
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {billingAddr}
+                  </span>
+                }
+              />
+            )}
+            {shippingAddr && (
+              <ListItem
+                title="Shipping"
+                subtitle={
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {shippingAddr}
+                  </span>
+                }
+              />
+            )}
+          </List>
+        </>
+      )}
+
+      {/* Contact persons */}
+      {contactPersons.length > 0 && (
+        <>
+          <BlockTitle>Contact Persons</BlockTitle>
+          <List strongIos outlineIos dividersIos>
+            {contactPersons.map((cp, idx) => (
+              <ListItem
+                key={idx}
+                title={
+                  [cp.salutation, cp.first_name, cp.last_name]
+                    .filter(Boolean)
+                    .join(' ')
+                }
+                subtitle={
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {[cp.email, cp.mobile_phone ?? cp.work_phone]
+                      .filter(Boolean)
+                      .join(' · ') || cp.designation || undefined}
+                  </span>
+                }
+                after={
+                  cp.is_primary ? (
+                    <span className="text-xs font-medium text-primary">
+                      Primary
+                    </span>
+                  ) : undefined
+                }
+              />
+            ))}
+          </List>
+        </>
+      )}
+
+      {/* Notes */}
+      {(customer.notes || customer.remarks) && (
+        <>
+          <BlockTitle>Notes</BlockTitle>
+          <Card className="mx-4">
+            <div className="p-4 text-sm text-gray-700 dark:text-gray-300">
+              {customer.notes ?? customer.remarks}
+            </div>
+          </Card>
+        </>
+      )}
+    </div>
   )
 }
 
-function LinkedInvoicesList({
+/* ------------------------------------------------------------------ */
+/* Invoices Tab                                                       */
+/* ------------------------------------------------------------------ */
+
+function InvoicesTabContent({
   items,
   isLoading,
   onTap,
@@ -695,118 +866,375 @@ function LinkedInvoicesList({
 }) {
   if (isLoading) {
     return (
-      <div className="flex justify-center py-4">
-        <MobileSpinner size="sm" />
+      <div className="flex justify-center py-8">
+        <Preloader />
       </div>
     )
   }
   if (items.length === 0) {
     return (
-      <p className="py-4 text-center text-sm text-gray-400 dark:text-gray-500">
-        No invoices
-      </p>
+      <Block className="text-center">
+        <p className="text-sm text-gray-400 dark:text-gray-500">No invoices</p>
+      </Block>
     )
   }
   return (
-    <div className="flex flex-col">
+    <List strongIos outlineIos dividersIos data-testid="invoices-tab-list">
       {items.map((inv) => (
-        <MobileListItem
+        <ListItem
           key={inv.id}
-          title={inv.invoice_number ?? 'Invoice'}
-          subtitle={inv.due_date}
-          trailing={
+          link
+          onClick={() => onTap(inv)}
+          title={
+            <span className="font-medium text-gray-900 dark:text-gray-100">
+              {inv.invoice_number ?? 'Invoice'}
+            </span>
+          }
+          subtitle={
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              Due {formatDate(inv.due_date)}
+            </span>
+          }
+          after={
             <div className="flex flex-col items-end gap-1">
-              <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              <span className="text-sm font-medium tabular-nums text-gray-900 dark:text-gray-100">
                 {formatNZD(inv.total ?? 0)}
               </span>
-              <MobileBadge label={inv.status} variant={badgeVariant(inv.status)} />
+              <StatusBadge status={inv.status} size="sm" />
             </div>
           }
-          onTap={() => onTap(inv)}
         />
       ))}
-    </div>
+    </List>
   )
 }
 
-function LinkedQuotesList({
+/* ------------------------------------------------------------------ */
+/* Vehicles Tab                                                       */
+/* ------------------------------------------------------------------ */
+
+function VehiclesTabContent({
   items,
   isLoading,
   onTap,
 }: {
-  items: LinkedQuote[]
+  items: LinkedVehicle[]
   isLoading: boolean
-  onTap: (q: LinkedQuote) => void
+  onTap: (v: LinkedVehicle) => void
 }) {
   if (isLoading) {
     return (
-      <div className="flex justify-center py-4">
-        <MobileSpinner size="sm" />
+      <div className="flex justify-center py-8">
+        <Preloader />
       </div>
     )
   }
   if (items.length === 0) {
     return (
-      <p className="py-4 text-center text-sm text-gray-400 dark:text-gray-500">
-        No quotes
-      </p>
+      <Block className="text-center">
+        <p className="text-sm text-gray-400 dark:text-gray-500">
+          No linked vehicles
+        </p>
+      </Block>
     )
   }
   return (
-    <div className="flex flex-col">
-      {items.map((q) => (
-        <MobileListItem
-          key={q.id}
-          title={q.quote_number ?? 'Quote'}
-          subtitle={q.created_at}
-          trailing={
-            <div className="flex flex-col items-end gap-1">
-              <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                {formatNZD(q.total ?? 0)}
+    <List strongIos outlineIos dividersIos data-testid="vehicles-tab-list">
+      {items.map((v) => (
+        <ListItem
+          key={v.id}
+          link
+          onClick={() => onTap(v)}
+          title={
+            <span className="font-mono font-bold text-gray-900 dark:text-gray-100">
+              {v.rego}
+            </span>
+          }
+          subtitle={
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              {[v.make, v.model, v.year].filter(Boolean).join(' ') || '—'}
+            </span>
+          }
+        />
+      ))}
+    </List>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Reminders Tab                                                      */
+/* ------------------------------------------------------------------ */
+
+function RemindersTabContent({
+  items,
+  isLoading,
+}: {
+  items: ReminderConfig[]
+  isLoading: boolean
+}) {
+  if (isLoading) {
+    return (
+      <div className="flex justify-center py-8">
+        <Preloader />
+      </div>
+    )
+  }
+  if (items.length === 0) {
+    return (
+      <Block className="text-center">
+        <p className="text-sm text-gray-400 dark:text-gray-500">
+          No reminders configured
+        </p>
+      </Block>
+    )
+  }
+  return (
+    <List strongIos outlineIos dividersIos data-testid="reminders-tab-list">
+      {items.map((r, idx) => (
+        <ListItem
+          key={r.id ?? idx}
+          title={r.type}
+          subtitle={
+            r.next_due ? (
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                Next due: {formatDate(r.next_due)}
               </span>
-              <MobileBadge label={q.status} variant={badgeVariant(q.status)} />
-            </div>
+            ) : undefined
           }
-          onTap={() => onTap(q)}
+          after={
+            <span
+              className={`text-xs font-medium ${
+                r.enabled
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-gray-400 dark:text-gray-500'
+              }`}
+            >
+              {r.enabled ? 'Active' : 'Inactive'}
+            </span>
+          }
         />
       ))}
-    </div>
+    </List>
   )
 }
 
-function LinkedJobsList({
+/* ------------------------------------------------------------------ */
+/* History Tab                                                        */
+/* ------------------------------------------------------------------ */
+
+function HistoryTabContent({
   items,
   isLoading,
-  onTap,
 }: {
-  items: LinkedJob[]
+  items: HistoryEntry[]
   isLoading: boolean
-  onTap: (j: LinkedJob) => void
 }) {
   if (isLoading) {
     return (
-      <div className="flex justify-center py-4">
-        <MobileSpinner size="sm" />
+      <div className="flex justify-center py-8">
+        <Preloader />
       </div>
     )
   }
   if (items.length === 0) {
     return (
-      <p className="py-4 text-center text-sm text-gray-400 dark:text-gray-500">
-        No jobs
-      </p>
+      <Block className="text-center">
+        <p className="text-sm text-gray-400 dark:text-gray-500">No history</p>
+      </Block>
     )
   }
   return (
-    <div className="flex flex-col">
-      {items.map((j) => (
-        <MobileListItem
-          key={j.id}
-          title={j.title ?? j.description ?? 'Job'}
-          trailing={<MobileBadge label={j.status} variant={badgeVariant(j.status)} />}
-          onTap={() => onTap(j)}
+    <List strongIos outlineIos dividersIos data-testid="history-tab-list">
+      {items.map((h, idx) => (
+        <ListItem
+          key={h.id ?? idx}
+          title={h.action}
+          subtitle={
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              {h.description ?? ''}
+              {h.user_name ? ` — ${h.user_name}` : ''}
+            </span>
+          }
+          after={
+            <span className="text-xs text-gray-400 dark:text-gray-500">
+              {formatDate(h.created_at)}
+            </span>
+          }
         />
       ))}
-    </div>
+    </List>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Edit Customer Sheet (modal form)                                   */
+/* ------------------------------------------------------------------ */
+
+function EditCustomerSheet({
+  isOpen,
+  onClose,
+  customer,
+  customerId,
+  onSuccess,
+}: {
+  isOpen: boolean
+  onClose: () => void
+  customer: CustomerProfile
+  customerId: string
+  onSuccess: () => void
+}) {
+  const [form, setForm] = useState({
+    first_name: customer.first_name ?? '',
+    last_name: customer.last_name ?? '',
+    company_name: customer.company_name ?? '',
+    email: customer.email ?? '',
+    phone: customer.phone ?? '',
+    mobile_phone: customer.mobile_phone ?? '',
+    work_phone: customer.work_phone ?? '',
+  })
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const updateField = useCallback(
+    (field: string, value: string) => {
+      setForm((prev) => ({ ...prev, [field]: value }))
+      setError(null)
+    },
+    [],
+  )
+
+  const handleSubmit = useCallback(async () => {
+    if (!form.first_name.trim()) {
+      setError('First name is required')
+      return
+    }
+    setIsSubmitting(true)
+    setError(null)
+    try {
+      await apiClient.put(`/api/v1/customers/${customerId}`, {
+        first_name: form.first_name.trim(),
+        last_name: form.last_name.trim() || undefined,
+        company_name: form.company_name.trim() || undefined,
+        email: form.email.trim() || undefined,
+        phone: form.phone.trim() || undefined,
+        mobile_phone: form.mobile_phone.trim() || undefined,
+        work_phone: form.work_phone.trim() || undefined,
+      })
+      onSuccess()
+    } catch {
+      setError('Failed to update customer')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }, [form, customerId, onSuccess])
+
+  return (
+    <Sheet
+      opened={isOpen}
+      onBackdropClick={onClose}
+      data-testid="edit-customer-sheet"
+      className="pb-safe"
+    >
+      <Block>
+        <h3 className="mb-3 text-lg font-semibold text-gray-900 dark:text-gray-100">
+          Edit Customer
+        </h3>
+      </Block>
+      <List strongIos outlineIos>
+        <ListInput
+          label="First Name"
+          type="text"
+          placeholder="First name"
+          value={form.first_name}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            updateField('first_name', e.target.value)
+          }
+          inputClassName="min-h-[44px]"
+          required
+        />
+        <ListInput
+          label="Last Name"
+          type="text"
+          placeholder="Last name"
+          value={form.last_name}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            updateField('last_name', e.target.value)
+          }
+          inputClassName="min-h-[44px]"
+        />
+        <ListInput
+          label="Company"
+          type="text"
+          placeholder="Company name"
+          value={form.company_name}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            updateField('company_name', e.target.value)
+          }
+          inputClassName="min-h-[44px]"
+        />
+        <ListInput
+          label="Email"
+          type="email"
+          placeholder="email@example.com"
+          value={form.email}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            updateField('email', e.target.value)
+          }
+          inputClassName="min-h-[44px]"
+        />
+        <ListInput
+          label="Phone"
+          type="tel"
+          placeholder="Phone"
+          value={form.phone}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            updateField('phone', e.target.value)
+          }
+          inputClassName="min-h-[44px]"
+        />
+        <ListInput
+          label="Mobile"
+          type="tel"
+          placeholder="Mobile phone"
+          value={form.mobile_phone}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            updateField('mobile_phone', e.target.value)
+          }
+          inputClassName="min-h-[44px]"
+        />
+        <ListInput
+          label="Work Phone"
+          type="tel"
+          placeholder="Work phone"
+          value={form.work_phone}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            updateField('work_phone', e.target.value)
+          }
+          inputClassName="min-h-[44px]"
+        />
+      </List>
+      {error && (
+        <Block>
+          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+        </Block>
+      )}
+      <Block className="flex gap-3">
+        <HapticButton
+          outline
+          onClick={onClose}
+          disabled={isSubmitting}
+          className="flex-1"
+        >
+          Cancel
+        </HapticButton>
+        <HapticButton
+          onClick={handleSubmit}
+          disabled={isSubmitting}
+          className="flex-1"
+        >
+          {isSubmitting ? 'Saving…' : 'Save'}
+        </HapticButton>
+      </Block>
+    </Sheet>
   )
 }

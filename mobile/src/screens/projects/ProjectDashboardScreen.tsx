@@ -1,7 +1,21 @@
 ﻿import { useNavigate, useParams } from 'react-router-dom'
+import {
+  Page,
+  Card,
+  List,
+  ListItem,
+  Block,
+  BlockTitle,
+  Preloader,
+  Progressbar,
+} from 'konsta/react'
+import { KonstaNavbar } from '@/components/konsta/KonstaNavbar'
 import { useApiDetail } from '@/hooks/useApiDetail'
-import { MobileCard, MobileBadge, MobileSpinner } from '@/components/ui'
-import type { BadgeVariant } from '@/components/ui'
+import StatusBadge from '@/components/konsta/StatusBadge'
+
+/* ------------------------------------------------------------------ */
+/* Types                                                              */
+/* ------------------------------------------------------------------ */
 
 interface ProjectDashboard {
   id: string
@@ -37,21 +51,22 @@ interface TimeEntry {
   description: string | null
 }
 
-const taskStatusVariant: Record<string, BadgeVariant> = {
-  todo: 'draft',
-  in_progress: 'sent',
-  done: 'paid',
-  blocked: 'overdue',
-}
+/* ------------------------------------------------------------------ */
+/* Helpers                                                            */
+/* ------------------------------------------------------------------ */
 
-function formatCurrency(n: number) {
-  return `$${Number(n ?? 0).toFixed(2)}`
+function formatNZD(value: number | null | undefined): string {
+  return `NZD${Number(value ?? 0).toLocaleString('en-NZ', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
 }
 
 /**
  * Project dashboard — tasks, budget breakdown, linked invoices, time entries.
+ * Uses KonstaNavbar for back navigation.
  *
- * Requirements: 36.2
+ * Requirements: 34.2
  */
 export default function ProjectDashboardScreen() {
   const { id } = useParams<{ id: string }>()
@@ -63,17 +78,23 @@ export default function ProjectDashboardScreen() {
 
   if (isLoading) {
     return (
-      <div className="flex h-64 items-center justify-center">
-        <MobileSpinner size="md" />
-      </div>
+      <Page data-testid="project-dashboard-page">
+        <KonstaNavbar title="Project" showBack />
+        <div className="flex flex-1 items-center justify-center p-8">
+          <Preloader />
+        </div>
+      </Page>
     )
   }
 
   if (error || !data) {
     return (
-      <div className="p-4 text-center text-red-600 dark:text-red-400">
-        {error ?? 'Project not found'}
-      </div>
+      <Page data-testid="project-dashboard-page">
+        <KonstaNavbar title="Project" showBack />
+        <Block>
+          <p className="text-center text-red-600 dark:text-red-400">{error ?? 'Project not found'}</p>
+        </Block>
+      </Page>
     )
   }
 
@@ -83,136 +104,84 @@ export default function ProjectDashboardScreen() {
   const utilisation = data.budget > 0 ? Math.round((data.spent / data.budget) * 100) : 0
 
   return (
-    <div className="flex flex-col gap-4 p-4">
-      {/* Back */}
-      <button
-        type="button"
-        onClick={() => navigate(-1)}
-        className="flex min-h-[44px] items-center gap-1 self-start text-blue-600 dark:text-blue-400"
-        aria-label="Back"
-      >
-        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="m15 18-6-6 6-6" />
-        </svg>
-        Back
-      </button>
+    <Page data-testid="project-dashboard-page">
+      <KonstaNavbar title={data.name ?? 'Project'} showBack />
 
-      <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
-        {data.name ?? 'Project'}
-      </h1>
+      <div className="flex flex-col pb-24">
+        {/* Budget summary cards */}
+        <div className="grid grid-cols-3 gap-2 px-4 pt-4">
+          <Card className="text-center" data-testid="budget-card">
+            <p className="text-xs text-gray-500 dark:text-gray-400">Budget</p>
+            <p className="text-lg font-bold text-gray-900 dark:text-gray-100">{formatNZD(data.budget)}</p>
+          </Card>
+          <Card className="text-center" data-testid="spent-card">
+            <p className="text-xs text-gray-500 dark:text-gray-400">Spent</p>
+            <p className="text-lg font-bold text-red-600 dark:text-red-400">{formatNZD(data.spent)}</p>
+          </Card>
+          <Card className="text-center" data-testid="remaining-card">
+            <p className="text-xs text-gray-500 dark:text-gray-400">Remaining</p>
+            <p className="text-lg font-bold text-green-600 dark:text-green-400">{formatNZD(data.remaining ?? (data.budget - data.spent))}</p>
+          </Card>
+        </div>
 
-      {/* Budget breakdown */}
-      <div className="grid grid-cols-3 gap-2">
-        <MobileCard>
-          <p className="text-xs text-gray-500 dark:text-gray-400">Budget</p>
-          <p className="text-lg font-bold text-gray-900 dark:text-gray-100">
-            {formatCurrency(data.budget)}
-          </p>
-        </MobileCard>
-        <MobileCard>
-          <p className="text-xs text-gray-500 dark:text-gray-400">Spent</p>
-          <p className="text-lg font-bold text-red-600 dark:text-red-400">
-            {formatCurrency(data.spent)}
-          </p>
-        </MobileCard>
-        <MobileCard>
-          <p className="text-xs text-gray-500 dark:text-gray-400">Remaining</p>
-          <p className="text-lg font-bold text-green-600 dark:text-green-400">
-            {formatCurrency(data.remaining ?? (data.budget - data.spent))}
-          </p>
-        </MobileCard>
-      </div>
+        {/* Progress bar */}
+        <Block>
+          <Progressbar progress={Math.min(utilisation, 100) / 100} />
+          <p className="mt-1 text-center text-xs text-gray-500 dark:text-gray-400">{utilisation}% utilised</p>
+        </Block>
 
-      {/* Budget bar */}
-      <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-        <div
-          className={`h-full rounded-full transition-all ${utilisation > 90 ? 'bg-red-500' : utilisation > 70 ? 'bg-amber-500' : 'bg-green-500'}`}
-          style={{ width: `${Math.min(utilisation, 100)}%` }}
-        />
-      </div>
-      <p className="text-center text-xs text-gray-500 dark:text-gray-400">{utilisation}% utilised</p>
-
-      {/* Tasks */}
-      <MobileCard>
-        <h2 className="mb-2 text-base font-semibold text-gray-900 dark:text-gray-100">
-          Tasks ({tasks.length})
-        </h2>
+        {/* Tasks */}
+        <BlockTitle>Tasks ({tasks.length})</BlockTitle>
         {tasks.length === 0 ? (
-          <p className="text-sm text-gray-500 dark:text-gray-400">No tasks</p>
+          <Block><p className="text-sm text-gray-500 dark:text-gray-400">No tasks</p></Block>
         ) : (
-          tasks.map((t) => (
-            <div
-              key={t.id}
-              className="flex items-center justify-between border-b border-gray-100 py-2 last:border-b-0 dark:border-gray-700"
-            >
-              <div className="min-w-0 flex-1">
-                <p className="text-sm text-gray-900 dark:text-gray-100">{t.title}</p>
-                {t.assignee && (
-                  <p className="text-xs text-gray-500 dark:text-gray-400">{t.assignee}</p>
-                )}
-              </div>
-              <MobileBadge
-                label={(t.status ?? 'todo').replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
-                variant={taskStatusVariant[t.status] ?? 'info'}
+          <List strongIos outlineIos dividersIos data-testid="tasks-list">
+            {tasks.map((t) => (
+              <ListItem
+                key={t.id}
+                title={<span className="text-gray-900 dark:text-gray-100">{t.title}</span>}
+                subtitle={t.assignee ? <span className="text-xs text-gray-500 dark:text-gray-400">{t.assignee}</span> : undefined}
+                after={<StatusBadge status={t.status ?? 'todo'} size="sm" />}
               />
-            </div>
-          ))
+            ))}
+          </List>
         )}
-      </MobileCard>
 
-      {/* Linked invoices */}
-      <MobileCard>
-        <h2 className="mb-2 text-base font-semibold text-gray-900 dark:text-gray-100">
-          Linked Invoices ({invoices.length})
-        </h2>
+        {/* Linked Invoices */}
+        <BlockTitle>Linked Invoices ({invoices.length})</BlockTitle>
         {invoices.length === 0 ? (
-          <p className="text-sm text-gray-500 dark:text-gray-400">No linked invoices</p>
+          <Block><p className="text-sm text-gray-500 dark:text-gray-400">No linked invoices</p></Block>
         ) : (
-          invoices.map((inv) => (
-            <div
-              key={inv.id}
-              onClick={() => navigate(`/invoices/${inv.id}`)}
-              className="flex cursor-pointer items-center justify-between border-b border-gray-100 py-2 last:border-b-0 dark:border-gray-700"
-            >
-              <p className="text-sm font-medium text-blue-600 dark:text-blue-400">
-                {inv.invoice_number ?? 'Invoice'}
-              </p>
-              <span className="text-sm text-gray-900 dark:text-gray-100">
-                {formatCurrency(inv.amount)}
-              </span>
-            </div>
-          ))
+          <List strongIos outlineIos dividersIos data-testid="linked-invoices-list">
+            {invoices.map((inv) => (
+              <ListItem
+                key={inv.id}
+                link
+                onClick={() => navigate(`/invoices/${inv.id}`)}
+                title={<span className="font-medium text-blue-600 dark:text-blue-400">{inv.invoice_number ?? 'Invoice'}</span>}
+                after={<span className="text-sm font-medium text-gray-900 dark:text-gray-100">{formatNZD(inv.amount)}</span>}
+              />
+            ))}
+          </List>
         )}
-      </MobileCard>
 
-      {/* Time entries */}
-      <MobileCard>
-        <h2 className="mb-2 text-base font-semibold text-gray-900 dark:text-gray-100">
-          Time Entries ({timeEntries.length})
-        </h2>
+        {/* Time Entries */}
+        <BlockTitle>Time Entries ({timeEntries.length})</BlockTitle>
         {timeEntries.length === 0 ? (
-          <p className="text-sm text-gray-500 dark:text-gray-400">No time entries</p>
+          <Block><p className="text-sm text-gray-500 dark:text-gray-400">No time entries</p></Block>
         ) : (
-          timeEntries.slice(0, 10).map((te) => (
-            <div
-              key={te.id}
-              className="flex items-center justify-between border-b border-gray-100 py-2 last:border-b-0 dark:border-gray-700"
-            >
-              <div>
-                <p className="text-sm text-gray-900 dark:text-gray-100">
-                  {te.staff_name ?? 'Staff'} — {te.hours ?? 0}h
-                </p>
-                {te.description && (
-                  <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-1">
-                    {te.description}
-                  </p>
-                )}
-              </div>
-              <span className="text-xs text-gray-500 dark:text-gray-400">{te.date}</span>
-            </div>
-          ))
+          <List strongIos outlineIos dividersIos data-testid="time-entries-list">
+            {timeEntries.slice(0, 10).map((te) => (
+              <ListItem
+                key={te.id}
+                title={<span className="text-gray-900 dark:text-gray-100">{te.staff_name ?? 'Staff'} — {te.hours ?? 0}h</span>}
+                subtitle={te.description ? <span className="text-xs text-gray-500 dark:text-gray-400 line-clamp-1">{te.description}</span> : undefined}
+                after={<span className="text-xs text-gray-500 dark:text-gray-400">{te.date}</span>}
+              />
+            ))}
+          </List>
         )}
-      </MobileCard>
-    </div>
+      </div>
+    </Page>
   )
 }

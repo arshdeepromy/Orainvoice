@@ -61,6 +61,23 @@ vi.mock('@/contexts/TenantContext', () => ({
   }),
 }))
 
+vi.mock('@/hooks/useHaptics', () => ({
+  useHaptics: () => ({
+    light: vi.fn().mockResolvedValue(undefined),
+    medium: vi.fn().mockResolvedValue(undefined),
+    heavy: vi.fn().mockResolvedValue(undefined),
+    selection: vi.fn().mockResolvedValue(undefined),
+  }),
+}))
+
+vi.mock('@/contexts/BranchContext', () => ({
+  useBranch: () => ({
+    selectedBranchId: null,
+    branches: [],
+    setSelectedBranch: vi.fn(),
+  }),
+}))
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -77,6 +94,10 @@ const mockCustomers = [
     email: 'john@example.com',
     phone: '021-555-1234',
     company: 'Doe Plumbing',
+    company_name: null,
+    display_name: null,
+    receivables: 150,
+    unused_credits: 0,
     address: '123 Main St',
   },
   {
@@ -86,6 +107,10 @@ const mockCustomers = [
     email: null,
     phone: '021-555-5678',
     company: null,
+    company_name: null,
+    display_name: null,
+    receivables: 0,
+    unused_credits: 0,
     address: null,
   },
   {
@@ -95,13 +120,17 @@ const mockCustomers = [
     email: 'bob@example.com',
     phone: null,
     company: null,
+    company_name: null,
+    display_name: null,
+    receivables: 0,
+    unused_credits: 0,
     address: null,
   },
 ]
 
 function mockCustomerListResponse(customers = mockCustomers) {
   mockGet.mockResolvedValue({
-    data: { customers, total: customers.length },
+    data: { items: customers, total: customers.length },
   })
 }
 
@@ -114,7 +143,7 @@ describe('CustomerListScreen', () => {
     vi.clearAllMocks()
   })
 
-  it('renders customer list with names and contact info', async () => {
+  it('renders customer list with names', async () => {
     mockCustomerListResponse()
     const CustomerListScreen = (await import('../CustomerListScreen')).default
     render(<CustomerListScreen />, { wrapper: Wrapper })
@@ -126,17 +155,7 @@ describe('CustomerListScreen', () => {
     expect(screen.getByText('Bob Smith')).toBeInTheDocument()
   })
 
-  it('displays phone and email in subtitle', async () => {
-    mockCustomerListResponse()
-    const CustomerListScreen = (await import('../CustomerListScreen')).default
-    render(<CustomerListScreen />, { wrapper: Wrapper })
-
-    await waitFor(() => {
-      expect(screen.getByText('021-555-1234 · john@example.com')).toBeInTheDocument()
-    })
-  })
-
-  it('displays company name as trailing content', async () => {
+  it('displays company name as subtitle', async () => {
     mockCustomerListResponse()
     const CustomerListScreen = (await import('../CustomerListScreen')).default
     render(<CustomerListScreen />, { wrapper: Wrapper })
@@ -146,8 +165,31 @@ describe('CustomerListScreen', () => {
     })
   })
 
+  it('displays phone as subtitle when no company', async () => {
+    mockCustomerListResponse()
+    const CustomerListScreen = (await import('../CustomerListScreen')).default
+    render(<CustomerListScreen />, { wrapper: Wrapper })
+
+    await waitFor(() => {
+      expect(screen.getByText('021-555-5678')).toBeInTheDocument()
+    })
+  })
+
+  it('displays receivables badge in red for customers with receivables > 0', async () => {
+    mockCustomerListResponse()
+    const CustomerListScreen = (await import('../CustomerListScreen')).default
+    render(<CustomerListScreen />, { wrapper: Wrapper })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('receivables-badge-cust-1')).toBeInTheDocument()
+    })
+    // Customers with 0 receivables should not have a badge
+    expect(screen.queryByTestId('receivables-badge-cust-2')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('receivables-badge-cust-3')).not.toBeInTheDocument()
+  })
+
   it('shows empty state when no customers', async () => {
-    mockGet.mockResolvedValue({ data: { customers: [], total: 0 } })
+    mockGet.mockResolvedValue({ data: { items: [], total: 0 } })
     const CustomerListScreen = (await import('../CustomerListScreen')).default
     render(<CustomerListScreen />, { wrapper: Wrapper })
 
@@ -156,7 +198,7 @@ describe('CustomerListScreen', () => {
     })
   })
 
-  it('navigates to new customer screen when New button is tapped', async () => {
+  it('navigates to new customer screen when FAB is tapped', async () => {
     mockCustomerListResponse()
     const user = userEvent.setup()
     const CustomerListScreen = (await import('../CustomerListScreen')).default
@@ -166,7 +208,9 @@ describe('CustomerListScreen', () => {
       expect(screen.getByText('John Doe')).toBeInTheDocument()
     })
 
-    await user.click(screen.getByRole('button', { name: /New/i }))
+    // FAB renders as a Konsta Fab component
+    const fab = screen.getByTestId('konsta-fab')
+    await user.click(fab)
     expect(mockNavigate).toHaveBeenCalledWith('/customers/new')
   })
 
@@ -176,9 +220,9 @@ describe('CustomerListScreen', () => {
     render(<CustomerListScreen />, { wrapper: Wrapper })
 
     await waitFor(() => {
-      expect(screen.getByRole('searchbox')).toBeInTheDocument()
+      expect(screen.getByPlaceholderText('Search customers…')).toBeInTheDocument()
     })
-    expect(screen.getByPlaceholderText('Search customers…')).toBeInTheDocument()
+    expect(screen.getByTestId('customer-searchbar')).toBeInTheDocument()
   })
 
   // -------------------------------------------------------------------------
@@ -194,8 +238,8 @@ describe('CustomerListScreen', () => {
       expect(screen.getByText('John Doe')).toBeInTheDocument()
     })
 
-    // SwipeAction renders action buttons in the DOM (hidden behind the swipe)
-    const callButtons = screen.getAllByRole('button', { name: 'Call' })
+    // SwipeAction renders action buttons in the DOM (aria-hidden until swiped)
+    const callButtons = screen.getAllByLabelText('Call')
     expect(callButtons.length).toBeGreaterThan(0)
   })
 
@@ -208,7 +252,7 @@ describe('CustomerListScreen', () => {
       expect(screen.getByText('John Doe')).toBeInTheDocument()
     })
 
-    const emailButtons = screen.getAllByRole('button', { name: 'Email' })
+    const emailButtons = screen.getAllByLabelText('Email')
     expect(emailButtons.length).toBeGreaterThan(0)
   })
 
@@ -221,8 +265,56 @@ describe('CustomerListScreen', () => {
       expect(screen.getByText('John Doe')).toBeInTheDocument()
     })
 
-    const smsButtons = screen.getAllByRole('button', { name: 'SMS' })
+    const smsButtons = screen.getAllByLabelText('SMS')
     expect(smsButtons.length).toBeGreaterThan(0)
+  })
+
+  it('navigates to customer detail when row is tapped', async () => {
+    mockCustomerListResponse()
+    const user = userEvent.setup()
+    const CustomerListScreen = (await import('../CustomerListScreen')).default
+    render(<CustomerListScreen />, { wrapper: Wrapper })
+
+    await waitFor(() => {
+      expect(screen.getByText('John Doe')).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId('customer-item-cust-1'))
+    expect(mockNavigate).toHaveBeenCalledWith('/customers/cust-1')
+  })
+
+  // -------------------------------------------------------------------------
+  // Requirement 8.1 — Pull-to-refresh triggers API refetch
+  // -------------------------------------------------------------------------
+
+  it('re-fetches customer data when refresh is triggered', async () => {
+    // Start with an error state so the Retry button is visible
+    mockGet.mockRejectedValue(new Error('Network error'))
+    const CustomerListScreen = (await import('../CustomerListScreen')).default
+    render(<CustomerListScreen />, { wrapper: Wrapper })
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load customers')).toBeInTheDocument()
+    })
+
+    // Now set up successful responses for the retry
+    mockGet.mockClear()
+    mockCustomerListResponse()
+
+    // Click the Retry button — this calls handleRefresh (same as PullRefresh onRefresh)
+    await userEvent.click(screen.getByText('Retry'))
+
+    // Verify the customers endpoint was re-fetched and data is displayed
+    await waitFor(() => {
+      expect(screen.getByText('John Doe')).toBeInTheDocument()
+    })
+
+    const customerCalls = mockGet.mock.calls.filter(
+      (call: unknown[]) =>
+        typeof call[0] === 'string' &&
+        (call[0] as string).includes('/customers'),
+    )
+    expect(customerCalls.length).toBeGreaterThan(0)
   })
 })
 
@@ -234,6 +326,7 @@ describe('CustomerListScreen swipe action handlers', () => {
   let windowOpenSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
+    vi.restoreAllMocks()
     windowOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
   })
 

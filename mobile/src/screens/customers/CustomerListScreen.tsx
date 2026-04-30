@@ -1,9 +1,24 @@
-﻿import { useState, useCallback, useMemo } from 'react'
+﻿import { useState, useCallback, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useApiList } from '@/hooks/useApiList'
-import { MobileSpinner } from '@/components/ui'
-import { SwipeAction } from '@/components/gestures/SwipeAction'
+import {
+  Page,
+  Searchbar,
+  List,
+  ListItem,
+  Block,
+  Preloader,
+  Badge,
+} from 'konsta/react'
 import { PullRefresh } from '@/components/gestures/PullRefresh'
+import { SwipeAction } from '@/components/gestures/SwipeAction'
+import KonstaFAB from '@/components/konsta/KonstaFAB'
+import apiClient from '@/api/client'
+
+/* ------------------------------------------------------------------ */
+/* Constants                                                          */
+/* ------------------------------------------------------------------ */
+
+const PAGE_SIZE = 25
 
 /* ------------------------------------------------------------------ */
 /* Types — matches CustomerSearchResult from backend                  */
@@ -12,8 +27,9 @@ import { PullRefresh } from '@/components/gestures/PullRefresh'
 interface CustomerListItem {
   id: string
   first_name: string
-  last_name: string
+  last_name: string | null
   company_name?: string | null
+  company?: string | null
   display_name?: string | null
   email?: string | null
   phone?: string | null
@@ -24,84 +40,8 @@ interface CustomerListItem {
 }
 
 /* ------------------------------------------------------------------ */
-/* Filter tab type                                                    */
+/* Inline SVG icons for swipe actions                                 */
 /* ------------------------------------------------------------------ */
-
-type FilterTab = 'active' | 'unpaid' | 'all'
-
-/* ------------------------------------------------------------------ */
-/* Avatar colour hash                                                 */
-/* ------------------------------------------------------------------ */
-
-const AVATAR_COLORS = [
-  'bg-blue-500',
-  'bg-green-500',
-  'bg-purple-500',
-  'bg-orange-500',
-  'bg-pink-500',
-  'bg-teal-500',
-  'bg-indigo-500',
-  'bg-red-500',
-]
-
-function getAvatarColor(name: string): string {
-  let hash = 0
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash)
-  }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length] ?? AVATAR_COLORS[0]
-}
-
-function getInitials(c: CustomerListItem): string {
-  const first = (c.first_name ?? '').charAt(0).toUpperCase()
-  const last = (c.last_name ?? '').charAt(0).toUpperCase()
-  if (first && last) return `${first}${last}`
-  if (first) return first
-  if (c.company_name) return c.company_name.charAt(0).toUpperCase()
-  return '?'
-}
-
-/* ------------------------------------------------------------------ */
-/* Helpers                                                            */
-/* ------------------------------------------------------------------ */
-
-function getDisplayName(c: CustomerListItem): string {
-  if (c.display_name) return c.display_name
-  const parts = [c.first_name, c.last_name].filter(Boolean)
-  if (parts.length > 0) return parts.join(' ')
-  return c.company_name ?? 'Unnamed'
-}
-
-function formatNZD(value: number | null | undefined): string {
-  return new Intl.NumberFormat('en-NZ', {
-    style: 'currency',
-    currency: 'NZD',
-    minimumFractionDigits: 2,
-  }).format(value ?? 0)
-}
-
-/* ------------------------------------------------------------------ */
-/* Inline SVG icons                                                   */
-/* ------------------------------------------------------------------ */
-
-function SearchIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="11" cy="11" r="8" />
-      <path d="m21 21-4.3-4.3" />
-    </svg>
-  )
-}
-
-function FilterIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 6h18" />
-      <path d="M7 12h10" />
-      <path d="M10 18h4" />
-    </svg>
-  )
-}
 
 function PhoneIcon({ className }: { className?: string }) {
   return (
@@ -128,17 +68,35 @@ function SmsIcon({ className }: { className?: string }) {
   )
 }
 
-function CloseIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M18 6 6 18" />
-      <path d="m6 6 12 12" />
-    </svg>
-  )
+/* ------------------------------------------------------------------ */
+/* Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function getDisplayName(c: CustomerListItem): string {
+  if (c.display_name) return c.display_name
+  const parts = [c.first_name, c.last_name].filter(Boolean)
+  if (parts.length > 0) return parts.join(' ')
+  return c.company_name ?? c.company ?? 'Unnamed'
+}
+
+function getSubtitle(c: CustomerListItem): string {
+  const company = c.company_name ?? c.company ?? null
+  const phone = c.phone ?? c.mobile_phone ?? null
+  if (company) return company
+  if (phone) return phone
+  return ''
+}
+
+function formatNZD(value: number | null | undefined): string {
+  return new Intl.NumberFormat('en-NZ', {
+    style: 'currency',
+    currency: 'NZD',
+    minimumFractionDigits: 2,
+  }).format(value ?? 0)
 }
 
 /* ------------------------------------------------------------------ */
-/* Swipe action handlers                                              */
+/* Swipe action handlers (exported for testing)                       */
 /* ------------------------------------------------------------------ */
 
 export function handleCall(phone: string | null) {
@@ -161,264 +119,303 @@ export function handleSms(phone: string | null) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Customer list screen — Zoho Invoice-style layout with avatar cards,
- * filter tabs, search, swipe actions, pull-to-refresh, and FAB.
+ * Customer list screen — Konsta UI redesign with:
+ * - Sticky Konsta Searchbar
+ * - Each customer as Konsta ListItem with display_name or first+last as title,
+ *   company_name or phone as subtitle, receivables badge (red if > 0) on right
+ * - Infinite scroll pagination (25 per page) using offset and limit
+ * - FAB for "+ New Customer"
+ * - Pull-to-refresh
+ * - Tap row navigates to /customers/:id
+ * - Safe API consumption: res.data?.items ?? [], res.data?.total ?? 0
+ *
+ * Requirements: 21.1, 21.2, 21.3, 21.4, 21.5, 21.6, 7.1
  */
 export default function CustomerListScreen() {
   const navigate = useNavigate()
-  const [activeFilter, setActiveFilter] = useState<FilterTab>('active')
-  const [showSearch, setShowSearch] = useState(false)
 
-  const {
-    items,
-    isLoading,
-    isRefreshing,
-    hasMore,
-    search,
-    setSearch,
-    refresh,
-    loadMore,
-  } = useApiList<CustomerListItem>({
-    endpoint: '/api/v1/customers',
-    dataKey: 'customers',
-  })
+  // ── State ──────────────────────────────────────────────────────────
+  const [items, setItems] = useState<CustomerListItem[]>([])
+  const [total, setTotal] = useState(0)
+  const [isLoading, setIsLoading] = useState(true)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [isLoadingMore, setIsLoadingMore] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
+  const [offset, setOffset] = useState(0)
 
-  // Client-side filter for tabs
-  const filteredItems = useMemo(() => {
-    if (activeFilter === 'unpaid') {
-      return items.filter((c) => (c.receivables ?? 0) > 0)
-    }
-    // 'active' and 'all' show all items (we don't have an inactive status)
-    return items
-  }, [items, activeFilter])
+  const abortRef = useRef<AbortController | null>(null)
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
 
-  const handleTap = useCallback(
-    (customer: CustomerListItem) => {
-      navigate(`/customers/${customer.id}`)
+  const hasMore = items.length < total
+
+  // ── Fetch data ─────────────────────────────────────────────────────
+  const fetchCustomers = useCallback(
+    async (
+      currentOffset: number,
+      isRefresh: boolean,
+      signal: AbortSignal,
+    ) => {
+      if (isRefresh) {
+        setIsRefreshing(true)
+      } else if (currentOffset === 0) {
+        setIsLoading(true)
+      } else {
+        setIsLoadingMore(true)
+      }
+      setError(null)
+
+      try {
+        const params: Record<string, string | number> = {
+          offset: currentOffset,
+          limit: PAGE_SIZE,
+        }
+        if (search.trim()) {
+          params.search = search.trim()
+        }
+
+        const res = await apiClient.get<{ items?: CustomerListItem[]; customers?: CustomerListItem[]; total?: number }>(
+          '/api/v1/customers',
+          { params, signal },
+        )
+
+        // Safe API consumption — try items first, then customers key
+        const newItems = res.data?.items ?? res.data?.customers ?? []
+        const newTotal = res.data?.total ?? 0
+
+        if (currentOffset === 0 || isRefresh) {
+          setItems(newItems)
+        } else {
+          setItems((prev) => [...prev, ...newItems])
+        }
+        setTotal(newTotal)
+      } catch (err: unknown) {
+        if ((err as { name?: string })?.name !== 'CanceledError') {
+          setError('Failed to load customers')
+        }
+      } finally {
+        setIsLoading(false)
+        setIsRefreshing(false)
+        setIsLoadingMore(false)
+      }
     },
-    [navigate],
+    [search],
   )
 
-  const filterTabs: { key: FilterTab; label: string }[] = [
-    { key: 'active', label: 'Active' },
-    { key: 'unpaid', label: 'Unpaid' },
-    { key: 'all', label: 'All' },
-  ]
+  // Fetch on mount and when search changes (reset to offset 0)
+  useEffect(() => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    setOffset(0)
+    fetchCustomers(0, false, controller.signal)
+
+    return () => controller.abort()
+  }, [fetchCustomers])
+
+  // ── Pull-to-refresh ────────────────────────────────────────────────
+  const handleRefresh = useCallback(async () => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    setOffset(0)
+    await fetchCustomers(0, true, controller.signal)
+  }, [fetchCustomers])
+
+  // ── Infinite scroll via IntersectionObserver ───────────────────────
+  const loadMore = useCallback(() => {
+    if (isLoading || isRefreshing || isLoadingMore || !hasMore) return
+
+    const nextOffset = offset + PAGE_SIZE
+    setOffset(nextOffset)
+
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    fetchCustomers(nextOffset, false, controller.signal)
+  }, [isLoading, isRefreshing, isLoadingMore, hasMore, offset, fetchCustomers])
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    if (!sentinel) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          loadMore()
+        }
+      },
+      { rootMargin: '200px' },
+    )
+
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [loadMore])
+
+  // ── Memoised search handler ────────────────────────────────────────
+  const handleSearchChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setSearch(e.target.value)
+    },
+    [],
+  )
+
+  const handleSearchClear = useCallback(() => {
+    setSearch('')
+  }, [])
+
+  // ── Build swipe actions per customer ───────────────────────────────
+  const buildRightActions = useCallback(
+    (customer: CustomerListItem) => {
+      const phone = customer.mobile_phone ?? customer.phone ?? null
+      const actions = []
+
+      if (phone) {
+        actions.push({
+          label: 'Call',
+          icon: PhoneIcon,
+          color: 'bg-green-500',
+          onAction: () => handleCall(phone),
+        })
+        actions.push({
+          label: 'SMS',
+          icon: SmsIcon,
+          color: 'bg-blue-500',
+          onAction: () => handleSms(phone),
+        })
+      }
+
+      if (customer.email) {
+        actions.push({
+          label: 'Email',
+          icon: MailIcon,
+          color: 'bg-purple-500',
+          onAction: () => handleEmail(customer.email ?? null),
+        })
+      }
+
+      return actions
+    },
+    [],
+  )
+
+  // ── Loading state ──────────────────────────────────────────────────
+  if (isLoading && items.length === 0) {
+    return (
+      <Page data-testid="customer-list-page">
+        <div className="flex flex-1 items-center justify-center p-8">
+          <Preloader />
+        </div>
+      </Page>
+    )
+  }
 
   return (
-    <PullRefresh onRefresh={refresh} isRefreshing={isRefreshing}>
-      <div className="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-900">
-        {/* Header */}
-        <div className="sticky top-0 z-20 bg-white px-4 pb-2 pt-4 dark:bg-gray-800">
-          <div className="flex items-center justify-between">
-            <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">
-              Customers
-            </h1>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setShowSearch((v) => !v)}
-                className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full text-gray-600 active:bg-gray-100 dark:text-gray-300 dark:active:bg-gray-700"
-                aria-label={showSearch ? 'Close search' : 'Search customers'}
-              >
-                {showSearch ? (
-                  <CloseIcon className="h-5 w-5" />
-                ) : (
-                  <SearchIcon className="h-5 w-5" />
-                )}
-              </button>
-              <button
-                type="button"
-                className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full text-gray-600 active:bg-gray-100 dark:text-gray-300 dark:active:bg-gray-700"
-                aria-label="Filter and sort"
-              >
-                <FilterIcon className="h-5 w-5" />
-              </button>
-            </div>
+    <Page data-testid="customer-list-page">
+      <PullRefresh onRefresh={handleRefresh} isRefreshing={isRefreshing}>
+        <div className="flex flex-col pb-24">
+          {/* ── Searchbar ─────────────────────────────────────────── */}
+          <div className="sticky top-0 z-10 px-4 pt-3">
+            <Searchbar
+              value={search}
+              onChange={handleSearchChange}
+              onClear={handleSearchClear}
+              placeholder="Search customers…"
+              data-testid="customer-searchbar"
+            />
           </div>
 
-          {/* Search bar */}
-          {showSearch && (
-            <div className="mt-2">
-              <input
-                type="search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search customers…"
-                className="w-full min-h-[44px] rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-500"
-                autoFocus
-              />
-            </div>
+          {/* ── Error Banner ──────────────────────────────────────── */}
+          {error && (
+            <Block>
+              <div
+                role="alert"
+                className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300"
+              >
+                {error}
+                <button
+                  type="button"
+                  onClick={() => handleRefresh()}
+                  className="ml-2 font-medium underline"
+                >
+                  Retry
+                </button>
+              </div>
+            </Block>
           )}
 
-          {/* Filter tabs */}
-          <div className="mt-3 flex gap-2" role="tablist">
-            {filterTabs.map((tab) => (
-              <button
-                key={tab.key}
-                type="button"
-                role="tab"
-                aria-selected={activeFilter === tab.key}
-                onClick={() => setActiveFilter(tab.key)}
-                className={`min-h-[36px] rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
-                  activeFilter === tab.key
-                    ? 'bg-blue-600 text-white dark:bg-blue-500'
-                    : 'bg-gray-100 text-gray-600 active:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:active:bg-gray-600'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Customer list */}
-        <div className="flex-1 px-4 pb-24 pt-2">
-          {isLoading && filteredItems.length === 0 ? (
-            <div className="flex items-center justify-center py-12">
-              <MobileSpinner size="lg" />
-            </div>
-          ) : filteredItems.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12">
-              <p className="text-gray-400 dark:text-gray-500">No customers found</p>
-            </div>
+          {/* ── Customer List ─────────────────────────────────────── */}
+          {items.length === 0 && !isLoading ? (
+            <Block className="text-center">
+              <p className="text-sm text-gray-400 dark:text-gray-500">
+                No customers found
+              </p>
+            </Block>
           ) : (
-            <div className="flex flex-col gap-2">
-              {filteredItems.map((customer) => {
+            <List strongIos outlineIos dividersIos data-testid="customer-list">
+              {items.map((customer) => {
                 const name = getDisplayName(customer)
-                const phone = customer.mobile_phone ?? customer.phone ?? null
-                const rightActions = [
-                  ...(phone
-                    ? [
-                        {
-                          label: 'Call',
-                          icon: PhoneIcon,
-                          color: 'bg-green-500',
-                          onAction: () => handleCall(phone),
-                        },
-                        {
-                          label: 'SMS',
-                          icon: SmsIcon,
-                          color: 'bg-blue-500',
-                          onAction: () => handleSms(phone),
-                        },
-                      ]
-                    : []),
-                  ...(customer.email
-                    ? [
-                        {
-                          label: 'Email',
-                          icon: MailIcon,
-                          color: 'bg-purple-500',
-                          onAction: () => handleEmail(customer.email ?? null),
-                        },
-                      ]
-                    : []),
-                ]
+                const subtitle = getSubtitle(customer)
+                const receivables = customer.receivables ?? 0
+                const rightActions = buildRightActions(customer)
 
                 return (
-                  <SwipeAction key={customer.id} rightActions={rightActions}>
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => handleTap(customer)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
-                          handleTap(customer)
-                        }
-                      }}
-                      className="flex items-center gap-3 rounded-xl bg-white p-3 shadow-sm ring-1 ring-gray-100 active:bg-gray-50 dark:bg-gray-800 dark:ring-gray-700 dark:active:bg-gray-700"
-                    >
-                      {/* Avatar */}
-                      <div
-                        className={`flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white ${getAvatarColor(name)}`}
-                        aria-hidden="true"
-                      >
-                        {getInitials(customer)}
-                      </div>
-
-                      {/* Info */}
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-base font-medium text-gray-900 dark:text-gray-100">
+                  <SwipeAction
+                    key={customer.id}
+                    rightActions={rightActions}
+                  >
+                    <ListItem
+                      link
+                      onClick={() => navigate(`/customers/${customer.id}`)}
+                      title={
+                        <span className="font-bold text-gray-900 dark:text-gray-100">
                           {name}
-                        </p>
-                        {customer.email && (
-                          <p className="truncate text-sm text-gray-500 dark:text-gray-400">
-                            {customer.email}
-                          </p>
-                        )}
-                        <div className="mt-1 flex gap-4">
-                          <div>
-                            <span className="text-xs text-gray-400 dark:text-gray-500">Receivables </span>
-                            <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
-                              {formatNZD(customer.receivables)}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-xs text-gray-400 dark:text-gray-500">Credits </span>
-                            <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
-                              {formatNZD(customer.unused_credits)}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Chevron */}
-                      <svg
-                        className="h-5 w-5 flex-shrink-0 text-gray-400 dark:text-gray-500"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <path d="m9 18 6-6-6-6" />
-                      </svg>
-                    </div>
+                        </span>
+                      }
+                      subtitle={
+                        subtitle ? (
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                            {subtitle}
+                          </span>
+                        ) : undefined
+                      }
+                      after={
+                        receivables > 0 ? (
+                          <Badge
+                            colors={{
+                              bg: 'bg-red-500',
+                            }}
+                            data-testid={`receivables-badge-${customer.id}`}
+                          >
+                            {formatNZD(receivables)}
+                          </Badge>
+                        ) : undefined
+                      }
+                      data-testid={`customer-item-${customer.id}`}
+                    />
                   </SwipeAction>
                 )
               })}
+            </List>
+          )}
 
-              {/* Load more */}
-              {hasMore && (
-                <button
-                  type="button"
-                  onClick={loadMore}
-                  disabled={isLoading}
-                  className="mx-auto mt-2 flex min-h-[44px] items-center justify-center rounded-lg px-6 py-2 text-sm font-medium text-blue-600 active:bg-blue-50 dark:text-blue-400 dark:active:bg-gray-800"
-                >
-                  {isLoading ? <MobileSpinner size="sm" /> : 'Load more'}
-                </button>
-              )}
+          {/* ── Infinite scroll sentinel ──────────────────────────── */}
+          {hasMore && (
+            <div ref={sentinelRef} className="flex justify-center py-4">
+              {isLoadingMore && <Preloader />}
             </div>
           )}
         </div>
+      </PullRefresh>
 
-        {/* FAB — New Customer */}
-        <button
-          type="button"
-          onClick={() => navigate('/customers/new')}
-          className="fixed bottom-20 right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg active:bg-blue-700 dark:bg-blue-500 dark:active:bg-blue-600"
-          aria-label="New customer"
-        >
-          <svg
-            className="h-7 w-7"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-        </button>
-      </div>
-    </PullRefresh>
+      {/* ── FAB: + New Customer ─────────────────────────────────────── */}
+      <KonstaFAB
+        label="+ New Customer"
+        onClick={() => navigate('/customers/new')}
+      />
+    </Page>
   )
 }

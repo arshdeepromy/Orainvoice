@@ -74,22 +74,34 @@ describe('LoginScreen', () => {
     vi.clearAllMocks()
   })
 
+  /** Helper to find the email input (Konsta ListInput renders label as a div, not a <label>) */
+  function getEmailInput() {
+    return screen.getByPlaceholderText('you@example.com')
+  }
+
+  /** Helper to find the password input */
+  function getPasswordInput() {
+    return screen.getByPlaceholderText('Enter your password')
+  }
+
   it('renders email and password fields, remember me toggle, and sign in button', async () => {
     const LoginScreen = (await import('../LoginScreen')).default
     render(<LoginScreen />, { wrapper: Wrapper })
 
-    expect(screen.getByLabelText(/email/i)).toBeInTheDocument()
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument()
+    expect(getEmailInput()).toBeInTheDocument()
+    expect(getPasswordInput()).toBeInTheDocument()
     expect(screen.getByLabelText(/remember me/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /sign in$/i })).toBeInTheDocument()
   })
 
-  it('renders Google Sign-In button and Forgot Password link', async () => {
+  it('renders Google and Passkey buttons and footer links', async () => {
     const LoginScreen = (await import('../LoginScreen')).default
     render(<LoginScreen />, { wrapper: Wrapper })
 
-    expect(screen.getByRole('button', { name: /sign in with google/i })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /forgot your password/i })).toBeInTheDocument()
+    expect(screen.getByText(/continue with google/i)).toBeInTheDocument()
+    expect(screen.getByText(/sign in with passkey/i)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /forgot password/i })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /create account/i })).toBeInTheDocument()
   })
 
   it('shows email validation error for invalid email', async () => {
@@ -97,7 +109,7 @@ describe('LoginScreen', () => {
     const LoginScreen = (await import('../LoginScreen')).default
     render(<LoginScreen />, { wrapper: Wrapper })
 
-    const emailInput = screen.getByLabelText(/email/i)
+    const emailInput = getEmailInput()
     await user.type(emailInput, 'not-an-email')
 
     expect(screen.getByText(/please enter a valid email/i)).toBeInTheDocument()
@@ -109,8 +121,8 @@ describe('LoginScreen', () => {
     const LoginScreen = (await import('../LoginScreen')).default
     render(<LoginScreen />, { wrapper: Wrapper })
 
-    await user.type(screen.getByLabelText(/email/i), 'test@example.com')
-    await user.type(screen.getByLabelText(/password/i), 'password123')
+    await user.type(getEmailInput(), 'test@example.com')
+    await user.type(getPasswordInput(), 'password123')
     await user.click(screen.getByRole('button', { name: /sign in$/i }))
 
     await waitFor(() => {
@@ -129,8 +141,8 @@ describe('LoginScreen', () => {
     const LoginScreen = (await import('../LoginScreen')).default
     render(<LoginScreen />, { wrapper: Wrapper })
 
-    await user.type(screen.getByLabelText(/email/i), 'test@example.com')
-    await user.type(screen.getByLabelText(/password/i), 'password123')
+    await user.type(getEmailInput(), 'test@example.com')
+    await user.type(getPasswordInput(), 'password123')
     await user.click(screen.getByRole('button', { name: /sign in$/i }))
 
     await waitFor(() => {
@@ -144,8 +156,8 @@ describe('LoginScreen', () => {
     const LoginScreen = (await import('../LoginScreen')).default
     render(<LoginScreen />, { wrapper: Wrapper })
 
-    await user.type(screen.getByLabelText(/email/i), 'test@example.com')
-    await user.type(screen.getByLabelText(/password/i), 'wrong')
+    await user.type(getEmailInput(), 'test@example.com')
+    await user.type(getPasswordInput(), 'wrong')
     await user.click(screen.getByRole('button', { name: /sign in$/i }))
 
     await waitFor(() => {
@@ -159,8 +171,8 @@ describe('LoginScreen', () => {
     const LoginScreen = (await import('../LoginScreen')).default
     render(<LoginScreen />, { wrapper: Wrapper })
 
-    await user.type(screen.getByLabelText(/email/i), 'test@example.com')
-    await user.type(screen.getByLabelText(/password/i), 'password123')
+    await user.type(getEmailInput(), 'test@example.com')
+    await user.type(getPasswordInput(), 'password123')
     await user.click(screen.getByLabelText(/remember me/i))
     await user.click(screen.getByRole('button', { name: /sign in$/i }))
 
@@ -183,11 +195,17 @@ describe('MfaScreen', () => {
     vi.clearAllMocks()
   })
 
+  /** Helper to find the code input (Konsta ListInput renders label as a div, not a <label>) */
+  function getCodeInput() {
+    return screen.getByPlaceholderText(/enter 6-digit code/i)
+  }
+
   it('renders verification code input and verify button', async () => {
     const MfaScreen = (await import('../MfaScreen')).default
     render(<MfaScreen />, { wrapper: Wrapper })
 
-    expect(screen.getByLabelText(/verification code/i)).toBeInTheDocument()
+    expect(getCodeInput()).toBeInTheDocument()
+    expect(screen.getByText(/verification code/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /verify/i })).toBeInTheDocument()
   })
 
@@ -195,7 +213,7 @@ describe('MfaScreen', () => {
     const MfaScreen = (await import('../MfaScreen')).default
     render(<MfaScreen />, { wrapper: Wrapper })
 
-    // The method selector buttons contain the method labels
+    // The method selector buttons contain the method labels (Konsta SegmentedButton)
     expect(screen.getByRole('button', { name: /authenticator app/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /sms code/i })).toBeInTheDocument()
   })
@@ -206,7 +224,7 @@ describe('MfaScreen', () => {
     const MfaScreen = (await import('../MfaScreen')).default
     render(<MfaScreen />, { wrapper: Wrapper })
 
-    await user.type(screen.getByLabelText(/verification code/i), '123456')
+    await user.type(getCodeInput(), '123456')
     await user.click(screen.getByRole('button', { name: /verify/i }))
 
     await waitFor(() => {
@@ -221,7 +239,7 @@ describe('MfaScreen', () => {
     const MfaScreen = (await import('../MfaScreen')).default
     render(<MfaScreen />, { wrapper: Wrapper })
 
-    const codeInput = screen.getByLabelText(/verification code/i)
+    const codeInput = getCodeInput()
     await user.type(codeInput, '000000')
     await user.click(screen.getByRole('button', { name: /verify/i }))
 

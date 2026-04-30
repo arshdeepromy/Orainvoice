@@ -126,7 +126,10 @@ export function usePushNotifications(
 
           // Submit token to backend
           apiClient
-            .post('/api/v1/notifications/push-token', { token: fcmToken })
+            .post('/api/v1/notifications/devices/register', {
+              token: fcmToken,
+              platform: (window as any).Capacitor?.getPlatform?.() ?? 'web',
+            })
             .catch(() => {
               // Non-blocking — token submission failure is not critical
             })
@@ -142,6 +145,16 @@ export function usePushNotifications(
         })
         if (!cancelled) listeners.push(tapListener)
         else tapListener.remove()
+
+        // Foreground notification handler — show toast-style alert
+        const fgListener = await plugin.addListener('pushNotificationReceived', (data) => {
+          // Foreground notifications are handled by the app — no native banner
+          // The calling component can subscribe to onNotificationTap for deep linking
+          const notifData = (data as any)?.data ?? {}
+          onNotificationTap?.(notifData)
+        })
+        if (!cancelled) listeners.push(fgListener)
+        else fgListener.remove()
       } catch {
         // Listener setup failed — no-op
       }

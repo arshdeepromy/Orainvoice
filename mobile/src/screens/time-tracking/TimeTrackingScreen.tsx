@@ -1,7 +1,17 @@
-﻿import { useState, useCallback } from 'react'
-import { useApiList } from '@/hooks/useApiList'
-import { MobileCard, MobileButton, MobileSpinner, MobileListItem } from '@/components/ui'
+﻿import { useState, useCallback, useRef, useEffect } from 'react'
+import {
+  Page,
+  List,
+  ListItem,
+  Block,
+  Preloader,
+  Card,
+  Segmented,
+  SegmentedButton,
+} from 'konsta/react'
+import { ModuleGate } from '@/components/common/ModuleGate'
 import { PullRefresh } from '@/components/gestures/PullRefresh'
+import HapticButton from '@/components/konsta/HapticButton'
 import apiClient from '@/api/client'
 
 /* ------------------------------------------------------------------ */
@@ -18,6 +28,8 @@ interface TimeEntry {
   notes: string | null
 }
 
+type TimesheetTab = 'daily' | 'weekly'
+
 /* ------------------------------------------------------------------ */
 /* Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -25,10 +37,7 @@ interface TimeEntry {
 function formatTime(dateStr: string): string {
   if (!dateStr) return ''
   try {
-    return new Date(dateStr).toLocaleTimeString('en-NZ', {
-      hour: '2-digit',
-      minute: '2-digit',
-    })
+    return new Date(dateStr).toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit' })
   } catch {
     return dateStr
   }
@@ -37,11 +46,7 @@ function formatTime(dateStr: string): string {
 function formatDate(dateStr: string): string {
   if (!dateStr) return ''
   try {
-    return new Date(dateStr).toLocaleDateString('en-NZ', {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short',
-    })
+    return new Date(dateStr).toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric', month: 'short' })
   } catch {
     return dateStr
   }
@@ -64,19 +69,10 @@ function formatElapsed(seconds: number): string {
 }
 
 /* ------------------------------------------------------------------ */
-/* Tab type                                                           */
+/* Main Component                                                     */
 /* ------------------------------------------------------------------ */
 
-type TimesheetTab = 'daily' | 'weekly'
-
-/**
- * Time tracking screen — clock in/out button, running timer display,
- * daily/weekly timesheet view with total hours. Pull-to-refresh.
- * Wrapped in ModuleGate at the route level.
- *
- * Requirements: 19.1, 19.2, 19.3, 19.4, 19.5
- */
-export default function TimeTrackingScreen() {
+function TimeTrackingContent() {
   const [activeTab, setActiveTab] = useState<TimesheetTab>('daily')
   const [isClockedIn, setIsClockedIn] = useState(false)
   const [isClockLoading, setIsClockLoading] = useState(false)
@@ -84,17 +80,51 @@ export default function TimeTrackingScreen() {
   const [timerInterval, setTimerInterval] = useState<ReturnType<typeof setInterval> | null>(null)
   const [activeEntryId, setActiveEntryId] = useState<string | null>(null)
 
-  const {
-    items: entries,
-    isLoading,
-    isRefreshing,
-    hasMore,
-    refresh,
-    loadMore,
-  } = useApiList<TimeEntry>({
-    endpoint: '/api/v2/time-entries',
-    dataKey: 'items',
-  })
+  const [entries, setEntries] = useState<TimeEntry[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const abortRef = useRef<AbortController | null>(null)
+
+  const fetchEntries = useCallback(
+    async (isRefresh: boolean, signal: AbortSignal) => {
+      if (isRefresh) setIsRefreshing(true)
+      else setIsLoading(true)
+      setError(null)
+
+      try {
+        const res = await apiClient.get<{ items?: TimeEntry[]; total?: number }>(
+          '/api/v2/time-entries',
+          { params: { offset: 0, limit: 50 }, signal },
+        )
+        setEntries(res.data?.items ?? [])
+      } catch (err: unknown) {
+        if ((err as { name?: string })?.name !== 'CanceledError') {
+          setError('Failed to load time entries')
+        }
+      } finally {
+        setIsLoading(false)
+        setIsRefreshing(false)
+      }
+    },
+    [],
+  )
+
+  useEffect(() => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    fetchEntries(false, controller.signal)
+    return () => controller.abort()
+  }, [fetchEntries])
+
+  const handleRefresh = useCallback(async () => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    await fetchEntries(true, controller.signal)
+  }, [fetchEntries])
 
   const startTimer = useCallback(() => {
     const startTime = Date.now()
@@ -122,7 +152,7 @@ export default function TimeTrackingScreen() {
       setIsClockedIn(true)
       startTimer()
     } catch {
-      // Error handled silently — toast would handle in production
+      // Error handled silently
     } finally {
       setIsClockLoading(false)
     }
@@ -139,129 +169,134 @@ export default function TimeTrackingScreen() {
       setIsClockedIn(false)
       setActiveEntryId(null)
       stopTimer()
-      await refresh()
+      await handleRefresh()
     } catch {
       // Error handled silently
     } finally {
       setIsClockLoading(false)
     }
-  }, [activeEntryId, stopTimer, refresh])
+  }, [activeEntryId, stopTimer, handleRefresh])
 
-  // Calculate total hours for displayed entries
-  const totalMinutes = entries.reduce(
-    (sum, e) => sum + (e.duration_minutes ?? 0),
-    0,
-  )
+  const totalMinutes = entries.reduce((sum, e) => sum + (e.duration_minutes ?? 0), 0)
 
-  const tabs: { key: TimesheetTab; label: string }[] = [
-    { key: 'daily', label: 'Today' },
-    { key: 'weekly', label: 'This Week' },
-  ]
-
-  const renderEntry = useCallback(
-    (entry: TimeEntry) => (
-      <MobileListItem
-        key={entry.id}
-        title={entry.job_title ?? 'General'}
-        subtitle={`${formatDate(entry.clock_in)} · ${formatTime(entry.clock_in)}${entry.clock_out ? ` – ${formatTime(entry.clock_out)}` : ' – In progress'}`}
-        trailing={
-          <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-            {formatDuration(entry.duration_minutes)}
-          </span>
-        }
-      />
-    ),
-    [],
-  )
+  if (isLoading && entries.length === 0) {
+    return (
+      <Page data-testid="time-tracking-page">
+        <div className="flex flex-1 items-center justify-center p-8">
+          <Preloader />
+        </div>
+      </Page>
+    )
+  }
 
   return (
-    <PullRefresh onRefresh={refresh} isRefreshing={isRefreshing}>
-      <div className="flex flex-col gap-4 p-4">
-        <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
-          Time Tracking
-        </h1>
-
-        {/* Clock In/Out card */}
-        <MobileCard>
-          <div className="flex flex-col items-center gap-4">
-            {isClockedIn && (
-              <div className="text-center">
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Clocked in
-                </p>
-                <p className="text-3xl font-bold tabular-nums text-blue-600 dark:text-blue-400">
-                  {formatElapsed(elapsedSeconds)}
-                </p>
+    <Page data-testid="time-tracking-page">
+      <PullRefresh onRefresh={handleRefresh} isRefreshing={isRefreshing}>
+        <div className="flex flex-col pb-24">
+          {/* Clock In/Out Card */}
+          <Block>
+            <Card data-testid="clock-card">
+              <div className="flex flex-col items-center gap-4 p-4">
+                {isClockedIn && (
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500 dark:text-gray-400">Clocked in</p>
+                    <p className="text-3xl font-bold tabular-nums text-blue-600 dark:text-blue-400" data-testid="timer-display">
+                      {formatElapsed(elapsedSeconds)}
+                    </p>
+                  </div>
+                )}
+                <HapticButton
+                  large
+                  className={isClockedIn ? 'k-color-red' : 'k-color-primary'}
+                  onClick={isClockedIn ? handleClockOut : handleClockIn}
+                  hapticStyle={isClockedIn ? 'heavy' : 'medium'}
+                  data-testid="clock-button"
+                >
+                  {isClockLoading ? 'Loading…' : isClockedIn ? 'Clock Out' : 'Clock In'}
+                </HapticButton>
               </div>
-            )}
-            <MobileButton
-              variant={isClockedIn ? 'danger' : 'primary'}
-              fullWidth
-              onClick={isClockedIn ? handleClockOut : handleClockIn}
-              isLoading={isClockLoading}
-            >
-              {isClockedIn ? 'Clock Out' : 'Clock In'}
-            </MobileButton>
-          </div>
-        </MobileCard>
+            </Card>
+          </Block>
 
-        {/* Total hours */}
-        <MobileCard>
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-500 dark:text-gray-400">
-              Total Hours
-            </span>
-            <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              {formatDuration(totalMinutes)}
-            </span>
-          </div>
-        </MobileCard>
+          {/* Total Hours */}
+          <Block>
+            <Card data-testid="total-hours-card">
+              <div className="flex items-center justify-between p-4">
+                <span className="text-sm text-gray-500 dark:text-gray-400">Total Hours</span>
+                <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                  {formatDuration(totalMinutes)}
+                </span>
+              </div>
+            </Card>
+          </Block>
 
-        {/* Tabs */}
-        <div className="flex border-b border-gray-200 dark:border-gray-700" role="tablist">
-          {tabs.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className={`flex-1 py-3 text-center text-sm font-medium transition-colors ${
-                activeTab === tab.key
-                  ? 'border-b-2 border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
-                  : 'text-gray-500 dark:text-gray-400'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+          {/* Tabs */}
+          <Block className="!mb-0">
+            <Segmented strong>
+              <SegmentedButton active={activeTab === 'daily'} onClick={() => setActiveTab('daily')} data-testid="tab-daily">
+                Today
+              </SegmentedButton>
+              <SegmentedButton active={activeTab === 'weekly'} onClick={() => setActiveTab('weekly')} data-testid="tab-weekly">
+                This Week
+              </SegmentedButton>
+            </Segmented>
+          </Block>
+
+          {/* Entries List */}
+          {error && (
+            <Block>
+              <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300">
+                {error}
+              </div>
+            </Block>
+          )}
+
+          {entries.length === 0 ? (
+            <Block className="text-center">
+              <p className="text-sm text-gray-400 dark:text-gray-500">No time entries</p>
+            </Block>
+          ) : (
+            <List strongIos outlineIos dividersIos data-testid="time-entries-list">
+              {entries.map((entry) => (
+                <ListItem
+                  key={entry.id}
+                  title={
+                    <span className="font-medium text-gray-900 dark:text-gray-100">
+                      {entry.job_title ?? 'General'}
+                    </span>
+                  }
+                  subtitle={
+                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                      {formatDate(entry.clock_in)} · {formatTime(entry.clock_in)}
+                      {entry.clock_out ? ` – ${formatTime(entry.clock_out)}` : ' – In progress'}
+                    </span>
+                  }
+                  after={
+                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      {formatDuration(entry.duration_minutes)}
+                    </span>
+                  }
+                  data-testid={`time-entry-${entry.id}`}
+                />
+              ))}
+            </List>
+          )}
         </div>
+      </PullRefresh>
+    </Page>
+  )
+}
 
-        {/* Timesheet entries */}
-        {isLoading ? (
-          <div className="flex justify-center py-8">
-            <MobileSpinner size="md" />
-          </div>
-        ) : entries.length === 0 ? (
-          <p className="py-8 text-center text-sm text-gray-400 dark:text-gray-500">
-            No time entries
-          </p>
-        ) : (
-          <div className="flex flex-col">
-            {entries.map(renderEntry)}
-            {hasMore && (
-              <MobileButton
-                variant="ghost"
-                size="sm"
-                onClick={loadMore}
-                className="mt-2"
-              >
-                Load More
-              </MobileButton>
-            )}
-          </div>
-        )}
-      </div>
-    </PullRefresh>
+/**
+ * Time Tracking screen — clock-in/out buttons, entries list.
+ * ModuleGate `time_tracking`.
+ *
+ * Requirements: 36.1, 36.2, 55.1
+ */
+export default function TimeTrackingScreen() {
+  return (
+    <ModuleGate moduleSlug="time_tracking">
+      <TimeTrackingContent />
+    </ModuleGate>
   )
 }

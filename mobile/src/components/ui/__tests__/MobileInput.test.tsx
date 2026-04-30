@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { MobileInput } from '../MobileInput'
 
 describe('MobileInput', () => {
@@ -51,6 +51,8 @@ describe('MobileInput', () => {
   it('applies error border styles', () => {
     render(<MobileInput label="Email" error="Bad" />)
     const input = screen.getByLabelText('Email')
-    expect(input.className).toContain('border-red-500')
+    // The border class is on the wrapper div, not the input itself
+    const wrapper = input.closest('div')!
+    expect(wrapper.className).toContain('border-red-500')
   })
 })

@@ -22,12 +22,13 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Arbitrary for a valid resource ID (UUID-like or alphanumeric). */
-const resourceIdArb = fc.stringOf(
-  fc.constantFrom(
+const resourceIdArb = fc.string({
+  unit: fc.constantFrom(
     ...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_'.split(''),
   ),
-  { minLength: 1, maxLength: 36 },
-)
+  minLength: 1,
+  maxLength: 36,
+})
 
 /** Arbitrary for valid deep link URLs with IDs. */
 const validDetailLinkArb = fc.tuple(
@@ -70,10 +71,11 @@ const invalidLinkArb = fc.oneof(
   fc.constant('/foo/bar/baz'),
   fc.constant('/'),
   fc.constant(''),
-  fc.stringOf(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz/'.split('')), {
+  fc.string({
+    unit: fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz/'.split('')),
     minLength: 1,
     maxLength: 50,
-  }).filter((s) => {
+  }).filter((s: string) => {
     // Filter out strings that would accidentally match a valid pattern
     return !DEEP_LINK_PATTERNS.some((p) => {
       const path = s.startsWith('/') ? s : `/${s}`
