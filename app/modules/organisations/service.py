@@ -1637,12 +1637,22 @@ async def public_signup(
         )
         family = family_result.scalar_one_or_none()
         if family:
-            # Get the first active category in this family
+            # Get the default category in this family.
+            # Prefer the "general-*" category (slug starts with 'general-')
+            # as it has the broadest feature set. Fall back to slug alpha.
+            from sqlalchemy import case
             cat_result = await db.execute(
                 select(TradeCategory.id).where(
                     TradeCategory.family_id == family.id,
                     TradeCategory.is_active == True,
-                ).order_by(TradeCategory.display_name).limit(1)
+                ).order_by(
+                    # general-* categories sort first (0 before 1)
+                    case(
+                        (TradeCategory.slug.like("general-%"), 0),
+                        else_=1,
+                    ),
+                    TradeCategory.display_name,
+                ).limit(1)
             )
             cat_row = cat_result.first()
             if cat_row:

@@ -2518,11 +2518,19 @@ async def confirm_signup_payment(
         )
         family = family_result.scalar_one_or_none()
         if family:
+            from sqlalchemy import case as sa_case
             cat_result = await db.execute(
                 select(TradeCategory.id).where(
                     TradeCategory.family_id == family.id,
                     TradeCategory.is_active == True,
-                ).order_by(TradeCategory.display_name).limit(1)
+                ).order_by(
+                    # Prefer "general-*" categories (broadest feature set)
+                    sa_case(
+                        (TradeCategory.slug.like("general-%"), 0),
+                        else_=1,
+                    ),
+                    TradeCategory.display_name,
+                ).limit(1)
             )
             cat_row = cat_result.first()
             if cat_row:
