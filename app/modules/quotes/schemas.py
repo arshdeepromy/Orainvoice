@@ -142,6 +142,8 @@ class QuoteResponse(BaseModel):
     subject: str | None = None
     acceptance_token: str | None = None
     converted_invoice_id: uuid.UUID | None = None
+    customer_portal_token: str | None = None
+    customer_enable_portal: bool = False
     line_items: list[QuoteLineItemResponse] = Field(default_factory=list)
     created_by: uuid.UUID
     created_at: datetime

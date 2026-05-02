@@ -17,6 +17,7 @@ import { KonstaNavbar } from '@/components/konsta/KonstaNavbar'
 import StatusBadge from '@/components/konsta/StatusBadge'
 import HapticButton from '@/components/konsta/HapticButton'
 import { useModules } from '@/contexts/ModuleContext'
+import { buildPortalUrl, canSharePortalLink } from '@/utils/portalLink'
 import apiClient from '@/api/client'
 
 /* ------------------------------------------------------------------ */
@@ -448,7 +449,8 @@ export default function InvoiceDetailScreen() {
 
   const handleShareLink = useCallback(async () => {
     if (!invoice) return
-    const portalUrl = `${window.location.origin}/portal/invoices/${id}`
+    const portalUrl = buildPortalUrl(window.location.origin, invoice.customer_portal_token)
+    if (!portalUrl) return
     try {
       const { Share } = await import('@capacitor/share')
       await Share.share({
@@ -465,7 +467,7 @@ export default function InvoiceDetailScreen() {
       }
     }
     setShowActionSheet(false)
-  }, [id, invoice])
+  }, [invoice])
 
   /* ── Loading state ────────────────────────────────────────────── */
 
@@ -1098,13 +1100,15 @@ export default function InvoiceDetailScreen() {
               }}
             />
           )}
-          <ListItem
-            link
-            title="Share Link"
-            onClick={() => {
-              void handleShareLink()
-            }}
-          />
+          {canSharePortalLink(invoice.customer_portal_token, invoice.customer_enable_portal) && (
+            <ListItem
+              link
+              title="Share Link"
+              onClick={() => {
+                void handleShareLink()
+              }}
+            />
+          )}
           {status === 'overdue' && (
             <ListItem
               link

@@ -94,9 +94,13 @@ export function Tabs({ tabs, defaultTab, className = '', urlPersist = false }: T
               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset
               ${
                 activeTab === tab.id
-                  ? 'border-b-2 border-blue-600 text-blue-600'
+                  ? 'border-b-2 text-blue-600'
                   : 'text-gray-500 hover:text-gray-700'
               }`}
+            style={activeTab === tab.id ? {
+              borderBottomColor: 'var(--portal-accent, #2563eb)',
+              color: 'var(--portal-accent, #2563eb)',
+            } : undefined}
           >
             {tab.label}
           </button>

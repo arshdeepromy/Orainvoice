@@ -345,7 +345,19 @@ async def get_quote(
     )
     line_items = list(li_result.scalars().all())
 
-    return _quote_to_dict(quote, line_items)
+    result = _quote_to_dict(quote, line_items)
+
+    # Include customer portal token info for mobile share link
+    if quote.customer_id:
+        cust_result = await db.execute(
+            select(Customer).where(Customer.id == quote.customer_id)
+        )
+        customer = cust_result.scalar_one_or_none()
+        if customer:
+            result["customer_portal_token"] = str(customer.portal_token) if customer.portal_token else None
+            result["customer_enable_portal"] = bool(customer.enable_portal)
+
+    return result
 
 
 async def list_quotes(

@@ -520,6 +520,190 @@ function BusinessTypeTab() {
   )
 }
 
+/* ── Portal Tab ── */
+
+function PortalTab() {
+  const [portalEnabled, setPortalEnabled] = useState(true)
+  const [portalTokenTtlDays, setPortalTokenTtlDays] = useState(90)
+  const [saving, setSaving] = useState(false)
+  const { toasts, addToast, dismissToast } = useToast()
+
+  // Portal analytics state (Req 47.2, 47.3)
+  interface AnalyticsDayItem {
+    date: string
+    view: number
+    quote_accepted: number
+    booking_created: number
+    payment_initiated: number
+  }
+  const [analytics, setAnalytics] = useState<{
+    days: AnalyticsDayItem[]
+    totals: AnalyticsDayItem
+  } | null>(null)
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    apiClient.get('/org/settings', { signal: controller.signal }).then(({ data }) => {
+      setPortalEnabled(data?.portal_enabled ?? true)
+      setPortalTokenTtlDays(data?.portal_token_ttl_days ?? 90)
+    }).catch(() => {
+      // ignore abort errors
+    })
+    return () => controller.abort()
+  }, [])
+
+  // Fetch portal analytics (Req 47.2)
+  useEffect(() => {
+    const controller = new AbortController()
+    setAnalyticsLoading(true)
+    apiClient.get('/org/portal-analytics', { signal: controller.signal }).then(({ data }) => {
+      setAnalytics({
+        days: data?.days ?? [],
+        totals: data?.totals ?? { date: 'total', view: 0, quote_accepted: 0, booking_created: 0, payment_initiated: 0 },
+      })
+    }).catch(() => {
+      // ignore abort errors
+    }).finally(() => {
+      if (!controller.signal.aborted) setAnalyticsLoading(false)
+    })
+    return () => controller.abort()
+  }, [])
+
+  const save = async () => {
+    if (portalTokenTtlDays < 1 || portalTokenTtlDays > 365) {
+      addToast('error', 'Token TTL must be between 1 and 365 days')
+      return
+    }
+    setSaving(true)
+    try {
+      await apiClient.put('/org/settings', { portal_enabled: portalEnabled, portal_token_ttl_days: portalTokenTtlDays })
+      addToast('success', 'Portal settings saved')
+    } catch {
+      addToast('error', 'Failed to save portal settings')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
+      <div>
+        <div className="flex items-center gap-3">
+          <label htmlFor="portal-enabled-toggle" className="text-sm font-medium text-gray-700">Customer Portal</label>
+          <button id="portal-enabled-toggle" role="switch" aria-checked={portalEnabled}
+            onClick={() => setPortalEnabled((prev) => !prev)}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${portalEnabled ? 'bg-blue-600' : 'bg-gray-300'}`}>
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${portalEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+          <span className="text-sm text-gray-600">{portalEnabled ? 'Enabled' : 'Disabled'}</span>
+        </div>
+        <p className="text-xs text-gray-500 mt-1">
+          {portalEnabled
+            ? 'Customers with portal access enabled can view their invoices, quotes, and bookings via a secure link.'
+            : 'The customer portal is disabled for your organisation. No customers will be able to access the portal.'}
+        </p>
+      </div>
+
+      {!portalEnabled && (
+        <div className="rounded-md bg-amber-50 border border-amber-200 p-3">
+          <p className="text-sm text-amber-800">
+            Disabling the portal will prevent all customers from accessing their portal links. Existing portal links will stop working until the portal is re-enabled.
+          </p>
+        </div>
+      )}
+
+      <hr className="border-gray-200" />
+
+      <p className="text-sm text-gray-600">
+        Configure how long customer portal access tokens remain valid. When a token expires, the customer will need a new link to access their portal.
+      </p>
+      <Input
+        label="Portal Token TTL (days)"
+        type="number"
+        min={1}
+        max={365}
+        value={String(portalTokenTtlDays)}
+        onChange={(e) => setPortalTokenTtlDays(parseInt(e.target.value) || 90)}
+        helperText="How many days a portal token remains valid after generation (default: 90)"
+      />
+      <Button onClick={save} loading={saving}>Save Portal Settings</Button>
+
+      {/* Portal Analytics — Req 47.2, 47.3 */}
+      <hr className="border-gray-200" />
+      <div>
+        <h3 className="text-sm font-medium text-gray-900 mb-3">Portal Usage (Last 30 Days)</h3>
+        {analyticsLoading ? (
+          <p className="text-sm text-gray-500">Loading analytics…</p>
+        ) : analytics ? (
+          <div className="space-y-4">
+            {/* Summary cards */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                <p className="text-xs text-gray-500">Portal Views</p>
+                <p className="text-lg font-semibold text-gray-900">{(analytics.totals?.view ?? 0).toLocaleString()}</p>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                <p className="text-xs text-gray-500">Quotes Accepted</p>
+                <p className="text-lg font-semibold text-gray-900">{(analytics.totals?.quote_accepted ?? 0).toLocaleString()}</p>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                <p className="text-xs text-gray-500">Bookings Created</p>
+                <p className="text-lg font-semibold text-gray-900">{(analytics.totals?.booking_created ?? 0).toLocaleString()}</p>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                <p className="text-xs text-gray-500">Payments Initiated</p>
+                <p className="text-lg font-semibold text-gray-900">{(analytics.totals?.payment_initiated ?? 0).toLocaleString()}</p>
+              </div>
+            </div>
+
+            {/* Daily breakdown table */}
+            {(analytics.days ?? []).length > 0 && (
+              <div className="overflow-x-auto rounded-lg border border-gray-200">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Date</th>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">Views</th>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">Quotes</th>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">Bookings</th>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">Payments</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {(analytics.days ?? []).filter(d =>
+                      (d?.view ?? 0) > 0 || (d?.quote_accepted ?? 0) > 0 || (d?.booking_created ?? 0) > 0 || (d?.payment_initiated ?? 0) > 0
+                    ).reverse().map((day) => (
+                      <tr key={day?.date ?? ''} className="hover:bg-gray-50">
+                        <td className="px-3 py-2 text-gray-700">{day?.date ?? ''}</td>
+                        <td className="px-3 py-2 text-right text-gray-600">{day?.view ?? 0}</td>
+                        <td className="px-3 py-2 text-right text-gray-600">{day?.quote_accepted ?? 0}</td>
+                        <td className="px-3 py-2 text-right text-gray-600">{day?.booking_created ?? 0}</td>
+                        <td className="px-3 py-2 text-right text-gray-600">{day?.payment_initiated ?? 0}</td>
+                      </tr>
+                    ))}
+                    {(analytics.days ?? []).filter(d =>
+                      (d?.view ?? 0) > 0 || (d?.quote_accepted ?? 0) > 0 || (d?.booking_created ?? 0) > 0 || (d?.payment_initiated ?? 0) > 0
+                    ).length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-3 py-4 text-center text-gray-400">No portal activity in the last 30 days</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="text-sm text-gray-400">Unable to load analytics</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /* ── Main Export ── */
 
 export function OrgSettings() {
@@ -529,6 +713,7 @@ export function OrgSettings() {
     { id: 'gst', label: 'GST', content: <GstTab /> },
     { id: 'invoice', label: 'Invoice', content: <InvoiceTab /> },
     { id: 'terms', label: 'Terms & Conditions', content: <TermsTab /> },
+    { id: 'portal', label: 'Portal', content: <PortalTab /> },
   ]
 
   return (

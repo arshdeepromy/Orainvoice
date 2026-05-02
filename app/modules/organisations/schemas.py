@@ -203,6 +203,14 @@ class OrgSettingsResponse(BaseModel):
         None, description="Colour overrides for the selected template"
     )
 
+    # Portal settings
+    portal_token_ttl_days: Optional[int] = Field(
+        None, description="Portal token TTL in days (default: 90)"
+    )
+    portal_enabled: Optional[bool] = Field(
+        None, description="Whether the customer portal is enabled for this org (default: true)"
+    )
+
     # Trade info (for trade-specific UI gating)
     trade_family: Optional[str] = Field(
         None, description="Trade family slug (e.g. 'automotive-transport', 'plumbing-gas')"
@@ -320,6 +328,14 @@ class OrgSettingsUpdateRequest(BaseModel):
     invoice_template_colours: Optional[dict] = Field(
         None,
         description="Colour overrides: {primary_colour, accent_colour, header_bg_colour}",
+    )
+
+    # Portal settings
+    portal_token_ttl_days: Optional[int] = Field(
+        None, ge=1, le=365, description="Portal token TTL in days (1-365, default: 90)"
+    )
+    portal_enabled: Optional[bool] = Field(
+        None, description="Whether the customer portal is enabled for this org (default: true)"
     )
 
     # Trade category

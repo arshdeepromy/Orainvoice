@@ -197,14 +197,19 @@ class Customer(Base):
     tags: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default="'[]'"
     )
-    portal_token: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), unique=True, nullable=True
+    portal_token: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True
     )
     portal_token_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
         server_default=text("now() + interval '90 days'"),
         comment="Portal token expiry timestamp (REM-15)",
+    )
+    last_portal_access_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Timestamp of last portal access (Req 48.1)",
     )
     
     # Timestamps

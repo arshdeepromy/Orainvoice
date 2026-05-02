@@ -30,18 +30,32 @@ import type { PortalInvoice } from '../pages/portal/InvoiceHistory'
 /* ── Test data factories ── */
 
 function makePortalInfo(overrides: Record<string, unknown> = {}) {
-  return {
-    customer_name: 'Jane Smith',
-    email: 'jane@example.com',
-    phone: '021 555 1234',
-    org_name: 'Kiwi Motors',
-    logo_url: 'https://example.com/logo.png',
-    primary_color: '#16a34a',
+  const base = {
+    customer: {
+      customer_id: 'cust-001',
+      first_name: 'Jane',
+      last_name: 'Smith',
+      email: 'jane@example.com',
+      phone: '021 555 1234',
+    },
+    branding: {
+      org_name: 'Kiwi Motors',
+      logo_url: 'https://example.com/logo.png',
+      primary_colour: '#16a34a',
+      secondary_colour: null,
+      powered_by: null,
+      language: null,
+    },
     outstanding_balance: 250.0,
-    total_invoices: 5,
+    invoice_count: 5,
     total_paid: 1200.0,
-    ...overrides,
   }
+  // Allow overriding nested fields via dot-style keys for convenience
+  const result = { ...base, ...overrides }
+  if (overrides.org_name) {
+    result.branding = { ...base.branding, org_name: overrides.org_name as string }
+  }
+  return result
 }
 
 function makeInvoice(overrides: Partial<PortalInvoice> = {}): PortalInvoice {
@@ -68,7 +82,7 @@ function makeVehicle(overrides: Record<string, unknown> = {}) {
     colour: 'Silver',
     wof_expiry: '2025-03-15',
     rego_expiry: '2025-06-01',
-    services: [
+    service_history: [
       {
         invoice_number: 'INV-0042',
         date: '2024-06-01',
@@ -125,7 +139,7 @@ describe('Customer Portal Pages', () => {
 
     // 61.2: Displays outstanding balance
     it('displays outstanding balance and invoice summary cards', async () => {
-      setupPortalMocks(makePortalInfo({ outstanding_balance: 250.0, total_invoices: 5, total_paid: 1200.0 }))
+      setupPortalMocks(makePortalInfo({ outstanding_balance: 250.0, invoice_count: 5, total_paid: 1200.0 }))
 
       renderWithRouter(<PortalPage />)
 
@@ -298,7 +312,7 @@ describe('Customer Portal Pages', () => {
     // 61.4: Displays vehicle service history
     it('displays vehicles with rego, make, model, year', async () => {
       ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: [makeVehicle()],
+        data: { vehicles: [makeVehicle()] },
       })
 
       render(<VehicleHistory token="test-token" />)
@@ -310,7 +324,7 @@ describe('Customer Portal Pages', () => {
     // 61.4: Expiry badges shown (WOF/Rego)
     it('displays WOF and rego expiry badges', async () => {
       ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: [makeVehicle({ wof_expiry: '2025-03-15', rego_expiry: '2025-06-01' })],
+        data: { vehicles: [makeVehicle({ wof_expiry: '2025-03-15', rego_expiry: '2025-06-01' })] },
       })
 
       render(<VehicleHistory token="test-token" />)
@@ -323,7 +337,7 @@ describe('Customer Portal Pages', () => {
     // 61.4: Expanding vehicle shows service history
     it('shows service history when vehicle is expanded', async () => {
       ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: [makeVehicle()],
+        data: { vehicles: [makeVehicle()] },
       })
       const user = userEvent.setup()
 
@@ -338,7 +352,7 @@ describe('Customer Portal Pages', () => {
 
     // Empty state
     it('shows empty message when no vehicles exist', async () => {
-      ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] })
+      ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: { vehicles: [] } })
 
       render(<VehicleHistory token="test-token" />)
 
@@ -407,7 +421,7 @@ describe('Customer Portal Pages', () => {
       })
 
       ;(apiClient.post as ReturnType<typeof vi.fn>).mockResolvedValue({
-        data: { checkout_url: 'https://checkout.stripe.com/session123' },
+        data: { payment_url: 'https://checkout.stripe.com/session123' },
       })
 
       const user = userEvent.setup()
@@ -422,7 +436,7 @@ describe('Customer Portal Pages', () => {
 
       await user.click(screen.getByRole('button', { name: /pay \$350\.00/i }))
 
-      expect(apiClient.post).toHaveBeenCalledWith('/portal/test-token/pay/inv-001')
+      expect(apiClient.post).toHaveBeenCalledWith('/portal/test-token/pay/inv-001', { amount: 350 })
       expect(hrefSetter).toHaveBeenCalledWith('https://checkout.stripe.com/session123')
     })
 
@@ -442,7 +456,7 @@ describe('Customer Portal Pages', () => {
 
       await user.click(screen.getByRole('button', { name: /pay \$350\.00/i }))
 
-      expect(await screen.findByText(/unable to start payment/i)).toBeInTheDocument()
+      expect(await screen.findByText(/payment failed/i)).toBeInTheDocument()
     })
 
     // Back button calls onBack
@@ -464,8 +478,8 @@ describe('Customer Portal Pages', () => {
       expect(onBack).toHaveBeenCalled()
     })
 
-    // Cancel button calls onBack
-    it('calls onBack when Cancel button is clicked', async () => {
+    // Secondary back button calls onBack
+    it('calls onBack when secondary back button is clicked', async () => {
       const onBack = vi.fn()
       const user = userEvent.setup()
 
@@ -478,7 +492,7 @@ describe('Customer Portal Pages', () => {
         />,
       )
 
-      await user.click(screen.getByRole('button', { name: 'Cancel' }))
+      await user.click(screen.getByRole('button', { name: 'Back to invoices' }))
 
       expect(onBack).toHaveBeenCalled()
     })

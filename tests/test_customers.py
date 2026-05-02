@@ -19,9 +19,27 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Import admin and auth models so SQLAlchemy can resolve all relationships
+# Import all models so SQLAlchemy can resolve all relationships
+# (mirrors the import block in app/main.py)
 import app.modules.admin.models  # noqa: F401
-from app.modules.auth.models import User  # noqa: F401
+import app.modules.auth.models  # noqa: F401
+import app.modules.organisations.models  # noqa: F401
+import app.modules.customers.models  # noqa: F401
+import app.modules.suppliers.models  # noqa: F401
+import app.modules.catalogue.models  # noqa: F401
+import app.modules.inventory.models  # noqa: F401
+import app.modules.invoices.models  # noqa: F401
+import app.modules.vehicles.models  # noqa: F401
+import app.modules.billing.models  # noqa: F401
+import app.modules.job_cards.models  # noqa: F401
+import app.modules.service_types.models  # noqa: F401
+import app.modules.staff.models  # noqa: F401
+import app.modules.stock.models  # noqa: F401
+import app.modules.quotes.models  # noqa: F401
+import app.modules.payments.models  # noqa: F401
+import app.modules.ledger.models  # noqa: F401
+from sqlalchemy.orm import configure_mappers
+configure_mappers()
 
 from app.modules.customers.models import Customer
 from app.modules.customers.schemas import (
@@ -54,6 +72,9 @@ def _make_customer(
     address="123 Main St, Auckland",
     notes=None,
     is_anonymised=False,
+    enable_portal=False,
+    portal_token=None,
+    portal_token_expires_at=None,
 ):
     """Create a mock Customer object."""
     customer = MagicMock(spec=Customer)
@@ -66,6 +87,9 @@ def _make_customer(
     customer.address = address
     customer.notes = notes
     customer.is_anonymised = is_anonymised
+    customer.enable_portal = enable_portal
+    customer.portal_token = portal_token
+    customer.portal_token_expires_at = portal_token_expires_at
     customer.created_at = datetime.now(timezone.utc)
     customer.updated_at = datetime.now(timezone.utc)
     return customer
@@ -99,6 +123,13 @@ def _mock_count_result(count):
     """Create a mock result that returns a count from scalar()."""
     result = MagicMock()
     result.scalar.return_value = count
+    return result
+
+
+def _mock_rows_result(rows):
+    """Create a mock result that returns rows from .all()."""
+    result = MagicMock()
+    result.all.return_value = rows
     return result
 
 
@@ -137,10 +168,10 @@ class TestCustomerSchemas:
         with pytest.raises(Exception):
             CustomerCreateRequest(first_name="", last_name="Doe")
 
-    def test_create_request_empty_last_name_rejected(self):
-        """Empty last name is rejected."""
-        with pytest.raises(Exception):
-            CustomerCreateRequest(first_name="Jane", last_name="")
+    def test_create_request_empty_last_name_allowed(self):
+        """Empty last name is allowed — only first name is required."""
+        req = CustomerCreateRequest(first_name="Jane", last_name="")
+        assert req.last_name == ""
 
     def test_update_request_all_optional(self):
         """Update request with no fields is valid (no-op)."""
@@ -190,10 +221,17 @@ class TestSearchCustomers:
 
         db = _mock_db_session()
         db.execute = AsyncMock(
-            side_effect=[_mock_count_result(2), _mock_scalars_result([c1, c2])]
+            side_effect=[
+                _mock_count_result(2),
+                _mock_scalars_result([c1, c2]),
+                _mock_rows_result([]),  # receivables query
+                _mock_rows_result([]),  # credits query
+            ]
         )
 
-        result = await search_customers(db, org_id=org_id)
+        with patch("app.core.modules.ModuleService") as MockModSvc:
+            MockModSvc.return_value.is_enabled = AsyncMock(return_value=False)
+            result = await search_customers(db, org_id=org_id)
 
         assert result["total"] == 2
         assert len(result["customers"]) == 2
@@ -207,10 +245,17 @@ class TestSearchCustomers:
 
         db = _mock_db_session()
         db.execute = AsyncMock(
-            side_effect=[_mock_count_result(1), _mock_scalars_result([c1])]
+            side_effect=[
+                _mock_count_result(1),
+                _mock_scalars_result([c1]),
+                _mock_rows_result([]),  # receivables query
+                _mock_rows_result([]),  # credits query
+            ]
         )
 
-        result = await search_customers(db, org_id=org_id, query="Alice")
+        with patch("app.core.modules.ModuleService") as MockModSvc:
+            MockModSvc.return_value.is_enabled = AsyncMock(return_value=False)
+            result = await search_customers(db, org_id=org_id, query="Alice")
 
         assert result["total"] == 1
         assert result["customers"][0]["first_name"] == "Alice"
@@ -220,10 +265,16 @@ class TestSearchCustomers:
         """Returns empty list when no customers match."""
         db = _mock_db_session()
         db.execute = AsyncMock(
-            side_effect=[_mock_count_result(0), _mock_scalars_result([])]
+            side_effect=[
+                _mock_count_result(0),
+                _mock_scalars_result([]),
+                # No receivables/credits queries when customer_ids is empty
+            ]
         )
 
-        result = await search_customers(db, org_id=uuid.uuid4(), query="Nonexistent")
+        with patch("app.core.modules.ModuleService") as MockModSvc:
+            MockModSvc.return_value.is_enabled = AsyncMock(return_value=False)
+            result = await search_customers(db, org_id=uuid.uuid4(), query="Nonexistent")
 
         assert result["total"] == 0
         assert result["customers"] == []
@@ -237,10 +288,17 @@ class TestSearchCustomers:
 
         db = _mock_db_session()
         db.execute = AsyncMock(
-            side_effect=[_mock_count_result(1), _mock_scalars_result([c1])]
+            side_effect=[
+                _mock_count_result(1),
+                _mock_scalars_result([c1]),
+                _mock_rows_result([]),  # receivables query
+                _mock_rows_result([]),  # credits query
+            ]
         )
 
-        result = await search_customers(db, org_id=org_id, query="Alice Brown")
+        with patch("app.core.modules.ModuleService") as MockModSvc:
+            MockModSvc.return_value.is_enabled = AsyncMock(return_value=False)
+            result = await search_customers(db, org_id=org_id, query="Alice Brown")
 
         assert result["has_exact_match"] is True
 
@@ -252,10 +310,17 @@ class TestSearchCustomers:
 
         db = _mock_db_session()
         db.execute = AsyncMock(
-            side_effect=[_mock_count_result(1), _mock_scalars_result([c1])]
+            side_effect=[
+                _mock_count_result(1),
+                _mock_scalars_result([c1]),
+                _mock_rows_result([]),  # receivables query
+                _mock_rows_result([]),  # credits query
+            ]
         )
 
-        result = await search_customers(db, org_id=org_id, query="alice@test.com")
+        with patch("app.core.modules.ModuleService") as MockModSvc:
+            MockModSvc.return_value.is_enabled = AsyncMock(return_value=False)
+            result = await search_customers(db, org_id=org_id, query="alice@test.com")
 
         assert result["has_exact_match"] is True
 
@@ -265,10 +330,17 @@ class TestSearchCustomers:
         c = _make_customer()
         db = _mock_db_session()
         db.execute = AsyncMock(
-            side_effect=[_mock_count_result(1), _mock_scalars_result([c])]
+            side_effect=[
+                _mock_count_result(1),
+                _mock_scalars_result([c]),
+                _mock_rows_result([]),  # receivables query
+                _mock_rows_result([]),  # credits query
+            ]
         )
 
-        result = await search_customers(db, org_id=c.org_id, query="John")
+        with patch("app.core.modules.ModuleService") as MockModSvc:
+            MockModSvc.return_value.is_enabled = AsyncMock(return_value=False)
+            result = await search_customers(db, org_id=c.org_id, query="John")
 
         sr = result["customers"][0]
         assert "id" in sr
@@ -285,10 +357,16 @@ class TestSearchCustomers:
         # so the DB should not return anonymised records.
         db = _mock_db_session()
         db.execute = AsyncMock(
-            side_effect=[_mock_count_result(0), _mock_scalars_result([])]
+            side_effect=[
+                _mock_count_result(0),
+                _mock_scalars_result([]),
+                # No receivables/credits queries when customer_ids is empty
+            ]
         )
 
-        result = await search_customers(db, org_id=org_id, query="Anon")
+        with patch("app.core.modules.ModuleService") as MockModSvc:
+            MockModSvc.return_value.is_enabled = AsyncMock(return_value=False)
+            result = await search_customers(db, org_id=org_id, query="Anon")
 
         assert result["total"] == 0
 
@@ -529,3 +607,200 @@ class TestUpdateCustomer:
         assert call_kwargs["action"] == "customer.updated"
         assert call_kwargs["entity_type"] == "customer"
         assert call_kwargs["ip_address"] == "10.0.0.2"
+
+
+# ---------------------------------------------------------------------------
+# Portal token lifecycle tests (Req 12.1, 12.2, 12.3)
+# ---------------------------------------------------------------------------
+
+
+def _make_org(org_id=None, settings=None):
+    """Create a mock Organisation object."""
+    from app.modules.admin.models import Organisation
+
+    org = MagicMock(spec=Organisation)
+    org.id = org_id or uuid.uuid4()
+    org.settings = settings or {}
+    return org
+
+
+class TestPortalTokenLifecycle:
+    """Test portal token auto-generation on enable_portal toggle.
+
+    Requirements: 12.1, 12.2, 12.3
+    """
+
+    @pytest.mark.asyncio
+    async def test_enable_portal_generates_token_when_null(self):
+        """When enable_portal transitions to True and portal_token is NULL,
+        a new UUID token and expiry are generated."""
+        org_id = uuid.uuid4()
+        c = _make_customer(org_id=org_id, enable_portal=False, portal_token=None)
+        org = _make_org(org_id=org_id, settings={"portal_token_ttl_days": 30})
+
+        db = _mock_db_session()
+        # First execute returns customer, second returns org
+        db.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(c),
+                _mock_scalar_result(org),
+            ]
+        )
+        db.refresh = AsyncMock()
+
+        with patch(
+            "app.modules.customers.service.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            result = await update_customer(
+                db,
+                org_id=org_id,
+                user_id=uuid.uuid4(),
+                customer_id=c.id,
+                enable_portal=True,
+            )
+
+        # Token should have been set
+        assert c.portal_token is not None
+        assert c.portal_token_expires_at is not None
+
+    @pytest.mark.asyncio
+    async def test_enable_portal_uses_default_ttl_when_not_configured(self):
+        """When org has no portal_token_ttl_days setting, defaults to 90 days."""
+        from datetime import timedelta
+
+        org_id = uuid.uuid4()
+        c = _make_customer(org_id=org_id, enable_portal=False, portal_token=None)
+        org = _make_org(org_id=org_id, settings={})
+
+        db = _mock_db_session()
+        db.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(c),
+                _mock_scalar_result(org),
+            ]
+        )
+        db.refresh = AsyncMock()
+
+        before = datetime.now(timezone.utc)
+
+        with patch(
+            "app.modules.customers.service.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            await update_customer(
+                db,
+                org_id=org_id,
+                user_id=uuid.uuid4(),
+                customer_id=c.id,
+                enable_portal=True,
+            )
+
+        after = datetime.now(timezone.utc)
+
+        # Expiry should be ~90 days from now
+        assert c.portal_token_expires_at >= before + timedelta(days=90)
+        assert c.portal_token_expires_at <= after + timedelta(days=90)
+
+    @pytest.mark.asyncio
+    async def test_enable_portal_uses_org_configured_ttl(self):
+        """When org has portal_token_ttl_days=30, expiry is 30 days from now."""
+        from datetime import timedelta
+
+        org_id = uuid.uuid4()
+        c = _make_customer(org_id=org_id, enable_portal=False, portal_token=None)
+        org = _make_org(org_id=org_id, settings={"portal_token_ttl_days": 30})
+
+        db = _mock_db_session()
+        db.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_result(c),
+                _mock_scalar_result(org),
+            ]
+        )
+        db.refresh = AsyncMock()
+
+        before = datetime.now(timezone.utc)
+
+        with patch(
+            "app.modules.customers.service.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            await update_customer(
+                db,
+                org_id=org_id,
+                user_id=uuid.uuid4(),
+                customer_id=c.id,
+                enable_portal=True,
+            )
+
+        after = datetime.now(timezone.utc)
+
+        # Expiry should be ~30 days from now
+        assert c.portal_token_expires_at >= before + timedelta(days=30)
+        assert c.portal_token_expires_at <= after + timedelta(days=30)
+
+    @pytest.mark.asyncio
+    async def test_disable_portal_revokes_token(self):
+        """When enable_portal transitions to False, portal_token is set to None."""
+        org_id = uuid.uuid4()
+        existing_token = uuid.uuid4()
+        c = _make_customer(
+            org_id=org_id,
+            enable_portal=True,
+            portal_token=existing_token,
+            portal_token_expires_at=datetime.now(timezone.utc),
+        )
+
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(c))
+        db.refresh = AsyncMock()
+
+        with patch(
+            "app.modules.customers.service.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            await update_customer(
+                db,
+                org_id=org_id,
+                user_id=uuid.uuid4(),
+                customer_id=c.id,
+                enable_portal=False,
+            )
+
+        assert c.portal_token is None
+        assert c.portal_token_expires_at is None
+
+    @pytest.mark.asyncio
+    async def test_enable_portal_skips_token_gen_when_token_exists(self):
+        """When enable_portal is set to True but portal_token already exists,
+        the existing token is preserved (no regeneration)."""
+        org_id = uuid.uuid4()
+        existing_token = uuid.uuid4()
+        existing_expiry = datetime.now(timezone.utc)
+        c = _make_customer(
+            org_id=org_id,
+            enable_portal=False,
+            portal_token=existing_token,
+            portal_token_expires_at=existing_expiry,
+        )
+
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(c))
+        db.refresh = AsyncMock()
+
+        with patch(
+            "app.modules.customers.service.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            await update_customer(
+                db,
+                org_id=org_id,
+                user_id=uuid.uuid4(),
+                customer_id=c.id,
+                enable_portal=True,
+            )
+
+        # Token should remain unchanged
+        assert c.portal_token == existing_token
+        assert c.portal_token_expires_at == existing_expiry

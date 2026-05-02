@@ -4,6 +4,8 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
+import { usePortalLocale } from './PortalLocaleContext'
+import { formatCurrency, formatDate } from './portalFormatters'
 
 export interface PortalQuote {
   id: string
@@ -34,6 +36,7 @@ const QUOTE_STATUS: Record<string, { label: string; variant: 'success' | 'warnin
 }
 
 export function QuoteAcceptance({ token }: QuoteAcceptanceProps) {
+  const locale = usePortalLocale()
   const [quotes, setQuotes] = useState<PortalQuote[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -89,13 +92,13 @@ export function QuoteAcceptance({ token }: QuoteAcceptanceProps) {
                   </p>
                 )}
                 <p className="mt-1 text-xs text-gray-400">
-                  Created {formatDate(q.created_at)}
-                  {q.expiry_date && ` · Expires ${formatDate(q.expiry_date)}`}
+                  Created {formatDate(q.created_at, locale)}
+                  {q.expiry_date && ` · Expires ${formatDate(q.expiry_date, locale)}`}
                 </p>
               </div>
               <div className="flex items-center gap-3">
                 <p className="text-sm font-semibold text-gray-900 tabular-nums">
-                  {formatCurrency(q.total, q.currency)}
+                  {formatCurrency(q.total, locale, q.currency || 'NZD')}
                 </p>
                 {canAccept && (
                   <Button
@@ -113,17 +116,4 @@ export function QuoteAcceptance({ token }: QuoteAcceptanceProps) {
       })}
     </div>
   )
-}
-
-function formatCurrency(amount: number, currency?: string | null): string {
-  return new Intl.NumberFormat('en-NZ', {
-    style: 'currency',
-    currency: currency || 'NZD',
-  }).format(amount)
-}
-
-function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-NZ', {
-    day: 'numeric', month: 'short', year: 'numeric',
-  })
 }

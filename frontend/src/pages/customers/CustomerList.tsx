@@ -25,6 +25,7 @@ interface CustomerSearchResult {
   receivables?: number
   unused_credits?: number
   reminders_enabled?: boolean
+  last_portal_access_at?: string | null
   branch_id?: string | null
 }
 
@@ -317,6 +318,7 @@ export default function CustomerList() {
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Work Phone</th>
                   <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Receivables (BCY)</th>
                   <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Unused Credits (BCY)</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Last Portal Access</th>
                   {isAutomotive && (
                   <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Reminders WOF/Service</th>
                   )}
@@ -326,7 +328,7 @@ export default function CustomerList() {
               <tbody className="divide-y divide-gray-200 bg-white">
                 {!data.customers || data.customers.length === 0 ? (
                   <tr>
-                    <td colSpan={isAutomotive ? 9 : 8} className="px-4 py-12 text-center text-sm text-gray-500">
+                    <td colSpan={isAutomotive ? 10 : 9} className="px-4 py-12 text-center text-sm text-gray-500">
                       {searchQuery ? 'No customers match your search.' : 'No customers yet. Create your first customer to get started.'}
                     </td>
                   </tr>
@@ -357,6 +359,11 @@ export default function CustomerList() {
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-gray-900">
                         {formatNZD(c.unused_credits)}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-500">
+                        {c.last_portal_access_at
+                          ? new Date(c.last_portal_access_at).toLocaleDateString()
+                          : '—'}
                       </td>
                       {isAutomotive && (
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-center">

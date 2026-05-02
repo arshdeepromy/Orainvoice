@@ -71,6 +71,12 @@ class StockTransfer(Base):
     received_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    received_quantity: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 3), nullable=True,
+    )
+    discrepancy_quantity: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 3), nullable=True,
+    )
     cancelled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )

@@ -4109,8 +4109,9 @@ async def regenerate_portal_token(
 
     # Generate new token and reset expiry
     from app.config import settings as app_settings
+    import secrets
 
-    new_token = uuid.uuid4()
+    new_token = secrets.token_urlsafe(32)
     new_expiry = datetime.now(timezone.utc) + timedelta(days=app_settings.portal_token_ttl_days)
     customer.portal_token = new_token
     customer.portal_token_expires_at = new_expiry

@@ -63,6 +63,12 @@ _PAYMENT_PAGE_RATE_LIMIT = 20
 _HA_HEARTBEAT_PATH = "/api/v1/ha/heartbeat"
 _HA_HEARTBEAT_RATE_LIMIT = 12
 
+# Portal per-token rate limit — 60 req/min per portal token (Req 9.1)
+_PORTAL_PER_TOKEN_RATE_LIMIT = 60
+
+# Portal per-IP rate limit on token resolution endpoint — 20 req/min (Req 9.2)
+_PORTAL_PER_IP_RATE_LIMIT = 20
+
 # Default password reset limit per IP per minute.
 _PASSWORD_RESET_LIMIT = 5
 
@@ -274,6 +280,43 @@ class RateLimitMiddleware:
                 )
                 await response(scope, receive, send)
                 return
+
+        # --- Portal per-token limit (60/min — Req 9.1) ---
+        if path.startswith("/api/v1/portal/") or path.startswith("/api/v2/portal/"):
+            parts = path.split("/")
+            # Extract token segment: /api/v1/portal/{token}[/...] → parts[4]
+            token_segment = parts[4] if len(parts) > 4 else None
+            if token_segment:
+                key = f"rl:portal:token:{token_segment}"
+                allowed, retry_after = await _check_rate_limit(
+                    redis, key, _PORTAL_PER_TOKEN_RATE_LIMIT, now,
+                )
+                if not allowed:
+                    response = JSONResponse(
+                        status_code=429,
+                        content={"detail": "Too many requests. Please try again later."},
+                        headers={"Retry-After": str(retry_after)},
+                    )
+                    await response(scope, receive, send)
+                    return
+
+            # Per-IP limit on token resolution endpoint (20/min — Req 9.2)
+            # Token resolution is GET /api/v{1,2}/portal/{token} — exactly 5 segments
+            if len(parts) == 5 and request.method == "GET":
+                from app.middleware.auth import get_client_ip
+                client_ip = get_client_ip(request) or "unknown"
+                key = f"rl:portal:ip:{client_ip}"
+                allowed, retry_after = await _check_rate_limit(
+                    redis, key, _PORTAL_PER_IP_RATE_LIMIT, now,
+                )
+                if not allowed:
+                    response = JSONResponse(
+                        status_code=429,
+                        content={"detail": "Too many requests. Please try again later."},
+                        headers={"Retry-After": str(retry_after)},
+                    )
+                    await response(scope, receive, send)
+                    return
 
         # --- Per-user limit ---
         user_id: str | None = getattr(request.state, "user_id", None)

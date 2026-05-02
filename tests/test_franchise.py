@@ -283,3 +283,113 @@ class TestFranchiseAdminAccess:
         # All permissions should be read-only
         for perm in perms:
             assert "write" not in perm.lower() or "read" in perm.lower()
+
+
+# ---------------------------------------------------------------------------
+# 54: Partial transfer receive support
+# ---------------------------------------------------------------------------
+
+class TestPartialTransferReceive:
+    """54: Partial transfer receive — received_quantity, discrepancy tracking.
+
+    **Validates: Requirements 54.1, 54.2, 54.3**
+    """
+
+    @pytest.mark.asyncio
+    async def test_full_receive_sets_status_received(self) -> None:
+        """Full receive (received_quantity == quantity) sets status to received."""
+        org_id = uuid.uuid4()
+        mock_db = MagicMock()
+        mock_db.add = MagicMock()
+        mock_db.flush = AsyncMock()
+
+        svc = FranchiseService(mock_db)
+        transfer = _make_transfer(
+            org_id, uuid.uuid4(), uuid.uuid4(), uuid.uuid4(),
+            quantity=Decimal("100"), status="executed",
+        )
+
+        result = await svc.receive_transfer(
+            transfer, received_by=uuid.uuid4(), received_quantity=Decimal("100"),
+        )
+        assert result.status == "received"
+        assert result.received_quantity == Decimal("100")
+        assert result.discrepancy_quantity == Decimal("0")
+
+    @pytest.mark.asyncio
+    async def test_partial_receive_sets_status_partially_received(self) -> None:
+        """Partial receive (received_quantity < quantity) sets status to partially_received."""
+        org_id = uuid.uuid4()
+        mock_db = MagicMock()
+        mock_db.add = MagicMock()
+        mock_db.flush = AsyncMock()
+
+        svc = FranchiseService(mock_db)
+        transfer = _make_transfer(
+            org_id, uuid.uuid4(), uuid.uuid4(), uuid.uuid4(),
+            quantity=Decimal("100"), status="executed",
+        )
+
+        result = await svc.receive_transfer(
+            transfer, received_by=uuid.uuid4(), received_quantity=Decimal("95"),
+        )
+        assert result.status == "partially_received"
+        assert result.received_quantity == Decimal("95")
+        assert result.discrepancy_quantity == Decimal("5")
+
+    @pytest.mark.asyncio
+    async def test_default_receive_is_full(self) -> None:
+        """When received_quantity is not provided, defaults to full receive."""
+        org_id = uuid.uuid4()
+        mock_db = MagicMock()
+        mock_db.add = MagicMock()
+        mock_db.flush = AsyncMock()
+
+        svc = FranchiseService(mock_db)
+        transfer = _make_transfer(
+            org_id, uuid.uuid4(), uuid.uuid4(), uuid.uuid4(),
+            quantity=Decimal("50"), status="executed",
+        )
+
+        result = await svc.receive_transfer(transfer, received_by=uuid.uuid4())
+        assert result.status == "received"
+        assert result.received_quantity == Decimal("50")
+        assert result.discrepancy_quantity == Decimal("0")
+
+    @pytest.mark.asyncio
+    async def test_received_quantity_exceeding_transfer_raises(self) -> None:
+        """Received quantity exceeding transfer quantity raises ValueError."""
+        org_id = uuid.uuid4()
+        mock_db = MagicMock()
+        mock_db.add = MagicMock()
+        mock_db.flush = AsyncMock()
+
+        svc = FranchiseService(mock_db)
+        transfer = _make_transfer(
+            org_id, uuid.uuid4(), uuid.uuid4(), uuid.uuid4(),
+            quantity=Decimal("100"), status="executed",
+        )
+
+        with pytest.raises(ValueError, match="cannot exceed"):
+            await svc.receive_transfer(
+                transfer, received_by=uuid.uuid4(), received_quantity=Decimal("101"),
+            )
+
+    @pytest.mark.asyncio
+    async def test_cannot_receive_non_executed_transfer(self) -> None:
+        """Cannot receive a transfer that is not in executed status."""
+        org_id = uuid.uuid4()
+        mock_db = MagicMock()
+        mock_db.add = MagicMock()
+        mock_db.flush = AsyncMock()
+
+        svc = FranchiseService(mock_db)
+        transfer = _make_transfer(
+            org_id, uuid.uuid4(), uuid.uuid4(), uuid.uuid4(),
+            quantity=Decimal("100"), status="pending",
+        )
+
+        with pytest.raises(ValueError, match="Cannot receive transfer"):
+            await svc.receive_transfer(
+                transfer, received_by=uuid.uuid4(), received_quantity=Decimal("50"),
+            )

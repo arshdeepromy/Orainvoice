@@ -279,6 +279,8 @@ class InvoiceResponse(BaseModel):
     payment_page_url: str | None = None
     payment_gateway: str | None = None
     attachment_count: int = 0
+    customer_portal_token: str | None = None
+    customer_enable_portal: bool = False
     created_by: uuid.UUID
     created_at: datetime
     updated_at: datetime

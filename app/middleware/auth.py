@@ -309,18 +309,13 @@ class AuthMiddleware:
             return None
 
         try:
-            token_uuid = _uuid.UUID(token_str)
-        except (ValueError, AttributeError):
-            return None  # Let the downstream handler return a proper 400.
-
-        try:
             from app.core.database import async_session_factory
             from app.modules.customers.models import Customer
 
             async with async_session_factory() as db:
                 result = await db.execute(
                     select(Customer.portal_token_expires_at).where(
-                        Customer.portal_token == token_uuid
+                        Customer.portal_token == token_str
                     )
                 )
                 row = result.first()

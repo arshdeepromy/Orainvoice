@@ -17,6 +17,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.franchise.models import FranchiseGroup, Location, StockTransfer
+from app.modules.franchise.transfer_action_model import TransferAction
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,176 @@ class FranchiseService:
         return location
 
     # ------------------------------------------------------------------
+    # Transfer Audit Trail
+    # ------------------------------------------------------------------
+
+    async def _log_transfer_action(
+        self,
+        transfer_id: uuid.UUID,
+        action: str,
+        performed_by: uuid.UUID | None = None,
+        notes: str | None = None,
+    ) -> TransferAction:
+        """Record an audit trail entry for a transfer status transition."""
+        entry = TransferAction(
+            transfer_id=transfer_id,
+            action=action,
+            performed_by=performed_by,
+            notes=notes,
+        )
+        self.db.add(entry)
+        await self.db.flush()
+        return entry
+
+    async def get_transfer_actions(
+        self,
+        transfer_id: uuid.UUID,
+    ) -> list[TransferAction]:
+        """Return the audit trail for a transfer, ordered chronologically."""
+        stmt = (
+            select(TransferAction)
+            .where(TransferAction.transfer_id == transfer_id)
+            .order_by(TransferAction.created_at.asc())
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    # ------------------------------------------------------------------
+    # Transfer Event Notifications
+    # ------------------------------------------------------------------
+
+    async def _notify_transfer_event(
+        self,
+        transfer: StockTransfer,
+        action: str,
+        performed_by: uuid.UUID | None = None,
+    ) -> None:
+        """Send in-app + optional email notifications for transfer events.
+
+        - ``created``: notify destination branch manager(s)
+        - ``approved`` / ``executed``: notify both source and destination managers
+
+        Uses the existing ``log_email_sent`` + ``send_email_task`` pattern.
+
+        **Validates: Requirements 55.1, 55.2, 55.3**
+        """
+        from app.modules.auth.models import User
+        from app.modules.notifications.service import log_email_sent
+        from app.modules.organisations.models import Branch
+        from app.tasks.notifications import send_email_task
+
+        org_id = transfer.org_id
+
+        # Resolve branch names for the notification body
+        source_branch = await self.db.get(Branch, transfer.from_branch_id)
+        dest_branch = await self.db.get(Branch, transfer.to_branch_id)
+        source_name = source_branch.name if source_branch else "Unknown"
+        dest_name = dest_branch.name if dest_branch else "Unknown"
+
+        # Determine which branch IDs to notify
+        if action == "created":
+            branch_ids_to_notify = [transfer.to_branch_id]
+        else:
+            # approved, executed — notify both sides
+            branch_ids_to_notify = [transfer.from_branch_id, transfer.to_branch_id]
+
+        # Find users who manage the target branches:
+        # - location_manager / org_admin with the branch in their branch_ids
+        recipients: list[User] = []
+        for branch_id in branch_ids_to_notify:
+            branch_id_str = str(branch_id)
+            stmt = (
+                select(User)
+                .where(
+                    User.org_id == org_id,
+                    User.is_active.is_(True),
+                    User.role.in_(["org_admin", "location_manager"]),
+                )
+            )
+            result = await self.db.execute(stmt)
+            users = list(result.scalars().all())
+            for user in users:
+                # org_admin gets all branch notifications
+                if user.role == "org_admin":
+                    if user not in recipients:
+                        recipients.append(user)
+                    continue
+                # location_manager — check branch_ids JSONB array
+                user_branches = user.branch_ids or []
+                if branch_id_str in [str(b) for b in user_branches]:
+                    if user not in recipients:
+                        recipients.append(user)
+
+        if not recipients:
+            logger.info(
+                "No recipients found for transfer %s %s notification",
+                transfer.id, action,
+            )
+            return
+
+        # Build notification content
+        qty = transfer.quantity
+        action_label = {
+            "created": "New transfer request",
+            "approved": "Transfer approved",
+            "executed": "Transfer executed",
+        }.get(action, f"Transfer {action}")
+
+        subject = f"{action_label}: {source_name} → {dest_name} (qty {qty})"
+
+        html_body = (
+            f"<p>Hi,</p>"
+            f"<p>A stock transfer event has occurred:</p>"
+            f"<ul>"
+            f"<li><strong>Action:</strong> {action_label}</li>"
+            f"<li><strong>From:</strong> {source_name}</li>"
+            f"<li><strong>To:</strong> {dest_name}</li>"
+            f"<li><strong>Quantity:</strong> {qty}</li>"
+            f"<li><strong>Status:</strong> {transfer.status}</li>"
+            f"</ul>"
+            f"<p>Please review the transfer in your dashboard.</p>"
+        )
+
+        text_body = (
+            f"Hi,\n\n"
+            f"A stock transfer event has occurred:\n\n"
+            f"  Action: {action_label}\n"
+            f"  From: {source_name}\n"
+            f"  To: {dest_name}\n"
+            f"  Quantity: {qty}\n"
+            f"  Status: {transfer.status}\n\n"
+            f"Please review the transfer in your dashboard.\n"
+        )
+
+        for recipient in recipients:
+            if not recipient.email:
+                continue
+            try:
+                log_entry = await log_email_sent(
+                    self.db,
+                    org_id=org_id,
+                    recipient=recipient.email,
+                    template_type=f"transfer_{action}",
+                    subject=subject,
+                    status="queued",
+                )
+                await send_email_task(
+                    org_id=str(org_id),
+                    log_id=str(log_entry["id"]),
+                    to_email=recipient.email,
+                    to_name=f"{recipient.first_name or ''} {recipient.last_name or ''}".strip(),
+                    subject=subject,
+                    html_body=html_body,
+                    text_body=text_body,
+                    template_type=f"transfer_{action}",
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to send transfer %s notification to %s",
+                    action, recipient.email,
+                )
+
+    # ------------------------------------------------------------------
     # Stock Transfer Workflow
     # ------------------------------------------------------------------
 
@@ -118,6 +289,11 @@ class FranchiseService:
         )
         self.db.add(transfer)
         await self.db.flush()
+        await self._log_transfer_action(
+            transfer.id, "created", performed_by=requested_by,
+        )
+        # Req 55.1: Notify destination branch manager on create
+        await self._notify_transfer_event(transfer, "created", performed_by=requested_by)
         return transfer
 
     async def approve_transfer(
@@ -130,11 +306,17 @@ class FranchiseService:
         transfer.status = "approved"
         transfer.approved_by = approved_by
         await self.db.flush()
+        await self._log_transfer_action(
+            transfer.id, "approved", performed_by=approved_by,
+        )
+        # Req 55.2: Notify both source and destination managers on approve
+        await self._notify_transfer_event(transfer, "approved", performed_by=approved_by)
         return transfer
 
     async def execute_transfer(
         self,
         transfer: StockTransfer,
+        executed_by: uuid.UUID | None = None,
     ) -> StockTransfer:
         """Execute an approved transfer — creates stock movements at both locations.
 
@@ -147,16 +329,81 @@ class FranchiseService:
         transfer.status = "executed"
         transfer.completed_at = datetime.now(timezone.utc)
         await self.db.flush()
+        await self._log_transfer_action(
+            transfer.id, "executed", performed_by=executed_by,
+        )
+        # Req 55.2: Notify both source and destination managers on execute
+        await self._notify_transfer_event(transfer, "executed", performed_by=executed_by)
         return transfer
 
     async def reject_transfer(
         self,
         transfer: StockTransfer,
+        rejected_by: uuid.UUID | None = None,
     ) -> StockTransfer:
         if transfer.status != "pending":
             raise ValueError(f"Cannot reject transfer in '{transfer.status}' status")
         transfer.status = "rejected"
         await self.db.flush()
+        await self._log_transfer_action(
+            transfer.id, "rejected", performed_by=rejected_by,
+        )
+        return transfer
+
+    async def receive_transfer(
+        self,
+        transfer: StockTransfer,
+        received_by: uuid.UUID | None = None,
+        received_quantity: Decimal | None = None,
+    ) -> StockTransfer:
+        """Mark an executed transfer as received, with optional partial receive.
+
+        If ``received_quantity`` is provided and is less than the transfer
+        quantity, the status is set to ``partially_received`` and the
+        discrepancy is recorded.  When ``received_quantity`` is omitted or
+        equals the transfer quantity, the status is set to ``received``.
+
+        Stock movement already occurred at the execute step — this is
+        a confirmation that goods physically arrived at the destination.
+
+        **Validates: Requirements 54.1, 54.2, 54.3**
+        """
+        if transfer.status != "executed":
+            raise ValueError(f"Cannot receive transfer in '{transfer.status}' status")
+
+        transfer_qty = transfer.quantity
+
+        if received_quantity is not None:
+            if received_quantity > transfer_qty:
+                raise ValueError(
+                    "Received quantity cannot exceed the transfer quantity",
+                )
+            transfer.received_quantity = received_quantity
+            discrepancy = transfer_qty - received_quantity
+            transfer.discrepancy_quantity = discrepancy
+
+            if discrepancy > 0:
+                transfer.status = "partially_received"
+            else:
+                transfer.status = "received"
+        else:
+            # No received_quantity provided — default to full receive
+            transfer.received_quantity = transfer_qty
+            transfer.discrepancy_quantity = Decimal("0")
+            transfer.status = "received"
+
+        transfer.received_at = datetime.now(timezone.utc)
+        await self.db.flush()
+
+        notes = None
+        if received_quantity is not None and received_quantity < transfer_qty:
+            notes = (
+                f"Partial receive: {received_quantity} of {transfer_qty} "
+                f"(discrepancy: {transfer_qty - received_quantity})"
+            )
+        await self._log_transfer_action(
+            transfer.id, transfer.status, performed_by=received_by, notes=notes,
+        )
         return transfer
 
     async def get_transfer(

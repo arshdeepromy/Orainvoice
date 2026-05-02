@@ -221,6 +221,8 @@ SETTINGS_JSONB_KEYS = {
     "sidebar_display_mode",
     "invoice_template_id",
     "invoice_template_colours",
+    "portal_token_ttl_days",
+    "portal_enabled",
 }
 
 

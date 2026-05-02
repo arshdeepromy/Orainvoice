@@ -66,6 +66,10 @@ class PortalAccessResponse(BaseModel):
     invoice_count: int = Field(
         ..., description="Total number of invoices for this customer"
     )
+    total_paid: Decimal = Field(
+        default=Decimal("0"),
+        description="Sum of amount_paid across non-draft non-voided invoices",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +104,7 @@ class PortalInvoiceItem(BaseModel):
     amount_paid: Decimal
     balance_due: Decimal
     vehicle_rego: str | None = None
+    line_items_summary: str = ""
     payments: list[PortalPaymentSummary] = []
 
     model_config = {"from_attributes": True}
@@ -113,6 +118,7 @@ class PortalInvoicesResponse(BaseModel):
     total_outstanding: Decimal
     total_paid: Decimal
     org_has_stripe_connect: bool = False
+    total: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +147,8 @@ class PortalVehicleItem(BaseModel):
     model: str | None = None
     year: int | None = None
     colour: str | None = None
+    wof_expiry: date | None = None
+    rego_expiry: date | None = None
     service_history: list[PortalServiceRecord] = []
 
 
@@ -149,6 +157,7 @@ class PortalVehiclesResponse(BaseModel):
 
     branding: PortalBranding
     vehicles: list[PortalVehicleItem]
+    total: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +213,6 @@ class PortalQuoteItem(BaseModel):
     tax_amount: Decimal = Decimal("0")
     total: Decimal = Decimal("0")
     currency: str | None = None
-    acceptance_token: str | None = None
     accepted_at: datetime | None = None
     created_at: datetime
 
@@ -216,6 +224,7 @@ class PortalQuotesResponse(BaseModel):
 
     branding: PortalBranding
     quotes: list[PortalQuoteItem]
+    total: int = 0
 
 
 class PortalAcceptQuoteResponse(BaseModel):
@@ -262,6 +271,7 @@ class PortalAssetsResponse(BaseModel):
 
     branding: PortalBranding
     assets: list[PortalAssetItem]
+    total: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +298,7 @@ class PortalBookingsResponse(BaseModel):
 
     branding: PortalBranding
     bookings: list[PortalBookingItem]
+    total: int = 0
 
 
 class PortalBookingCreateRequest(BaseModel):
@@ -329,6 +340,125 @@ class PortalAvailableSlotsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Job status visibility (Req 16)
+# ---------------------------------------------------------------------------
+
+
+class PortalJobItem(BaseModel):
+    """A job card visible in the customer portal."""
+
+    id: uuid.UUID
+    status: str
+    description: str | None = None
+    assigned_staff_name: str | None = None
+    vehicle_rego: str | None = None
+    linked_invoice_number: str | None = None
+    estimated_completion: datetime | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PortalJobsResponse(BaseModel):
+    """Response from GET /portal/{token}/jobs."""
+
+    branding: PortalBranding
+    jobs: list[PortalJobItem] = []
+    total: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Claims visibility (Req 17)
+# ---------------------------------------------------------------------------
+
+
+class PortalClaimActionItem(BaseModel):
+    """A single action/event in a claim's timeline."""
+
+    action_type: str
+    from_status: str | None = None
+    to_status: str | None = None
+    notes: str | None = None
+    performed_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PortalClaimItem(BaseModel):
+    """A customer claim visible in the customer portal."""
+
+    id: uuid.UUID
+    reference: str | None = None
+    claim_type: str
+    status: str
+    description: str
+    resolution_type: str | None = None
+    resolution_notes: str | None = None
+    created_at: datetime
+    actions: list[PortalClaimActionItem] = []
+
+    model_config = {"from_attributes": True}
+
+
+class PortalClaimsResponse(BaseModel):
+    """Response from GET /portal/{token}/claims."""
+
+    branding: PortalBranding
+    claims: list[PortalClaimItem] = []
+    total: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Loyalty balance (Req 49.2, Req 38.6)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Compliance documents (Req 19)
+# ---------------------------------------------------------------------------
+
+
+class PortalDocumentItem(BaseModel):
+    """A compliance document visible in the customer portal."""
+
+    id: uuid.UUID
+    document_type: str
+    description: str | None = None
+    linked_invoice_number: str | None = None
+    download_url: str
+
+    model_config = {"from_attributes": True}
+
+
+class PortalDocumentsResponse(BaseModel):
+    """Response from GET /portal/{token}/documents."""
+
+    branding: PortalBranding
+    documents: list[PortalDocumentItem] = []
+    total: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Profile update (Req 21)
+# ---------------------------------------------------------------------------
+
+
+class PortalProfileUpdateRequest(BaseModel):
+    """Request body for PATCH /portal/{token}/profile."""
+
+    email: str | None = None
+    phone: str | None = None
+
+
+class PortalProfileUpdateResponse(BaseModel):
+    """Response from PATCH /portal/{token}/profile."""
+
+    email: str | None = None
+    phone: str | None = None
+    message: str = "Profile updated successfully"
+
+
 class PortalLoyaltyTier(BaseModel):
     """Loyalty tier info for the portal."""
 
@@ -353,8 +483,186 @@ class PortalLoyaltyResponse(BaseModel):
     """Response from GET /portal/{token}/loyalty."""
 
     branding: PortalBranding
+    programme_configured: bool = False
     total_points: int
     current_tier: PortalLoyaltyTier | None = None
     next_tier: PortalLoyaltyTier | None = None
     points_to_next_tier: int | None = None
     transactions: list[PortalLoyaltyTransaction] = []
+    total: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Recurring invoice schedules (Req 50)
+# ---------------------------------------------------------------------------
+
+
+class PortalRecurringItem(BaseModel):
+    """A recurring invoice schedule visible in the customer portal."""
+
+    id: uuid.UUID
+    frequency: str
+    next_generation_date: date
+    status: str
+    line_items: list = []
+    start_date: date
+    end_date: date | None = None
+    auto_issue: bool = False
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PortalRecurringResponse(BaseModel):
+    """Response from GET /portal/{token}/recurring."""
+
+    branding: PortalBranding
+    schedules: list[PortalRecurringItem] = []
+    total: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Progress Claims visibility (Req 51)
+# ---------------------------------------------------------------------------
+
+
+class PortalProgressClaimItem(BaseModel):
+    """A progress claim visible in the customer portal."""
+
+    id: uuid.UUID
+    project_id: uuid.UUID
+    claim_number: int
+    status: str
+    contract_value: Decimal
+    revised_contract_value: Decimal
+    work_completed_to_date: Decimal
+    work_completed_this_period: Decimal
+    materials_on_site: Decimal = Decimal("0")
+    retention_withheld: Decimal = Decimal("0")
+    amount_due: Decimal
+    completion_percentage: Decimal
+    submitted_at: datetime | None = None
+    approved_at: datetime | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PortalProgressClaimsResponse(BaseModel):
+    """Response from GET /portal/{token}/progress-claims."""
+
+    branding: PortalBranding
+    progress_claims: list[PortalProgressClaimItem] = []
+    total: int = 0
+
+
+# ---------------------------------------------------------------------------
+# DSAR — Data Subject Access Request (Req 45)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Projects visibility (Req 49)
+# ---------------------------------------------------------------------------
+
+
+class PortalProjectItem(BaseModel):
+    """A project visible in the customer portal."""
+
+    id: uuid.UUID
+    name: str
+    status: str
+    description: str | None = None
+    budget_amount: Decimal | None = None
+    contract_value: Decimal | None = None
+    start_date: date | None = None
+    target_end_date: date | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PortalProjectsResponse(BaseModel):
+    """Response from GET /portal/{token}/projects."""
+
+    branding: PortalBranding
+    projects: list[PortalProjectItem] = []
+    total: int = 0
+
+
+class PortalRecoverRequest(BaseModel):
+    """Request body for POST /portal/recover."""
+
+    email: str = Field(
+        ...,
+        description="Email address to look up portal-enabled customers",
+    )
+
+
+class PortalRecoverResponse(BaseModel):
+    """Response from POST /portal/recover — always generic to prevent enumeration."""
+
+    message: str = "If an account exists with that email, a portal link has been sent."
+
+
+class PortalDSARRequest(BaseModel):
+    """Request body for POST /portal/{token}/dsar."""
+
+    request_type: str = Field(
+        ...,
+        description="Type of DSAR: 'export' for data export, 'deletion' for account deletion",
+    )
+
+
+class PortalDSARResponse(BaseModel):
+    """Response from POST /portal/{token}/dsar."""
+
+    request_type: str
+    message: str = "Your request has been submitted and will be reviewed by the organisation."
+
+
+# ---------------------------------------------------------------------------
+# Portal Analytics (Req 47)
+# ---------------------------------------------------------------------------
+
+
+class PortalAnalyticsDayItem(BaseModel):
+    """Analytics counters for a single day."""
+
+    date: str
+    view: int = 0
+    quote_accepted: int = 0
+    booking_created: int = 0
+    payment_initiated: int = 0
+
+
+class PortalAnalyticsResponse(BaseModel):
+    """Response from GET /api/v2/org/portal-analytics."""
+
+    days: list[PortalAnalyticsDayItem] = []
+    totals: PortalAnalyticsDayItem = PortalAnalyticsDayItem(date="total")
+
+
+# ---------------------------------------------------------------------------
+# SMS conversation history (Req 63)
+# ---------------------------------------------------------------------------
+
+
+class PortalMessageItem(BaseModel):
+    """A single SMS message in the portal conversation history."""
+
+    id: uuid.UUID
+    direction: str  # "inbound" or "outbound"
+    body: str
+    created_at: datetime
+    status: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class PortalMessagesResponse(BaseModel):
+    """Response from GET /portal/{token}/messages."""
+
+    branding: PortalBranding
+    messages: list[PortalMessageItem] = []
+    total: int = 0

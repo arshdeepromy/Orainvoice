@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/Button'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
 import { PaymentPage } from './PaymentPage'
+import { usePortalLocale } from './PortalLocaleContext'
+import { formatCurrency, formatDate } from './portalFormatters'
 
 export interface PortalInvoice {
   id: string
@@ -38,9 +40,12 @@ const STATUS_CONFIG: Record<string, { label: string; variant: 'success' | 'warni
   issued: { label: 'Issued', variant: 'info' },
   overdue: { label: 'Overdue', variant: 'error' },
   voided: { label: 'Voided', variant: 'neutral' },
+  refunded: { label: 'Refunded', variant: 'info' },
+  partially_refunded: { label: 'Partially Refunded', variant: 'info' },
 }
 
 export function InvoiceHistory({ token, primaryColor }: InvoiceHistoryProps) {
+  const locale = usePortalLocale()
   const [invoices, setInvoices] = useState<PortalInvoice[]>([])
   const [orgHasStripeConnect, setOrgHasStripeConnect] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -123,22 +128,34 @@ export function InvoiceHistory({ token, primaryColor }: InvoiceHistoryProps) {
                   {inv.line_items_summary}
                 </p>
                 <p className="mt-1 text-xs text-gray-400">
-                  Issued {formatDate(inv.issue_date)}
-                  {inv.due_date && ` · Due ${formatDate(inv.due_date)}`}
+                  Issued {formatDate(inv.issue_date, locale)}
+                  {inv.due_date && ` · Due ${formatDate(inv.due_date, locale)}`}
                 </p>
               </div>
 
               <div className="flex items-center gap-3">
                 <div className="text-right">
                   <p className="text-sm font-semibold text-gray-900 tabular-nums">
-                    {formatNZD(inv.total)}
+                    {formatCurrency(inv.total, locale)}
                   </p>
                   {canPay && (
                     <p className="text-xs text-amber-600 tabular-nums">
-                      {formatNZD(inv.balance_due)} due
+                      {formatCurrency(inv.balance_due, locale)} due
                     </p>
                   )}
                 </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    window.open(
+                      `/api/v1/portal/${token}/invoices/${inv.id}/pdf`,
+                      '_blank',
+                    )
+                  }}
+                >
+                  Download PDF
+                </Button>
                 {canPay && (
                   <Button
                     size="sm"
@@ -156,16 +173,4 @@ export function InvoiceHistory({ token, primaryColor }: InvoiceHistoryProps) {
       })}
     </div>
   )
-}
-
-function formatNZD(amount: number): string {
-  return new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(amount)
-}
-
-function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-NZ', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  })
 }

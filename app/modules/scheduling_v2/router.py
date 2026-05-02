@@ -27,6 +27,9 @@ from app.modules.scheduling_v2.schemas import (
     ScheduleEntryListResponse,
     ScheduleEntryResponse,
     ScheduleEntryUpdate,
+    ShiftTemplateCreate,
+    ShiftTemplateListResponse,
+    ShiftTemplateResponse,
 )
 from app.modules.scheduling_v2.service import SchedulingService
 
@@ -68,6 +71,20 @@ async def create_entry(
 ):
     org_id = _get_org_id(request)
     svc = SchedulingService(db)
+
+    # Handle recurring entries
+    recurrence = getattr(payload, "recurrence", "none")
+    if recurrence and recurrence != "none":
+        try:
+            entries = await svc.create_recurring_entry(org_id, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        # Return the first entry as the response
+        first = entries[0] if entries else None
+        if first is None:
+            raise HTTPException(status_code=422, detail="No entries created")
+        return ScheduleEntryResponse.model_validate(first)
+
     try:
         entry = await svc.create_entry(org_id, payload)
     except ValueError as exc:
@@ -175,3 +192,59 @@ async def check_conflicts(
             for c in conflicts
         ],
     )
+
+
+# ------------------------------------------------------------------
+# Shift Templates (Req 57)
+# ------------------------------------------------------------------
+
+
+@router.get("/templates", response_model=ShiftTemplateListResponse, summary="List shift templates")
+async def list_templates(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    svc = SchedulingService(db)
+    templates, total = await svc.list_templates(org_id)
+    return ShiftTemplateListResponse(
+        templates=[ShiftTemplateResponse.model_validate(t) for t in templates],
+        total=total,
+    )
+
+
+@router.post(
+    "/templates",
+    response_model=ShiftTemplateResponse,
+    status_code=201,
+    summary="Create shift template",
+)
+async def create_template(
+    payload: ShiftTemplateCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    svc = SchedulingService(db)
+    try:
+        template = await svc.create_template(org_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return ShiftTemplateResponse.model_validate(template)
+
+
+@router.delete(
+    "/templates/{template_id}",
+    status_code=204,
+    summary="Delete shift template",
+)
+async def delete_template(
+    template_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    svc = SchedulingService(db)
+    deleted = await svc.delete_template(org_id, template_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Template not found")

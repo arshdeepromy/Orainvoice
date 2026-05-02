@@ -11,6 +11,8 @@ export interface Quote {
   valid_until: string
   created_at: string
   line_items: QuoteLineItem[]
+  customer_portal_token?: string | null
+  customer_enable_portal?: boolean
 }
 
 export interface QuoteLineItem {

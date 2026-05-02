@@ -52,6 +52,7 @@ from app.modules.customers.service import (
     merge_customers,
     notify_customer,
     search_customers,
+    send_portal_link,
     tag_vehicle_to_customer,
     update_customer,
     update_customer_reminder_config,
@@ -939,6 +940,73 @@ async def notify_customer_endpoint(
         )
 
     return CustomerNotifyResponse(**result)
+
+
+# ---------------------------------------------------------------------------
+# Task 5.2 — Send portal link to customer
+# Requirements: 13.1, 13.2, 13.3, 13.4
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{customer_id}/send-portal-link",
+    responses={
+        200: {"description": "Portal link sent successfully"},
+        400: {"description": "Validation error (no email, portal not enabled)"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        404: {"description": "Customer not found"},
+    },
+    summary="Send portal access link to customer via email",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def send_portal_link_endpoint(
+    customer_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Send the customer portal access link to the customer's email.
+
+    Validates that the customer has portal access enabled, a valid portal
+    token, and an email address on file before sending.
+
+    Requirements: 13.1, 13.2, 13.3, 13.4
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        cust_uuid = uuid.UUID(customer_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid customer ID format"},
+        )
+
+    try:
+        result = await send_portal_link(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid or uuid.uuid4(),
+            customer_id=cust_uuid,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        error_msg = str(exc)
+        status = 404 if "not found" in error_msg.lower() else 400
+        return JSONResponse(
+            status_code=status,
+            content={"detail": error_msg},
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=result,
+    )
 
 
 @router.post(

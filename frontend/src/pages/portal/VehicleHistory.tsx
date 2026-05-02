@@ -3,17 +3,18 @@ import apiClient from '@/api/client'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
+import { usePortalLocale } from './PortalLocaleContext'
+import { formatCurrency, formatDate } from './portalFormatters'
 
 export interface PortalVehicle {
-  id: string
   rego: string
-  make: string
-  model: string
+  make: string | null
+  model: string | null
   year: number | null
   colour: string | null
   wof_expiry: string | null
   rego_expiry: string | null
-  services: VehicleService[]
+  service_history: VehicleService[]
 }
 
 interface VehicleService {
@@ -23,11 +24,17 @@ interface VehicleService {
   total: number
 }
 
+interface PortalVehiclesResponse {
+  branding: unknown
+  vehicles: PortalVehicle[]
+}
+
 interface VehicleHistoryProps {
   token: string
 }
 
 export function VehicleHistory({ token }: VehicleHistoryProps) {
+  const locale = usePortalLocale()
   const [vehicles, setVehicles] = useState<PortalVehicle[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -36,8 +43,8 @@ export function VehicleHistory({ token }: VehicleHistoryProps) {
     setLoading(true)
     setError('')
     try {
-      const res = await apiClient.get<PortalVehicle[]>(`/portal/${token}/vehicles`)
-      setVehicles(res.data)
+      const res = await apiClient.get<PortalVehiclesResponse>(`/portal/${token}/vehicles`)
+      setVehicles(res.data?.vehicles ?? [])
     } catch {
       setError('Failed to load vehicle history.')
     } finally {
@@ -72,18 +79,20 @@ export function VehicleHistory({ token }: VehicleHistoryProps) {
   return (
     <div className="space-y-4">
       {vehicles.map((vehicle) => (
-        <VehicleCard key={vehicle.id} vehicle={vehicle} />
+        <VehicleCard key={vehicle.rego} vehicle={vehicle} locale={locale} />
       ))}
     </div>
   )
 }
 
-function VehicleCard({ vehicle }: { vehicle: PortalVehicle }) {
+function VehicleCard({ vehicle, locale }: { vehicle: PortalVehicle; locale: string }) {
   const [expanded, setExpanded] = useState(false)
 
   const vehicleTitle = [vehicle.year, vehicle.make, vehicle.model]
     .filter(Boolean)
     .join(' ')
+
+  const serviceHistory = vehicle.service_history ?? []
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white">
@@ -92,7 +101,7 @@ function VehicleCard({ vehicle }: { vehicle: PortalVehicle }) {
         onClick={() => setExpanded(!expanded)}
         className="flex w-full items-center justify-between p-4 text-left hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset rounded-lg"
         aria-expanded={expanded}
-        aria-controls={`vehicle-${vehicle.id}-services`}
+        aria-controls={`vehicle-${vehicle.rego}-services`}
       >
         <div>
           <div className="flex items-center gap-2">
@@ -109,11 +118,11 @@ function VehicleCard({ vehicle }: { vehicle: PortalVehicle }) {
         <div className="flex items-center gap-3">
           {/* Expiry badges */}
           <div className="hidden sm:flex sm:gap-2">
-            {vehicle.wof_expiry && (
-              <ExpiryBadge label="WOF" date={vehicle.wof_expiry} />
+            {vehicle.wof_expiry != null && (
+              <ExpiryBadge label="WOF" date={vehicle.wof_expiry} locale={locale} />
             )}
-            {vehicle.rego_expiry && (
-              <ExpiryBadge label="Rego" date={vehicle.rego_expiry} />
+            {vehicle.rego_expiry != null && (
+              <ExpiryBadge label="Rego" date={vehicle.rego_expiry} locale={locale} />
             )}
           </div>
 
@@ -124,20 +133,20 @@ function VehicleCard({ vehicle }: { vehicle: PortalVehicle }) {
       </button>
 
       {/* Mobile expiry badges */}
-      {(vehicle.wof_expiry || vehicle.rego_expiry) && (
+      {(vehicle.wof_expiry != null || vehicle.rego_expiry != null) && (
         <div className="flex gap-2 px-4 pb-2 sm:hidden">
-          {vehicle.wof_expiry && <ExpiryBadge label="WOF" date={vehicle.wof_expiry} />}
-          {vehicle.rego_expiry && <ExpiryBadge label="Rego" date={vehicle.rego_expiry} />}
+          {vehicle.wof_expiry != null && <ExpiryBadge label="WOF" date={vehicle.wof_expiry} locale={locale} />}
+          {vehicle.rego_expiry != null && <ExpiryBadge label="Rego" date={vehicle.rego_expiry} locale={locale} />}
         </div>
       )}
 
       {/* Service history */}
       {expanded && (
         <div
-          id={`vehicle-${vehicle.id}-services`}
+          id={`vehicle-${vehicle.rego}-services`}
           className="border-t border-gray-100 px-4 py-3"
         >
-          {vehicle.services.length === 0 ? (
+          {serviceHistory.length === 0 ? (
             <p className="text-sm text-gray-500">No service history.</p>
           ) : (
             <table className="w-full text-sm" role="table">
@@ -151,12 +160,12 @@ function VehicleCard({ vehicle }: { vehicle: PortalVehicle }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {vehicle.services.map((svc, idx) => (
+                {serviceHistory.map((svc, idx) => (
                   <tr key={idx}>
-                    <td className="py-2 text-gray-600">{formatDate(svc.date)}</td>
+                    <td className="py-2 text-gray-600">{formatDate(svc.date, locale)}</td>
                     <td className="py-2 font-mono text-gray-700">{svc.invoice_number}</td>
                     <td className="py-2 text-gray-600 truncate max-w-[200px]">{svc.description}</td>
-                    <td className="py-2 text-right tabular-nums text-gray-900">{formatNZD(svc.total)}</td>
+                    <td className="py-2 text-right tabular-nums text-gray-900">{formatCurrency(svc.total ?? 0, locale)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -168,7 +177,7 @@ function VehicleCard({ vehicle }: { vehicle: PortalVehicle }) {
   )
 }
 
-function ExpiryBadge({ label, date }: { label: string; date: string }) {
+function ExpiryBadge({ label, date, locale }: { label: string; date: string; locale: string }) {
   const daysUntil = Math.ceil(
     (new Date(date).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
   )
@@ -179,19 +188,7 @@ function ExpiryBadge({ label, date }: { label: string; date: string }) {
 
   return (
     <Badge variant={variant}>
-      {label}: {formatDate(date)}
+      {label}: {formatDate(date, locale)}
     </Badge>
   )
-}
-
-function formatNZD(amount: number): string {
-  return new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(amount)
-}
-
-function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-NZ', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  })
 }

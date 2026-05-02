@@ -6,8 +6,9 @@ Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 12.1, 12.2, 12.3, 13.1, 13.2, 
 from __future__ import annotations
 
 import logging
+import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import or_, select, func, text
@@ -45,6 +46,10 @@ def _customer_to_dict(customer: Customer) -> dict:
         # Options
         "enable_bank_payment": customer.enable_bank_payment or False,
         "enable_portal": customer.enable_portal or False,
+        # Portal
+        "portal_token": str(customer.portal_token) if customer.portal_token else None,
+        "portal_token_expires_at": customer.portal_token_expires_at.isoformat() if customer.portal_token_expires_at else None,
+        "last_portal_access_at": customer.last_portal_access_at.isoformat() if customer.last_portal_access_at else None,
         # Addresses
         "address": customer.address,
         "billing_address": customer.billing_address or {},
@@ -85,6 +90,11 @@ def _customer_to_search_dict(customer: Customer) -> dict:
         "mobile_phone": customer.mobile_phone,
         "work_phone": customer.work_phone,
         "reminders_enabled": reminders_on,
+        "last_portal_access_at": (
+            customer.last_portal_access_at.isoformat()
+            if customer.last_portal_access_at
+            else None
+        ),
     }
 
 
@@ -438,6 +448,35 @@ async def update_customer(
 
     if not updated_fields:
         return _customer_to_dict(customer)
+
+    # --- Portal token lifecycle (Req 12.1, 12.2, 12.3) ---
+    # When enable_portal transitions to True and portal_token is NULL,
+    # auto-generate a token with org-configured TTL.
+    # When enable_portal transitions to False, revoke the token.
+    if "enable_portal" in updated_fields:
+        if customer.enable_portal and customer.portal_token is None:
+            from app.modules.admin.models import Organisation
+
+            org_result = await db.execute(
+                select(Organisation).where(Organisation.id == org_id)
+            )
+            org = org_result.scalar_one_or_none()
+            ttl_days = 90
+            if org and org.settings:
+                ttl_days = org.settings.get("portal_token_ttl_days", 90)
+
+            customer.portal_token = secrets.token_urlsafe(32)
+            customer.portal_token_expires_at = datetime.now(timezone.utc) + timedelta(days=ttl_days)
+
+            before_value["portal_token"] = None
+            before_value["portal_token_expires_at"] = None
+        elif not customer.enable_portal:
+            before_value["portal_token"] = str(customer.portal_token) if customer.portal_token else None
+            before_value["portal_token_expires_at"] = (
+                customer.portal_token_expires_at.isoformat() if customer.portal_token_expires_at else None
+            )
+            customer.portal_token = None
+            customer.portal_token_expires_at = None
 
     await db.flush()
     await db.refresh(customer)
@@ -1911,3 +1950,121 @@ async def update_vehicle_expiry_dates(
         })
 
     return updated
+
+
+# ---------------------------------------------------------------------------
+# Task 5.2 — Send portal link to customer via email
+# Requirements: 13.1, 13.2, 13.3, 13.4
+# ---------------------------------------------------------------------------
+
+
+async def send_portal_link(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Send the customer portal link to the customer's email address.
+
+    Validates that the customer has portal access enabled, a valid portal
+    token, and an email address on file. Sends the portal URL via the
+    platform email infrastructure.
+
+    Requirements: 13.1, 13.2, 13.3, 13.4
+    """
+    from app.config import settings
+    from app.modules.admin.models import Organisation
+    from app.modules.notifications.service import log_email_sent
+    from app.tasks.notifications import send_email_task
+
+    # Fetch customer
+    result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.org_id == org_id,
+        )
+    )
+    customer = result.scalar_one_or_none()
+    if customer is None:
+        raise ValueError("Customer not found")
+
+    # Validate portal access is enabled (Req 13.4)
+    if not customer.enable_portal:
+        raise ValueError("Portal access is not enabled for this customer")
+
+    if customer.portal_token is None:
+        raise ValueError("Customer does not have a portal token. Enable portal access first.")
+
+    # Validate customer has an email address (Req 13.3)
+    if not customer.email:
+        raise ValueError("Customer has no email address on file")
+
+    # Fetch org for branding
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    org_name = org.name if org else "Workshop"
+
+    # Build portal URL
+    portal_url = f"{settings.frontend_base_url}/portal/{customer.portal_token}"
+
+    customer_name = f"{customer.first_name or ''} {customer.last_name or ''}".strip()
+    email_subject = f"Your Portal Access Link — {org_name}"
+
+    html_body = f"""<p>Hi {customer_name or 'there'},</p>
+<p>You can access your customer portal using the link below:</p>
+<p><a href="{portal_url}" style="display:inline-block;padding:12px 24px;background-color:#2563eb;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;">Open Your Portal</a></p>
+<p>Or copy this link: <a href="{portal_url}">{portal_url}</a></p>
+<p>From your portal you can view invoices, quotes, bookings, and more.</p>
+<p>Kind regards,<br/>{org_name}</p>"""
+
+    text_body = (
+        f"Hi {customer_name or 'there'},\n\n"
+        f"You can access your customer portal using this link:\n"
+        f"{portal_url}\n\n"
+        f"From your portal you can view invoices, quotes, bookings, and more.\n\n"
+        f"Kind regards,\n{org_name}"
+    )
+
+    # Log the email and dispatch via the async email task
+    log_entry = await log_email_sent(
+        db,
+        org_id=org_id,
+        recipient=customer.email,
+        template_type="portal_link",
+        subject=email_subject,
+        status="queued",
+    )
+
+    await send_email_task(
+        org_id=str(org_id),
+        log_id=str(log_entry["id"]),
+        to_email=customer.email,
+        to_name=customer_name,
+        subject=email_subject,
+        html_body=html_body,
+        text_body=text_body,
+        org_sender_name=org_name,
+        template_type="portal_link",
+    )
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="customer.portal_link_sent",
+        entity_type="customer",
+        entity_id=customer_id,
+        before_value=None,
+        after_value={"channel": "email", "has_email": True},
+        ip_address=ip_address,
+    )
+
+    return {
+        "message": "Portal link sent successfully",
+        "recipient": customer.email,
+    }

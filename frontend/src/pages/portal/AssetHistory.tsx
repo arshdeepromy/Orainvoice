@@ -3,6 +3,8 @@ import apiClient from '@/api/client'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
+import { usePortalLocale } from './PortalLocaleContext'
+import { formatDate } from './portalFormatters'
 
 export interface PortalAsset {
   id: string
@@ -28,6 +30,7 @@ interface AssetHistoryProps {
 }
 
 export function AssetHistory({ token }: AssetHistoryProps) {
+  const locale = usePortalLocale()
   const [assets, setAssets] = useState<PortalAsset[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -87,7 +90,7 @@ export function AssetHistory({ token }: AssetHistoryProps) {
                     <div className="flex items-center gap-2">
                       {entry.status && <Badge variant="neutral">{entry.status}</Badge>}
                       {entry.date && (
-                        <span className="text-xs text-gray-400">{formatDate(entry.date)}</span>
+                        <span className="text-xs text-gray-400">{formatDate(entry.date, locale)}</span>
                       )}
                     </div>
                   </div>
@@ -99,10 +102,4 @@ export function AssetHistory({ token }: AssetHistoryProps) {
       ))}
     </div>
   )
-}
-
-function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-NZ', {
-    day: 'numeric', month: 'short', year: 'numeric',
-  })
 }

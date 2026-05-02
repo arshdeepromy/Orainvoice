@@ -110,6 +110,9 @@ const JobsPage = lazy(() => import('@/pages/jobs/JobsPage'))
 
 /* Portal pages (public, token-based) */
 const PortalPage = lazy(() => import('@/pages/portal/PortalPage').then(m => ({ default: m.PortalPage })))
+const PaymentSuccess = lazy(() => import('@/pages/portal/PaymentSuccess').then(m => ({ default: m.PaymentSuccess })))
+const PortalSignedOut = lazy(() => import('@/pages/portal/PortalSignedOut').then(m => ({ default: m.PortalSignedOut })))
+const PortalRecover = lazy(() => import('@/pages/portal/PortalRecover').then(m => ({ default: m.PortalRecover })))
 
 /* Invoice payment page (public, token-based — lazy to keep Stripe bundles out of main chunk) */
 const InvoicePaymentPage = lazy(() => import('@/pages/public/InvoicePaymentPage'))
@@ -133,6 +136,9 @@ const StaffDetail = lazy(() => import('@/pages/staff/StaffDetail'))
 
 /* Franchise location detail */
 const LocationDetail = lazy(() => import('@/pages/franchise/LocationDetail'))
+
+/* Franchise transfer detail */
+const TransferDetail = lazy(() => import('@/pages/franchise/TransferDetail'))
 
 /* Kiosk (standalone, outside OrgLayout) */
 const KioskPage = lazy(() => import('@/pages/kiosk/KioskPage'))
@@ -278,6 +284,11 @@ function StaffDetailRoute() {
 function LocationDetailRoute() {
   const { id } = useParams<{ id: string }>()
   return <LocationDetail locationId={id!} />
+}
+
+function TransferDetailRoute() {
+  const { id } = useParams<{ id: string }>()
+  return <TransferDetail transferId={id!} />
 }
 
 function AppRoutes() {
@@ -448,6 +459,7 @@ function AppRoutes() {
           <Route path="/franchise" element={<SafePage name="franchise"><ModuleRoute moduleSlug="franchise"><FranchiseDashboard /></ModuleRoute></SafePage>} />
           <Route path="/locations" element={<SafePage name="locations"><ModuleRoute moduleSlug="franchise"><LocationList /></ModuleRoute></SafePage>} />
           <Route path="/stock-transfers" element={<SafePage name="stock-transfers"><ModuleRoute moduleSlug="franchise"><StockTransfers /></ModuleRoute></SafePage>} />
+          <Route path="/stock-transfers/:id" element={<SafePage name="transfer-detail"><ModuleRoute moduleSlug="franchise"><TransferDetailRoute /></ModuleRoute></SafePage>} />
 
           {/* Branch Stock Transfers */}
           <Route path="/branch-transfers" element={<SafePage name="branch-transfers"><ModuleRoute moduleSlug="branch_management"><BranchStockTransfers /></ModuleRoute></SafePage>} />
@@ -514,6 +526,9 @@ function AppRoutes() {
       </Route>
 
       {/* Customer portal (public, token-based access) */}
+      <Route path="/portal/signed-out" element={<SafePage name="portal-signed-out"><PortalSignedOut /></SafePage>} />
+      <Route path="/portal/recover" element={<SafePage name="portal-recover"><PortalRecover /></SafePage>} />
+      <Route path="/portal/:token/payment-success" element={<SafePage name="payment-success"><PaymentSuccess /></SafePage>} />
       <Route path="/portal/:token" element={<SafePage name="portal"><PortalPage /></SafePage>} />
 
       {/* Invoice payment page (public, token-based access — Stripe Elements) */}

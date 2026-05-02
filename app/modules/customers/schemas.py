@@ -278,6 +278,10 @@ class CustomerResponse(BaseModel):
     enable_bank_payment: bool = Field(False, description="Bank payment enabled")
     enable_portal: bool = Field(False, description="Portal access enabled")
     
+    # Portal
+    portal_token: Optional[str] = Field(None, description="Portal access token")
+    portal_token_expires_at: Optional[str] = Field(None, description="Portal token expiry ISO 8601")
+    
     # Addresses
     address: Optional[str] = Field(None, description="Simple address")
     billing_address: Optional[dict] = Field(None, description="Billing address")
@@ -329,6 +333,7 @@ class CustomerSearchResult(BaseModel):
     receivables: float = Field(0.0, description="Total outstanding balance due (BCY)")
     unused_credits: float = Field(0.0, description="Total unused credit notes (BCY)")
     reminders_enabled: bool = Field(False, description="Whether any reminder is enabled for this customer")
+    last_portal_access_at: Optional[str] = Field(None, description="Last portal access timestamp (ISO 8601)")
     linked_vehicles: Optional[list[LinkedVehicleSummary]] = Field(
         None, description="Linked vehicles (when include_vehicles=true)"
     )

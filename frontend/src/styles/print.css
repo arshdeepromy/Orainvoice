@@ -197,3 +197,46 @@
     print-color-adjust: exact;
   }
 }
+
+
+/* ------------------------------------------------------------------ */
+/*  Schedule Calendar — print-specific styles (Req 59.1)               */
+/* ------------------------------------------------------------------ */
+
+@media print {
+  /* Show the schedule grid at full width */
+  .schedule-print-area {
+    display: block !important;
+    width: 100% !important;
+    overflow: visible !important;
+  }
+
+  .schedule-print-area table {
+    width: 100% !important;
+    font-size: 10pt;
+  }
+
+  /* Preserve entry type colours in print */
+  .schedule-print-area .bg-blue-100,
+  .schedule-print-area .bg-emerald-100,
+  .schedule-print-area .bg-amber-100,
+  .schedule-print-area .bg-purple-100,
+  .schedule-print-area .bg-gray-200 {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Hide interactive elements in schedule */
+  .schedule-print-area button,
+  .schedule-print-area [role="button"] {
+    cursor: default !important;
+  }
+
+  /* Ensure the schedule title is visible */
+  .schedule-print-title {
+    display: block !important;
+    font-size: 14pt;
+    font-weight: bold;
+    margin-bottom: 8pt;
+  }
+}

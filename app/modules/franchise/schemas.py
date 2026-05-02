@@ -65,6 +65,8 @@ class StockTransferResponse(BaseModel):
     to_location_id: UUID
     product_id: UUID
     quantity: Decimal
+    received_quantity: Decimal | None = None
+    discrepancy_quantity: Decimal | None = None
     status: str
     requested_by: UUID | None = None
     approved_by: UUID | None = None
@@ -72,6 +74,16 @@ class StockTransferResponse(BaseModel):
     completed_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class ReceiveTransferRequest(BaseModel):
+    """Optional body for the receive endpoint — supports partial receives."""
+
+    received_quantity: Decimal | None = Field(
+        None,
+        gt=0,
+        description="Quantity actually received. Defaults to the full transfer quantity if omitted.",
+    )
 
 
 # --- Franchise Group ---
@@ -112,3 +124,18 @@ class FranchiseDashboardMetrics(BaseModel):
     total_revenue: Decimal = Decimal("0")
     total_outstanding: Decimal = Decimal("0")
     total_locations: int = 0
+
+
+# --- Transfer Audit Trail ---
+
+class TransferActionResponse(BaseModel):
+    """A single audit trail entry for a stock transfer."""
+
+    id: UUID
+    transfer_id: UUID
+    action: str
+    performed_by: UUID | None = None
+    notes: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

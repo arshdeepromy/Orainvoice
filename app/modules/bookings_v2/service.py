@@ -74,6 +74,7 @@ class BookingService:
         self,
         org_id: uuid.UUID,
         payload: BookingCreate,
+        customer_id: uuid.UUID | None = None,
     ) -> Booking:
         """Create a booking, validating against booking rules."""
         if payload.end_time <= payload.start_time:
@@ -86,6 +87,7 @@ class BookingService:
 
         booking = Booking(
             org_id=org_id,
+            customer_id=customer_id,
             customer_name=payload.customer_name,
             customer_email=payload.customer_email,
             customer_phone=payload.customer_phone,

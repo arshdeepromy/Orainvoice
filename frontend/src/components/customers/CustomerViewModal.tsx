@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import apiClient from '../../api/client'
 import { Button, Modal, Spinner } from '../ui'
 
@@ -26,6 +26,145 @@ function formatAddress(addr: Record<string, string> | null | undefined): string 
   if (!addr) return '—'
   const parts = [addr.street, addr.city, addr.state, addr.postal_code, addr.country].filter(Boolean)
   return parts.length > 0 ? parts.join(', ') : '—'
+}
+
+function PortalAccessSection({
+  enablePortal,
+  portalToken,
+  customerId,
+  lastPortalAccessAt,
+}: {
+  enablePortal: boolean | undefined
+  portalToken: string | undefined
+  customerId: string | undefined
+  lastPortalAccessAt: string | null | undefined
+}) {
+  const [copyFeedback, setCopyFeedback] = useState(false)
+  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
+  const [sendError, setSendError] = useState('')
+
+  const isEnabled = !!enablePortal && !!portalToken
+  const portalUrl = isEnabled ? `${window.location.origin}/portal/${portalToken}` : null
+
+  const handleCopy = useCallback(async () => {
+    if (!portalUrl) return
+    try {
+      await navigator.clipboard.writeText(portalUrl)
+      setCopyFeedback(true)
+      setTimeout(() => setCopyFeedback(false), 2000)
+    } catch {
+      // Fallback for older browsers
+      const textarea = document.createElement('textarea')
+      textarea.value = portalUrl
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+      setCopyFeedback(true)
+      setTimeout(() => setCopyFeedback(false), 2000)
+    }
+  }, [portalUrl])
+
+  const handleSendLink = useCallback(async () => {
+    if (!customerId) return
+    setSendStatus('sending')
+    setSendError('')
+    try {
+      await apiClient.post(`/api/v2/customers/${customerId}/send-portal-link`)
+      setSendStatus('sent')
+      setTimeout(() => setSendStatus('idle'), 3000)
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+        'Failed to send portal link'
+      setSendError(detail)
+      setSendStatus('error')
+      setTimeout(() => setSendStatus('idle'), 4000)
+    }
+  }, [customerId])
+
+  if (!isEnabled) {
+    return (
+      <div className="mt-3">
+        <span className="text-xs text-gray-500 block">Portal Access</span>
+        <span className="text-sm text-gray-900">Disabled</span>
+        {lastPortalAccessAt && (
+          <div className="mt-1">
+            <span className="text-xs text-gray-500">Last Seen: </span>
+            <span className="text-xs text-gray-700">{new Date(lastPortalAccessAt).toLocaleString()}</span>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-3">
+      <span className="text-xs text-gray-500 block mb-1">Portal Access</span>
+      <div className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+        <span className="inline-block h-2 w-2 rounded-full bg-green-500 flex-shrink-0" />
+        <span className="text-sm text-gray-700 truncate flex-1 min-w-0" title={portalUrl ?? ''}>
+          {portalUrl}
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 transition-colors flex-shrink-0"
+        >
+          {copyFeedback ? (
+            <>
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+              Copied
+            </>
+          ) : (
+            <>
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              Copy Link
+            </>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={handleSendLink}
+          disabled={sendStatus === 'sending' || sendStatus === 'sent'}
+          className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+        >
+          {sendStatus === 'sending' ? (
+            'Sending…'
+          ) : sendStatus === 'sent' ? (
+            <>
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+              Sent
+            </>
+          ) : (
+            <>
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+              Send Link
+            </>
+          )}
+        </button>
+      </div>
+      {sendStatus === 'error' && sendError && (
+        <p className="text-xs text-red-600 mt-1">{sendError}</p>
+      )}
+      {lastPortalAccessAt && (
+        <div className="mt-1">
+          <span className="text-xs text-gray-500">Last Seen: </span>
+          <span className="text-xs text-gray-700">{new Date(lastPortalAccessAt).toLocaleString()}</span>
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function CustomerViewModal({ open, customerId, onClose }: CustomerViewModalProps) {
@@ -90,8 +229,14 @@ export function CustomerViewModal({ open, customerId, onClose }: CustomerViewMod
               <Field label="Payment Terms" value={PAYMENT_TERMS_LABELS[d.payment_terms as string] || d.payment_terms as string} />
               <Field label="Company ID" value={d.company_id as string} />
               <Field label="Bank Payment" value={(d.enable_bank_payment as boolean) ? 'Enabled' : 'Disabled'} />
-              <Field label="Portal Access" value={(d.enable_portal as boolean) ? 'Enabled' : 'Disabled'} />
             </div>
+            {/* Portal Access Section */}
+            <PortalAccessSection
+              enablePortal={d.enable_portal as boolean | undefined}
+              portalToken={d.portal_token as string | undefined}
+              customerId={d.id as string | undefined}
+              lastPortalAccessAt={d.last_portal_access_at as string | null | undefined}
+            />
           </div>
 
           {/* Addresses */}

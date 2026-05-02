@@ -16,6 +16,7 @@ import StatusBadge from '@/components/konsta/StatusBadge'
 import HapticButton from '@/components/konsta/HapticButton'
 import { ModuleGate } from '@/components/common/ModuleGate'
 import { PullRefresh } from '@/components/gestures/PullRefresh'
+import { buildPortalUrl, canSharePortalLink } from '@/utils/portalLink'
 import apiClient from '@/api/client'
 
 /* ------------------------------------------------------------------ */
@@ -393,32 +394,35 @@ export default function QuoteDetailScreen() {
                   >
                     Duplicate
                   </Button>
-                  <Button
-                    outline
-                    large
-                    onClick={async () => {
-                      const portalUrl = `${window.location.origin}/portal/quotes/${id}`
-                      try {
-                        const { Share } = await import('@capacitor/share')
-                        await Share.share({
-                          title: `Quote ${quote.quote_number ?? ''}`,
-                          text: `View quote ${quote.quote_number ?? ''} from ${quote.customer_name ?? 'us'}`,
-                          url: portalUrl,
-                        })
-                      } catch {
+                  {canSharePortalLink(quote.customer_portal_token, quote.customer_enable_portal) && (
+                    <Button
+                      outline
+                      large
+                      onClick={async () => {
+                        const portalUrl = buildPortalUrl(window.location.origin, quote.customer_portal_token)
+                        if (!portalUrl) return
                         try {
-                          await navigator.clipboard.writeText(portalUrl)
-                          setToast({ message: 'Link copied', variant: 'success' })
+                          const { Share } = await import('@capacitor/share')
+                          await Share.share({
+                            title: `Quote ${quote.quote_number ?? ''}`,
+                            text: `View quote ${quote.quote_number ?? ''} from ${quote.customer_name ?? 'us'}`,
+                            url: portalUrl,
+                          })
                         } catch {
-                          // Ignore clipboard errors
+                          try {
+                            await navigator.clipboard.writeText(portalUrl)
+                            setToast({ message: 'Link copied', variant: 'success' })
+                          } catch {
+                            // Ignore clipboard errors
+                          }
                         }
-                      }
-                      setShowActions(false)
-                    }}
-                    className="w-full"
-                  >
-                    Share Portal Link
-                  </Button>
+                        setShowActions(false)
+                      }}
+                      className="w-full"
+                    >
+                      Share Portal Link
+                    </Button>
+                  )}
                 </div>
               </Block>
             )}

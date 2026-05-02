@@ -35,6 +35,18 @@ const apiClient = axios.create({
   withCredentials: true, // send httpOnly refresh cookie
 })
 
+/**
+ * Read the portal_csrf cookie value set by the backend on portal
+ * session creation.  The cookie is non-HttpOnly so JavaScript can
+ * read it for the double-submit CSRF pattern (Req 41.1, 41.2).
+ */
+function getPortalCsrfCookie(): string | null {
+  const match = document.cookie
+    .split('; ')
+    .find((row) => row.startsWith('portal_csrf='))
+  return match ? decodeURIComponent(match.split('=')[1]) : null
+}
+
 apiClient.interceptors.request.use((config) => {
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`
@@ -45,6 +57,16 @@ apiClient.interceptors.request.use((config) => {
   const branchId = localStorage.getItem('selected_branch_id')
   if (branchId && branchId !== 'all') {
     config.headers['X-Branch-Id'] = branchId
+  }
+
+  // Portal CSRF double-submit: read the portal_csrf cookie and send it
+  // as X-CSRF-Token header on state-changing requests (Req 41.1, 41.2).
+  const method = (config.method ?? '').toUpperCase()
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    const csrfToken = getPortalCsrfCookie()
+    if (csrfToken) {
+      config.headers['X-CSRF-Token'] = csrfToken
+    }
   }
 
   // Fix v2 URL paths: calls using `/api/v2/...` would get double-prefixed

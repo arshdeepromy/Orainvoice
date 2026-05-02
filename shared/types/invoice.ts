@@ -13,6 +13,8 @@ export interface Invoice {
   due_date: string
   created_at: string
   line_items: InvoiceLineItem[]
+  customer_portal_token?: string | null
+  customer_enable_portal?: boolean
 }
 
 export interface InvoiceLineItem {

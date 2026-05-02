@@ -3,6 +3,8 @@ import apiClient from '@/api/client'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
+import { usePortalLocale } from './PortalLocaleContext'
+import { formatDate } from './portalFormatters'
 
 interface LoyaltyTier {
   name: string
@@ -19,6 +21,7 @@ interface LoyaltyTransaction {
 }
 
 interface LoyaltyData {
+  programme_configured: boolean
   total_points: number
   current_tier: LoyaltyTier | null
   next_tier: LoyaltyTier | null
@@ -31,6 +34,7 @@ interface LoyaltyBalanceProps {
 }
 
 export function LoyaltyBalance({ token }: LoyaltyBalanceProps) {
+  const locale = usePortalLocale()
   const [data, setData] = useState<LoyaltyData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -53,6 +57,27 @@ export function LoyaltyBalance({ token }: LoyaltyBalanceProps) {
   if (loading) return <div className="py-8"><Spinner label="Loading loyalty" /></div>
   if (error) return <AlertBanner variant="error">{error}</AlertBanner>
   if (!data) return null
+
+  // Req 61.1: No loyalty programme configured for this org
+  if (!data.programme_configured) {
+    return (
+      <div className="py-8 text-center">
+        <p className="text-sm text-gray-500">This business does not have a loyalty programme.</p>
+      </div>
+    )
+  }
+
+  // Req 61.2: Programme exists but customer has zero balance
+  if ((data.total_points ?? 0) === 0 && (data.transactions ?? []).length === 0) {
+    return (
+      <div className="py-8 text-center">
+        <p className="text-lg font-semibold text-gray-900">You have 0 points</p>
+        <p className="mt-2 text-sm text-gray-500">
+          Earn points by paying invoices and using services. Points are awarded automatically when invoices are paid.
+        </p>
+      </div>
+    )
+  }
 
   const progressPercent = data.next_tier && data.points_to_next_tier != null
     ? Math.min(100, ((data.total_points / data.next_tier.threshold_points) * 100))
@@ -103,8 +128,8 @@ export function LoyaltyBalance({ token }: LoyaltyBalanceProps) {
           </div>
           <div className="h-2 rounded-full bg-gray-200">
             <div
-              className="h-2 rounded-full bg-blue-500 transition-all"
-              style={{ width: `${progressPercent}%` }}
+              className="h-2 rounded-full transition-all"
+              style={{ width: `${progressPercent}%`, backgroundColor: 'var(--portal-accent, #3b82f6)' }}
             />
           </div>
         </div>
@@ -129,7 +154,7 @@ export function LoyaltyBalance({ token }: LoyaltyBalanceProps) {
                   <span className={`font-medium tabular-nums ${tx.points > 0 ? 'text-green-600' : 'text-red-600'}`}>
                     {tx.points > 0 ? '+' : ''}{tx.points}
                   </span>
-                  <span className="text-xs text-gray-400">{formatDate(tx.created_at)}</span>
+                  <span className="text-xs text-gray-400">{formatDate(tx.created_at, locale)}</span>
                 </div>
               </div>
             ))}
@@ -138,10 +163,4 @@ export function LoyaltyBalance({ token }: LoyaltyBalanceProps) {
       )}
     </div>
   )
-}
-
-function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-NZ', {
-    day: 'numeric', month: 'short', year: 'numeric',
-  })
 }

@@ -115,3 +115,14 @@ dialog::backdrop {
 .animate-fadeIn {
   animation: fadeIn 0.3s ease-out;
 }
+
+/* Hatched/striped background for leave entries in the schedule calendar */
+.bg-stripes-gray {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 4px,
+    rgba(156, 163, 175, 0.2) 4px,
+    rgba(156, 163, 175, 0.2) 8px
+  );
+}

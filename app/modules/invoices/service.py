@@ -1425,6 +1425,9 @@ async def get_invoice(
                 "company_name": getattr(customer, "company_name", None),
                 "display_name": getattr(customer, "display_name", None),
             }
+            # Include portal token info for mobile share link
+            result["customer_portal_token"] = str(customer.portal_token) if customer.portal_token else None
+            result["customer_enable_portal"] = bool(customer.enable_portal)
 
     # Include vehicle details from global vehicle table (rego, make, model, year, odometer, WOF expiry)
     # Falls back to org_vehicles if not found in global_vehicles

@@ -6,16 +6,17 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.scheduling_v2.models import ScheduleEntry
+from app.modules.scheduling_v2.models import ScheduleEntry, ShiftTemplate
 from app.modules.scheduling_v2.schemas import (
     ScheduleEntryCreate,
     ScheduleEntryUpdate,
+    ShiftTemplateCreate,
 )
 
 
@@ -82,6 +83,68 @@ class SchedulingService:
         self.db.add(entry)
         await self.db.flush()
         return entry
+
+    async def create_recurring_entry(
+        self,
+        org_id: uuid.UUID,
+        payload: ScheduleEntryCreate,
+    ) -> list[ScheduleEntry]:
+        """Create recurring schedule entries for the recurrence period (up to 4 weeks).
+
+        Generates individual entries linked by a shared recurrence_group_id.
+        Supports daily, weekly, and fortnightly frequencies.
+
+        Requirements: 56.1, 56.2
+        """
+        if payload.end_time <= payload.start_time:
+            raise ValueError("end_time must be after start_time")
+
+        recurrence = getattr(payload, "recurrence", "none")
+        if recurrence == "none":
+            # Fall back to single entry creation
+            entry = await self.create_entry(org_id, payload)
+            return [entry]
+
+        # Determine interval between occurrences
+        interval_map = {
+            "daily": timedelta(days=1),
+            "weekly": timedelta(weeks=1),
+            "fortnightly": timedelta(weeks=2),
+        }
+        interval = interval_map.get(recurrence)
+        if interval is None:
+            raise ValueError(f"Invalid recurrence: {recurrence}")
+
+        # Generate entries up to 4 weeks from the first entry's start
+        max_horizon = payload.start_time + timedelta(weeks=4)
+        group_id = uuid.uuid4()
+        duration = payload.end_time - payload.start_time
+
+        entries: list[ScheduleEntry] = []
+        current_start = payload.start_time
+
+        while current_start < max_horizon:
+            current_end = current_start + duration
+            entry = ScheduleEntry(
+                org_id=org_id,
+                staff_id=payload.staff_id,
+                job_id=payload.job_id,
+                booking_id=payload.booking_id,
+                location_id=payload.location_id,
+                title=payload.title,
+                description=payload.description,
+                start_time=current_start,
+                end_time=current_end,
+                entry_type=payload.entry_type,
+                notes=payload.notes,
+                recurrence_group_id=group_id,
+            )
+            self.db.add(entry)
+            entries.append(entry)
+            current_start += interval
+
+        await self.db.flush()
+        return entries
 
     async def get_entry(
         self, org_id: uuid.UUID, entry_id: uuid.UUID,
@@ -191,3 +254,61 @@ class SchedulingService:
         )
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
+
+    # ------------------------------------------------------------------
+    # Shift Templates (Req 57)
+    # ------------------------------------------------------------------
+
+    async def list_templates(
+        self,
+        org_id: uuid.UUID,
+    ) -> tuple[list[ShiftTemplate], int]:
+        """List all shift templates for an organisation."""
+        stmt = select(ShiftTemplate).where(ShiftTemplate.org_id == org_id)
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total = (await self.db.execute(count_stmt)).scalar() or 0
+
+        stmt = stmt.order_by(ShiftTemplate.name)
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all()), total
+
+    async def create_template(
+        self,
+        org_id: uuid.UUID,
+        payload: ShiftTemplateCreate,
+    ) -> ShiftTemplate:
+        """Create a new shift template."""
+        from datetime import time as dt_time
+
+        parts_start = payload.start_time.split(":")
+        parts_end = payload.end_time.split(":")
+        start_t = dt_time(int(parts_start[0]), int(parts_start[1]))
+        end_t = dt_time(int(parts_end[0]), int(parts_end[1]))
+
+        template = ShiftTemplate(
+            org_id=org_id,
+            name=payload.name,
+            start_time=start_t,
+            end_time=end_t,
+            entry_type=payload.entry_type,
+        )
+        self.db.add(template)
+        await self.db.flush()
+        return template
+
+    async def delete_template(
+        self,
+        org_id: uuid.UUID,
+        template_id: uuid.UUID,
+    ) -> bool:
+        """Delete a shift template. Returns True if deleted."""
+        stmt = select(ShiftTemplate).where(
+            and_(ShiftTemplate.org_id == org_id, ShiftTemplate.id == template_id),
+        )
+        result = await self.db.execute(stmt)
+        template = result.scalar_one_or_none()
+        if template is None:
+            return False
+        await self.db.delete(template)
+        await self.db.flush()
+        return True

@@ -8,7 +8,9 @@ Endpoints:
 - POST   /api/v2/stock-transfers              — create stock transfer
 - GET    /api/v2/stock-transfers              — list stock transfers
 - PUT    /api/v2/stock-transfers/{id}/approve — approve transfer
+- PUT    /api/v2/stock-transfers/{id}/reject  — reject transfer
 - PUT    /api/v2/stock-transfers/{id}/execute — execute transfer
+- PUT    /api/v2/stock-transfers/{id}/receive — receive transfer (acknowledgement)
 - GET    /api/v2/franchise/dashboard          — franchise aggregate dashboard
 - GET    /api/v2/franchise/head-office        — head-office aggregate view
 
@@ -31,8 +33,10 @@ from app.modules.franchise.schemas import (
     LocationCreate,
     LocationResponse,
     LocationUpdate,
+    ReceiveTransferRequest,
     StockTransferCreate,
     StockTransferResponse,
+    TransferActionResponse,
 )
 from app.modules.franchise.service import FranchiseService
 
@@ -197,6 +201,31 @@ async def approve_transfer(
     return StockTransferResponse.model_validate(updated)
 
 
+@transfers_router.put("/{transfer_id}/reject", response_model=StockTransferResponse, summary="Reject transfer")
+async def reject_transfer(
+    transfer_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Reject a pending stock transfer request.
+
+    **Validates: Requirements 31.1, 31.2, 31.3, 31.4**
+    """
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    svc = FranchiseService(db)
+    transfer = await svc.get_transfer(org_id, transfer_id)
+    if transfer is None:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    try:
+        updated = await svc.reject_transfer(transfer, rejected_by=user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.flush()
+    await db.refresh(updated)
+    return StockTransferResponse.model_validate(updated)
+
+
 @transfers_router.put("/{transfer_id}/execute", response_model=StockTransferResponse, summary="Execute transfer")
 async def execute_transfer(
     transfer_id: UUID,
@@ -205,12 +234,13 @@ async def execute_transfer(
 ):
     """Execute an approved transfer — creates stock movements at both locations."""
     org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
     svc = FranchiseService(db)
     transfer = await svc.get_transfer(org_id, transfer_id)
     if transfer is None:
         raise HTTPException(status_code=404, detail="Transfer not found")
     try:
-        updated = await svc.execute_transfer(transfer)
+        updated = await svc.execute_transfer(transfer, executed_by=user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -242,6 +272,62 @@ async def execute_transfer(
     await db.commit()
     await db.refresh(updated)
     return StockTransferResponse.model_validate(updated)
+
+
+@transfers_router.put("/{transfer_id}/receive", response_model=StockTransferResponse, summary="Receive transfer")
+async def receive_transfer(
+    transfer_id: UUID,
+    request: Request,
+    payload: ReceiveTransferRequest | None = None,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Mark an executed transfer as received — acknowledgement that goods arrived.
+
+    Accepts an optional ``received_quantity`` in the request body.  When the
+    received quantity is less than the transfer quantity the status is set to
+    ``partially_received`` and the discrepancy is recorded.
+
+    **Validates: Requirements 33.1, 33.2, 33.3, 33.4, 54.1, 54.2, 54.3**
+    """
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    svc = FranchiseService(db)
+    transfer = await svc.get_transfer(org_id, transfer_id)
+    if transfer is None:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    try:
+        received_qty = payload.received_quantity if payload else None
+        updated = await svc.receive_transfer(
+            transfer, received_by=user_id, received_quantity=received_qty,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.flush()
+    await db.refresh(updated)
+    return StockTransferResponse.model_validate(updated)
+
+
+@transfers_router.get(
+    "/{transfer_id}/actions",
+    response_model=list[TransferActionResponse],
+    summary="Get transfer audit trail",
+)
+async def get_transfer_actions(
+    transfer_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the audit trail for a stock transfer.
+
+    **Validates: Requirements 53.1, 53.2, 53.3**
+    """
+    org_id = _get_org_id(request)
+    svc = FranchiseService(db)
+    transfer = await svc.get_transfer(org_id, transfer_id)
+    if transfer is None:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    actions = await svc.get_transfer_actions(transfer_id)
+    return [TransferActionResponse.model_validate(a) for a in actions]
 
 
 # ------------------------------------------------------------------

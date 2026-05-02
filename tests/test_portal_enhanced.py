@@ -49,6 +49,7 @@ def _make_customer(
     c.phone = "+6421000000"
     c.portal_token = portal_token
     c.is_anonymised = is_anonymised
+    c.portal_token_expires_at = None
     return c
 
 

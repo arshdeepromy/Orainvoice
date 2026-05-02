@@ -1861,3 +1861,42 @@ async def update_business_type(
     )
 
     return BusinessTypeResponse(**result, message="Business type updated")
+
+
+# ---------------------------------------------------------------------------
+# Portal Analytics (Req 47.1, 47.2, 47.3)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/portal-analytics",
+    summary="Get portal usage analytics for the last 30 days",
+    dependencies=[require_role("org_admin")],
+)
+async def get_portal_analytics_endpoint(
+    request: Request,
+):
+    """Return portal usage statistics (views, quote acceptances, bookings,
+    payments) aggregated per day for the last 30 days.
+
+    Requirements: 47.1, 47.2, 47.3
+    """
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id format"},
+        )
+
+    from app.modules.portal.service import get_portal_analytics
+
+    result = await get_portal_analytics(org_uuid)
+    return result
