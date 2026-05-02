@@ -127,11 +127,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       // Skip refresh attempt on public auth pages
       const path = window.location.pathname
-      if (
+      const isAuthPage =
+        path === '/login' ||
+        path === '/forgot-password' ||
+        path === '/mfa-verify' ||
         path === '/mobile/login' ||
         path === '/mobile/forgot-password' ||
         path === '/mobile/mfa-verify'
-      ) {
+      if (isAuthPage) {
         if (!cancelled) setIsLoading(false)
         return
       }

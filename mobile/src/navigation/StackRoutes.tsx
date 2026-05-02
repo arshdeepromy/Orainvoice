@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useRef } from 'react'
-import { Routes, Route, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
+import { useAuth } from '@/contexts/AuthContext'
 
 /**
  * Placeholder component for screens not yet implemented.
@@ -511,6 +512,42 @@ function useScrollPreservation() {
   }, [location.pathname])
 }
 
+/**
+ * Auth guard — redirects to /login when the user is not authenticated.
+ * Shows a loading spinner while the auth state is being restored.
+ */
+function AuthGuard({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading } = useAuth()
+
+  if (isLoading) {
+    return <ScreenLoader />
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />
+  }
+
+  return <>{children}</>
+}
+
+/**
+ * Redirect authenticated users away from auth screens (login, signup, etc.)
+ * back to the dashboard.
+ */
+function GuestOnly({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading } = useAuth()
+
+  if (isLoading) {
+    return <ScreenLoader />
+  }
+
+  if (isAuthenticated) {
+    return <Navigate to="/" replace />
+  }
+
+  return <>{children}</>
+}
+
 // ---------------------------------------------------------------------------
 // Stack Routes
 // ---------------------------------------------------------------------------
@@ -528,157 +565,90 @@ export function StackRoutes() {
     <ErrorBoundary>
     <Suspense fallback={<ScreenLoader />}>
       <Routes>
-        {/* Auth screens (outside tab navigator) */}
-        <Route path="/login" element={<LoginScreen />} />
+        {/* ── Public / Guest-only screens ─────────────────────────── */}
+        <Route path="/login" element={<GuestOnly><LoginScreen /></GuestOnly>} />
         <Route path="/mfa-verify" element={<MfaScreen />} />
-        <Route path="/forgot-password" element={<ForgotPasswordScreen />} />
+        <Route path="/forgot-password" element={<GuestOnly><ForgotPasswordScreen /></GuestOnly>} />
         <Route path="/biometric-lock" element={<BiometricLockScreen />} />
-        <Route path="/signup" element={<SignupScreen />} />
-        <Route path="/reset-password" element={<ResetPasswordScreen />} />
+        <Route path="/signup" element={<GuestOnly><SignupScreen /></GuestOnly>} />
+        <Route path="/reset-password" element={<GuestOnly><ResetPasswordScreen /></GuestOnly>} />
         <Route path="/verify-email" element={<VerifyEmailScreen />} />
-        <Route path="/landing" element={<LandingScreen />} />
+        <Route path="/landing" element={<GuestOnly><LandingScreen /></GuestOnly>} />
         <Route path="/pay/:token" element={<PublicPaymentScreen />} />
 
-        {/* Dashboard tab */}
-        <Route path="/" element={<DashboardScreen />} />
-
-        {/* Invoices tab stack */}
-        <Route path="/invoices" element={<InvoiceListScreen />} />
-        <Route path="/invoices/new" element={<InvoiceCreateScreen />} />
-        <Route path="/invoices/:id/edit" element={<InvoiceCreateScreen />} />
-        <Route path="/invoices/:id" element={<InvoiceDetailScreen />} />
-        <Route path="/invoices/:id/pdf" element={<InvoicePDFScreen />} />
-
-        {/* Customers tab stack */}
-        <Route path="/customers" element={<CustomerListScreen />} />
-        <Route path="/customers/new" element={<CustomerCreateScreen />} />
-        <Route path="/customers/:id" element={<CustomerProfileScreen />} />
-        <Route path="/customers/:id/edit" element={<CustomerEditScreen />} />
-
-        {/* Jobs tab stack */}
-        <Route path="/jobs" element={<JobListScreen />} />
-        <Route path="/jobs/board" element={<JobBoardScreen />} />
-        <Route path="/jobs/:id" element={<JobDetailScreen />} />
-        <Route path="/jobs/cards" element={<JobCardListScreen />} />
-        <Route path="/jobs/cards/new" element={<JobCardCreateScreen />} />
-        <Route path="/jobs/cards/:id" element={<JobCardDetailScreen />} />
-
-        {/* More menu */}
-        <Route path="/more" element={<MoreMenuScreen />} />
-
-        {/* Quotes */}
-        <Route path="/quotes" element={<QuoteListScreen />} />
-        <Route path="/quotes/new" element={<QuoteCreateScreen />} />
-        <Route path="/quotes/:id" element={<QuoteDetailScreen />} />
-
-        {/* Inventory */}
-        <Route path="/inventory" element={<InventoryListScreen />} />
-        <Route path="/inventory/:id" element={<InventoryDetailScreen />} />
-        <Route path="/items" element={<CatalogueItemsScreen />} />
-
-        {/* Staff */}
-        <Route path="/staff" element={<StaffListScreen />} />
-        <Route path="/staff/:id" element={<StaffDetailScreen />} />
-
-        {/* Time Tracking */}
-        <Route path="/time-tracking" element={<TimeTrackingScreen />} />
-
-        {/* Expenses */}
-        <Route path="/expenses" element={<ExpenseListScreen />} />
-        <Route path="/expenses/new" element={<ExpenseCreateScreen />} />
-
-        {/* Bookings */}
-        <Route path="/bookings" element={<BookingCalendarScreen />} />
-        <Route path="/bookings/new" element={<BookingCreateScreen />} />
-
-        {/* Vehicles (automotive) */}
-        <Route path="/vehicles" element={<VehicleListScreen />} />
-        <Route path="/vehicles/:id" element={<VehicleProfileScreen />} />
-
-        {/* Accounting */}
-        <Route path="/accounting" element={<ChartOfAccountsScreen />} />
-        <Route path="/accounting/journals" element={<JournalEntryListScreen />} />
-        <Route path="/accounting/journals/:id" element={<JournalEntryDetailScreen />} />
-
-        {/* Banking */}
-        <Route path="/banking" element={<BankAccountsScreen />} />
-        <Route path="/banking/:id/transactions" element={<BankTransactionsScreen />} />
-        <Route path="/banking/reconciliation" element={<ReconciliationScreen />} />
-
-        {/* Tax / GST */}
-        <Route path="/tax" element={<GstPeriodsScreen />} />
-        <Route path="/tax/:id" element={<GstFilingDetailScreen />} />
-        <Route path="/tax/position" element={<TaxPositionScreen />} />
-
-        {/* Compliance */}
-        <Route path="/compliance" element={<ComplianceDashboardScreen />} />
-        <Route path="/compliance/upload" element={<ComplianceUploadScreen />} />
-
-        {/* Reports */}
-        <Route path="/reports" element={<ReportsMenuScreen />} />
-        <Route path="/reports/:type" element={<ReportViewScreen />} />
-
-        {/* Notifications */}
-        <Route path="/notifications" element={<NotificationPreferencesScreen />} />
-
-        {/* POS */}
-        <Route path="/pos" element={<POSScreen />} />
-
-        {/* Construction */}
-        <Route path="/construction/claims" element={<ProgressClaimListScreen />} />
-        <Route path="/construction/variations" element={<VariationListScreen />} />
-        <Route path="/construction/retentions" element={<RetentionSummaryScreen />} />
-        <Route path="/construction/:id" element={<ConstructionDetailScreen />} />
-
-        {/* Franchise */}
-        <Route path="/franchise" element={<FranchiseDashboardScreen />} />
-        <Route path="/franchise/locations/:id" element={<LocationDetailScreen />} />
-        <Route path="/franchise/transfers" element={<StockTransferListScreen />} />
-
-        {/* Hospitality */}
-        <Route path="/floor-plan" element={<FloorPlanScreen />} />
-        <Route path="/kitchen" element={<KitchenDisplayScreen />} />
-
-        {/* Assets */}
-        <Route path="/assets" element={<AssetListScreen />} />
-        <Route path="/assets/:id" element={<AssetDetailScreen />} />
-
-        {/* Recurring Invoices */}
-        <Route path="/recurring" element={<RecurringListScreen />} />
-        <Route path="/recurring/:id" element={<RecurringDetailScreen />} />
-
-        {/* Purchase Orders */}
-        <Route path="/purchase-orders" element={<POListScreen />} />
-        <Route path="/purchase-orders/:id" element={<PODetailScreen />} />
-
-        {/* Projects */}
-        <Route path="/projects" element={<ProjectListScreen />} />
-        <Route path="/projects/:id" element={<ProjectDashboardScreen />} />
-
-        {/* Schedule */}
-        <Route path="/schedule" element={<ScheduleCalendarScreen />} />
-
-        {/* SMS */}
-        <Route path="/sms" element={<SMSComposeScreen />} />
-
-        {/* Settings */}
-        <Route path="/settings" element={<SettingsScreen />} />
-
-        {/* Portal */}
-        <Route path="/portal" element={<PortalScreen />} />
-
-        {/* Kiosk */}
-        <Route path="/kiosk" element={<KioskScreen />} />
+        {/* ── Authenticated screens (all wrapped in AuthGuard) ────── */}
+        <Route path="/" element={<AuthGuard><DashboardScreen /></AuthGuard>} />
+        <Route path="/invoices" element={<AuthGuard><InvoiceListScreen /></AuthGuard>} />
+        <Route path="/invoices/new" element={<AuthGuard><InvoiceCreateScreen /></AuthGuard>} />
+        <Route path="/invoices/:id/edit" element={<AuthGuard><InvoiceCreateScreen /></AuthGuard>} />
+        <Route path="/invoices/:id" element={<AuthGuard><InvoiceDetailScreen /></AuthGuard>} />
+        <Route path="/invoices/:id/pdf" element={<AuthGuard><InvoicePDFScreen /></AuthGuard>} />
+        <Route path="/customers" element={<AuthGuard><CustomerListScreen /></AuthGuard>} />
+        <Route path="/customers/new" element={<AuthGuard><CustomerCreateScreen /></AuthGuard>} />
+        <Route path="/customers/:id" element={<AuthGuard><CustomerProfileScreen /></AuthGuard>} />
+        <Route path="/customers/:id/edit" element={<AuthGuard><CustomerEditScreen /></AuthGuard>} />
+        <Route path="/jobs" element={<AuthGuard><JobListScreen /></AuthGuard>} />
+        <Route path="/jobs/board" element={<AuthGuard><JobBoardScreen /></AuthGuard>} />
+        <Route path="/jobs/:id" element={<AuthGuard><JobDetailScreen /></AuthGuard>} />
+        <Route path="/jobs/cards" element={<AuthGuard><JobCardListScreen /></AuthGuard>} />
+        <Route path="/jobs/cards/new" element={<AuthGuard><JobCardCreateScreen /></AuthGuard>} />
+        <Route path="/jobs/cards/:id" element={<AuthGuard><JobCardDetailScreen /></AuthGuard>} />
+        <Route path="/more" element={<AuthGuard><MoreMenuScreen /></AuthGuard>} />
+        <Route path="/quotes" element={<AuthGuard><QuoteListScreen /></AuthGuard>} />
+        <Route path="/quotes/new" element={<AuthGuard><QuoteCreateScreen /></AuthGuard>} />
+        <Route path="/quotes/:id" element={<AuthGuard><QuoteDetailScreen /></AuthGuard>} />
+        <Route path="/inventory" element={<AuthGuard><InventoryListScreen /></AuthGuard>} />
+        <Route path="/inventory/:id" element={<AuthGuard><InventoryDetailScreen /></AuthGuard>} />
+        <Route path="/items" element={<AuthGuard><CatalogueItemsScreen /></AuthGuard>} />
+        <Route path="/staff" element={<AuthGuard><StaffListScreen /></AuthGuard>} />
+        <Route path="/staff/:id" element={<AuthGuard><StaffDetailScreen /></AuthGuard>} />
+        <Route path="/time-tracking" element={<AuthGuard><TimeTrackingScreen /></AuthGuard>} />
+        <Route path="/expenses" element={<AuthGuard><ExpenseListScreen /></AuthGuard>} />
+        <Route path="/expenses/new" element={<AuthGuard><ExpenseCreateScreen /></AuthGuard>} />
+        <Route path="/bookings" element={<AuthGuard><BookingCalendarScreen /></AuthGuard>} />
+        <Route path="/bookings/new" element={<AuthGuard><BookingCreateScreen /></AuthGuard>} />
+        <Route path="/vehicles" element={<AuthGuard><VehicleListScreen /></AuthGuard>} />
+        <Route path="/vehicles/:id" element={<AuthGuard><VehicleProfileScreen /></AuthGuard>} />
+        <Route path="/accounting" element={<AuthGuard><ChartOfAccountsScreen /></AuthGuard>} />
+        <Route path="/accounting/journals" element={<AuthGuard><JournalEntryListScreen /></AuthGuard>} />
+        <Route path="/accounting/journals/:id" element={<AuthGuard><JournalEntryDetailScreen /></AuthGuard>} />
+        <Route path="/banking" element={<AuthGuard><BankAccountsScreen /></AuthGuard>} />
+        <Route path="/banking/:id/transactions" element={<AuthGuard><BankTransactionsScreen /></AuthGuard>} />
+        <Route path="/banking/reconciliation" element={<AuthGuard><ReconciliationScreen /></AuthGuard>} />
+        <Route path="/tax" element={<AuthGuard><GstPeriodsScreen /></AuthGuard>} />
+        <Route path="/tax/:id" element={<AuthGuard><GstFilingDetailScreen /></AuthGuard>} />
+        <Route path="/tax/position" element={<AuthGuard><TaxPositionScreen /></AuthGuard>} />
+        <Route path="/compliance" element={<AuthGuard><ComplianceDashboardScreen /></AuthGuard>} />
+        <Route path="/compliance/upload" element={<AuthGuard><ComplianceUploadScreen /></AuthGuard>} />
+        <Route path="/reports" element={<AuthGuard><ReportsMenuScreen /></AuthGuard>} />
+        <Route path="/reports/:type" element={<AuthGuard><ReportViewScreen /></AuthGuard>} />
+        <Route path="/notifications" element={<AuthGuard><NotificationPreferencesScreen /></AuthGuard>} />
+        <Route path="/pos" element={<AuthGuard><POSScreen /></AuthGuard>} />
+        <Route path="/construction/claims" element={<AuthGuard><ProgressClaimListScreen /></AuthGuard>} />
+        <Route path="/construction/variations" element={<AuthGuard><VariationListScreen /></AuthGuard>} />
+        <Route path="/construction/retentions" element={<AuthGuard><RetentionSummaryScreen /></AuthGuard>} />
+        <Route path="/construction/:id" element={<AuthGuard><ConstructionDetailScreen /></AuthGuard>} />
+        <Route path="/franchise" element={<AuthGuard><FranchiseDashboardScreen /></AuthGuard>} />
+        <Route path="/franchise/locations/:id" element={<AuthGuard><LocationDetailScreen /></AuthGuard>} />
+        <Route path="/franchise/transfers" element={<AuthGuard><StockTransferListScreen /></AuthGuard>} />
+        <Route path="/floor-plan" element={<AuthGuard><FloorPlanScreen /></AuthGuard>} />
+        <Route path="/kitchen" element={<AuthGuard><KitchenDisplayScreen /></AuthGuard>} />
+        <Route path="/assets" element={<AuthGuard><AssetListScreen /></AuthGuard>} />
+        <Route path="/assets/:id" element={<AuthGuard><AssetDetailScreen /></AuthGuard>} />
+        <Route path="/recurring" element={<AuthGuard><RecurringListScreen /></AuthGuard>} />
+        <Route path="/recurring/:id" element={<AuthGuard><RecurringDetailScreen /></AuthGuard>} />
+        <Route path="/purchase-orders" element={<AuthGuard><POListScreen /></AuthGuard>} />
+        <Route path="/purchase-orders/:id" element={<AuthGuard><PODetailScreen /></AuthGuard>} />
+        <Route path="/projects" element={<AuthGuard><ProjectListScreen /></AuthGuard>} />
+        <Route path="/projects/:id" element={<AuthGuard><ProjectDashboardScreen /></AuthGuard>} />
+        <Route path="/schedule" element={<AuthGuard><ScheduleCalendarScreen /></AuthGuard>} />
+        <Route path="/sms" element={<AuthGuard><SMSComposeScreen /></AuthGuard>} />
+        <Route path="/settings" element={<AuthGuard><SettingsScreen /></AuthGuard>} />
+        <Route path="/portal" element={<AuthGuard><PortalScreen /></AuthGuard>} />
+        <Route path="/kiosk" element={<AuthGuard><KioskScreen /></AuthGuard>} />
 
         {/* Fallback */}
-        <Route
-          path="*"
-          element={
-            <div className="flex flex-1 items-center justify-center p-4 text-gray-500 dark:text-gray-400">
-              <p>Page not found</p>
-            </div>
-          }
-        />
+        <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </Suspense>
     </ErrorBoundary>

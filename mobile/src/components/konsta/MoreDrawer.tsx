@@ -90,8 +90,10 @@ export function MoreDrawer({ isOpen, onClose }: MoreDrawerProps) {
     <Sheet
       opened={isOpen}
       onBackdropClick={onClose}
+      backdrop
       data-testid="more-drawer"
-      className="more-drawer-sheet"
+      className="pb-safe"
+      style={{ zIndex: 13500 }}
     >
       <div
         className="max-h-[80vh] overflow-y-auto pb-safe"

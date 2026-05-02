@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">OraInvoice</string>
+    <string name="title_activity_main">OraInvoice</string>
+    <string name="package_name">nz.co.oraflows.invoice</string>
+    <string name="custom_url_scheme">nz.co.oraflows.invoice</string>
+</resources>

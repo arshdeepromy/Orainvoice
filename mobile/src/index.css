@@ -46,6 +46,7 @@ button,
 /* Prevent iOS rubber-band overscroll on the body */
 html,
 body {
+  min-height: 100dvh;
   overscroll-behavior: none;
 }
 

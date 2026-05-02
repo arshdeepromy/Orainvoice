@@ -245,10 +245,11 @@ describe('DashboardScreen', () => {
     render(<DashboardScreen />, { wrapper: Wrapper })
 
     await waitFor(() => {
-      expect(screen.getByTestId('dashboard-greeting')).toHaveTextContent(
-        'Hello, Test',
-      )
+      // Greeting is now rendered as the Navbar subtitle
+      expect(screen.getByTestId('dashboard-navbar')).toBeInTheDocument()
     })
+    // The navbar subtitle contains the greeting
+    expect(screen.getByText('Hello, Test')).toBeInTheDocument()
   })
 
   // -------------------------------------------------------------------------

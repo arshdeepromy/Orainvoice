@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { Capacitor } from '@capacitor/core'
 
 let accessToken: string | null = null
 
@@ -29,8 +30,14 @@ export function isAccessTokenValid(): boolean {
   }
 }
 
+// On native Capacitor, API calls go to the production backend.
+// On web (served behind nginx), relative paths work via the reverse proxy.
+const apiBaseURL = Capacitor.isNativePlatform()
+  ? 'https://devin.oraflow.co.nz/api/v1'
+  : '/api/v1'
+
 const apiClient = axios.create({
-  baseURL: '/api/v1',
+  baseURL: apiBaseURL,
   headers: { 'Content-Type': 'application/json' },
   withCredentials: true, // send httpOnly refresh cookie
 })
@@ -93,8 +100,11 @@ export function doTokenRefresh(): Promise<string | null> {
 
   refreshPromise = (async () => {
     try {
+      const refreshURL = Capacitor.isNativePlatform()
+        ? 'https://devin.oraflow.co.nz/api/v1/auth/token/refresh'
+        : '/api/v1/auth/token/refresh'
       const res = await axios.post<{ access_token: string }>(
-        '/api/v1/auth/token/refresh',
+        refreshURL,
         {},
         { withCredentials: true },
       )
@@ -144,8 +154,16 @@ apiClient.interceptors.response.use(
       // Refresh failed — clear token and redirect to login
       setAccessToken(null)
       const path = window.location.pathname
-      if (path !== '/mobile/login' && path !== '/mobile/forgot-password') {
-        window.location.replace('/mobile/login')
+      const isAlreadyOnLogin =
+        path === '/login' ||
+        path === '/forgot-password' ||
+        path === '/mobile/login' ||
+        path === '/mobile/forgot-password'
+      if (!isAlreadyOnLogin) {
+        // On native Capacitor, basename is / so navigate to /login
+        // On web, basename is /mobile so navigate to /mobile/login
+        const loginPath = Capacitor.isNativePlatform() ? '/login' : '/mobile/login'
+        window.location.replace(loginPath)
       }
     }
     return Promise.reject(error)

@@ -37,7 +37,7 @@ const konstaTheme = platform === 'ios' ? 'ios' : 'material'
  */
 export default function App() {
   return (
-    <KonstaApp theme={konstaTheme} safeAreas>
+    <KonstaApp theme={konstaTheme} safeAreas dark>
       <AuthProvider>
         <TenantProvider>
           <ModuleProvider>

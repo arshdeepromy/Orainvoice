@@ -135,6 +135,9 @@ export default function LoginScreen() {
               label="Email"
               placeholder="you@example.com"
               value={email}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setEmail(e.target.value)
+              }
               onInput={(e: React.ChangeEvent<HTMLInputElement>) =>
                 setEmail(e.target.value)
               }
@@ -148,6 +151,9 @@ export default function LoginScreen() {
               label="Password"
               placeholder="Enter your password"
               value={password}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setPassword(e.target.value)
+              }
               onInput={(e: React.ChangeEvent<HTMLInputElement>) =>
                 setPassword(e.target.value)
               }
@@ -175,6 +181,12 @@ export default function LoginScreen() {
             large
             className="mb-3"
             disabled={!canSubmit}
+            colors={{
+              fillBgIos: 'bg-blue-600',
+              fillBgMaterial: 'bg-blue-600',
+              fillTextIos: 'text-white',
+              fillTextMaterial: 'text-white',
+            }}
           >
             {isSubmitting ? 'Signing in…' : 'Sign In'}
           </Button>
@@ -194,6 +206,12 @@ export default function LoginScreen() {
           className="mb-3"
           disabled={isGoogleLoading}
           onClick={handleGoogleSignIn}
+          colors={{
+            textIos: 'text-blue-600',
+            textMaterial: 'text-blue-600',
+            outlineBorderIos: 'border-blue-600',
+            outlineBorderMaterial: 'border-blue-600',
+          }}
         >
           <span className="flex items-center justify-center gap-2">
             <GoogleIcon />
@@ -206,6 +224,12 @@ export default function LoginScreen() {
           outline
           className="mb-6"
           onClick={handlePasskeySignIn}
+          colors={{
+            textIos: 'text-blue-600',
+            textMaterial: 'text-blue-600',
+            outlineBorderIos: 'border-blue-600',
+            outlineBorderMaterial: 'border-blue-600',
+          }}
         >
           <span className="flex items-center justify-center gap-2">
             <PasskeyIcon />

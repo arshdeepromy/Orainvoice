@@ -735,10 +735,10 @@ This plan migrates the OraInvoice mobile app frontend from custom Tailwind styli
   - Verify the complete Konsta UI redesign is functional
   - Ask the user if questions arise.
 
-- [-] 27. Git push all changes to repository
-  - [-] 27.1 Stage all changed and new files
-  - [ ] 27.2 Commit with descriptive message summarising the Konsta UI redesign changes
-  - [ ] 27.3 Push to remote repository
+- [x] 27. Git push all changes to repository
+  - [x] 27.1 Stage all changed and new files
+  - [x] 27.2 Commit with descriptive message summarising the Konsta UI redesign changes
+  - [x] 27.3 Push to remote repository
 
 ## Notes
 

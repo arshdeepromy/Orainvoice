@@ -27,7 +27,7 @@ function renderWithRouter(
 }
 
 describe('KonstaShell', () => {
-  it('shows navbar and tabbar when authenticated on a non-auth route', () => {
+  it('shows tabbar when authenticated on a non-auth route (navbar is per-screen)', () => {
     mockUseAuth.mockReturnValue({
       isAuthenticated: true,
       user: { role: 'salesperson' },
@@ -37,7 +37,8 @@ describe('KonstaShell', () => {
         <div>Dashboard content</div>
       </KonstaShell>,
     )
-    expect(screen.getByTestId('konsta-navbar')).toBeInTheDocument()
+    // Navbar is no longer in the shell — each screen owns its own navbar
+    expect(screen.queryByTestId('konsta-navbar')).not.toBeInTheDocument()
     expect(screen.getByTestId('konsta-tabbar')).toBeInTheDocument()
     expect(screen.getByText('Dashboard content')).toBeInTheDocument()
   })
@@ -147,7 +148,7 @@ describe('KonstaShell', () => {
     expect(screen.queryByTestId('konsta-tabbar')).not.toBeInTheDocument()
   })
 
-  it('hides tabbar for kiosk users but shows navbar', () => {
+  it('hides tabbar for kiosk users (navbar is per-screen)', () => {
     mockUseAuth.mockReturnValue({
       isAuthenticated: true,
       user: { role: 'kiosk' },
@@ -157,7 +158,8 @@ describe('KonstaShell', () => {
         <div>Kiosk content</div>
       </KonstaShell>,
     )
-    expect(screen.getByTestId('konsta-navbar')).toBeInTheDocument()
+    // Navbar is no longer in the shell — each screen owns its own navbar
+    expect(screen.queryByTestId('konsta-navbar')).not.toBeInTheDocument()
     expect(screen.queryByTestId('konsta-tabbar')).not.toBeInTheDocument()
   })
 

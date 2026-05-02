@@ -2,6 +2,7 @@
 import { useNavigate } from 'react-router-dom'
 import {
   Page,
+  Navbar,
   Searchbar,
   Chip,
   List,
@@ -500,6 +501,7 @@ export default function InvoiceListScreen() {
   if (isLoading && items.length === 0) {
     return (
       <Page data-testid="invoice-list-page">
+        <Navbar title="Invoices" data-testid="invoice-navbar" />
         <div className="flex flex-1 items-center justify-center p-8">
           <Preloader />
         </div>
@@ -509,19 +511,21 @@ export default function InvoiceListScreen() {
 
   return (
     <Page data-testid="invoice-list-page">
+      <Navbar
+        title="Invoices"
+        subnavbar={
+          <Searchbar
+            value={search}
+            onChange={handleSearchChange}
+            onClear={handleSearchClear}
+            placeholder="Search invoices…"
+            data-testid="invoice-searchbar"
+          />
+        }
+        data-testid="invoice-navbar"
+      />
       <PullRefresh onRefresh={handleRefresh} isRefreshing={isRefreshing}>
         <div className="flex flex-col pb-24">
-          {/* ── Searchbar ─────────────────────────────────────────── */}
-          <div className="px-4 pt-3">
-            <Searchbar
-              value={search}
-              onChange={handleSearchChange}
-              onClear={handleSearchClear}
-              placeholder="Search invoices…"
-              data-testid="invoice-searchbar"
-            />
-          </div>
-
           {/* ── Status Filter Chips ───────────────────────────────── */}
           <div
             className="-mx-0 flex gap-2 overflow-x-auto px-4 py-2"

@@ -2,6 +2,7 @@
 import { useNavigate } from 'react-router-dom'
 import {
   Page,
+  Navbar,
   Card,
   Chip,
   List,
@@ -199,21 +200,21 @@ export default function DashboardScreen() {
 
   return (
     <Page data-testid="dashboard-page">
+      <Navbar
+        title="Dashboard"
+        subtitle={firstName ? `Hello, ${firstName}` : undefined}
+        large
+        data-testid="dashboard-navbar"
+      />
       <PullRefresh onRefresh={handleRefresh} isRefreshing={isRefreshing}>
       <div className="flex flex-col gap-4 p-4 pb-8">
-        {/* ── Greeting Header ─────────────────────────────────────── */}
-        <div className="px-1 py-2">
-          <h1
-            className="text-2xl font-bold text-gray-900 dark:text-gray-100"
-            data-testid="dashboard-greeting"
-          >
-            Hello{firstName ? `, ${firstName}` : ''}
-          </h1>
-          {isModuleEnabled('branch_management') && (
+        {/* ── Branch Selector ─────────────────────────────────────── */}
+        {isModuleEnabled('branch_management') && (
+          <div className="px-1">
             <button
               type="button"
               onClick={() => setBranchPickerOpen(true)}
-              className="mt-0.5 flex items-center gap-1 text-sm text-gray-500 active:text-gray-700 dark:text-gray-400 dark:active:text-gray-300"
+              className="flex items-center gap-1 text-sm text-gray-500 active:text-gray-700 dark:text-gray-400 dark:active:text-gray-300"
               data-testid="branch-selector-subtitle"
             >
               <svg
@@ -243,8 +244,8 @@ export default function DashboardScreen() {
                 <polyline points="6 9 12 15 18 9" />
               </svg>
             </button>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* ── Error Banner ────────────────────────────────────────── */}
         {error && (

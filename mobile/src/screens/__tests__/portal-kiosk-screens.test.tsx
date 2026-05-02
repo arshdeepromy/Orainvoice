@@ -167,17 +167,8 @@ describe('KioskScreen', () => {
 })
 
 describe('KonstaShell kiosk role handling', () => {
-  it('resolves kiosk route title correctly', async () => {
-    const { resolveNavbarMeta } = await import('@/components/konsta/KonstaShell')
-    const meta = resolveNavbarMeta('/kiosk')
-    expect(meta.title).toBe('Kiosk')
-    expect(meta.showBack).toBe(false)
-  })
-
-  it('resolves portal route title correctly', async () => {
-    const { resolveNavbarMeta } = await import('@/components/konsta/KonstaShell')
-    const meta = resolveNavbarMeta('/portal')
-    expect(meta.title).toBe('Customer Portal')
-    expect(meta.showBack).toBe(false)
+  it('no longer exports resolveNavbarMeta — screens own their navbars', async () => {
+    const mod = await import('@/components/konsta/KonstaShell') as Record<string, unknown>
+    expect(mod.resolveNavbarMeta).toBeUndefined()
   })
 })
