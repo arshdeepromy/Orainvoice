@@ -152,6 +152,7 @@ class ClaimResponse(BaseModel):
     line_item_ids: list[uuid.UUID] = Field(default_factory=list)
 
     # Claim details
+    reference: str | None = None
     claim_type: str
     status: str
     description: str
@@ -186,6 +187,7 @@ class ClaimListItem(BaseModel):
     """Single claim row in list response (lighter than full detail)."""
 
     id: uuid.UUID
+    reference: str | None = None
     customer_id: uuid.UUID
     customer_name: str | None = None
     claim_type: str

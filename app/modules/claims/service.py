@@ -103,6 +103,17 @@ async def create_claim(
 
     # --- Create claim record (Req 1.1, 1.7) ---
     now = datetime.now(timezone.utc)
+
+    # Auto-generate reference: CLM-NNNNN (org-scoped sequential)
+    from sqlalchemy import func as sa_func
+    max_ref_result = await db.execute(
+        select(sa_func.count(CustomerClaim.id)).where(
+            CustomerClaim.org_id == org_id,
+        )
+    )
+    next_num = (max_ref_result.scalar() or 0) + 1
+    reference = f"CLM-{next_num:05d}"
+
     claim = CustomerClaim(
         org_id=org_id,
         branch_id=branch_id,
@@ -113,6 +124,7 @@ async def create_claim(
         claim_type=claim_type.value if isinstance(claim_type, ClaimType) else claim_type,
         status=ClaimStatus.OPEN.value,
         description=description,
+        reference=reference,
         created_by=user_id,
         created_at=now,
         updated_at=now,
@@ -160,6 +172,7 @@ async def create_claim(
         "id": claim.id,
         "org_id": claim.org_id,
         "branch_id": claim.branch_id,
+        "reference": claim.reference,
         "customer_id": claim.customer_id,
         "invoice_id": claim.invoice_id,
         "job_card_id": claim.job_card_id,

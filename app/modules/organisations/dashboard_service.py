@@ -372,7 +372,7 @@ async def get_recent_claims(
     from sqlalchemy import text as sa_text
     params: dict = {"org_id": str(org_id)}
     sql = sa_text("""
-        SELECT cc.id AS claim_id, cc.reference,
+        SELECT cc.id AS claim_id, COALESCE(cc.reference, 'CLM-' || LEFT(cc.id::text, 8)) AS reference,
                COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS customer_name,
                cc.created_at AS claim_date, cc.status
         FROM customer_claims cc
@@ -382,7 +382,7 @@ async def get_recent_claims(
     """)
     if branch_id is not None:
         sql = sa_text("""
-            SELECT cc.id AS claim_id, cc.reference,
+            SELECT cc.id AS claim_id, COALESCE(cc.reference, 'CLM-' || LEFT(cc.id::text, 8)) AS reference,
                    COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS customer_name,
                    cc.created_at AS claim_date, cc.status
             FROM customer_claims cc

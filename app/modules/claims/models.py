@@ -107,6 +107,10 @@ class CustomerClaim(Base):
     )
 
     # Claim details
+    reference: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, unique=False,
+        comment="Human-readable claim reference, e.g. CLM-00001",
+    )
     claim_type: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default="open"
