@@ -101,6 +101,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/workshoppro
       REDIS_URL: redis://redis:6379/0
       HA_LOCAL_PG_PORT: "5435"
+      HA_LOCAL_SSH_PORT: "2224"
     volumes:
       - ./app:/app/app:delegated
       - ./alembic:/app/alembic:delegated
