@@ -4792,3 +4792,43 @@ Re-raising is safe: if the inner app completed successfully, there is no excepti
 All other custom ASGI middleware audited for the same pattern (calling `self.app()` inside an `except` block after already calling it in the try): `idempotency.py`, `modules.py`, `security_headers.py`, `ha/middleware.py`, `tenant.py` — none repeat the pattern. Bug is isolated to `rate_limit.py`.
 
 **Related Issues**: ISSUE-144 (primary trigger; fixing ISSUE-144 prevents the cascade that currently exposes this bug, but ISSUE-145 remains a latent risk for any future downstream exception)
+
+
+---
+
+### ISSUE-146: Dashboard widgets crash — wrong column names in raw SQL queries poison transaction
+
+- **Date**: 2026-05-03
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user (Pi prod error)
+- **Regression of**: N/A
+
+**Symptoms**: `GET /api/v1/dashboard/widgets` returns `InFailedSQLTransactionError: current transaction is aborted, commands ignored until end of transaction block`. Error message: "Caught handled exception, but response already started."
+
+**Root Cause**: Three raw SQL column name mismatches in `app/modules/organisations/dashboard_service.py`:
+
+1. **`get_inventory_overview`** — referenced `category` and `current_stock` on the `products` table. Actual columns are `category_id` and `stock_quantity`.
+2. **`get_cash_flow` (expenses sub-query)** — referenced `expense_date` on the `expenses` table. Actual column is `date`.
+3. **`get_active_staff` (branch-scoped path)** — referenced `te.branch_id` on the `time_entries` table. Column doesn't exist.
+
+The `_safe_call` savepoint pattern in `get_all_widget_data` correctly caught the `inventory_overview` failure. However, the `cash_flow` widget's expenses sub-query was inside a bare `try/except` (not a savepoint), so when it failed with `UndefinedColumnError`, it poisoned the parent transaction. Subsequent widgets then hit `InFailedSQLTransactionError` because the transaction was aborted.
+
+**Why the savepoint pattern didn't fully protect**: The `_safe_call` wrapper creates a savepoint around each widget coroutine. But `get_cash_flow` internally runs two queries: a revenue query (protected by the outer savepoint) and an expenses sub-query inside a bare `try/except`. When the expenses query fails, the error occurs inside the savepoint but the `try/except` catches the Python exception without rolling back the savepoint. The PostgreSQL transaction is now in an error state, and the savepoint rollback in `_safe_call` can't recover it because the error happened after the savepoint was created but wasn't rolled back to the savepoint.
+
+**Fix Applied**:
+1. Fixed `get_inventory_overview`: `category` → `category_id::text`, `current_stock` → `stock_quantity`, `branch_id` → `location_id`
+2. Fixed `get_cash_flow` expenses sub-query: `expense_date` → `date`, wrapped in its own savepoint (`db.begin_nested()`) so failures don't poison the parent transaction
+3. Fixed `get_active_staff`: removed branch-scoped path since `time_entries` has no `branch_id` column
+
+**Steering Updated**: Added two new rules to `database-migration-checklist.md`:
+- "When Writing Raw SQL Queries" — always verify column names against the actual DB schema before writing `sa_text()` queries
+- "When Writing Multi-Query Functions with Savepoints" — every sub-query inside a savepoint-protected function must itself be inside a savepoint
+
+**Files Changed**:
+- `app/modules/organisations/dashboard_service.py` — fixed 3 widget functions
+- `.kiro/steering/database-migration-checklist.md` — added 2 new rules
+
+**Similar Bugs Found & Fixed**: The `time_entries` branch filter was also wrong (column doesn't exist). Fixed by removing the branch-scoped path for that widget.
+
+**Related Issues**: ISSUE-144 (same endpoint, different root cause), ISSUE-145 (rate limiter double-response, triggered by this cascade)

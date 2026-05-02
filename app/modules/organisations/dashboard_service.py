@@ -279,23 +279,24 @@ async def get_inventory_overview(
 ) -> dict:
     """Inventory grouped by category with low-stock counts."""
     from sqlalchemy import text as sa_text
+    # products columns: category_id (not category), stock_quantity (not current_stock)
     params: dict = {"org_id": str(org_id)}
     sql = sa_text("""
-        SELECT COALESCE(category, 'other') AS category,
+        SELECT COALESCE(category_id::text, 'other') AS category,
                COUNT(*) AS total_count,
-               COUNT(*) FILTER (WHERE current_stock <= low_stock_threshold) AS low_stock_count
+               COUNT(*) FILTER (WHERE stock_quantity <= low_stock_threshold) AS low_stock_count
         FROM products
         WHERE org_id = :org_id
-        GROUP BY COALESCE(category, 'other')
+        GROUP BY COALESCE(category_id::text, 'other')
     """)
     if branch_id is not None:
         sql = sa_text("""
-            SELECT COALESCE(category, 'other') AS category,
+            SELECT COALESCE(category_id::text, 'other') AS category,
                    COUNT(*) AS total_count,
-                   COUNT(*) FILTER (WHERE current_stock <= low_stock_threshold) AS low_stock_count
+                   COUNT(*) FILTER (WHERE stock_quantity <= low_stock_threshold) AS low_stock_count
             FROM products
-            WHERE org_id = :org_id AND branch_id = :branch_id
-            GROUP BY COALESCE(category, 'other')
+            WHERE org_id = :org_id AND location_id = :branch_id
+            GROUP BY COALESCE(category_id::text, 'other')
         """)
         params["branch_id"] = str(branch_id)
 
@@ -339,18 +340,24 @@ async def get_cash_flow(
     rev_result = await db.execute(rev_sql, params)
     rev_rows = {r.month: r for r in rev_result.all()}
 
-    # Expenses (may not exist)
+    # Expenses — column is "date" not "expense_date" (ISSUE-107)
+    # Wrapped in savepoint so failure doesn't poison the parent transaction
     exp_map: dict[str, float] = {}
     try:
-        exp_params: dict = {"org_id": str(org_id), "cutoff": six_months_ago}
-        exp_sql = sa_text("SELECT to_char(expense_date, 'YYYY-MM') AS month, COALESCE(SUM(amount), 0) AS expenses FROM expenses WHERE org_id = :org_id AND expense_date >= :cutoff GROUP BY to_char(expense_date, 'YYYY-MM')")
-        if branch_id is not None:
-            exp_sql = sa_text("SELECT to_char(expense_date, 'YYYY-MM') AS month, COALESCE(SUM(amount), 0) AS expenses FROM expenses WHERE org_id = :org_id AND expense_date >= :cutoff AND branch_id = :branch_id GROUP BY to_char(expense_date, 'YYYY-MM')")
-            exp_params["branch_id"] = str(branch_id)
-        exp_result = await db.execute(exp_sql, exp_params)
-        exp_map = {r.month: float(r.expenses) for r in exp_result.all()}
+        exp_savepoint = await db.begin_nested()
+        try:
+            exp_params: dict = {"org_id": str(org_id), "cutoff": six_months_ago}
+            exp_sql = sa_text("SELECT to_char(date, 'YYYY-MM') AS month, COALESCE(SUM(amount), 0) AS expenses FROM expenses WHERE org_id = :org_id AND date >= :cutoff GROUP BY to_char(date, 'YYYY-MM')")
+            if branch_id is not None:
+                exp_sql = sa_text("SELECT to_char(date, 'YYYY-MM') AS month, COALESCE(SUM(amount), 0) AS expenses FROM expenses WHERE org_id = :org_id AND date >= :cutoff AND branch_id = :branch_id GROUP BY to_char(date, 'YYYY-MM')")
+                exp_params["branch_id"] = str(branch_id)
+            exp_result = await db.execute(exp_sql, exp_params)
+            exp_map = {r.month: float(r.expenses) for r in exp_result.all()}
+        except Exception:
+            await exp_savepoint.rollback()
+            logger.debug("Expenses query failed in cash_flow widget — using empty data")
     except Exception:
-        pass  # expenses table may not exist
+        pass  # savepoint creation failed — skip expenses
 
     all_months = sorted(set(list(rev_rows.keys()) + list(exp_map.keys())))
     items = []
@@ -405,6 +412,7 @@ async def get_active_staff(
 ) -> dict:
     """Staff currently clocked in (time entries with no end_time today)."""
     from sqlalchemy import text as sa_text
+    # time_entries does NOT have branch_id — skip branch filtering for this widget
     params: dict = {"org_id": str(org_id), "today": date.today()}
     sql = sa_text("""
         SELECT u.id AS staff_id, u.email AS name, te.start_time AS clock_in_time
@@ -412,14 +420,6 @@ async def get_active_staff(
         JOIN users u ON te.user_id = u.id
         WHERE te.org_id = :org_id AND te.end_time IS NULL AND te.start_time::date = :today
     """)
-    if branch_id is not None:
-        sql = sa_text("""
-            SELECT u.id AS staff_id, u.email AS name, te.start_time AS clock_in_time
-            FROM time_entries te
-            JOIN users u ON te.user_id = u.id
-            WHERE te.org_id = :org_id AND te.end_time IS NULL AND te.start_time::date = :today AND te.branch_id = :branch_id
-        """)
-        params["branch_id"] = str(branch_id)
     result = await db.execute(sql, params)
     rows = result.all()
     return {"items": [
