@@ -470,6 +470,24 @@ async def update_customer(
 
             before_value["portal_token"] = None
             before_value["portal_token_expires_at"] = None
+
+            # Auto-send portal link email if customer has an email address
+            if customer.email:
+                try:
+                    await send_portal_link(
+                        db,
+                        org_id=org_id,
+                        user_id=user_id,
+                        customer_id=customer.id,
+                        ip_address=ip_address,
+                    )
+                except Exception:
+                    # Best-effort — token is generated even if email fails
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Auto-send portal link failed for customer %s — token generated but email not sent",
+                        customer.id,
+                    )
         elif not customer.enable_portal:
             before_value["portal_token"] = str(customer.portal_token) if customer.portal_token else None
             before_value["portal_token_expires_at"] = (

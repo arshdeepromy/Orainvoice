@@ -42,6 +42,10 @@ interface CustomerProfile {
   address: string | null
   notes: string | null
   is_anonymised: boolean
+  enable_portal: boolean
+  portal_token: string | null
+  portal_token_expires_at: string | null
+  last_portal_access_at: string | null
   created_at: string
   updated_at: string
   vehicles: LinkedVehicle[]
@@ -144,6 +148,96 @@ const INVOICE_STATUS_CONFIG: Record<string, { label: string; variant: BadgeVaria
   paid: { label: 'Paid', variant: 'success' },
   overdue: { label: 'Overdue', variant: 'error' },
   voided: { label: 'Voided', variant: 'neutral' },
+}
+
+/* ------------------------------------------------------------------ */
+/*  Portal Access Card                                                 */
+/* ------------------------------------------------------------------ */
+
+function PortalAccessCard({ customer, onRefresh }: { customer: CustomerProfile; onRefresh: () => void }) {
+  const [copyFeedback, setCopyFeedback] = useState(false)
+  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
+  const [sendError, setSendError] = useState('')
+
+  const isEnabled = !!customer.enable_portal && !!customer.portal_token
+  const portalUrl = isEnabled ? `${window.location.origin}/portal/${customer.portal_token}` : null
+
+  const handleCopy = async () => {
+    if (!portalUrl) return
+    try {
+      await navigator.clipboard.writeText(portalUrl)
+      setCopyFeedback(true)
+      setTimeout(() => setCopyFeedback(false), 2000)
+    } catch {
+      // fallback
+    }
+  }
+
+  const handleSendLink = async () => {
+    setSendStatus('sending')
+    setSendError('')
+    try {
+      await apiClient.post(`/api/v2/customers/${customer.id}/send-portal-link`)
+      setSendStatus('sent')
+      setTimeout(() => setSendStatus('idle'), 3000)
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail ?? 'Failed to send portal link'
+      setSendError(detail)
+      setSendStatus('error')
+      setTimeout(() => setSendStatus('idle'), 4000)
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-gray-200 p-4 mb-6">
+      <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">Portal Access</h2>
+
+      {!isEnabled ? (
+        <p className="text-sm text-gray-500">
+          Portal access is disabled for this customer. Enable it in the Edit Customer form to generate a portal link.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {/* Portal URL with copy/send buttons */}
+          <div className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-green-500 flex-shrink-0" />
+            <span className="text-sm text-gray-700 truncate flex-1 min-w-0 font-mono" title={portalUrl ?? ''}>
+              {portalUrl}
+            </span>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 transition-colors flex-shrink-0 min-h-[36px]"
+            >
+              {copyFeedback ? '✓ Copied' : 'Copy Link'}
+            </button>
+            <button
+              type="button"
+              onClick={handleSendLink}
+              disabled={sendStatus === 'sending' || sendStatus === 'sent'}
+              className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex-shrink-0 min-h-[36px]"
+            >
+              {sendStatus === 'sending' ? 'Sending…' : sendStatus === 'sent' ? '✓ Sent' : 'Send Link'}
+            </button>
+          </div>
+
+          {sendStatus === 'error' && sendError && (
+            <p className="text-xs text-red-600">{sendError}</p>
+          )}
+
+          {/* Metadata */}
+          <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-500">
+            {customer.portal_token_expires_at && (
+              <span>Expires: {formatDate(customer.portal_token_expires_at)}</span>
+            )}
+            {customer.last_portal_access_at && (
+              <span>Last accessed: {new Date(customer.last_portal_access_at).toLocaleString()}</span>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -666,6 +760,9 @@ export default function CustomerProfilePage() {
           )}
         </dl>
       </section>
+
+      {/* Portal Access */}
+      <PortalAccessCard customer={customer} onRefresh={fetchProfile} />
 
       {/* Tabs: Vehicles, Invoices & Claims */}
       <Tabs
