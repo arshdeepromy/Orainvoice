@@ -3,11 +3,18 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 import fs from 'fs'
 
-// Read version from VERSION file at project root
+// Read version from VERSION file or package.json
 const version = (() => {
   try {
-    const versionFile = path.resolve(__dirname, '..', 'VERSION')
-    if (fs.existsSync(versionFile)) return fs.readFileSync(versionFile, 'utf-8').trim()
+    // Check parent directory first (local dev: frontend/../VERSION)
+    const parentVersion = path.resolve(__dirname, '..', 'VERSION')
+    if (fs.existsSync(parentVersion)) return fs.readFileSync(parentVersion, 'utf-8').trim()
+    // Check current directory (Docker: /app/VERSION)
+    const localVersion = path.resolve(__dirname, 'VERSION')
+    if (fs.existsSync(localVersion)) return fs.readFileSync(localVersion, 'utf-8').trim()
+    // Fallback: read from package.json (always available)
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'))
+    if (pkg.version) return pkg.version
   } catch { /* ignore */ }
   return 'dev'
 })()
