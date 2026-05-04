@@ -209,12 +209,12 @@ class TestWriteTasksDefinition:
         from app.tasks.scheduled import WRITE_TASKS
         assert "reset_sms_counters" in WRITE_TASKS
 
-    def test_write_tasks_does_not_contain_readonly(self):
-        """Read-only tasks like compliance_expiry should still run on standby."""
+    def test_write_tasks_contains_all_db_writers(self):
+        """All tasks that write to the DB must be in WRITE_TASKS (ISSUE-147)."""
         from app.tasks.scheduled import WRITE_TASKS
-        assert "compliance_expiry" not in WRITE_TASKS
-        assert "quote_expiry" not in WRITE_TASKS
-        assert "sync_public_holidays" not in WRITE_TASKS
+        assert "compliance_expiry" in WRITE_TASKS
+        assert "quote_expiry" in WRITE_TASKS
+        assert "sync_public_holidays" in WRITE_TASKS
 
     def test_all_write_tasks_exist_in_daily_tasks(self):
         """Every name in WRITE_TASKS must correspond to a registered task."""

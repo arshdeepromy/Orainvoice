@@ -759,8 +759,10 @@ from app.tasks.subscriptions import (
 )
 
 # Tasks that write to the database and must be skipped on standby nodes.
-# Read-only tasks (e.g. sync_public_holidays) still run on standby
-# because they don't produce writes that would conflict with replication.
+# ALL tasks that INSERT, UPDATE, or DELETE rows must be listed here.
+# If a task writes to the DB and runs on both nodes, the standby will
+# have the data locally AND receive it via replication → duplicate key
+# errors that permanently block replication.  See ISSUE-147.
 #
 # NOTE on promotion: when a standby is promoted to primary, the middleware
 # role cache is updated immediately by set_node_role(). The next scheduler
@@ -783,6 +785,8 @@ WRITE_TASKS: set[str] = {
     "check_grace_period",          # check_grace_period_task — status transitions, audit logs, email sends
     "check_suspension_retention",  # check_suspension_retention_task — status transitions, audit logs, settings updates, email sends
     "compliance_expiry",           # check_compliance_expiry_task — sends expiry emails, writes notification log
+    "sync_public_holidays",        # sync_public_holidays_task — DELETE + INSERT holidays + audit log (ISSUE-147)
+    "quote_expiry",                # check_quote_expiry_task — UPDATE quotes to expired status
 }
 
 # (task_fn, interval_seconds, name)

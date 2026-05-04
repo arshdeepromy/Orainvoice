@@ -4832,3 +4832,58 @@ The `_safe_call` savepoint pattern in `get_all_widget_data` correctly caught the
 **Similar Bugs Found & Fixed**: The `time_entries` branch filter was also wrong (column doesn't exist). Fixed by removing the branch-scoped path for that widget.
 
 **Related Issues**: ISSUE-144 (same endpoint, different root cause), ISSUE-145 (rate limiter double-response, triggered by this cascade)
+
+---
+
+### ISSUE-147: HA replication permanently blocked — `sync_public_holidays` task misclassified as read-only, runs on both nodes causing duplicate key conflict
+
+- **Date**: 2026-05-04
+- **Severity**: Critical
+- **Environment**: Pi Prod (primary) → Standby Prod (standby)
+- **Reporter**: Investigated during deployment verification
+
+**Symptoms**:
+- HA Replication page shows Peer Node as "Unknown", health check "Warning"
+- Replication slot on primary is inactive (`active = f`)
+- Standby postgres logs show crash loop every 5 seconds:
+  ```
+  ERROR: duplicate key value violates unique constraint "uq_public_holidays_country_date_name"
+  DETAIL: Key (country_code, holiday_date, name)=(NZ, 2026-01-01, New Year's Day) already exists.
+  ```
+- 37,766 apply errors accumulated on standby
+- Replication lag growing continuously (23MB+ at time of investigation)
+- All data replication blocked — no changes flowing from primary to standby
+
+**Root Cause**:
+The `sync_public_holidays` scheduled task was **not** listed in `WRITE_TASKS` in `app/tasks/scheduled.py`. The code comment incorrectly stated it was "read-only":
+
+```python
+# Read-only tasks (e.g. sync_public_holidays) still run on standby
+# because they don't produce writes that would conflict with replication.
+```
+
+In reality, `sync_public_holidays` performs `DELETE` + `INSERT` + `flush()` + writes audit log entries — it is a full write operation.
+
+**Failure sequence**:
+1. Standby prod app started at 11:34:47 UTC. Scheduler ran `sync_public_holidays_task` (not in WRITE_TASKS, so not skipped). Inserted 97 holiday rows directly into standby DB.
+2. Pi prod (primary) restarted at 11:43:11 UTC. Its scheduler also ran `sync_public_holidays_task`. Inserted 97 holiday rows into primary DB. These INSERTs entered the WAL.
+3. Replication worker on standby tried to replay the primary's INSERT for `(NZ, 2026-01-01, New Year's Day)` → unique constraint violation because standby already had that row from step 1.
+4. Worker crashed, restarted every 5 seconds, hit the same error — infinite loop. All subsequent replication blocked.
+
+**Additional issue found**: `quote_expiry` task was also missing from `WRITE_TASKS`. It performs `UPDATE quotes SET status = 'expired'` — also a write operation that would cause conflicts if run on both nodes.
+
+**Fix Applied**:
+1. **Code fix**: Added `sync_public_holidays` and `quote_expiry` to `WRITE_TASKS` set in `app/tasks/scheduled.py`
+2. **Updated comment**: Removed incorrect "read-only" comment, added reference to this issue
+3. **Updated test**: Changed `test_write_tasks_does_not_contain_readonly` → `test_write_tasks_contains_all_db_writers` in `tests/test_scheduled_tasks.py`
+4. **Replication fix**: Disabled subscription on standby, deleted conflicting `public_holidays` rows and their audit log entries, re-enabled subscription. Replication caught up (lag → 0 bytes).
+5. **Maintenance mode**: Disabled on primary (was left on from previous operation).
+6. **Peer endpoint**: Fixed standby's `peer_endpoint` from `http://192.168.1.90:80` to `http://192.168.1.90:8999`.
+
+**Files Changed**:
+- `app/tasks/scheduled.py` — added `sync_public_holidays` and `quote_expiry` to `WRITE_TASKS`
+- `tests/test_scheduled_tasks.py` — updated test assertions
+
+**Lesson Learned**: Every scheduled task must be audited for DB writes before classifying it as safe for standby execution. The rule is simple: if a task does ANY INSERT, UPDATE, or DELETE, it must be in `WRITE_TASKS`. When in doubt, add it — a task not running on standby is harmless (data comes from replication), but a write task running on both nodes will permanently break replication.
+
+**Related Issues**: None
