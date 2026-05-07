@@ -74,15 +74,15 @@ class TestParseVehicleResponse:
         data = {
             "make": "Honda",
             "model": "Civic",
-            "year": "2019",
-            "colour": "Blue",
-            "body_type": "Hatchback",
+            "year_of_manufacture": "2019",
+            "main_colour": "Blue",
+            "body_style": "Hatchback",
             "fuel_type": "Petrol",
-            "engine_size": "1.5L",
-            "seats": "5",
-            "wof_expiry": "2025-03-15",
-            "rego_expiry": "2025-09-30",
-            "odometer": "62000",
+            "cc_rating": "1.5L",
+            "no_of_seats": "5",
+            "expiry_date_of_last_successful_wof": "1742000000",
+            "licence_expiry_date": "1759276800",
+            "latest_odometer_reading": "62000",
         }
         v = _parse_vehicle_response("abc123", data)
         assert v.rego == "ABC123"
@@ -98,7 +98,7 @@ class TestParseVehicleResponse:
         assert v.year is None
 
     def test_non_numeric_year_returns_none(self):
-        v = _parse_vehicle_response("GHI789", {"year": "unknown"})
+        v = _parse_vehicle_response("GHI789", {"year_of_manufacture": "unknown"})
         assert v.year is None
 
     def test_rego_normalised_to_uppercase(self):
@@ -209,12 +209,16 @@ class TestCarjamClientLookup:
         mock_response = httpx.Response(
             200,
             json={
-                "make": "Toyota",
-                "model": "Hilux",
-                "year": "2021",
-                "colour": "Silver",
+                "idh": {
+                    "vehicle": {
+                        "make": "Toyota",
+                        "model": "Hilux",
+                        "year_of_manufacture": "2021",
+                        "main_colour": "Silver",
+                    }
+                }
             },
-            request=httpx.Request("GET", "https://api.carjam.co.nz/car/ABC123"),
+            request=httpx.Request("GET", "https://www.carjam.co.nz/api/car/"),
         )
 
         client = _make_client()

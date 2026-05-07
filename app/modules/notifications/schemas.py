@@ -26,6 +26,7 @@ EMAIL_TEMPLATE_TYPES: list[str] = [
     "subscription_renewal_reminder",
     "subscription_payment_failed",
     "wof_expiry_reminder",
+    "cof_expiry_reminder",
     "registration_expiry_reminder",
     "service_due_reminder",
     "booking_confirmation",
@@ -77,6 +78,7 @@ SMS_TEMPLATE_TYPES: list[str] = [
     "invoice_issued",
     "payment_overdue_reminder",
     "wof_expiry_reminder",
+    "cof_expiry_reminder",
     "registration_expiry_reminder",
     "service_due_reminder",
     "booking_confirmation",
@@ -101,6 +103,10 @@ DEFAULT_SMS_BODIES: dict[str, str] = {
     ),
     "wof_expiry_reminder": (
         "Hi {{customer_first_name}}, WOF for {{vehicle_rego}} "
+        "expires {{expiry_date}}. Call {{org_name}} to book."
+    ),
+    "cof_expiry_reminder": (
+        "Hi {{customer_first_name}}, COF for {{vehicle_rego}} "
         "expires {{expiry_date}}. Call {{org_name}} to book."
     ),
     "registration_expiry_reminder": (
@@ -186,6 +192,11 @@ _DEFAULT_BODY_BLOCKS: dict[str, list[dict[str, Any]]] = {
         {"type": "text", "content": "Hi {{customer_first_name}}, the WOF for {{vehicle_rego}} ({{vehicle_make}} {{vehicle_model}}) expires on {{expiry_date}}."},
         {"type": "text", "content": "Book your WOF inspection with us today."},
     ],
+    "cof_expiry_reminder": [
+        {"type": "header", "content": "COF Expiry Reminder"},
+        {"type": "text", "content": "Hi {{customer_first_name}}, the COF for {{vehicle_rego}} ({{vehicle_make}} {{vehicle_model}}) expires on {{expiry_date}}."},
+        {"type": "text", "content": "Book your COF inspection with us today."},
+    ],
     "registration_expiry_reminder": [
         {"type": "header", "content": "Registration Expiry Reminder"},
         {"type": "text", "content": "Hi {{customer_first_name}}, the registration for {{vehicle_rego}} ({{vehicle_make}} {{vehicle_model}}) expires on {{expiry_date}}."},
@@ -257,6 +268,7 @@ DEFAULT_SUBJECTS: dict[str, str] = {
     "subscription_renewal_reminder": "Subscription renewal reminder",
     "subscription_payment_failed": "Subscription payment failed",
     "wof_expiry_reminder": "WOF expiry reminder for {{vehicle_rego}}",
+    "cof_expiry_reminder": "COF expiry reminder for {{vehicle_rego}}",
     "registration_expiry_reminder": "Registration expiry reminder for {{vehicle_rego}}",
     "service_due_reminder": "Service due reminder for {{vehicle_rego}}",
     "booking_confirmation": "Booking confirmed — {{booking_service}} on {{booking_date}}",
@@ -601,6 +613,7 @@ NOTIFICATION_CATEGORIES: dict[str, list[str]] = {
     ],
     "Vehicle Reminders": [
         "wof_expiry_reminder",
+        "cof_expiry_reminder",
         "registration_expiry_reminder",
         "service_due_reminder",
     ],

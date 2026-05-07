@@ -9,6 +9,7 @@ import { useBranch } from '@/contexts/BranchContext'
 import { useAuth } from '../../contexts/AuthContext'
 import { ModuleGate } from '../../components/common/ModuleGate'
 import { useModules } from '../../contexts/ModuleContext'
+import { getInspectionLabel } from '@/utils/vehicleHelpers'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -46,12 +47,15 @@ interface Vehicle {
   fuel_type: string
   engine_size: string
   wof_expiry: string | null
+  cof_expiry: string | null
+  inspection_type: string | null
   registration_expiry: string | null
   odometer?: number | null
   newOdometer?: number | null
   service_due_date?: string | null
   newServiceDueDate?: string | null
   newWofExpiry?: string | null
+  newCofExpiry?: string | null
 }
 
 interface CatalogueItem {
@@ -1241,7 +1245,12 @@ export default function InvoiceCreate() {
       vehicle_odometer: vehicles[0]?.newOdometer ?? vehicles[0]?.odometer ?? undefined,
       global_vehicle_id: vehicles[0]?.id || undefined,
       vehicle_service_due_date: vehicles[0]?.newServiceDueDate ?? vehicles[0]?.service_due_date ?? undefined,
-      vehicle_wof_expiry_date: vehicles[0]?.newWofExpiry ?? vehicles[0]?.wof_expiry ?? undefined,
+      vehicle_wof_expiry_date: vehicles[0]?.inspection_type === 'cof'
+        ? undefined
+        : (vehicles[0]?.newWofExpiry ?? vehicles[0]?.wof_expiry ?? undefined),
+      vehicle_cof_expiry_date: vehicles[0]?.inspection_type === 'cof'
+        ? (vehicles[0]?.newCofExpiry ?? vehicles[0]?.cof_expiry ?? undefined)
+        : undefined,
       vehicles: vehicles.map(v => ({
         id: v.id || undefined,
         rego: v.rego,
@@ -1512,60 +1521,80 @@ export default function InvoiceCreate() {
                               {[v.year, v.make, v.model].filter(Boolean).join(' ')}
                             </span>
                           )}
-                          {v.odometer != null && v.odometer > 0 && (
-                            <span className="ml-2 text-gray-400">
-                              Current: {v.odometer.toLocaleString()} km
-                            </span>
-                          )}
                         </div>
                       </div>
-                      <div className="mt-2 flex items-center gap-2">
-                        <label className="text-xs text-gray-500 whitespace-nowrap">New Odo Reading:</label>
-                        <input
-                          type="number"
-                          min="0"
-                          placeholder={v.odometer ? `${v.odometer}` : 'km'}
-                          value={v.newOdometer ?? ''}
-                          onChange={(e) => {
-                            const val = e.target.value ? Number(e.target.value) : null
-                            setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newOdometer: val } : veh))
-                          }}
-                          className="w-32 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        />
-                        <span className="text-xs text-gray-400">Kms</span>
-                      </div>
-                      <div className="mt-2 flex items-center gap-2">
-                        <label className="text-xs text-gray-500 whitespace-nowrap">Service Due:</label>
-                        <input
-                          type="date"
-                          value={v.newServiceDueDate ?? v.service_due_date ?? ''}
-                          onChange={(e) => {
-                            const val = e.target.value || null
-                            setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newServiceDueDate: val } : veh))
-                          }}
-                          className="w-40 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        />
-                        {v.service_due_date && !v.newServiceDueDate && (
-                          <span className="text-xs text-gray-400">
-                            Current: {new Date(v.service_due_date).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}
-                          </span>
+                      <div className="mt-2">
+                        <div className="flex items-center gap-2">
+                          <label className="text-xs text-gray-500 whitespace-nowrap">New Odo Reading:</label>
+                          <input
+                            type="number"
+                            min="0"
+                            placeholder={v.odometer ? `${v.odometer}` : 'km'}
+                            value={v.newOdometer ?? ''}
+                            onChange={(e) => {
+                              const val = e.target.value ? Number(e.target.value) : null
+                              setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newOdometer: val } : veh))
+                            }}
+                            className="w-32 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                          <span className="text-xs text-gray-400">Kms</span>
+                        </div>
+                        {v.odometer != null && v.odometer > 0 && (
+                          <p className="mt-0.5 ml-[106px] text-xs text-blue-500">
+                            Current: {(v.odometer ?? 0).toLocaleString()} km
+                          </p>
                         )}
                       </div>
-                      <div className="mt-2 flex items-center gap-2">
-                        <label className="text-xs text-gray-500 whitespace-nowrap">WOF Expiry:</label>
-                        <input
-                          type="date"
-                          value={v.newWofExpiry ?? v.wof_expiry ?? ''}
-                          onChange={(e) => {
-                            const val = e.target.value || null
-                            setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newWofExpiry: val } : veh))
-                          }}
-                          className="w-40 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        />
-                        {v.wof_expiry && !v.newWofExpiry && (
-                          <span className="text-xs text-gray-400">
-                            Current: {new Date(v.wof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}
-                          </span>
+                      <div className="mt-2">
+                        <div className="flex items-center gap-2">
+                          <label className="text-xs text-gray-500 whitespace-nowrap">Service Due:</label>
+                          <input
+                            type="date"
+                            value={v.newServiceDueDate ?? v.service_due_date ?? ''}
+                            onChange={(e) => {
+                              const val = e.target.value || null
+                              setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newServiceDueDate: val } : veh))
+                            }}
+                            className="w-40 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                        {v.service_due_date && (
+                          <p className="mt-0.5 ml-[106px] text-xs text-blue-500">
+                            Current: {new Date(v.service_due_date).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}
+                          </p>
+                        )}
+                      </div>
+                      <div className="mt-2">
+                        <div className="flex items-center gap-2">
+                          <label className="text-xs text-gray-500 whitespace-nowrap">{getInspectionLabel(v)}:</label>
+                          <input
+                            type="date"
+                            value={v.inspection_type === 'cof'
+                              ? (v.newCofExpiry ?? v.cof_expiry ?? '')
+                              : (v.newWofExpiry ?? v.wof_expiry ?? '')}
+                            onChange={(e) => {
+                              const val = e.target.value || null
+                              if (v.inspection_type === 'cof') {
+                                setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newCofExpiry: val } : veh))
+                              } else {
+                                setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newWofExpiry: val } : veh))
+                              }
+                            }}
+                            className="w-40 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                        {v.inspection_type === 'cof' ? (
+                          v.cof_expiry && (
+                            <p className="mt-0.5 ml-[106px] text-xs text-blue-500">
+                              Current: {new Date(v.cof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}
+                            </p>
+                          )
+                        ) : (
+                          v.wof_expiry && (
+                            <p className="mt-0.5 ml-[106px] text-xs text-blue-500">
+                              Current: {new Date(v.wof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}
+                            </p>
+                          )
                         )}
                       </div>
                     </div>

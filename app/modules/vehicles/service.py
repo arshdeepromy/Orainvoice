@@ -109,6 +109,8 @@ def _global_vehicle_to_dict(gv: GlobalVehicle, source: str) -> dict:
         "plate_type": gv.plate_type,
         "submodel": gv.submodel,
         "second_colour": gv.second_colour,
+        "cof_expiry": gv.cof_expiry.isoformat() if gv.cof_expiry else None,
+        "inspection_type": gv.inspection_type,
     }
 
 
@@ -146,6 +148,8 @@ def _carjam_data_to_global_vehicle(data: CarjamVehicleData) -> GlobalVehicle:
         plate_type=data.plate_type,
         submodel=data.submodel,
         second_colour=data.second_colour,
+        cof_expiry=_parse_date(data.cof_expiry),
+        inspection_type=data.inspection_type,
     )
 
 
@@ -476,6 +480,8 @@ async def refresh_vehicle(
     existing.plate_type = carjam_data.plate_type
     existing.submodel = carjam_data.submodel
     existing.second_colour = carjam_data.second_colour
+    existing.cof_expiry = _parse_date(carjam_data.cof_expiry)
+    existing.inspection_type = carjam_data.inspection_type
     await db.flush()
 
     # Increment org's Carjam usage counter (charge the org)
@@ -549,6 +555,8 @@ async def create_manual_vehicle(
     wof_expiry: str | None = None,
     rego_expiry: str | None = None,
     odometer: int | None = None,
+    cof_expiry: str | None = None,
+    inspection_type: str | None = None,
     ip_address: str | None = None,
 ) -> dict:
     """Create a manually entered vehicle in global_vehicles.
@@ -610,6 +618,10 @@ async def create_manual_vehicle(
             existing.registration_expiry = _parse_date(rego_expiry)
         if odometer is not None:
             existing.odometer_last_recorded = odometer
+        if cof_expiry is not None:
+            existing.cof_expiry = _parse_date(cof_expiry)
+        if inspection_type is not None:
+            existing.inspection_type = inspection_type
         existing.last_pulled_at = now
         await db.flush()
         vehicle = existing
@@ -639,6 +651,8 @@ async def create_manual_vehicle(
             vehicle_type=vehicle_type,
             submodel=submodel,
             second_colour=second_colour,
+            cof_expiry=_parse_date(cof_expiry),
+            inspection_type=inspection_type,
         )
         db.add(vehicle)
         await db.flush()
@@ -907,6 +921,8 @@ async def get_vehicle_profile(
         "vehicle_type": vehicle.vehicle_type,
         "submodel": vehicle.submodel,
         "second_colour": vehicle.second_colour,
+        "cof_expiry": vehicle.cof_expiry.isoformat() if vehicle.cof_expiry else None,
+        "inspection_type": vehicle.inspection_type,
         "lookup_type": lookup_type,
         "linked_customers": linked_customers,
         "service_history": service_history,
@@ -969,6 +985,8 @@ async def search_vehicles(
             "odometer": v.odometer_last_recorded,
             "service_due_date": v.service_due_date.isoformat() if v.service_due_date else None,
             "wof_expiry": v.wof_expiry.isoformat() if v.wof_expiry else None,
+            "cof_expiry": v.cof_expiry.isoformat() if v.cof_expiry else None,
+            "inspection_type": v.inspection_type,
             "linked_customers": [],
         }
 
@@ -1028,6 +1046,8 @@ async def search_vehicles(
                 "odometer": ov.odometer_last_recorded,
                 "service_due_date": ov.service_due_date.isoformat() if ov.service_due_date else None,
                 "wof_expiry": ov.wof_expiry.isoformat() if ov.wof_expiry else None,
+                "cof_expiry": ov.cof_expiry.isoformat() if ov.cof_expiry else None,
+                "inspection_type": ov.inspection_type,
                 "linked_customers": [],
             }
 

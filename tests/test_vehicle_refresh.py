@@ -22,6 +22,8 @@ import pytest
 # Import models to resolve SQLAlchemy relationships
 import app.modules.admin.models  # noqa: F401
 import app.modules.auth.models  # noqa: F401
+import app.modules.customers.models  # noqa: F401
+import app.modules.organisations.models  # noqa: F401
 
 from app.integrations.carjam import (
     CarjamError,
@@ -165,17 +167,19 @@ class TestRefreshVehicle:
 
         mock_client = AsyncMock()
         mock_client.lookup_vehicle = AsyncMock(return_value=carjam_data)
+        mock_client.lookup_vehicle_abcd = AsyncMock(side_effect=CarjamError("ABCD not available"))
 
-        with patch("app.modules.vehicles.service.CarjamClient", return_value=mock_client):
+        with patch("app.modules.vehicles.service._load_carjam_client", new_callable=AsyncMock, return_value=mock_client):
             with patch("app.modules.vehicles.service.write_audit_log", new_callable=AsyncMock):
-                result = await refresh_vehicle(
-                    db, redis,
-                    vehicle_id=vehicle_id,
-                    org_id=org_id,
-                    user_id=uuid.uuid4(),
-                )
+                with patch("app.modules.vehicles.service.record_odometer_reading", new_callable=AsyncMock):
+                    result = await refresh_vehicle(
+                        db, redis,
+                        vehicle_id=vehicle_id,
+                        org_id=org_id,
+                        user_id=uuid.uuid4(),
+                    )
 
-        # Carjam was called
+        # Carjam was called (basic fallback)
         mock_client.lookup_vehicle.assert_called_once_with("REF123")
 
         # GlobalVehicle fields updated
@@ -184,13 +188,13 @@ class TestRefreshVehicle:
         assert gv.year == 2023
         assert gv.colour == "Green"
         assert gv.fuel_type == "Electric"
-        assert gv.odometer_last_recorded == 8000
+        assert gv.odometer_last_recorded == 45000  # max(8000, 45000)
 
         # Org counter incremented
         assert org.carjam_lookups_this_month == 11
 
         # Response has correct data
-        assert result["source"] == "carjam"
+        assert result["source"] == "basic"
         assert result["rego"] == "REF123"
         assert result["make"] == "Nissan"
 
@@ -219,11 +223,14 @@ class TestRefreshVehicle:
         redis = MagicMock()
 
         mock_client = AsyncMock()
+        mock_client.lookup_vehicle_abcd = AsyncMock(
+            side_effect=CarjamNotFoundError("GONE999")
+        )
         mock_client.lookup_vehicle = AsyncMock(
             side_effect=CarjamNotFoundError("GONE999")
         )
 
-        with patch("app.modules.vehicles.service.CarjamClient", return_value=mock_client):
+        with patch("app.modules.vehicles.service._load_carjam_client", new_callable=AsyncMock, return_value=mock_client):
             with pytest.raises(CarjamNotFoundError):
                 await refresh_vehicle(
                     db, redis,
@@ -242,11 +249,14 @@ class TestRefreshVehicle:
         redis = MagicMock()
 
         mock_client = AsyncMock()
+        mock_client.lookup_vehicle_abcd = AsyncMock(
+            side_effect=CarjamRateLimitError(retry_after=60)
+        )
         mock_client.lookup_vehicle = AsyncMock(
             side_effect=CarjamRateLimitError(retry_after=60)
         )
 
-        with patch("app.modules.vehicles.service.CarjamClient", return_value=mock_client):
+        with patch("app.modules.vehicles.service._load_carjam_client", new_callable=AsyncMock, return_value=mock_client):
             with pytest.raises(CarjamRateLimitError) as exc_info:
                 await refresh_vehicle(
                     db, redis,
@@ -265,130 +275,82 @@ class TestRefreshVehicle:
 class TestCreateManualVehicle:
     @pytest.mark.asyncio
     async def test_creates_org_vehicle_marked_as_manual(self):
-        """Req 14.7: Manual entry stored in org_vehicles, marked as manually entered."""
+        """Req 14.7: Manual entry stored in global_vehicles with lookup_type='manual'."""
         org_id = uuid.uuid4()
         user_id = uuid.uuid4()
 
         db = AsyncMock()
+        db.execute = AsyncMock(return_value=_make_scalar_result(None))  # No existing vehicle
         db.add = MagicMock()
         db.flush = AsyncMock()
+        db.commit = AsyncMock()
 
         with patch("app.modules.vehicles.service.write_audit_log", new_callable=AsyncMock):
-            with patch("app.modules.vehicles.models.OrgVehicle") as MockOrgVehicle:
-                mock_instance = MagicMock()
-                mock_instance.id = uuid.uuid4()
-                mock_instance.org_id = org_id
-                mock_instance.rego = "MAN456"
-                mock_instance.make = "Subaru"
-                mock_instance.model = "Outback"
-                mock_instance.year = 2017
-                mock_instance.colour = "Blue"
-                mock_instance.body_type = "Wagon"
-                mock_instance.fuel_type = "Petrol"
-                mock_instance.engine_size = "2.5L"
-                mock_instance.num_seats = 5
-                mock_instance.is_manual_entry = True
-                mock_instance.created_at = datetime(2025, 3, 1, tzinfo=timezone.utc)
-                MockOrgVehicle.return_value = mock_instance
+            result = await create_manual_vehicle(
+                db,
+                org_id=org_id,
+                user_id=user_id,
+                rego="man456",
+                make="Subaru",
+                model="Outback",
+                year=2017,
+                colour="Blue",
+                body_type="Wagon",
+                fuel_type="Petrol",
+                engine_size="2.5L",
+                num_seats=5,
+            )
 
-                result = await create_manual_vehicle(
-                    db,
-                    org_id=org_id,
-                    user_id=user_id,
-                    rego="man456",
-                    make="Subaru",
-                    model="Outback",
-                    year=2017,
-                    colour="Blue",
-                    body_type="Wagon",
-                    fuel_type="Petrol",
-                    engine_size="2.5L",
-                    num_seats=5,
-                )
-
-        # OrgVehicle was constructed with correct args
-        MockOrgVehicle.assert_called_once()
-        call_kwargs = MockOrgVehicle.call_args[1]
-        assert call_kwargs["org_id"] == org_id
-        assert call_kwargs["rego"] == "MAN456"  # normalised uppercase
-        assert call_kwargs["is_manual_entry"] is True
-
-        # Added to DB
-        db.add.assert_called_once_with(mock_instance)
+        # Vehicle was added to DB
+        db.add.assert_called_once()
+        added_vehicle = db.add.call_args[0][0]
+        assert added_vehicle.rego == "MAN456"  # normalised uppercase
+        assert added_vehicle.make == "Subaru"
+        assert added_vehicle.lookup_type == "manual"
 
         # Response
         assert result["rego"] == "MAN456"
         assert result["make"] == "Subaru"
-        assert result["is_manual_entry"] is True
+        assert result["source"] == "manual"
 
     @pytest.mark.asyncio
     async def test_rego_normalised_to_uppercase(self):
         """Rego should be normalised to uppercase and trimmed."""
         db = AsyncMock()
+        db.execute = AsyncMock(return_value=_make_scalar_result(None))
         db.add = MagicMock()
         db.flush = AsyncMock()
+        db.commit = AsyncMock()
 
         with patch("app.modules.vehicles.service.write_audit_log", new_callable=AsyncMock):
-            with patch("app.modules.vehicles.models.OrgVehicle") as MockOrgVehicle:
-                mock_instance = MagicMock()
-                mock_instance.id = uuid.uuid4()
-                mock_instance.org_id = uuid.uuid4()
-                mock_instance.rego = "LOW123"
-                mock_instance.make = None
-                mock_instance.model = None
-                mock_instance.year = None
-                mock_instance.colour = None
-                mock_instance.body_type = None
-                mock_instance.fuel_type = None
-                mock_instance.engine_size = None
-                mock_instance.num_seats = None
-                mock_instance.is_manual_entry = True
-                mock_instance.created_at = datetime(2025, 3, 1, tzinfo=timezone.utc)
-                MockOrgVehicle.return_value = mock_instance
+            await create_manual_vehicle(
+                db,
+                org_id=uuid.uuid4(),
+                user_id=uuid.uuid4(),
+                rego="  low123  ",
+            )
 
-                await create_manual_vehicle(
-                    db,
-                    org_id=uuid.uuid4(),
-                    user_id=uuid.uuid4(),
-                    rego="  low123  ",
-                )
-
-        call_kwargs = MockOrgVehicle.call_args[1]
-        assert call_kwargs["rego"] == "LOW123"
+        added_vehicle = db.add.call_args[0][0]
+        assert added_vehicle.rego == "LOW123"
 
     @pytest.mark.asyncio
     async def test_audit_log_written(self):
         """Manual entry should write an audit log entry."""
         db = AsyncMock()
+        db.execute = AsyncMock(return_value=_make_scalar_result(None))
         db.add = MagicMock()
         db.flush = AsyncMock()
+        db.commit = AsyncMock()
 
         with patch("app.modules.vehicles.service.write_audit_log", new_callable=AsyncMock) as mock_audit:
-            with patch("app.modules.vehicles.models.OrgVehicle") as MockOrgVehicle:
-                mock_instance = MagicMock()
-                mock_instance.id = uuid.uuid4()
-                mock_instance.org_id = uuid.uuid4()
-                mock_instance.rego = "AUD001"
-                mock_instance.make = None
-                mock_instance.model = None
-                mock_instance.year = None
-                mock_instance.colour = None
-                mock_instance.body_type = None
-                mock_instance.fuel_type = None
-                mock_instance.engine_size = None
-                mock_instance.num_seats = None
-                mock_instance.is_manual_entry = True
-                mock_instance.created_at = datetime(2025, 3, 1, tzinfo=timezone.utc)
-                MockOrgVehicle.return_value = mock_instance
-
-                await create_manual_vehicle(
-                    db,
-                    org_id=uuid.uuid4(),
-                    user_id=uuid.uuid4(),
-                    rego="AUD001",
-                )
+            await create_manual_vehicle(
+                db,
+                org_id=uuid.uuid4(),
+                user_id=uuid.uuid4(),
+                rego="AUD001",
+            )
 
         mock_audit.assert_called_once()
         call_kwargs = mock_audit.call_args[1]
         assert call_kwargs["action"] == "vehicle.manual_entry"
-        assert call_kwargs["entity_type"] == "org_vehicle"
+        assert call_kwargs["entity_type"] == "global_vehicle"

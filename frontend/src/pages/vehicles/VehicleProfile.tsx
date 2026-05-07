@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Tabs, Modal, Input, ToastContainer, useToast } from '../../components/ui'
+import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -49,6 +50,8 @@ interface VehicleProfileData {
   last_pulled_at: string | null
   wof_expiry: ExpiryIndicator
   rego_expiry: ExpiryIndicator
+  cof_expiry: string | null
+  inspection_type: string | null
   linked_customers: LinkedCustomer[]
   service_history: ServiceHistoryEntry[]
   // Extended fields
@@ -476,9 +479,9 @@ export default function VehicleProfilePage() {
         </div>
       )}
 
-      {/* WOF & Rego expiry indicators */}
+      {/* WOF/COF & Rego expiry indicators */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 mb-6">
-        <ExpiryBadge expiry={vehicle.wof_expiry} label="WOF Expiry" />
+        <ExpiryBadge expiry={vehicle.wof_expiry} label={getInspectionLabel(vehicle)} />
         <ExpiryBadge expiry={vehicle.rego_expiry} label="Registration Expiry" />
       </div>
 

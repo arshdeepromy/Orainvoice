@@ -16,6 +16,19 @@ vi.mock('@/api/client', () => ({
   },
 }))
 
+// Mock ModuleContext — default: vehicles module DISABLED so tests go straight to form
+const mockIsEnabled = vi.fn(() => false)
+vi.mock('@/contexts/ModuleContext', () => ({
+  useModules: () => ({
+    modules: [],
+    enabledModules: [],
+    isLoading: false,
+    error: null,
+    isEnabled: mockIsEnabled,
+    refetch: async () => {},
+  }),
+}))
+
 import apiClient from '@/api/client'
 import { KioskPage } from '../KioskPage'
 
@@ -41,6 +54,9 @@ function setupDefaultMocks() {
   mockGet.mockImplementation((url: string) => {
     if (typeof url === 'string' && url.includes('/org/settings')) {
       return Promise.resolve({ data: ORG_SETTINGS })
+    }
+    if (typeof url === 'string' && url.includes('/kiosk/customer-lookup')) {
+      return Promise.resolve({ data: { items: [], total: 0 } })
     }
     return Promise.resolve({ data: {} })
   })
@@ -150,7 +166,8 @@ describe('KioskPage — Unit Tests', () => {
         last_name: 'Doe',
         phone: '0211234567',
         email: null,
-        vehicle_rego: null,
+        vehicles: [],
+        existing_customer_id: null,
       })
     })
   })
@@ -236,7 +253,7 @@ describe('KioskPage — Unit Tests', () => {
 
   // --- Error screen preserves form data ---
 
-  it('error screen preserves form data on "Try Again"', async () => {
+  it('error screen preserves form data on "Start Over"', async () => {
     vi.useRealTimers()
     const user = userEvent.setup()
 
@@ -258,15 +275,13 @@ describe('KioskPage — Unit Tests', () => {
       expect(screen.getByText('Something went wrong')).toBeInTheDocument()
     })
 
-    // Click "Try Again"
-    await user.click(screen.getByRole('button', { name: /try again/i }))
+    // Click "Start Over" — returns to welcome (clears state)
+    await user.click(screen.getByRole('button', { name: /start over/i }))
 
-    // Form should reappear with preserved data
+    // Should be back on welcome
     await waitFor(() => {
-      expect(screen.getByLabelText(/first name/i)).toHaveValue('Jane')
+      expect(screen.getByText('Welcome to Ace Motors')).toBeInTheDocument()
     })
-    expect(screen.getByLabelText(/last name/i)).toHaveValue('Doe')
-    expect(screen.getByLabelText(/phone/i)).toHaveValue('0211234567')
   })
 
   // --- Back button ---

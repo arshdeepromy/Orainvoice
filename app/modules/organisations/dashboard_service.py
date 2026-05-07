@@ -432,7 +432,7 @@ async def get_active_staff(
 async def get_expiry_reminders(
     db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
 ) -> dict:
-    """Vehicles with upcoming WOF/service expiry, excluding dismissed."""
+    """Vehicles with upcoming WOF/COF/service expiry, excluding dismissed."""
     from sqlalchemy import text as sa_text
 
     # Get config thresholds
@@ -443,6 +443,7 @@ async def get_expiry_reminders(
 
     today = date.today()
     wof_cutoff = today + timedelta(days=wof_days)
+    cof_cutoff = today + timedelta(days=wof_days)  # COF uses same threshold as WOF
     service_cutoff = today + timedelta(days=service_days)
 
     # Get dismissed combos
@@ -452,13 +453,15 @@ async def get_expiry_reminders(
     # Get vehicles with upcoming expiry
     v_result = await db.execute(sa_text("""
         SELECT gv.id AS vehicle_id, gv.rego AS vehicle_rego, gv.make AS vehicle_make,
-               gv.model AS vehicle_model, gv.wof_expiry, gv.service_due_date
+               gv.model AS vehicle_model, gv.wof_expiry, gv.cof_expiry,
+               gv.inspection_type, gv.service_due_date
         FROM global_vehicles gv
         JOIN org_vehicles ov ON ov.global_vehicle_id = gv.id
         WHERE ov.org_id = :org_id
           AND ((gv.wof_expiry IS NOT NULL AND gv.wof_expiry >= :today AND gv.wof_expiry <= :wof_cutoff)
+            OR (gv.cof_expiry IS NOT NULL AND gv.cof_expiry >= :today AND gv.cof_expiry <= :cof_cutoff)
             OR (gv.service_due_date IS NOT NULL AND gv.service_due_date >= :today AND gv.service_due_date <= :service_cutoff))
-    """), {"org_id": str(org_id), "today": today, "wof_cutoff": wof_cutoff, "service_cutoff": service_cutoff})
+    """), {"org_id": str(org_id), "today": today, "wof_cutoff": wof_cutoff, "cof_cutoff": cof_cutoff, "service_cutoff": service_cutoff})
     vehicles = v_result.all()
 
     items = []
@@ -474,11 +477,30 @@ async def get_expiry_reminders(
         cust_name = cv_row.name if cv_row else "Unlinked"
         cust_id = str(cv_row.id) if cv_row else ""
 
-        if v.wof_expiry and v.wof_expiry >= today and v.wof_expiry <= wof_cutoff:
+        # Determine which inspection expiry to show when vehicle has both
+        # If vehicle has both wof_expiry and cof_expiry, display the one matching inspection_type
+        has_wof = v.wof_expiry and v.wof_expiry >= today and v.wof_expiry <= wof_cutoff
+        has_cof = v.cof_expiry and v.cof_expiry >= today and v.cof_expiry <= cof_cutoff
+
+        if has_wof and has_cof:
+            # Both present — show only the one matching inspection_type
+            if v.inspection_type == "cof":
+                has_wof = False
+            else:
+                has_cof = False
+
+        if has_wof:
             exp_str = str(v.wof_expiry)[:10]
             if (vid, "wof", exp_str) not in dismissed_set:
                 items.append({"vehicle_id": vid, "vehicle_rego": v.vehicle_rego or "", "vehicle_make": v.vehicle_make,
                               "vehicle_model": v.vehicle_model, "expiry_type": "wof", "expiry_date": exp_str,
+                              "customer_name": cust_name, "customer_id": cust_id})
+
+        if has_cof:
+            exp_str = str(v.cof_expiry)[:10]
+            if (vid, "cof", exp_str) not in dismissed_set:
+                items.append({"vehicle_id": vid, "vehicle_rego": v.vehicle_rego or "", "vehicle_make": v.vehicle_make,
+                              "vehicle_model": v.vehicle_model, "expiry_type": "cof", "expiry_date": exp_str,
                               "customer_name": cust_name, "customer_id": cust_id})
 
         if v.service_due_date and v.service_due_date >= today and v.service_due_date <= service_cutoff:

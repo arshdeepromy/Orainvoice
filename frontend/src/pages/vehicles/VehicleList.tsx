@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import apiClient from '../../api/client'
 import { Button, Input, Spinner, Modal, Pagination, PageSizeSelect } from '../../components/ui'
+import { getInspectionLabel } from '@/utils/vehicleHelpers'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -25,6 +26,8 @@ interface VehicleListItem {
   fuel_type: string | null
   wof_indicator: 'green' | 'amber' | 'red'
   wof_expiry_date: string | null
+  cof_expiry: string | null
+  inspection_type: string | null
   rego_indicator: 'green' | 'amber' | 'red'
   rego_expiry_date: string | null
   service_due_date: string | null
@@ -61,6 +64,8 @@ interface ManualEntryForm {
   wof_expiry: string
   rego_expiry: string
   odometer: string
+  inspection_type: string
+  cof_expiry: string
 }
 
 const EMPTY_MANUAL_FORM: ManualEntryForm = {
@@ -69,7 +74,7 @@ const EMPTY_MANUAL_FORM: ManualEntryForm = {
   vin: '', chassis: '', engine_no: '', transmission: '',
   country_of_origin: '', number_of_owners: '', vehicle_type: '',
   submodel: '', second_colour: '', wof_expiry: '', rego_expiry: '',
-  odometer: '',
+  odometer: '', inspection_type: 'wof', cof_expiry: '',
 }
 
 const INDICATOR_COLORS: Record<string, string> = {
@@ -168,7 +173,13 @@ export default function VehicleList() {
       if (manualForm.vehicle_type.trim()) body.vehicle_type = manualForm.vehicle_type.trim()
       if (manualForm.submodel.trim()) body.submodel = manualForm.submodel.trim()
       if (manualForm.second_colour.trim()) body.second_colour = manualForm.second_colour.trim()
-      if (manualForm.wof_expiry.trim()) body.wof_expiry = manualForm.wof_expiry.trim()
+      if (manualForm.inspection_type === 'cof' && manualForm.cof_expiry.trim()) {
+        body.cof_expiry = manualForm.cof_expiry.trim()
+        body.inspection_type = 'cof'
+      } else {
+        if (manualForm.wof_expiry.trim()) body.wof_expiry = manualForm.wof_expiry.trim()
+        body.inspection_type = 'wof'
+      }
       if (manualForm.rego_expiry.trim()) body.rego_expiry = manualForm.rego_expiry.trim()
       if (manualForm.odometer.trim()) body.odometer = parseInt(manualForm.odometer, 10)
       const res = await apiClient.post<{ id: string }>('/vehicles/manual', body)
@@ -218,7 +229,7 @@ export default function VehicleList() {
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Rego</th>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Vehicle</th>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Colour</th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">WOF</th>
+                <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">WOF/COF</th>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Rego Expiry</th>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Service Due</th>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Customers</th>
@@ -240,7 +251,7 @@ export default function VehicleList() {
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{v.colour || '—'}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm">
                       <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${wofColor}`}>
-                        {formatExpiryDate(v.wof_expiry_date)}
+                        {getInspectionLabel(v)}: {formatExpiryDate(v.inspection_type === 'cof' ? (v.cof_expiry ?? null) : (v.wof_expiry_date ?? null))}
                       </span>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm">
@@ -399,8 +410,23 @@ export default function VehicleList() {
 
           {/* Compliance & History */}
           <p className="text-xs font-medium text-gray-500 uppercase tracking-wider pt-2">Compliance & History</p>
+          <div>
+            <label className="text-xs text-gray-500">Inspection Type</label>
+            <select
+              value={manualForm.inspection_type}
+              onChange={(e) => updateManualField('inspection_type', e.target.value)}
+              className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+            >
+              <option value="wof">WOF (Warrant of Fitness)</option>
+              <option value="cof">COF (Certificate of Fitness)</option>
+            </select>
+          </div>
           <div className="grid grid-cols-2 gap-3">
-            <Input label="WOF Expiry" type="date" value={manualForm.wof_expiry} onChange={(e) => updateManualField('wof_expiry', e.target.value)} />
+            {manualForm.inspection_type === 'cof' ? (
+              <Input label="COF Expiry" type="date" value={manualForm.cof_expiry} onChange={(e) => updateManualField('cof_expiry', e.target.value)} />
+            ) : (
+              <Input label="WOF Expiry" type="date" value={manualForm.wof_expiry} onChange={(e) => updateManualField('wof_expiry', e.target.value)} />
+            )}
             <Input label="Rego Expiry" type="date" value={manualForm.rego_expiry} onChange={(e) => updateManualField('rego_expiry', e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">

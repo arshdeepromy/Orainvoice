@@ -23,6 +23,16 @@ import pytest
 
 # Import models so SQLAlchemy can resolve all relationships
 import app.modules.admin.models  # noqa: F401
+import app.modules.auth.models  # noqa: F401
+import app.modules.organisations.models  # noqa: F401
+import app.modules.customers.models  # noqa: F401
+import app.modules.suppliers.models  # noqa: F401
+import app.modules.catalogue.models  # noqa: F401
+import app.modules.inventory.models  # noqa: F401
+import app.modules.invoices.models  # noqa: F401
+import app.modules.vehicles.models  # noqa: F401
+import app.modules.stock.models  # noqa: F401
+import app.modules.payments.models  # noqa: F401
 from app.modules.auth.models import User  # noqa: F401
 from app.modules.organisations.models import Branch  # noqa: F401
 from app.modules.payments.models import Payment  # noqa: F401
@@ -349,21 +359,22 @@ class TestCreateInvoiceService:
         db.execute.side_effect = [cust_result, org_result, None]
 
         with patch("app.modules.invoices.service.write_audit_log", new_callable=AsyncMock):
-            result = await create_invoice(
-                db,
-                org_id=org_id,
-                user_id=user_id,
-                customer_id=customer.id,
-                status="draft",
-                line_items_data=[
-                    {
-                        "item_type": "service",
-                        "description": "WOF inspection",
-                        "quantity": Decimal("1"),
-                        "unit_price": Decimal("55.00"),
-                    },
-                ],
-            )
+            with patch("app.core.modules.ModuleService.is_enabled", new_callable=AsyncMock, return_value=True):
+                result = await create_invoice(
+                    db,
+                    org_id=org_id,
+                    user_id=user_id,
+                    customer_id=customer.id,
+                    status="draft",
+                    line_items_data=[
+                        {
+                            "item_type": "service",
+                            "description": "WOF inspection",
+                            "quantity": Decimal("1"),
+                            "unit_price": Decimal("55.00"),
+                        },
+                    ],
+                )
 
         assert result["invoice_number"] is None
         assert result["status"] == "draft"
@@ -394,21 +405,22 @@ class TestCreateInvoiceService:
         db.execute.side_effect = [cust_result, org_result, seq_result, None, None]
 
         with patch("app.modules.invoices.service.write_audit_log", new_callable=AsyncMock):
-            result = await create_invoice(
-                db,
-                org_id=org_id,
-                user_id=user_id,
-                customer_id=customer.id,
-                status="issued",
-                line_items_data=[
-                    {
-                        "item_type": "service",
-                        "description": "Full service",
-                        "quantity": Decimal("1"),
-                        "unit_price": Decimal("200.00"),
-                    },
-                ],
-            )
+            with patch("app.core.modules.ModuleService.is_enabled", new_callable=AsyncMock, return_value=True):
+                result = await create_invoice(
+                    db,
+                    org_id=org_id,
+                    user_id=user_id,
+                    customer_id=customer.id,
+                    status="issued",
+                    line_items_data=[
+                        {
+                            "item_type": "service",
+                            "description": "Full service",
+                            "quantity": Decimal("1"),
+                            "unit_price": Decimal("200.00"),
+                        },
+                    ],
+                )
 
         assert result["invoice_number"] == "WS-0001"
         assert result["status"] == "issued"
@@ -453,21 +465,22 @@ class TestCreateInvoiceService:
         db.execute.side_effect = [cust_result, org_result, None]
 
         with patch("app.modules.invoices.service.write_audit_log", new_callable=AsyncMock):
-            result = await create_invoice(
-                db,
-                org_id=org_id,
-                user_id=user_id,
-                customer_id=customer.id,
-                status="draft",
-                line_items_data=[
-                    {
-                        "item_type": "part",
-                        "description": "Oil filter",
-                        "quantity": Decimal("1"),
-                        "unit_price": Decimal("100.00"),
-                    },
-                ],
-            )
+            with patch("app.core.modules.ModuleService.is_enabled", new_callable=AsyncMock, return_value=True):
+                result = await create_invoice(
+                    db,
+                    org_id=org_id,
+                    user_id=user_id,
+                    customer_id=customer.id,
+                    status="draft",
+                    line_items_data=[
+                        {
+                            "item_type": "part",
+                            "description": "Oil filter",
+                            "quantity": Decimal("1"),
+                            "unit_price": Decimal("100.00"),
+                        },
+                    ],
+                )
 
         assert result["gst_amount"] == Decimal("10.00")
         assert result["total"] == Decimal("110.00")
@@ -494,13 +507,14 @@ class TestCreateInvoiceService:
         db.execute.side_effect = [cust_result, org_result, seq_result, None, None]
 
         with patch("app.modules.invoices.service.write_audit_log", new_callable=AsyncMock):
-            result = await create_invoice(
-                db,
-                org_id=org_id,
-                user_id=user_id,
-                customer_id=customer.id,
-                status="issued",
-            )
+            with patch("app.core.modules.ModuleService.is_enabled", new_callable=AsyncMock, return_value=True):
+                result = await create_invoice(
+                    db,
+                    org_id=org_id,
+                    user_id=user_id,
+                    customer_id=customer.id,
+                    status="issued",
+                )
 
         assert result["due_date"] is not None
         assert result["issue_date"] is not None

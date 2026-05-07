@@ -1270,9 +1270,10 @@ async def process_wof_rego_reminders(db: AsyncSession) -> dict[str, Any]:
         if effective_channel is None:
             continue
 
-        # Process WOF expiry reminders from global_vehicles
+        # Process WOF/COF expiry reminders from global_vehicles
         for expiry_type, expiry_field, template_type in [
             ("WOF", "wof_expiry", "wof_expiry_reminder"),
+            ("COF", "cof_expiry", "cof_expiry_reminder"),
             ("Registration", "registration_expiry", "registration_expiry_reminder"),
         ]:
             # Find customer_vehicles linked to global vehicles expiring on target_date
@@ -1912,6 +1913,10 @@ async def process_customer_reminders(db: AsyncSession) -> dict[str, Any]:
                 expiry_field = "wof_expiry"
                 reminder_label = "WOF Expiry"
                 template_type = "customer_wof_expiry_reminder"
+            elif reminder_type == "cof_expiry":
+                expiry_field = "cof_expiry"
+                reminder_label = "COF Expiry"
+                template_type = "customer_cof_expiry_reminder"
             else:
                 continue
 

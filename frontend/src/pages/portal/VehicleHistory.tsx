@@ -5,6 +5,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { AlertBanner } from '@/components/ui/AlertBanner'
 import { usePortalLocale } from './PortalLocaleContext'
 import { formatCurrency, formatDate } from './portalFormatters'
+import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
 
 export interface PortalVehicle {
   rego: string
@@ -13,6 +14,8 @@ export interface PortalVehicle {
   year: number | null
   colour: string | null
   wof_expiry: string | null
+  cof_expiry: string | null
+  inspection_type: string | null
   rego_expiry: string | null
   service_history: VehicleService[]
 }
@@ -118,8 +121,8 @@ function VehicleCard({ vehicle, locale }: { vehicle: PortalVehicle; locale: stri
         <div className="flex items-center gap-3">
           {/* Expiry badges */}
           <div className="hidden sm:flex sm:gap-2">
-            {vehicle.wof_expiry != null && (
-              <ExpiryBadge label="WOF" date={vehicle.wof_expiry} locale={locale} />
+            {getInspectionExpiry(vehicle) != null && (
+              <ExpiryBadge label={getInspectionLabel(vehicle).replace(' Expiry', '')} date={getInspectionExpiry(vehicle)!} locale={locale} />
             )}
             {vehicle.rego_expiry != null && (
               <ExpiryBadge label="Rego" date={vehicle.rego_expiry} locale={locale} />
@@ -133,9 +136,9 @@ function VehicleCard({ vehicle, locale }: { vehicle: PortalVehicle; locale: stri
       </button>
 
       {/* Mobile expiry badges */}
-      {(vehicle.wof_expiry != null || vehicle.rego_expiry != null) && (
+      {(getInspectionExpiry(vehicle) != null || vehicle.rego_expiry != null) && (
         <div className="flex gap-2 px-4 pb-2 sm:hidden">
-          {vehicle.wof_expiry != null && <ExpiryBadge label="WOF" date={vehicle.wof_expiry} locale={locale} />}
+          {getInspectionExpiry(vehicle) != null && <ExpiryBadge label={getInspectionLabel(vehicle).replace(' Expiry', '')} date={getInspectionExpiry(vehicle)!} locale={locale} />}
           {vehicle.rego_expiry != null && <ExpiryBadge label="Rego" date={vehicle.rego_expiry} locale={locale} />}
         </div>
       )}

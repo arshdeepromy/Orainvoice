@@ -1,6 +1,14 @@
-import { useState, type FormEvent } from 'react'
+import { useState, useEffect, useRef, useCallback, type FormEvent } from 'react'
 import apiClient from '@/api/client'
-import type { KioskFormData, KioskSuccessData } from './KioskPage'
+import { lookupCustomer } from './api'
+import type {
+  KioskFormData,
+  KioskSuccessData,
+  KioskVehicleEntry,
+  AutoFillMatch,
+  CheckInPayload,
+  CheckInResponse,
+} from './types'
 
 /* ── Types ── */
 
@@ -10,6 +18,7 @@ interface KioskCheckInFormProps {
   onSuccess: (data: KioskSuccessData) => void
   onError: () => void
   onBack: () => void
+  vehicles?: KioskVehicleEntry[]
 }
 
 interface FieldErrors {
@@ -17,12 +26,6 @@ interface FieldErrors {
   last_name?: string
   phone?: string
   email?: string
-}
-
-interface CheckInResponse {
-  customer_first_name: string
-  is_new_customer: boolean
-  vehicle_linked: boolean
 }
 
 /* ── Validation helpers (match backend rules) ── */
@@ -82,13 +85,88 @@ export function KioskCheckInForm({
   onSuccess,
   onError,
   onBack,
+  vehicles = [],
 }: KioskCheckInFormProps) {
   const [errors, setErrors] = useState<FieldErrors>({})
   const [submitting, setSubmitting] = useState(false)
 
+  // Auto-fill state
+  const [matches, setMatches] = useState<AutoFillMatch[]>([])
+  const [showAutoFill, setShowAutoFill] = useState(false)
+  const [existingCustomerId, setExistingCustomerId] = useState<string | null>(null)
+
+  // Refs for debounce and abort
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
+
+  /** Perform debounced customer lookup when phone or email changes. */
+  const triggerLookup = useCallback((phone: string, email: string) => {
+    // Clear previous debounce timer
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current)
+    }
+
+    // Abort previous in-flight request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+
+    // Determine if we have enough data to look up
+    const trimmedPhone = phone.trim()
+    const trimmedEmail = email.trim()
+    const phoneDigits = stripPhoneFormatting(trimmedPhone)
+    const hasValidPhone = phoneDigits.length >= 7 && /^\d+$/.test(phoneDigits)
+    const hasValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)
+
+    if (!hasValidPhone && !hasValidEmail) {
+      setMatches([])
+      setShowAutoFill(false)
+      return
+    }
+
+    debounceTimerRef.current = setTimeout(async () => {
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+
+      try {
+        const params: { phone?: string; email?: string } = {}
+        if (hasValidPhone) params.phone = trimmedPhone
+        if (hasValidEmail) params.email = trimmedEmail
+
+        const result = await lookupCustomer(params, controller.signal)
+        const items = result?.items ?? []
+
+        if (!controller.signal.aborted) {
+          setMatches(items)
+          setShowAutoFill(items.length > 0)
+        }
+      } catch {
+        // Silently ignore auto-fill lookup failures (form continues normally)
+        if (!controller.signal.aborted) {
+          setMatches([])
+          setShowAutoFill(false)
+        }
+      }
+    }, 500)
+  }, [])
+
+  /** Cleanup on unmount. */
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current)
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+    }
+  }, [])
+
   /** Update a single field in the form data. */
   const updateField = (field: keyof KioskFormData, value: string) => {
-    onFormDataChange({ ...formData, [field]: value })
+    const newFormData = { ...formData, [field]: value }
+    onFormDataChange(newFormData)
+
     // Clear field error on change
     if (errors[field as keyof FieldErrors]) {
       setErrors((prev) => {
@@ -97,6 +175,33 @@ export function KioskCheckInForm({
         return next
       })
     }
+
+    // Clear existing_customer_id when user edits key fields after auto-fill
+    if (existingCustomerId && (field === 'phone' || field === 'email')) {
+      setExistingCustomerId(null)
+    }
+
+    // Trigger lookup on phone or email change
+    if (field === 'phone' || field === 'email') {
+      const phone = field === 'phone' ? value : formData.phone
+      const email = field === 'email' ? value : formData.email
+      triggerLookup(phone, email)
+    }
+  }
+
+  /** Apply auto-fill from a matched customer record. */
+  const applyAutoFill = (match: AutoFillMatch) => {
+    const updated: KioskFormData = {
+      first_name: match.first_name ?? formData.first_name,
+      last_name: match.last_name ?? formData.last_name,
+      phone: match.phone ?? formData.phone,
+      email: match.email ?? formData.email,
+    }
+    onFormDataChange(updated)
+    setExistingCustomerId(match.id)
+    setShowAutoFill(false)
+    setMatches([])
+    setErrors({})
   }
 
   /** Handle form submission. */
@@ -114,13 +219,19 @@ export function KioskCheckInForm({
     setErrors({})
 
     try {
-      const res = await apiClient.post<CheckInResponse>('/kiosk/check-in', {
+      const payload: CheckInPayload = {
         first_name: formData.first_name.trim(),
         last_name: formData.last_name.trim(),
         phone: formData.phone.trim(),
         email: formData.email.trim() || null,
-        vehicle_rego: formData.vehicle_rego.trim() || null,
-      })
+        vehicles: vehicles.map((v) => ({
+          global_vehicle_id: v.global_vehicle_id,
+          odometer_km: v.odometer_km ?? null,
+        })),
+        existing_customer_id: existingCustomerId,
+      }
+
+      const res = await apiClient.post<CheckInResponse>('/kiosk/check-in', payload)
 
       onSuccess({
         customer_first_name: res.data?.customer_first_name ?? formData.first_name.trim(),
@@ -141,6 +252,53 @@ export function KioskCheckInForm({
       <h2 className="text-xl font-semibold text-gray-900" style={{ fontSize: '22px' }}>
         Check In
       </h2>
+
+      {/* Auto-fill suggestion banner */}
+      {showAutoFill && matches.length === 1 && (
+        <button
+          type="button"
+          onClick={() => applyAutoFill(matches[0])}
+          className="w-full rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-left text-blue-800 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          style={{ minHeight: '48px' }}
+          aria-label="Auto-fill customer details"
+        >
+          <span className="font-medium">We found your details — tap to auto-fill</span>
+          <span className="mt-1 block text-sm text-blue-600">
+            {matches[0].first_name} {matches[0].last_name}
+          </span>
+        </button>
+      )}
+
+      {/* Multiple matches — selectable list */}
+      {showAutoFill && matches.length > 1 && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+          <p className="mb-2 text-sm font-medium text-blue-800">
+            We found your details — tap to auto-fill
+          </p>
+          <ul className="space-y-2" role="list" aria-label="Customer matches">
+            {matches.map((match) => (
+              <li key={match.id}>
+                <button
+                  type="button"
+                  onClick={() => applyAutoFill(match)}
+                  className="w-full rounded-md border border-blue-100 bg-white px-3 py-2 text-left text-gray-900 hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  style={{ minHeight: '44px' }}
+                >
+                  <span className="font-medium">
+                    {match.first_name} {match.last_name}
+                  </span>
+                  {match.phone && (
+                    <span className="ml-2 text-sm text-gray-500">{match.phone}</span>
+                  )}
+                  {match.email && (
+                    <span className="ml-2 text-sm text-gray-500">{match.email}</span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* First Name */}
       <div>
@@ -231,23 +389,6 @@ export function KioskCheckInForm({
         {errors.email && (
           <p id="err-email" className="mt-1 text-sm text-red-600">{errors.email}</p>
         )}
-      </div>
-
-      {/* Vehicle Rego (optional) */}
-      <div>
-        <label htmlFor="kiosk-rego" className="mb-1 block text-sm font-medium text-gray-700">
-          Vehicle Registration
-        </label>
-        <input
-          id="kiosk-rego"
-          type="text"
-          autoComplete="off"
-          placeholder="Rego (optional)"
-          value={formData.vehicle_rego}
-          onChange={(e) => updateField('vehicle_rego', e.target.value)}
-          className={INPUT_CLASS}
-          style={INPUT_STYLE}
-        />
       </div>
 
       {/* Buttons */}

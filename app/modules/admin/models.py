@@ -225,6 +225,8 @@ class GlobalVehicle(Base):
     engine_size: Mapped[str | None] = mapped_column(String(50), nullable=True)
     num_seats: Mapped[int | None] = mapped_column(Integer, nullable=True)
     wof_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+    cof_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+    inspection_type: Mapped[str | None] = mapped_column(String(3), nullable=True)
     registration_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
     odometer_last_recorded: Mapped[int | None] = mapped_column(Integer, nullable=True)
     service_due_date: Mapped[date | None] = mapped_column(Date, nullable=True)

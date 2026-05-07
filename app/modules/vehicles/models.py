@@ -55,6 +55,8 @@ class OrgVehicle(Base):
 
     # Extended fields (matching GlobalVehicle for parity)
     wof_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+    cof_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+    inspection_type: Mapped[str | None] = mapped_column(String(3), nullable=True)
     registration_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
     odometer_last_recorded: Mapped[int | None] = mapped_column(Integer, nullable=True)
     service_due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -174,7 +176,7 @@ class OdometerReading(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "source IN ('carjam','manual','invoice')",
+            "source IN ('carjam','manual','invoice','kiosk')",
             name="ck_odometer_readings_source",
         ),
         Index("idx_odometer_readings_vehicle", "global_vehicle_id", "recorded_at"),

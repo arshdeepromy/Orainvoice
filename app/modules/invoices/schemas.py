@@ -125,6 +125,10 @@ class InvoiceCreateRequest(BaseModel):
         default=None,
         description="WOF expiry date — saved to the vehicle record"
     )
+    vehicle_cof_expiry_date: date | None = Field(
+        default=None,
+        description="COF expiry date — saved to the vehicle record"
+    )
     vehicles: list[VehicleItem] | None = Field(
         default=None,
         description="List of vehicles associated with this invoice"

@@ -24,6 +24,8 @@ import pytest
 # Import models to resolve SQLAlchemy relationships
 import app.modules.admin.models  # noqa: F401
 import app.modules.auth.models  # noqa: F401
+import app.modules.customers.models  # noqa: F401
+import app.modules.organisations.models  # noqa: F401
 
 from app.modules.vehicles.service import (
     _compute_expiry_indicator,

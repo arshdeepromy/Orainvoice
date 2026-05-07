@@ -459,6 +459,7 @@ async def create_invoice(
     global_vehicle_id: uuid.UUID | None = None,
     vehicle_service_due_date: date | None = None,
     vehicle_wof_expiry_date: date | None = None,
+    vehicle_cof_expiry_date: date | None = None,
     vehicles: list[dict] | None = None,
     branch_id: uuid.UUID | None = None,
     status: str = "draft",
@@ -869,6 +870,23 @@ async def create_invoice(
                 gv = gv_result.scalar_one_or_none()
             if gv:
                 gv.wof_expiry = vehicle_wof_expiry_date
+
+    # Update COF expiry on the vehicle if provided
+    if vehicle_cof_expiry_date and global_vehicle_id:
+        if vehicle_type == "org":
+            # Org vehicles: update directly on the already-resolved record
+            vehicle_record.cof_expiry = vehicle_cof_expiry_date
+            await db.flush()
+        else:
+            # Global vehicles: query and update
+            from app.modules.admin.models import GlobalVehicle
+            if not vehicle_service_due_date and not vehicle_wof_expiry_date:
+                gv_result = await db.execute(
+                    select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
+                )
+                gv = gv_result.scalar_one_or_none()
+            if gv:
+                gv.cof_expiry = vehicle_cof_expiry_date
 
     # Auto-generate Stripe PaymentIntent when issuing with stripe gateway
     if status == "issued":

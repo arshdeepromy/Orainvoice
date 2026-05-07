@@ -175,11 +175,10 @@ class TestCacheFirstLookupFlow:
         redis = AsyncMock()
         carjam_data = _make_carjam_vehicle_data("XYZ789")
 
-        with patch("app.modules.vehicles.service.CarjamClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.lookup_vehicle = AsyncMock(return_value=carjam_data)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.lookup_vehicle = AsyncMock(return_value=carjam_data)
 
+        with patch("app.modules.vehicles.service._load_carjam_client", new_callable=AsyncMock, return_value=mock_client):
             with patch("app.modules.vehicles.service.write_audit_log", new_callable=AsyncMock):
                 result = await lookup_vehicle(
                     db, redis, rego="XYZ789",

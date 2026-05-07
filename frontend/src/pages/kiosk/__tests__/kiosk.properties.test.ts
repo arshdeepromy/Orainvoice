@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import * as fc from 'fast-check'
 import { validateKioskForm } from '../KioskCheckInForm'
-import type { KioskFormData, KioskScreen } from '../KioskPage'
+import type { KioskFormData } from '../types'
+import type { KioskScreen } from '../KioskPage'
 
 // ---------------------------------------------------------------------------
 // Pure helpers: mirror the welcome message logic in KioskWelcome.tsx
@@ -28,7 +29,6 @@ const EMPTY_FORM: KioskFormData = {
   last_name: '',
   phone: '',
   email: '',
-  vehicle_rego: '',
 }
 
 /**
@@ -157,10 +157,6 @@ const kioskFormDataArb: fc.Arbitrary<KioskFormData> = fc.record({
     fc.constant(''),
     validEmailArb,
   ),
-  vehicle_rego: fc.oneof(
-    fc.constant(''),
-    fc.stringMatching(/^[A-Z0-9]{1,8}$/),
-  ),
 })
 
 // ---------------------------------------------------------------------------
@@ -210,7 +206,6 @@ describe('Kiosk — Property-Based Tests', () => {
               last_name: lastName,
               phone,
               email: '',
-              vehicle_rego: '',
             })
             expect(Object.keys(errors).length).toBe(0)
           },
@@ -227,7 +222,6 @@ describe('Kiosk — Property-Based Tests', () => {
             last_name: lastName,
             phone,
             email: '',
-            vehicle_rego: '',
           })
           expect(errors).toHaveProperty('first_name')
         }),
@@ -243,7 +237,6 @@ describe('Kiosk — Property-Based Tests', () => {
             last_name: lastName,
             phone,
             email: '',
-            vehicle_rego: '',
           })
           expect(errors).toHaveProperty('last_name')
         }),
@@ -259,7 +252,6 @@ describe('Kiosk — Property-Based Tests', () => {
             last_name: lastName,
             phone,
             email: '',
-            vehicle_rego: '',
           })
           expect(errors).toHaveProperty('phone')
         }),
@@ -280,7 +272,6 @@ describe('Kiosk — Property-Based Tests', () => {
               last_name: lastName,
               phone,
               email,
-              vehicle_rego: '',
             })
             expect(errors).toHaveProperty('email')
           },
@@ -302,7 +293,6 @@ describe('Kiosk — Property-Based Tests', () => {
               last_name: lastName,
               phone,
               email,
-              vehicle_rego: '',
             })
             expect(errors).not.toHaveProperty('email')
           },
@@ -319,7 +309,6 @@ describe('Kiosk — Property-Based Tests', () => {
             last_name: lastName,
             phone,
             email: '',
-            vehicle_rego: '',
           })
           expect(errors).not.toHaveProperty('email')
         }),
@@ -345,7 +334,6 @@ describe('Kiosk — Property-Based Tests', () => {
           expect(result.formDataAfterRetry.last_name).toBe(formData.last_name)
           expect(result.formDataAfterRetry.phone).toBe(formData.phone)
           expect(result.formDataAfterRetry.email).toBe(formData.email)
-          expect(result.formDataAfterRetry.vehicle_rego).toBe(formData.vehicle_rego)
         }),
         { numRuns: 100 },
       )
@@ -372,7 +360,6 @@ describe('Kiosk — Property-Based Tests', () => {
           expect(result.formData.last_name).toBe('')
           expect(result.formData.phone).toBe('')
           expect(result.formData.email).toBe('')
-          expect(result.formData.vehicle_rego).toBe('')
 
           // Success data is cleared
           expect(result.successData).toBeNull()

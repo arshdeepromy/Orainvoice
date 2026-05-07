@@ -11,6 +11,10 @@ import pytest
 
 # Import models so SQLAlchemy can resolve all relationships
 import app.modules.admin.models  # noqa: F401
+import app.modules.suppliers.models  # noqa: F401
+import app.modules.stock.models  # noqa: F401
+import app.modules.organisations.models  # noqa: F401
+import app.modules.customers.models  # noqa: F401
 from app.modules.auth.models import User  # noqa: F401
 import app.modules.inventory.models  # noqa: F401
 import app.modules.catalogue.models  # noqa: F401
@@ -123,11 +127,11 @@ class TestNotificationCategories:
     """Verify the category groupings and notification type constants."""
 
     def test_all_types_count(self):
-        """All 19 notification types are defined."""
-        assert len(ALL_NOTIFICATION_TYPES) == 19
+        """All notification types are defined."""
+        assert len(ALL_NOTIFICATION_TYPES) == 24
 
     def test_six_categories(self):
-        assert len(NOTIFICATION_CATEGORIES) == 6
+        assert len(NOTIFICATION_CATEGORIES) == 7
 
     def test_invoicing_types(self):
         assert set(NOTIFICATION_CATEGORIES["Invoicing"]) == {
@@ -142,6 +146,7 @@ class TestNotificationCategories:
     def test_vehicle_reminders_types(self):
         assert set(NOTIFICATION_CATEGORIES["Vehicle Reminders"]) == {
             "wof_expiry_reminder",
+            "cof_expiry_reminder",
             "registration_expiry_reminder",
             "service_due_reminder",
         }
@@ -215,7 +220,7 @@ class TestListNotificationPreferences:
         data = await list_notification_preferences(db, org_id=ORG_ID)
 
         assert "categories" in data
-        assert len(data["categories"]) == 4
+        assert len(data["categories"]) == 7
 
         # Verify every notification type appears
         all_returned = set()

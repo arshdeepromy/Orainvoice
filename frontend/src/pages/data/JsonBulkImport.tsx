@@ -194,6 +194,8 @@ export default function JsonBulkImport() {
                       <th className="px-3 py-2 text-left font-medium text-gray-600">VIN</th>
                       <th className="px-3 py-2 text-left font-medium text-gray-600">Transmission</th>
                       <th className="px-3 py-2 text-left font-medium text-gray-600">WOF Expiry</th>
+                      <th className="px-3 py-2 text-left font-medium text-gray-600">COF Expiry</th>
+                      <th className="px-3 py-2 text-left font-medium text-gray-600">Inspection Type</th>
                     </>
                   )}
                 </tr>
@@ -213,14 +215,16 @@ export default function JsonBulkImport() {
                       </>
                     ) : (
                       <>
-                        <td className="px-3 py-1.5">{item.rego || '—'}</td>
-                        <td className="px-3 py-1.5">{item.make || '—'}</td>
-                        <td className="px-3 py-1.5">{item.model || '—'}</td>
-                        <td className="px-3 py-1.5">{item.year || '—'}</td>
-                        <td className="px-3 py-1.5">{item.colour || '—'}</td>
-                        <td className="px-3 py-1.5">{item.vin || '—'}</td>
-                        <td className="px-3 py-1.5">{item.transmission || '—'}</td>
-                        <td className="px-3 py-1.5">{item.wof_expiry || '—'}</td>
+                        <td className="px-3 py-1.5">{item?.rego || '—'}</td>
+                        <td className="px-3 py-1.5">{item?.make || '—'}</td>
+                        <td className="px-3 py-1.5">{item?.model || '—'}</td>
+                        <td className="px-3 py-1.5">{item?.year || '—'}</td>
+                        <td className="px-3 py-1.5">{item?.colour || '—'}</td>
+                        <td className="px-3 py-1.5">{item?.vin || '—'}</td>
+                        <td className="px-3 py-1.5">{item?.transmission || '—'}</td>
+                        <td className="px-3 py-1.5">{item?.wof_expiry || '—'}</td>
+                        <td className="px-3 py-1.5">{item?.cof_expiry || '—'}</td>
+                        <td className="px-3 py-1.5">{item?.inspection_type || '—'}</td>
                       </>
                     )}
                   </tr>

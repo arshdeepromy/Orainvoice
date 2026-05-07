@@ -599,7 +599,7 @@ async def get_portal_vehicles(
     for cv in cv_rows:
         # Resolve vehicle details from global or org vehicle
         rego = make = model = year = colour = None
-        wof_expiry = rego_expiry = None
+        wof_expiry = rego_expiry = cof_expiry = inspection_type = None
         if cv.global_vehicle_id:
             gv_stmt = select(GlobalVehicle).where(
                 GlobalVehicle.id == cv.global_vehicle_id
@@ -611,6 +611,8 @@ async def get_portal_vehicles(
                 )
                 wof_expiry = gv.wof_expiry
                 rego_expiry = gv.registration_expiry
+                cof_expiry = gv.cof_expiry
+                inspection_type = gv.inspection_type
         elif cv.org_vehicle_id:
             ov_stmt = select(OrgVehicle).where(
                 OrgVehicle.id == cv.org_vehicle_id
@@ -622,6 +624,8 @@ async def get_portal_vehicles(
                 )
                 wof_expiry = ov.wof_expiry
                 rego_expiry = ov.registration_expiry
+                cof_expiry = ov.cof_expiry
+                inspection_type = ov.inspection_type
 
         if not rego:
             continue
@@ -662,6 +666,8 @@ async def get_portal_vehicles(
                 year=year,
                 colour=colour,
                 wof_expiry=wof_expiry,
+                cof_expiry=cof_expiry,
+                inspection_type=inspection_type,
                 rego_expiry=rego_expiry,
                 service_history=service_history,
             )

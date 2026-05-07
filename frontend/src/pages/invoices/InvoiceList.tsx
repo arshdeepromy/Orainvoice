@@ -20,6 +20,7 @@ import POSReceiptPreview from '../../components/pos/POSReceiptPreview'
 import { invoiceToReceiptData } from '../../utils/invoiceReceiptMapper'
 import { resolveTemplateStyles } from '@/utils/invoiceTemplateStyles'
 import AttachmentList from '@/components/invoices/AttachmentList'
+import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -75,6 +76,8 @@ interface Vehicle {
   fuel_type: string
   engine_size: string
   wof_expiry: string | null
+  cof_expiry?: string | null
+  inspection_type?: string | null
   registration_expiry: string | null
   odometer: number | null
 }
@@ -129,7 +132,7 @@ interface InvoiceDetailData {
   vehicle_model?: string | null
   vehicle_year?: number | null
   vehicle_odometer?: number | null
-  additional_vehicles?: { rego: string; make?: string; model?: string; year?: number; wof_expiry?: string; odometer?: number }[]
+  additional_vehicles?: { rego: string; make?: string; model?: string; year?: number; wof_expiry?: string; cof_expiry?: string; inspection_type?: string; odometer?: number }[]
   line_items: LineItem[]
   subtotal: number
   subtotal_ex_gst?: number
@@ -1438,10 +1441,10 @@ export default function InvoiceList() {
                               <span className="text-gray-900">{Number(invoice.vehicle?.odometer || invoice.vehicle_odometer).toLocaleString()} km</span>
                             </div>
                           ) : null}
-                          {invoice.vehicle?.wof_expiry && (
+                          {getInspectionExpiry(invoice.vehicle ?? {}) && (
                             <div className="flex items-center gap-1.5">
-                              <span className="text-xs text-gray-400 uppercase tracking-wider">WOF Expiry</span>
-                              <span className="text-gray-900">{formatDate(invoice.vehicle.wof_expiry)}</span>
+                              <span className="text-xs text-gray-400 uppercase tracking-wider">{getInspectionLabel(invoice.vehicle ?? {})}</span>
+                              <span className="text-gray-900">{formatDate(getInspectionExpiry(invoice.vehicle ?? {}))}</span>
                             </div>
                           )}
                         </div>
@@ -1470,10 +1473,10 @@ export default function InvoiceList() {
                                 <span className="text-gray-900">{Number(av.odometer).toLocaleString()} km</span>
                               </div>
                             ) : null}
-                            {av.wof_expiry && (
+                            {getInspectionExpiry(av) && (
                               <div className="flex items-center gap-1.5">
-                                <span className="text-xs text-gray-400 uppercase tracking-wider">WOF Expiry</span>
-                                <span className="text-gray-900">{formatDate(av.wof_expiry)}</span>
+                                <span className="text-xs text-gray-400 uppercase tracking-wider">{getInspectionLabel(av)}</span>
+                                <span className="text-gray-900">{formatDate(getInspectionExpiry(av))}</span>
                               </div>
                             )}
                           </div>

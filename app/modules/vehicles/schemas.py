@@ -31,6 +31,8 @@ class VehicleLookupResponse(BaseModel):
     engine_size: Optional[str] = Field(None, description="Engine size")
     seats: Optional[int] = Field(None, description="Number of seats")
     wof_expiry: Optional[str] = Field(None, description="WOF expiry date (ISO)")
+    cof_expiry: Optional[str] = Field(None, description="COF expiry date (ISO)")
+    inspection_type: Optional[str] = Field(None, description="'wof', 'cof', or null")
     rego_expiry: Optional[str] = Field(None, description="Registration expiry date (ISO)")
     odometer: Optional[int] = Field(None, description="Last recorded odometer")
     last_pulled_at: str = Field(..., description="ISO 8601 timestamp of last Carjam pull")
@@ -82,6 +84,8 @@ class ManualVehicleCreate(BaseModel):
     submodel: Optional[str] = Field(None, max_length=150, description="Submodel / variant")
     second_colour: Optional[str] = Field(None, max_length=50, description="Secondary colour")
     wof_expiry: Optional[str] = Field(None, description="WOF expiry date (YYYY-MM-DD)")
+    cof_expiry: Optional[str] = Field(None, description="COF expiry date (YYYY-MM-DD)")
+    inspection_type: Optional[str] = Field(None, description="'wof', 'cof', or null")
     rego_expiry: Optional[str] = Field(None, description="Registration expiry date (YYYY-MM-DD)")
     odometer: Optional[int] = Field(None, ge=0, description="Current odometer reading (km)")
 
@@ -106,6 +110,8 @@ class ManualVehicleResponse(BaseModel):
     engine_size: Optional[str] = None
     seats: Optional[int] = None
     wof_expiry: Optional[str] = None
+    cof_expiry: Optional[str] = None
+    inspection_type: Optional[str] = None
     rego_expiry: Optional[str] = None
     odometer: Optional[int] = None
     vin: Optional[str] = None
@@ -139,6 +145,8 @@ class VehicleRefreshResponse(BaseModel):
     engine_size: Optional[str] = None
     seats: Optional[int] = None
     wof_expiry: Optional[str] = None
+    cof_expiry: Optional[str] = None
+    inspection_type: Optional[str] = None
     rego_expiry: Optional[str] = None
     odometer: Optional[int] = None
     last_pulled_at: str = Field(..., description="ISO 8601 timestamp of Carjam pull")
@@ -237,6 +245,8 @@ class VehicleProfileResponse(BaseModel):
     odometer: Optional[int] = None
     last_pulled_at: Optional[str] = None
     wof_expiry: ExpiryIndicator
+    cof_expiry: Optional[str] = Field(None, description="COF expiry date (ISO)")
+    inspection_type: Optional[str] = Field(None, description="'wof', 'cof', or null")
     rego_expiry: ExpiryIndicator
     # Extended fields
     vin: Optional[str] = None
@@ -267,6 +277,8 @@ class VehicleSearchResult(BaseModel):
     model: Optional[str] = None
     year: Optional[int] = None
     colour: Optional[str] = None
+    cof_expiry: Optional[str] = Field(None, description="COF expiry date (ISO)")
+    inspection_type: Optional[str] = Field(None, description="'wof', 'cof', or null")
     lookup_type: Optional[str] = Field(None, description="'abcd', 'basic', or 'manual'")
 
 

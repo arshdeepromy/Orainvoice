@@ -305,6 +305,8 @@ async def vehicle_manual_entry(
         wof_expiry=body.wof_expiry,
         rego_expiry=body.rego_expiry,
         odometer=body.odometer,
+        cof_expiry=body.cof_expiry,
+        inspection_type=body.inspection_type,
         ip_address=ip_address,
     )
 

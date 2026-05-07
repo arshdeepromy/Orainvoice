@@ -51,17 +51,21 @@ interface VehicleExpiryData {
   year: number | null
   service_due_date: string | null
   wof_expiry: string | null
+  cof_expiry: string | null
+  inspection_type: string | null
 }
 
 interface CustomerReminderConfig {
   service_due: ReminderEntry
   wof_expiry: ReminderEntry
+  cof_expiry: ReminderEntry
   vehicles: VehicleExpiryData[]
 }
 
 const DEFAULT_REMINDER_CONFIG: CustomerReminderConfig = {
   service_due: { enabled: false, days_before: 30, channel: 'email' },
   wof_expiry: { enabled: false, days_before: 30, channel: 'email' },
+  cof_expiry: { enabled: false, days_before: 30, channel: 'email' },
   vehicles: [],
 }
 
@@ -173,29 +177,29 @@ export default function CustomerList() {
   const [reminderLoading, setReminderLoading] = useState(false)
   const [reminderSaving, setReminderSaving] = useState(false)
   const [reminderError, setReminderError] = useState('')
-  const [vehicleDateEdits, setVehicleDateEdits] = useState<Record<string, { service_due_date?: string; wof_expiry?: string }>>({})
+  const [vehicleDateEdits, setVehicleDateEdits] = useState<Record<string, { service_due_date?: string; wof_expiry?: string; cof_expiry?: string }>>({})
 
-  const updateReminder = (type: 'service_due' | 'wof_expiry', updates: Partial<ReminderEntry>) => {
+  const updateReminder = (type: 'service_due' | 'wof_expiry' | 'cof_expiry', updates: Partial<ReminderEntry>) => {
     setReminderConfig(prev => ({
       ...prev,
       [type]: { ...prev[type], ...updates },
     }))
   }
 
-  const updateVehicleDate = (globalVehicleId: string, field: 'service_due_date' | 'wof_expiry', value: string) => {
+  const updateVehicleDate = (globalVehicleId: string, field: 'service_due_date' | 'wof_expiry' | 'cof_expiry', value: string) => {
     setVehicleDateEdits(prev => ({
       ...prev,
       [globalVehicleId]: { ...prev[globalVehicleId], [field]: value },
     }))
     setReminderConfig(prev => ({
       ...prev,
-      vehicles: prev.vehicles.map(v =>
+      vehicles: (prev?.vehicles ?? []).map(v =>
         v.global_vehicle_id === globalVehicleId ? { ...v, [field]: value || null } : v
       ),
     }))
   }
 
-  const getVehicleDate = (v: VehicleExpiryData, field: 'service_due_date' | 'wof_expiry'): string => {
+  const getVehicleDate = (v: VehicleExpiryData, field: 'service_due_date' | 'wof_expiry' | 'cof_expiry'): string => {
     const edit = vehicleDateEdits[v.global_vehicle_id]
     if (edit && edit[field] !== undefined) return edit[field] || ''
     return v[field] || ''
@@ -209,6 +213,7 @@ export default function CustomerList() {
         await apiClient.put(`/customers/${c.id}/reminders`, {
           service_due: { enabled: false, days_before: 30, channel: 'email' },
           wof_expiry: { enabled: false, days_before: 30, channel: 'email' },
+          cof_expiry: { enabled: false, days_before: 30, channel: 'email' },
         })
         await fetchCustomers(searchQuery, page)
       } catch { /* silent */ }
@@ -237,7 +242,7 @@ export default function CustomerList() {
     setReminderError('')
     try {
       const dateUpdates = Object.entries(vehicleDateEdits)
-        .filter(([, v]) => v.service_due_date !== undefined || v.wof_expiry !== undefined)
+        .filter(([, v]) => v.service_due_date !== undefined || v.wof_expiry !== undefined || v.cof_expiry !== undefined)
         .map(([gvId, dates]) => ({ global_vehicle_id: gvId, ...dates }))
 
       if (dateUpdates.length > 0) {
@@ -320,7 +325,7 @@ export default function CustomerList() {
                   <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Unused Credits (BCY)</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Last Portal Access</th>
                   {isAutomotive && (
-                  <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Reminders WOF/Service</th>
+                  <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Reminders WOF/COF/Service</th>
                   )}
                   <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Actions</th>
                 </tr>
@@ -599,6 +604,79 @@ export default function CustomerList() {
                     </div>
                   ) : (
                     <p className="text-xs text-gray-400 italic">No vehicles linked to this customer.</p>
+                  )}
+                </>
+              )}
+            </div>
+            )}
+
+            {/* COF Expiry — automotive only */}
+            {isAutomotive && (
+            <div className="rounded-lg border border-gray-200 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium text-gray-900">COF Expiry</h3>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={reminderConfig?.cof_expiry?.enabled ?? false}
+                    onChange={(e) => updateReminder('cof_expiry', { enabled: e.target.checked })}
+                    className="sr-only peer"
+                  />
+                  <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600" />
+                  <span className="ml-2 text-sm text-gray-600">{reminderConfig?.cof_expiry?.enabled ? 'Enabled' : 'Disabled'}</span>
+                </label>
+              </div>
+              {reminderConfig?.cof_expiry?.enabled && (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      label="Days before expiry"
+                      type="number"
+                      value={String(reminderConfig?.cof_expiry?.days_before ?? 30)}
+                      onChange={(e) => updateReminder('cof_expiry', { days_before: parseInt(e.target.value) || 30 })}
+                    />
+                    <Select
+                      label="Notify via"
+                      options={[
+                        { value: 'email', label: 'Email' },
+                        { value: 'sms', label: 'SMS' },
+                        { value: 'both', label: 'Email & SMS' },
+                      ]}
+                      value={reminderConfig?.cof_expiry?.channel ?? 'email'}
+                      onChange={(e) => updateReminder('cof_expiry', { channel: e.target.value as 'email' | 'sms' | 'both' })}
+                    />
+                  </div>
+                  {(reminderConfig?.vehicles ?? []).filter(v => v?.inspection_type === 'cof').length > 0 ? (
+                    <div className="mt-2 space-y-2">
+                      <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Vehicle COF Expiry Dates</p>
+                      {(reminderConfig?.vehicles ?? []).filter(v => v?.inspection_type === 'cof').map((v) => {
+                        const dateVal = getVehicleDate(v, 'cof_expiry')
+                        return (
+                          <div key={v.global_vehicle_id} className="flex items-center gap-3 rounded-md bg-gray-50 px-3 py-2">
+                            <div className="flex-1 min-w-0">
+                              <span className="text-sm font-mono font-medium text-gray-900">{v?.rego || '—'}</span>
+                              <span className="ml-2 text-sm text-gray-500">{[v?.year, v?.make, v?.model].filter(Boolean).join(' ')}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {dateVal ? (
+                                <span className="text-sm text-gray-700">{dateVal}</span>
+                              ) : (
+                                <span className="text-xs text-amber-600">Not set</span>
+                              )}
+                              <input
+                                type="date"
+                                value={dateVal}
+                                onChange={(e) => updateVehicleDate(v.global_vehicle_id, 'cof_expiry', e.target.value)}
+                                className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                aria-label={`COF expiry date for ${v?.rego || 'vehicle'}`}
+                              />
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-400 italic">No COF vehicles linked to this customer.</p>
                   )}
                 </>
               )}

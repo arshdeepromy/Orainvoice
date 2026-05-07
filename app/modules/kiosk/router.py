@@ -8,7 +8,7 @@ from __future__ import annotations
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,8 +16,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.core.redis import get_redis
 from app.modules.auth.rbac import require_role
-from app.modules.kiosk.schemas import KioskCheckInRequest, KioskCheckInResponse
-from app.modules.kiosk.service import kiosk_check_in
+from app.modules.kiosk.schemas import (
+    KioskCheckInRequestV2,
+    KioskCheckInResponseV2,
+    KioskCustomerLookupResponse,
+    KioskVehicleLookupRequest,
+    KioskVehicleLookupResponse,
+)
+from app.modules.kiosk.service import (
+    customer_lookup_for_kiosk,
+    kiosk_check_in_v2,
+    lookup_vehicle_for_kiosk,
+)
 
 router = APIRouter()
 
@@ -86,10 +96,11 @@ async def _check_kiosk_rate_limit(
 
 @router.post(
     "/check-in",
-    response_model=KioskCheckInResponse,
+    response_model=KioskCheckInResponseV2,
     responses={
         401: {"description": "Authentication required"},
         403: {"description": "Kiosk role required"},
+        404: {"description": "Customer not found"},
         422: {"description": "Validation error"},
         429: {"description": "Rate limit exceeded"},
     },
@@ -100,18 +111,20 @@ async def _check_kiosk_rate_limit(
     ],
 )
 async def check_in(
-    payload: KioskCheckInRequest,
+    payload: KioskCheckInRequestV2,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
-    redis: Redis = Depends(get_redis),
 ):
     """Process a walk-in customer check-in from a kiosk tablet.
 
-    Orchestrates customer lookup/creation, optional vehicle lookup/creation
-    (via Carjam with manual fallback), and vehicle-customer linking in a
-    single atomic operation.
+    Accepts customer details with an optional list of vehicle entries
+    (each with global_vehicle_id and optional odometer_km). Links all
+    vehicles to the customer and records odometer readings.
 
-    Requirements: 3.7, 6.5
+    Backward compatible: when vehicles list is empty, behaves like the
+    original check-in endpoint.
+
+    Requirements: 7.2, 7.3
     """
     org_uuid, user_uuid, ip_address = _extract_org_context(request)
     if not org_uuid:
@@ -120,13 +133,104 @@ async def check_in(
             content={"detail": "Organisation context required"},
         )
 
-    result = await kiosk_check_in(
+    result = await kiosk_check_in_v2(
         db,
-        redis,
         org_id=org_uuid,
         user_id=user_uuid or uuid.uuid4(),
         data=payload,
         ip_address=ip_address,
+    )
+
+    return result
+
+
+@router.post(
+    "/vehicle-lookup",
+    response_model=KioskVehicleLookupResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Kiosk role required"},
+        404: {"description": "Vehicle not found"},
+        422: {"description": "Validation error"},
+        429: {"description": "Rate limit exceeded"},
+        502: {"description": "Vehicle lookup service error"},
+    },
+    summary="Kiosk vehicle registration lookup",
+    dependencies=[
+        require_role("kiosk"),
+        Depends(_check_kiosk_rate_limit),
+    ],
+)
+async def vehicle_lookup(
+    payload: KioskVehicleLookupRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis),
+):
+    """Look up a vehicle by registration number for kiosk check-in.
+
+    Performs a cascading lookup: org_vehicles → global_vehicles → CarJam API.
+    Returns vehicle details for display on the kiosk summary screen.
+
+    Requirements: 7.1, 7.4
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    result = await lookup_vehicle_for_kiosk(
+        db,
+        redis,
+        rego=payload.rego,
+        org_id=org_uuid,
+    )
+
+    return result
+
+
+@router.get(
+    "/customer-lookup",
+    response_model=KioskCustomerLookupResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Kiosk role required"},
+        422: {"description": "At least one of phone or email required"},
+        429: {"description": "Rate limit exceeded"},
+    },
+    summary="Kiosk customer auto-fill lookup",
+    dependencies=[
+        require_role("kiosk"),
+        Depends(_check_kiosk_rate_limit),
+    ],
+)
+async def customer_lookup(
+    request: Request,
+    phone: str | None = Query(None, description="Customer phone number (exact match)"),
+    email: str | None = Query(None, description="Customer email (case-insensitive match)"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Look up customers by phone or email for kiosk auto-fill.
+
+    Returns up to 5 matching customers within the organisation. At least one
+    of phone or email must be provided.
+
+    Requirements: 7.1, 9.5, 9.7
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    result = await customer_lookup_for_kiosk(
+        db,
+        org_id=org_uuid,
+        phone=phone,
+        email=email,
     )
 
     return result

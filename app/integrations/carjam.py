@@ -98,6 +98,9 @@ class CarjamVehicleData:
     plate_type: str | None = None
     submodel: str | None = None
     second_colour: str | None = None
+    # COF (Certificate of Fitness) fields
+    cof_expiry: str | None = None
+    inspection_type: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +152,15 @@ async def _check_carjam_rate_limit(
 # ---------------------------------------------------------------------------
 
 
+def _derive_inspection_type(subject_to_wof: Any, subject_to_cof: Any) -> str | None:
+    """Derive inspection type from CarJam subject_to_wof/cof flags."""
+    if str(subject_to_cof).upper() == "Y":
+        return "cof"
+    if str(subject_to_wof).upper() == "Y":
+        return "wof"
+    return None
+
+
 def _parse_vehicle_response(rego: str, data: dict[str, Any], lookup_type: str = "basic") -> CarjamVehicleData:
     """Extract vehicle fields from a Carjam regular API response dict.
     
@@ -181,6 +193,16 @@ def _parse_vehicle_response(rego: str, data: dict[str, Any], lookup_type: str = 
         except (ValueError, TypeError):
             return None
 
+    # Parse COF expiry and log warning if present but unparseable
+    raw_cof_expiry = data.get("expiry_date_of_last_successful_cof")
+    parsed_cof_expiry = _timestamp_to_date(raw_cof_expiry)
+    if raw_cof_expiry is not None and raw_cof_expiry != "" and parsed_cof_expiry is None:
+        logger.warning(
+            "Unparseable expiry_date_of_last_successful_cof value: %r for rego=%s",
+            raw_cof_expiry,
+            rego,
+        )
+
     return CarjamVehicleData(
         rego=rego.upper().strip(),
         lookup_type=lookup_type,
@@ -211,6 +233,12 @@ def _parse_vehicle_response(rego: str, data: dict[str, Any], lookup_type: str = 
         plate_type=_safe_str(data.get("plate_type")),
         submodel=_safe_str(data.get("submodel")),
         second_colour=_safe_str(data.get("second_colour")),
+        # COF (Certificate of Fitness) fields
+        cof_expiry=parsed_cof_expiry,
+        inspection_type=_derive_inspection_type(
+            data.get("subject_to_wof"),
+            data.get("subject_to_cof"),
+        ),
     )
 
 

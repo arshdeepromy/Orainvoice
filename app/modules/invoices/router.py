@@ -152,6 +152,7 @@ async def create_invoice_endpoint(
             global_vehicle_id=payload.global_vehicle_id,
             vehicle_service_due_date=payload.vehicle_service_due_date,
             vehicle_wof_expiry_date=payload.vehicle_wof_expiry_date,
+            vehicle_cof_expiry_date=payload.vehicle_cof_expiry_date,
             vehicles=[v.model_dump() for v in payload.vehicles] if payload.vehicles else None,
             branch_id=payload.branch_id,
             status=effective_status,

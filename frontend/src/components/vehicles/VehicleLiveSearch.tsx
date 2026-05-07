@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import apiClient from '@/api/client'
 import { Button, Spinner } from '@/components/ui'
+import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
 
 interface Vehicle {
   id: string
@@ -13,6 +14,8 @@ interface Vehicle {
   fuel_type: string
   engine_size: string
   wof_expiry: string | null
+  cof_expiry: string | null
+  inspection_type: string | null
   registration_expiry: string | null
   odometer?: number | null
   service_due_date?: string | null
@@ -40,6 +43,8 @@ interface SearchResult {
   odometer?: number | null
   service_due_date?: string | null
   wof_expiry?: string | null
+  cof_expiry: string | null
+  inspection_type: string | null
   linked_customers?: LinkedCustomer[]
 }
 
@@ -129,6 +134,8 @@ export function VehicleLiveSearch({ vehicle, onVehicleFound, onCustomerAutoSelec
       fuel_type: '',
       engine_size: '',
       wof_expiry: result.wof_expiry ?? null,
+      cof_expiry: result.cof_expiry ?? null,
+      inspection_type: result.inspection_type ?? null,
       registration_expiry: null,
       odometer: result.odometer ?? null,
       service_due_date: result.service_due_date ?? null,
@@ -235,6 +242,11 @@ export function VehicleLiveSearch({ vehicle, onVehicleFound, onCustomerAutoSelec
           {vehicle.odometer != null && vehicle.odometer > 0 && (
             <div className="mt-1 text-sm text-gray-500">
               Odo: {vehicle.odometer.toLocaleString()} Kms
+            </div>
+          )}
+          {getInspectionExpiry(vehicle) && (
+            <div className="mt-1 text-sm text-gray-500">
+              {getInspectionLabel(vehicle)}: {getInspectionExpiry(vehicle)}
             </div>
           )}
         </div>

@@ -1,56 +1,172 @@
 import { useState, useCallback } from 'react'
+import { useModules } from '@/contexts/ModuleContext'
 import { KioskWelcome } from './KioskWelcome'
+import { KioskRegoEntry } from './KioskRegoEntry'
+import { KioskVehicleSummary } from './KioskVehicleSummary'
+import { KioskCheckInForm } from './KioskCheckInForm'
 import { KioskSuccess } from './KioskSuccess'
-import { CustomerCreateModal } from '@/components/customers/CustomerCreateModal'
+import type {
+  KioskVehicleEntry,
+  VehicleLookupResult,
+  KioskFormData,
+  KioskSuccessData,
+} from './types'
 
 /* ── Types ── */
 
-export type KioskScreen = 'welcome' | 'form' | 'success' | 'error'
+export type KioskScreen = 'welcome' | 'rego' | 'vehicle-summary' | 'form' | 'success' | 'error'
 
-export interface KioskFormData {
-  first_name: string
-  last_name: string
-  phone: string
-  email: string
-  vehicle_rego: string
-}
+/* ── Initial state helpers ── */
 
-export interface KioskSuccessData {
-  customer_first_name: string
+const EMPTY_FORM_DATA: KioskFormData = {
+  first_name: '',
+  last_name: '',
+  phone: '',
+  email: '',
 }
 
 /* ── KioskPage ── */
 
 export function KioskPage() {
+  const { isEnabled } = useModules()
+  const vehiclesEnabled = isEnabled('vehicles')
+
   const [screen, setScreen] = useState<KioskScreen>('welcome')
+  const [vehicles, setVehicles] = useState<KioskVehicleEntry[]>([])
+  const [currentLookupResult, setCurrentLookupResult] = useState<VehicleLookupResult | null>(null)
+  const [formData, setFormData] = useState<KioskFormData>(EMPTY_FORM_DATA)
   const [successData, setSuccessData] = useState<KioskSuccessData | null>(null)
 
-  /** Open the existing customer creation modal. */
-  const goToForm = useCallback(() => {
+  /** Clear all session state and return to welcome. */
+  const resetToWelcome = useCallback(() => {
+    setScreen('welcome')
+    setVehicles([])
+    setCurrentLookupResult(null)
+    setFormData(EMPTY_FORM_DATA)
+    setSuccessData(null)
+  }, [])
+
+  /** Welcome → Check In: module-gated transition. */
+  const handleCheckIn = useCallback(() => {
+    if (vehiclesEnabled) {
+      setScreen('rego')
+    } else {
+      setScreen('form')
+    }
+  }, [vehiclesEnabled])
+
+  /** KioskRegoEntry: vehicle found → go to vehicle-summary. */
+  const handleVehicleFound = useCallback((result: VehicleLookupResult) => {
+    setCurrentLookupResult(result)
+    setScreen('vehicle-summary')
+  }, [])
+
+  /** KioskRegoEntry: skip → go to form. */
+  const handleRegoSkip = useCallback(() => {
     setScreen('form')
   }, [])
 
-  /** Called when a customer is created via the existing modal. */
-  const handleCustomerCreated = useCallback((customer: { first_name: string }) => {
-    setSuccessData({ customer_first_name: customer.first_name || 'Customer' })
+  /** KioskRegoEntry: back → go to welcome. */
+  const handleRegoBack = useCallback(() => {
+    resetToWelcome()
+  }, [resetToWelcome])
+
+  /** KioskVehicleSummary: confirm → add vehicle to list, go to form. */
+  const handleVehicleConfirm = useCallback(
+    (odometer_km: number | null) => {
+      if (!currentLookupResult) return
+
+      const entry: KioskVehicleEntry = {
+        global_vehicle_id: currentLookupResult.id,
+        rego: currentLookupResult.rego,
+        make: currentLookupResult.make,
+        model: currentLookupResult.model,
+        body_type: currentLookupResult.body_type,
+        year: currentLookupResult.year,
+        wof_expiry: currentLookupResult.wof_expiry,
+        rego_expiry: currentLookupResult.rego_expiry,
+        last_odometer: currentLookupResult.odometer,
+        odometer_km,
+      }
+
+      setVehicles((prev) => [...prev, entry])
+      setCurrentLookupResult(null)
+      setScreen('form')
+    },
+    [currentLookupResult],
+  )
+
+  /** KioskVehicleSummary: add another → go back to rego (vehicles preserved). */
+  const handleAddAnother = useCallback(() => {
+    setCurrentLookupResult(null)
+    setScreen('rego')
+  }, [])
+
+  /** KioskVehicleSummary: back → go to rego. */
+  const handleSummaryBack = useCallback(() => {
+    setCurrentLookupResult(null)
+    setScreen('rego')
+  }, [])
+
+  /** KioskCheckInForm: form data changed. */
+  const handleFormDataChange = useCallback((data: KioskFormData) => {
+    setFormData(data)
+  }, [])
+
+  /** KioskCheckInForm: success. */
+  const handleSuccess = useCallback((data: KioskSuccessData) => {
+    setSuccessData(data)
     setScreen('success')
   }, [])
 
-  /** Close the modal and go back to welcome. */
-  const handleModalClose = useCallback(() => {
-    setScreen('welcome')
+  /** KioskCheckInForm: error. */
+  const handleError = useCallback(() => {
+    setScreen('error')
   }, [])
 
-  /** Reset to welcome screen and clear all state. */
-  const resetToWelcome = useCallback(() => {
-    setScreen('welcome')
-    setSuccessData(null)
-  }, [])
+  /** KioskCheckInForm: back → go to rego (if vehicles enabled) or welcome. */
+  const handleFormBack = useCallback(() => {
+    if (vehiclesEnabled) {
+      setScreen('rego')
+    } else {
+      resetToWelcome()
+    }
+  }, [vehiclesEnabled, resetToWelcome])
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-gray-50 px-4">
       {screen === 'welcome' && (
-        <KioskWelcome onCheckIn={goToForm} />
+        <KioskWelcome onCheckIn={handleCheckIn} />
+      )}
+
+      {screen === 'rego' && (
+        <KioskRegoEntry
+          vehicleCount={vehicles.length}
+          onVehicleFound={handleVehicleFound}
+          onSkip={handleRegoSkip}
+          onBack={handleRegoBack}
+        />
+      )}
+
+      {screen === 'vehicle-summary' && currentLookupResult && (
+        <KioskVehicleSummary
+          vehicle={currentLookupResult}
+          vehicleCount={vehicles.length}
+          onConfirm={handleVehicleConfirm}
+          onAddAnother={handleAddAnother}
+          onBack={handleSummaryBack}
+        />
+      )}
+
+      {screen === 'form' && (
+        <KioskCheckInForm
+          formData={formData}
+          onFormDataChange={handleFormDataChange}
+          vehicles={vehicles}
+          onSuccess={handleSuccess}
+          onError={handleError}
+          onBack={handleFormBack}
+        />
       )}
 
       {screen === 'success' && successData && (
@@ -60,13 +176,37 @@ export function KioskPage() {
         />
       )}
 
-      {/* Reuse the existing CustomerCreateModal — same form, same API, same DB tables */}
-      <CustomerCreateModal
-        open={screen === 'form'}
-        onClose={handleModalClose}
-        onCustomerCreated={handleCustomerCreated}
-        kioskMode
-      />
+      {screen === 'error' && (
+        <div className="w-full max-w-md space-y-6 rounded-xl bg-white p-8 text-center shadow-lg">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-red-100">
+            <svg
+              className="h-8 w-8 text-red-600"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth={2}
+              stroke="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </div>
+          <h2 className="text-xl font-semibold text-gray-900">Something went wrong</h2>
+          <p className="text-lg text-gray-600">
+            We couldn&apos;t complete your check-in. Please try again.
+          </p>
+          <button
+            type="button"
+            onClick={resetToWelcome}
+            className="inline-flex min-h-[48px] items-center justify-center rounded-lg bg-blue-600 px-8 py-3 text-lg font-medium text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+          >
+            Start Over
+          </button>
+        </div>
+      )}
     </div>
   )
 }

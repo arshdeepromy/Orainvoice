@@ -32,6 +32,8 @@ from redis.asyncio import Redis
 
 # Ensure SQLAlchemy relationship models are loaded
 import app.modules.admin.models  # noqa: F401
+import app.modules.customers.models  # noqa: F401
+import app.modules.organisations.models  # noqa: F401
 
 from app.modules.auth.models import Session, User
 from app.modules.auth.password import hash_password

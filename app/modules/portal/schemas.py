@@ -148,6 +148,8 @@ class PortalVehicleItem(BaseModel):
     year: int | None = None
     colour: str | None = None
     wof_expiry: date | None = None
+    cof_expiry: date | None = None
+    inspection_type: str | None = None
     rego_expiry: date | None = None
     service_history: list[PortalServiceRecord] = []
 

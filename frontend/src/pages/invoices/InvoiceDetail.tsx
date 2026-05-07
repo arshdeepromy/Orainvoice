@@ -21,6 +21,7 @@ import { invoiceToReceiptData } from '../../utils/invoiceReceiptMapper'
 import POSReceiptPreview from '../../components/pos/POSReceiptPreview'
 import PrinterErrorModal from '../../components/pos/PrinterErrorModal'
 import LinkedComplianceDocs from '../compliance/LinkedComplianceDocs'
+import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -65,6 +66,8 @@ interface Vehicle {
   fuel_type: string
   engine_size: string
   wof_expiry: string | null
+  cof_expiry: string | null
+  inspection_type: string | null
   registration_expiry: string | null
 }
 
@@ -118,7 +121,7 @@ interface InvoiceDetail {
   vehicle_model?: string | null
   vehicle_year?: number | null
   vehicle_odometer?: number | null
-  additional_vehicles?: { rego: string; make?: string; model?: string; year?: number; wof_expiry?: string; odometer?: number }[]
+  additional_vehicles?: { rego: string; make?: string; model?: string; year?: number; wof_expiry?: string; cof_expiry?: string; inspection_type?: string; odometer?: number }[]
   line_items: LineItem[]
   subtotal: number
   subtotal_ex_gst?: number
@@ -892,6 +895,12 @@ export default function InvoiceDetail() {
                   <dd className="text-sm text-gray-600">{invoice.vehicle.colour}</dd>
                 </div>
               )}
+              {getInspectionExpiry(invoice.vehicle) && (
+                <div>
+                  <dt className="text-xs text-gray-500">{getInspectionLabel(invoice.vehicle)}</dt>
+                  <dd className="text-sm text-gray-900">{formatDate(getInspectionExpiry(invoice.vehicle))}</dd>
+                </div>
+              )}
             </dl>
           ) : invoice.vehicle_rego ? (
             <dl className="space-y-1.5">
@@ -929,9 +938,9 @@ export default function InvoiceDetail() {
                         {[av.year, av.make, av.model].filter(Boolean).join(' ')}
                       </span>
                     )}
-                    {av.wof_expiry && (
+                    {getInspectionExpiry(av) && (
                       <span className="ml-2 text-xs text-gray-400">
-                        WOF: {formatDate(av.wof_expiry)}
+                        {getInspectionLabel(av)}: {formatDate(getInspectionExpiry(av))}
                       </span>
                     )}
                     {av.odometer != null && av.odometer > 0 && (

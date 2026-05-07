@@ -231,7 +231,7 @@ class TestLookupVehicleCacheMiss:
         mock_client_instance = AsyncMock()
         mock_client_instance.lookup_vehicle = AsyncMock(return_value=carjam_data)
 
-        with patch("app.modules.vehicles.service.CarjamClient", return_value=mock_client_instance):
+        with patch("app.modules.vehicles.service._load_carjam_client", new_callable=AsyncMock, return_value=mock_client_instance):
             with patch("app.modules.vehicles.service.write_audit_log", new_callable=AsyncMock):
                 result = await lookup_vehicle(
                     db, redis,

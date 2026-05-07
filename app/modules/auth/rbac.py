@@ -214,6 +214,7 @@ KIOSK_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/api/v1/customers",     # customer creation for kiosk check-in (POST only)
     "/api/v1/auth/me",       # session validation for AuthContext
     "/api/v1/auth/refresh",  # token refresh to keep kiosk session alive
+    "/api/v2/modules",       # module list for vehicle-step gating on kiosk
 )
 
 

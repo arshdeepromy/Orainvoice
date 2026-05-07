@@ -12,6 +12,10 @@ import pytest
 
 # Import models so SQLAlchemy can resolve all relationships
 import app.modules.admin.models  # noqa: F401
+import app.modules.organisations.models  # noqa: F401
+import app.modules.customers.models  # noqa: F401
+import app.modules.suppliers.models  # noqa: F401
+import app.modules.stock.models  # noqa: F401
 from app.modules.auth.models import User  # noqa: F401
 import app.modules.inventory.models  # noqa: F401
 import app.modules.catalogue.models  # noqa: F401
@@ -260,34 +264,43 @@ class TestUpdateWofRegoSettings:
 
 
 class TestProcessWofRegoRemindersTask:
-    """Test the Celery Beat task wrapper."""
+    """Test the WOF/rego reminder task function."""
 
     def test_task_registered(self):
         from app.tasks.notifications import process_wof_rego_reminders_task
 
-        assert process_wof_rego_reminders_task.name == (
-            "app.tasks.notifications.process_wof_rego_reminders_task"
-        )
+        # Task is now a plain async function (not Celery)
+        assert callable(process_wof_rego_reminders_task)
 
-    def test_task_success(self):
+    @pytest.mark.asyncio
+    async def test_task_success(self):
         from app.tasks.notifications import process_wof_rego_reminders_task
 
         mock_result = {"orgs_processed": 1, "reminders_sent": 3, "errors": 0}
-        with patch(
-            "app.tasks.notifications._run_async", return_value=mock_result
-        ):
-            result = process_wof_rego_reminders_task()
+        with patch("app.core.database.async_session_factory") as mock_factory:
+            mock_session = AsyncMock()
+            mock_session.begin = MagicMock(return_value=AsyncMock())
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+            with patch(
+                "app.modules.notifications.service.process_wof_rego_reminders",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ):
+                result = await process_wof_rego_reminders_task()
         assert result["orgs_processed"] == 1
         assert result["reminders_sent"] == 3
 
-    def test_task_handles_exception(self):
+    @pytest.mark.asyncio
+    async def test_task_handles_exception(self):
         from app.tasks.notifications import process_wof_rego_reminders_task
 
-        with patch(
-            "app.tasks.notifications._run_async",
-            side_effect=RuntimeError("DB connection failed"),
-        ):
-            result = process_wof_rego_reminders_task()
+        with patch("app.core.database.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(
+                side_effect=RuntimeError("DB connection failed")
+            )
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await process_wof_rego_reminders_task()
         assert "error" in result
         assert "DB connection failed" in result["error"]
 
