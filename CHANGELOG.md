@@ -2,6 +2,24 @@
 
 All notable changes to OraInvoice are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.0] - 2026-05-08
+
+### Added
+- COF (Certificate of Fitness) expiry support alongside existing WOF system
+  - CarJam integration: parses `expiry_date_of_last_successful_cof` and `subject_to_cof` fields, derives `inspection_type` ("wof"/"cof"/null)
+  - Database: migration 0181 adds `cof_expiry` (DATE) and `inspection_type` (VARCHAR(3)) to `global_vehicles` and `org_vehicles`
+  - Backend schemas: COF fields added to vehicle, kiosk, invoice, portal, and notification schemas
+  - Vehicle service: lookup, refresh, and manual creation all map COF fields
+  - Invoice service: accepts `vehicle_cof_expiry_date` to update COF expiry on vehicle records
+  - Notifications: `cof_expiry_reminder` template type with email/SMS support, dedup, and preference gating
+  - Dashboard: upcoming expirations widget includes COF vehicles with correct "cof" label
+  - Frontend helpers: `getInspectionLabel()` and `getInspectionExpiry()` for dynamic WOF/COF display
+  - Frontend: all 12 vehicle display components use dynamic labels (kiosk, profile, list, invoices, portal, search)
+  - Manual vehicle entry: inspection type selector (WOF/COF) with dynamic expiry input
+  - Customer reminders: COF expiry toggle alongside WOF in customer notification preferences
+  - Bulk import: preview table shows COF Expiry and Inspection Type columns
+- Kiosk vehicle check-in: odometer source constraint updated to include 'kiosk' (migration 0182)
+
 ## [1.2.0] - 2026-04-28
 
 ### Added

@@ -246,15 +246,15 @@ Add Certificate of Fitness (COF) expiry support alongside the existing Warrant o
 - [x] 12. Final checkpoint — Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 13. Git push and rebuild local dev environment
-  - [-] 13.1 Git commit and push all changes to a new branch
+- [x] 13. Git push and rebuild local dev environment
+  - [x] 13.1 Git commit and push all changes to a new branch
     - Stage all changed files: `git add -A`
     - Commit with message: `feat: add COF expiry support alongside WOF`
     - Push to new branch: `git push -u origin feat/cof-expiry-support`
-  - [~] 13.2 Rebuild backend container with new migration
+  - [x] 13.2 Rebuild backend container with new migration
     - Run: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build --force-recreate app`
     - Verify migration applied: `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec app alembic upgrade head`
-  - [~] 13.3 Rebuild frontend Vite inside the container
+  - [x] 13.3 Rebuild frontend Vite inside the container
     - Run: `docker compose -f docker-compose.yml -f docker-compose.dev.yml restart frontend`
     - Verify build succeeded: `docker compose -f docker-compose.yml -f docker-compose.dev.yml logs frontend --tail 20`
 
