@@ -3,6 +3,7 @@ import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useTenant } from '@/contexts/TenantContext'
 import { useModules } from '@/contexts/ModuleContext'
 import { useAuth } from '@/contexts/AuthContext'
+import { checkNavigationGuard } from '@/utils/navigationGuard'
 import { useFeatureFlags } from '@/contexts/FeatureFlagContext'
 import { GlobalSearchBar } from '@/components/search'
 import { BranchSelector } from '@/components/branch/BranchSelector'
@@ -12,6 +13,7 @@ import { usePaymentMethodEnforcement } from '@/hooks/usePaymentMethodEnforcement
 import { BlockingPaymentModal } from '@/components/billing/BlockingPaymentModal'
 import { ExpiringPaymentWarningModal } from '@/components/billing/ExpiringPaymentWarningModal'
 import NotificationBadge from '@/pages/compliance/NotificationBadge'
+import { Modal, Button } from '@/components/ui'
 
 interface QuickAction {
   label: string
@@ -92,6 +94,9 @@ export function OrgLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const [unsavedModalOpen, setUnsavedModalOpen] = useState(false)
+  const [unsavedDestination, setUnsavedDestination] = useState<string | null>(null)
+  const unsavedGuardRef = useRef<{ onSave: () => Promise<void> } | null>(null)
   const userMenuRef = useRef<HTMLDivElement>(null)
   const { settings, tradeFamily } = useTenant()
   const { isEnabled } = useModules()
@@ -271,7 +276,17 @@ export function OrgLayout() {
               <li key={item.to}>
                 <NavLink
                   to={item.to}
-                  onClick={() => setSidebarOpen(false)}
+                  onClick={(e) => {
+                    const guard = checkNavigationGuard()
+                    if (guard) {
+                      e.preventDefault()
+                      unsavedGuardRef.current = guard
+                      setUnsavedDestination(item.to)
+                      setUnsavedModalOpen(true)
+                      return
+                    }
+                    setSidebarOpen(false)
+                  }}
                   className={({ isActive }) =>
                     `flex items-center gap-3 rounded-lg px-3 min-h-[44px] text-sm font-medium transition-all duration-[var(--transition-speed)] ${
                       isActive ? 'sidebar-nav-active' : 'sidebar-nav-item'
@@ -496,6 +511,44 @@ export function OrgLayout() {
       {/* Global search overlay */}
       <GlobalSearchBar />
     </div>
+
+    {/* Unsaved Changes Modal — triggered by navigation guard */}
+    <Modal
+      open={unsavedModalOpen}
+      onClose={() => { setUnsavedModalOpen(false); setUnsavedDestination(null) }}
+      title="Unsaved Changes"
+    >
+      <p className="text-sm text-gray-600 mb-4">
+        You have unsaved changes. Would you like to save as a draft before leaving?
+      </p>
+      <div className="flex justify-end gap-2">
+        <Button variant="secondary" size="sm" onClick={() => {
+          setUnsavedModalOpen(false)
+          const dest = unsavedDestination
+          setUnsavedDestination(null)
+          unsavedGuardRef.current = null
+          if (dest) navigate(dest)
+        }}>
+          Discard
+        </Button>
+        <Button variant="secondary" size="sm" onClick={() => { setUnsavedModalOpen(false); setUnsavedDestination(null) }}>
+          Stay
+        </Button>
+        <Button
+          size="sm"
+          onClick={async () => {
+            if (unsavedGuardRef.current) {
+              await unsavedGuardRef.current.onSave()
+            }
+            setUnsavedModalOpen(false)
+            setUnsavedDestination(null)
+            unsavedGuardRef.current = null
+          }}
+        >
+          Save as Draft
+        </Button>
+      </div>
+    </Modal>
     </>
   )
 }

@@ -23,7 +23,7 @@ OraInvoice is a multi-tenant SaaS invoicing and business management platform bui
 - `app/core/` — Database, encryption, branch context, module registry
 - `app/modules/` — Feature modules (each has router.py, service.py, models.py, schemas.py)
 - `frontend/` — React SPA (Vite, pages/, components/, contexts/, hooks/, api/)
-- `alembic/versions/` — Database migrations (currently at revision 0139)
+- `alembic/versions/` — Database migrations (currently at revision 0182)
 - `tests/` — pytest tests, property-based tests (Hypothesis), e2e tests (Playwright)
 - `scripts/` — Utility scripts (seeding, deployment, checks)
 - `docs/` — Issue tracker, security audits, implementation plans
@@ -59,9 +59,9 @@ OraInvoice is a multi-tenant SaaS invoicing and business management platform bui
 - The `get_db_session` dependency uses `session.begin()` which auto-commits — use `flush()` not `commit()` in services
 - Integration API keys (Stripe, CarJam, Xero, SMS) are stored encrypted in the DB, configured via Global Admin GUI — never read from `.env` for API calls (see #[[file:.kiro/steering/integration-credentials-architecture.md]])
 
-## Current State (as of 2026-04-08)
+## Current State (as of 2026-05-08)
 
-- Alembic: revision 0139 (head) on all environments
+- Alembic: revision 0182 (head) on all environments
 - 132 tables in the database
 - 106 issues tracked and resolved
 - Prod has 1 org, 1 customer, 2 invoices, 1 user (early production)
@@ -69,3 +69,6 @@ OraInvoice is a multi-tenant SaaS invoicing and business management platform bui
 - Xero accounting integration with webhooks deployed
 - Branch management, claims, scheduling, stock transfers all implemented
 - Customer creation only requires First Name (all other fields optional per user feedback)
+- COF (Certificate of Fitness) expiry support deployed alongside WOF
+- Kiosk vehicle check-in multi-step flow deployed (rego → vehicle summary → customer details)
+- App version: 1.4.0

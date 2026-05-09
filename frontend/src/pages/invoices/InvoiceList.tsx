@@ -4,6 +4,7 @@ import apiClient from '../../api/client'
 import { Button, Spinner, Modal, Badge } from '../../components/ui'
 import { useTenant } from '@/contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
+import { checkNavigationGuard } from '@/utils/navigationGuard'
 import { CreditNoteModal } from '../../components/invoices/CreditNoteModal'
 import { RefundModal } from '../../components/invoices/RefundModal'
 import InvoiceCreate from './InvoiceCreate'
@@ -345,10 +346,15 @@ const PRINT_STYLES = `
     display: none !important;
   }
 
-  /* Page setup */
+  /* Page setup — margin: 0 removes browser headers/footers (date, URL, title, page number) */
   @page {
-    margin: 10mm;
+    margin: 0;
     size: A4;
+  }
+
+  /* Add padding to content since @page margin is 0 */
+  [data-print-content] {
+    padding: 10mm !important;
   }
 
   /* Hide POS receipt column in normal invoice print */
@@ -391,6 +397,11 @@ export default function InvoiceList() {
   const [invoice, setInvoice] = useState<InvoiceDetailData | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
+
+  /* --- Unsaved changes guard for invoice sidebar clicks --- */
+  const [unsavedModalOpen, setUnsavedModalOpen] = useState(false)
+  const [unsavedTargetId, setUnsavedTargetId] = useState<string | null>(null)
+  const unsavedGuardRef = useRef<{ onSave: () => Promise<void> } | null>(null)
 
   // Sync selectedId when route param changes (e.g. navigating from /invoices/new to /invoices/:id)
   useEffect(() => {
@@ -901,7 +912,17 @@ export default function InvoiceList() {
             return (
               <button
                 key={inv.id}
-                onClick={() => setSelectedId(inv.id)}
+                onClick={() => { 
+                  const guard = checkNavigationGuard()
+                  if (guard) {
+                    unsavedGuardRef.current = guard
+                    setUnsavedTargetId(inv.id)
+                    setUnsavedModalOpen(true)
+                    return
+                  }
+                  setSelectedId(inv.id)
+                  if (isCreating) navigate(`/invoices/${inv.id}`, { replace: true })
+                }}
                 className={`w-full text-left px-4 py-3 border-b border-gray-50 transition-colors ${
                   isActive
                     ? 'bg-blue-50 border-l-[3px] border-l-blue-500'
@@ -1643,7 +1664,7 @@ export default function InvoiceList() {
 
               {/* ---- Payment History ---- */}
               {(invoice.payments || []).length > 0 && (
-                <div className="mt-4 bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                <div className="mt-4 bg-white rounded-xl shadow-sm border border-gray-200 p-5" data-print-hide>
                   <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Payment History</h3>
                   <table className="w-full text-sm">
                     <thead>
@@ -1702,7 +1723,7 @@ export default function InvoiceList() {
 
               {/* ---- Credit Notes ---- */}
               {(invoice.credit_notes || []).length > 0 && (
-                <div className="mt-4 bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                <div className="mt-4 bg-white rounded-xl shadow-sm border border-gray-200 p-5" data-print-hide>
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Credit Notes</h3>
                     {isCreditNoteButtonVisible(invoice.status) && (
@@ -1946,6 +1967,40 @@ export default function InvoiceList() {
           />
         </>
       )}
+
+      {/* Unsaved Changes Modal — for invoice sidebar clicks */}
+      <Modal open={unsavedModalOpen} onClose={() => { setUnsavedModalOpen(false); setUnsavedTargetId(null) }} title="Unsaved Changes">
+        <p className="text-sm text-gray-600 mb-4">
+          You have unsaved changes. Would you like to save as a draft before leaving?
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={() => {
+            setUnsavedModalOpen(false)
+            const targetId = unsavedTargetId
+            setUnsavedTargetId(null)
+            unsavedGuardRef.current = null
+            if (targetId) {
+              setSelectedId(targetId)
+              navigate(`/invoices/${targetId}`, { replace: true })
+            }
+          }}>
+            Discard
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => { setUnsavedModalOpen(false); setUnsavedTargetId(null) }}>
+            Stay
+          </Button>
+          <Button size="sm" onClick={async () => {
+            if (unsavedGuardRef.current) {
+              await unsavedGuardRef.current.onSave()
+            }
+            setUnsavedModalOpen(false)
+            setUnsavedTargetId(null)
+            unsavedGuardRef.current = null
+          }}>
+            Save as Draft
+          </Button>
+        </div>
+      </Modal>
     </div>
   )
 }

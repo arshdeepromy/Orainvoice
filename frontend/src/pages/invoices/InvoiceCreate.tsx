@@ -10,6 +10,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import { ModuleGate } from '../../components/common/ModuleGate'
 import { useModules } from '../../contexts/ModuleContext'
 import { getInspectionLabel } from '@/utils/vehicleHelpers'
+import { setNavigationGuard, clearNavigationGuard } from '@/utils/navigationGuard'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -859,6 +860,47 @@ export default function InvoiceCreate() {
   const [paidMethod, setPaidMethod] = useState('cash')
   const [paidSaving, setPaidSaving] = useState(false)
 
+  // Unsaved changes detection
+  const isDirty = Boolean(
+    customer ||
+    subject.trim() ||
+    orderNumber.trim() ||
+    customerNotes.trim() ||
+    lineItems.some(li => li.description.trim() || li.quantity !== 1 || li.rate !== 0) ||
+    vehicles.length > 0 ||
+    discountValue > 0 ||
+    shippingCharges > 0 ||
+    adjustment !== 0 ||
+    attachments.length > 0
+  )
+
+  // Register navigation guard with layout
+  const isDirtyRef = useRef(isDirty)
+  isDirtyRef.current = isDirty
+  const handleSaveDraftRef = useRef<() => Promise<void>>(() => Promise.resolve())
+
+  useEffect(() => {
+    setNavigationGuard({
+      isDirty: () => isDirtyRef.current,
+      onSave: () => handleSaveDraftRef.current(),
+    })
+    return () => clearNavigationGuard()
+  }, [])
+
+  // Unsaved changes modal state (for Cancel button only)
+  const [unsavedModalOpen, setUnsavedModalOpen] = useState(false)
+  const pendingNavigationRef = useRef<string | null>(null)
+
+  /** Try to navigate — shows modal if dirty, otherwise navigates immediately */
+  const guardedNavigate = useCallback((to: string) => {
+    if (isDirty && !saving) {
+      pendingNavigationRef.current = to
+      setUnsavedModalOpen(true)
+    } else {
+      navigate(to)
+    }
+  }, [isDirty, saving, navigate])
+
   // Fetch Stripe Connect status for payment method option
   useEffect(() => {
     const controller = new AbortController()
@@ -1362,6 +1404,9 @@ export default function InvoiceCreate() {
     }
   }
 
+  // Wire up the ref so the navigation guard can call handleSaveDraft
+  handleSaveDraftRef.current = handleSaveDraft
+
   const handleSaveAndSend = async () => {
     if (!validate()) return
     setSaving(true)
@@ -1440,11 +1485,8 @@ export default function InvoiceCreate() {
   }
 
   const handleCancel = () => {
-    if (isEditMode && editId) {
-      navigate(`/invoices/${editId}`)
-    } else {
-      navigate('/invoices')
-    }
+    const target = isEditMode && editId ? `/invoices/${editId}` : '/invoices'
+    guardedNavigate(target)
   }
 
   if (loadingInvoice) {
@@ -2206,6 +2248,48 @@ export default function InvoiceCreate() {
               {fluidItems.length === 0 && !fluidLoading && <div className="py-8 text-center text-sm text-gray-500">No fluids in stock.</div>}
             </div>
           )}
+        </div>
+      </Modal>
+
+      {/* Unsaved Changes Modal */}
+      <Modal
+        open={unsavedModalOpen}
+        onClose={() => { setUnsavedModalOpen(false); pendingNavigationRef.current = null }}
+        title="Unsaved Changes"
+      >
+        <p className="text-sm text-gray-600 mb-4">
+          You have unsaved changes on this invoice. Would you like to save it as a draft before leaving?
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              setUnsavedModalOpen(false)
+              const target = pendingNavigationRef.current
+              pendingNavigationRef.current = null
+              if (target) navigate(target)
+            }}
+          >
+            Discard
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => { setUnsavedModalOpen(false); pendingNavigationRef.current = null }}
+          >
+            Stay
+          </Button>
+          <Button
+            size="sm"
+            onClick={async () => {
+              setUnsavedModalOpen(false)
+              await handleSaveDraft()
+            }}
+            loading={saving}
+          >
+            Save as Draft
+          </Button>
         </div>
       </Modal>
     </div>
