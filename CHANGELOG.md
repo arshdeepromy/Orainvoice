@@ -5,6 +5,10 @@ All notable changes to OraInvoice are documented here. Format follows [Keep a Ch
 ## [1.6.0] - 2026-05-12
 
 ### Added
+- Mobile: `QuotePDFScreen` at `/quotes/:id/pdf` — full-screen PDF preview
+- Mobile: `QuoteDetailScreen` — Preview PDF hero button
+- Mobile: `QuoteDetailScreen` action sheet — Download PDF and Print items
+- Mobile: `QuoteDetailScreen` — attachments carousel with inline camera upload and draft-only delete
 - Quotes: Order number field (PO/reference number) on create and detail views
 - Quotes: Salesperson dropdown with auto-populated org staff list
 - Quotes: GST-inclusive line items with back-calculation (unit_price = inclusive_price / 1.15)

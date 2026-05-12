@@ -135,6 +135,11 @@ const QuoteCreateScreen = lazy(() =>
     default: () => <ScreenPlaceholder name="New Quote" />,
   })),
 )
+const QuotePDFScreen = lazy(() =>
+  import('@/screens/quotes/QuotePDFScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Quote PDF" />,
+  })),
+)
 
 // Inventory
 const InventoryListScreen = lazy(() =>
@@ -597,6 +602,7 @@ export function StackRoutes() {
         <Route path="/quotes" element={<AuthGuard><QuoteListScreen /></AuthGuard>} />
         <Route path="/quotes/new" element={<AuthGuard><QuoteCreateScreen /></AuthGuard>} />
         <Route path="/quotes/:id" element={<AuthGuard><QuoteDetailScreen /></AuthGuard>} />
+        <Route path="/quotes/:id/pdf" element={<AuthGuard><QuotePDFScreen /></AuthGuard>} />
         <Route path="/inventory" element={<AuthGuard><InventoryListScreen /></AuthGuard>} />
         <Route path="/inventory/:id" element={<AuthGuard><InventoryDetailScreen /></AuthGuard>} />
         <Route path="/items" element={<AuthGuard><CatalogueItemsScreen /></AuthGuard>} />
