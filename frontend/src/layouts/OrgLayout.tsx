@@ -14,6 +14,7 @@ import { BlockingPaymentModal } from '@/components/billing/BlockingPaymentModal'
 import { ExpiringPaymentWarningModal } from '@/components/billing/ExpiringPaymentWarningModal'
 import NotificationBadge from '@/pages/compliance/NotificationBadge'
 import { Modal, Button } from '@/components/ui'
+import { usePageMeta } from '@/hooks/usePageMeta'
 
 interface QuickAction {
   label: string
@@ -106,6 +107,9 @@ export function OrgLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const branding = settings?.branding
+
+  // SEO: every authenticated org page must NOT be indexed by search engines.
+  usePageMeta({ noindex: true })
 
   // Refresh the compliance badge count whenever the user navigates to /compliance.
   const [badgeRefreshKey, setBadgeRefreshKey] = useState(0)

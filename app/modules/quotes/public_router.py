@@ -114,6 +114,21 @@ async def view_shared_quote(
     env = Environment(loader=FileSystemLoader(str(template_dir)), autoescape=True)
     template = env.get_template("quote_share.html")
 
+    # Resolve salesperson name if set
+    salesperson_name = None
+    if quote.salesperson_id:
+        from app.modules.auth.models import User
+        sp_result = await db.execute(
+            select(User.first_name, User.last_name, User.email)
+            .where(User.id == quote.salesperson_id)
+        )
+        sp_row = sp_result.first()
+        if sp_row:
+            first = sp_row.first_name or ""
+            last = sp_row.last_name or ""
+            name = f"{first} {last}".strip()
+            salesperson_name = name if name else sp_row.email
+
     html_content = template.render(
         quote=quote_dict,
         org=org_context,
@@ -122,6 +137,8 @@ async def view_shared_quote(
         token=token,
         can_accept=quote.status == "sent",
         already_accepted=quote.status == "accepted",
+        order_number=quote.order_number,
+        salesperson_name=salesperson_name,
     )
 
     return HTMLResponse(content=html_content)
@@ -135,10 +152,73 @@ async def accept_quote_endpoint(
     token: str,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Public endpoint for customers to accept a quote via token."""
+    """Public endpoint for customers to accept a quote via token.
+    
+    Returns an HTML page confirming acceptance (not raw JSON) so the
+    customer sees a friendly confirmation on their phone/browser.
+    """
     try:
         result = await accept_quote_by_token(db, token=token)
         await db.commit()
-        return result
+
+        # Return a friendly HTML confirmation page instead of raw JSON
+        quote_number = result.get("quote_number", "")
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quote {quote_number} Accepted</title>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; line-height: 1.5; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
+  .card {{ max-width: 480px; width: 100%; background: #fff; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); padding: 48px 32px; text-align: center; }}
+  .icon {{ width: 64px; height: 64px; background: #dcfce7; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; }}
+  .icon svg {{ width: 32px; height: 32px; color: #16a34a; }}
+  h1 {{ font-size: 22px; font-weight: 700; color: #1a1a1a; margin-bottom: 8px; }}
+  p {{ font-size: 15px; color: #555; margin-bottom: 16px; }}
+  .badge {{ display: inline-block; padding: 8px 20px; background: #dcfce7; color: #166534; font-size: 14px; font-weight: 600; border-radius: 6px; margin-top: 8px; }}
+  .back-link {{ display: inline-block; margin-top: 24px; color: #2563eb; font-size: 14px; text-decoration: none; }}
+  .back-link:hover {{ text-decoration: underline; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+  <h1>Quote Accepted!</h1>
+  <p>Thank you for accepting quote <strong>{quote_number}</strong>.</p>
+  <p>An invoice has been created and you will receive it shortly.</p>
+  <div class="badge">✓ Accepted</div>
+  <br>
+  <a href="/api/v1/public/quotes/view/{token}" class="back-link">← View Quote Details</a>
+</div>
+</body>
+</html>"""
+        return HTMLResponse(content=html)
+
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        error_msg = str(exc)
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Error</title>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; line-height: 1.5; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
+  .card {{ max-width: 480px; width: 100%; background: #fff; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); padding: 48px 32px; text-align: center; }}
+  h1 {{ font-size: 20px; font-weight: 700; color: #991b1b; margin-bottom: 12px; }}
+  p {{ font-size: 15px; color: #555; }}
+  .back-link {{ display: inline-block; margin-top: 24px; color: #2563eb; font-size: 14px; text-decoration: none; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Unable to Accept</h1>
+  <p>{error_msg}</p>
+  <a href="/api/v1/public/quotes/view/{token}" class="back-link">← Back to Quote</a>
+</div>
+</body>
+</html>"""
+        return HTMLResponse(content=html, status_code=400)

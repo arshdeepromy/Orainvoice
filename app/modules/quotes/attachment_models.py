@@ -86,7 +86,12 @@ class QuoteAttachment(Base):
     )
 
     # Relationships
-    quote = relationship("Quote", backref="attachments")
+    quote = relationship(
+        "app.modules.quotes.models.Quote",
+        backref="attachments",
+        foreign_keys=[quote_id],
+        viewonly=True,
+    )
     organisation = relationship("Organisation", backref="quote_attachments")
     uploaded_by_user = relationship(
         "User",

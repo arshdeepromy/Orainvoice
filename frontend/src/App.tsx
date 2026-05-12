@@ -24,6 +24,7 @@ const LazySignup = lazy(() =>
 import { AdminLayout } from '@/layouts/AdminLayout'
 import { OrgLayout } from '@/layouts/OrgLayout'
 import { Dashboard } from '@/pages/dashboard'
+import { NoIndexRoute } from '@/components/common/NoIndexRoute'
 
 /* ── Admin pages (eagerly loaded — small set) ── */
 import { Organisations } from '@/pages/admin/Organisations'
@@ -56,7 +57,6 @@ const InvoiceList = lazy(() => import('@/pages/invoices/InvoiceList'))
 const InvoiceCreate = lazy(() => import('@/pages/invoices/InvoiceCreate'))
 const QuoteList = lazy(() => import('@/pages/quotes/QuoteList'))
 const QuoteCreate = lazy(() => import('@/pages/quotes/QuoteCreate'))
-const QuoteDetail = lazy(() => import('@/pages/quotes/QuoteDetail'))
 const JobCardList = lazy(() => import('@/pages/job-cards/JobCardList'))
 const JobCardCreate = lazy(() => import('@/pages/job-cards/JobCardCreate'))
 const JobCardDetail = lazy(() => import('@/pages/job-cards/JobCardDetail'))
@@ -121,6 +121,18 @@ const InvoicePaymentPage = lazy(() => import('@/pages/public/InvoicePaymentPage'
 const LandingPage = lazy(() => import('@/pages/public/LandingPage'))
 const PrivacyPage = lazy(() => import('@/pages/public/PrivacyPage'))
 const TradesPage = lazy(() => import('@/pages/public/TradesPage'))
+const WorkshopPage = lazy(() => import('@/pages/public/WorkshopPage'))
+
+/* Visual page editor (lazy — Puck CSS is large and admin-only) */
+const PageEditorList = lazy(() => import('@/admin/page-editor/pages/PageEditorList').then(m => ({ default: m.PageEditorList })))
+const PageEditorEdit = lazy(() => import('@/admin/page-editor/pages/PageEditorEdit').then(m => ({ default: m.PageEditorEdit })))
+const PageEditorRedirects = lazy(() => import('@/admin/page-editor/pages/PageEditorRedirects').then(m => ({ default: m.PageEditorRedirects })))
+
+/* Public catch-all renderer (resolves slugs against the editor backend) */
+const PublicPageRenderer = lazy(() => import('@/pages/public/PublicPageRenderer').then(m => ({ default: m.PublicPageRenderer })))
+
+/* ManagedPage wrapper — swaps in published Puck content when present, otherwise renders the React fallback */
+import { ManagedPage } from '@/pages/public/ManagedPage'
 
 /* Catalogue pages */
 const CataloguePage = lazy(() => import('@/pages/catalogue/CataloguePage'))
@@ -256,11 +268,6 @@ function RequireAutomotive() {
 }
 
 /* ── Route wrappers for components that expect props instead of useParams ── */
-function QuoteDetailRoute() {
-  const { id } = useParams<{ id: string }>()
-  return <QuoteDetail quoteId={id!} />
-}
-
 function ProjectDashboardRoute() {
   const { id } = useParams<{ id: string }>()
   return <ProjectDashboard projectId={id!} />
@@ -292,23 +299,37 @@ function TransferDetailRoute() {
 }
 
 function AppRoutes() {
-  const { isGlobalAdmin, isKiosk, isAuthenticated } = useAuth()
+  const { isGlobalAdmin, isKiosk } = useAuth()
 
   return (
     <Routes>
-      {/* Public pages — accessible regardless of auth state */}
-      <Route path="/privacy" element={<SafePage name="privacy"><PrivacyPage /></SafePage>} />
-      <Route path="/trades" element={<SafePage name="trades"><TradesPage /></SafePage>} />
+      {/* Public pages — accessible regardless of auth state.
+          Each hand-coded page is wrapped in <ManagedPage>, which transparently
+          swaps in published Puck content from the visual page editor when present
+          (Requirement 14.4, 14.5) and falls back to the original React component
+          otherwise. */}
+      <Route path="/privacy" element={<SafePage name="privacy"><ManagedPage page_key="privacy"><PrivacyPage /></ManagedPage></SafePage>} />
+      <Route path="/trades" element={<SafePage name="trades"><ManagedPage page_key="trades"><TradesPage /></ManagedPage></SafePage>} />
+      <Route path="/workshop" element={<SafePage name="workshop"><ManagedPage page_key="workshop"><WorkshopPage /></ManagedPage></SafePage>} />
+      {/* SEO: /mechanics and /garage are alias routes that redirect to the
+          canonical /workshop URL. This consolidates link-equity to a single
+          URL (plus the <link rel="canonical"> on WorkshopPage itself). */}
+      <Route path="/mechanics" element={<Navigate to="/workshop" replace />} />
+      <Route path="/garage" element={<Navigate to="/workshop" replace />} />
 
-      {/* Guest routes — authenticated users are redirected by role */}
+      {/* Guest routes — authenticated users are redirected by role.
+          The landing page is publicly indexable; all auth-related pages
+          must be marked noindex to keep them out of search results. */}
       <Route element={<GuestOnly />}>
-        <Route path="/" element={<SafePage name="landing"><LandingPage /></SafePage>} />
-        <Route path="/login" element={<SafePage name="login"><Login /></SafePage>} />
-        <Route path="/mfa-verify" element={<SafePage name="mfa-verify"><MfaVerify /></SafePage>} />
-        <Route path="/forgot-password" element={<SafePage name="forgot-password"><PasswordResetRequest /></SafePage>} />
-        <Route path="/reset-password" element={<SafePage name="reset-password"><PasswordResetComplete /></SafePage>} />
-        <Route path="/signup" element={<SafePage name="signup"><LazySignup /></SafePage>} />
-        <Route path="/verify-email" element={<SafePage name="verify-email"><VerifyEmail /></SafePage>} />
+        <Route path="/" element={<SafePage name="landing"><ManagedPage page_key="landing"><LandingPage /></ManagedPage></SafePage>} />
+        <Route element={<NoIndexRoute />}>
+          <Route path="/login" element={<SafePage name="login"><Login /></SafePage>} />
+          <Route path="/mfa-verify" element={<SafePage name="mfa-verify"><MfaVerify /></SafePage>} />
+          <Route path="/forgot-password" element={<SafePage name="forgot-password"><PasswordResetRequest /></SafePage>} />
+          <Route path="/reset-password" element={<SafePage name="reset-password"><PasswordResetComplete /></SafePage>} />
+          <Route path="/signup" element={<SafePage name="signup"><LazySignup /></SafePage>} />
+          <Route path="/verify-email" element={<SafePage name="verify-email"><VerifyEmail /></SafePage>} />
+        </Route>
       </Route>
 
       {/* Global admin routes */}
@@ -336,6 +357,10 @@ function AppRoutes() {
             <Route path="trade-families" element={<SafePage name="admin-trade-families"><TradeFamilies /></SafePage>} />
             <Route path="branches" element={<SafePage name="admin-branches"><GlobalBranchOverview /></SafePage>} />
             <Route path="profile" element={<SafePage name="admin-profile"><GlobalAdminProfile /></SafePage>} />
+            {/* Visual page editor (global_admin only — Requirement 13.1) */}
+            <Route path="page-editor" element={<SafePage name="page-editor-list"><PageEditorList /></SafePage>} />
+            <Route path="page-editor/redirects" element={<SafePage name="page-editor-redirects"><PageEditorRedirects /></SafePage>} />
+            <Route path="page-editor/:pageKey" element={<SafePage name="page-editor-edit"><PageEditorEdit /></SafePage>} />
             <Route index element={<Navigate to="dashboard" replace />} />
           </Route>
         </Route>
@@ -366,9 +391,9 @@ function AppRoutes() {
 
           {/* Quotes */}
           <Route path="/quotes" element={<SafePage name="quotes"><ModuleRoute moduleSlug="quotes"><QuoteList /></ModuleRoute></SafePage>} />
-          <Route path="/quotes/new" element={<SafePage name="quote-create"><ModuleRoute moduleSlug="quotes"><QuoteCreate /></ModuleRoute></SafePage>} />
+          <Route path="/quotes/new" element={<SafePage name="quote-create"><ModuleRoute moduleSlug="quotes"><QuoteList /></ModuleRoute></SafePage>} />
           <Route path="/quotes/:id/edit" element={<SafePage name="quote-edit"><ModuleRoute moduleSlug="quotes"><QuoteCreate /></ModuleRoute></SafePage>} />
-          <Route path="/quotes/:id" element={<SafePage name="quote-detail"><ModuleRoute moduleSlug="quotes"><QuoteDetailRoute /></ModuleRoute></SafePage>} />
+          <Route path="/quotes/:id" element={<SafePage name="quote-detail"><ModuleRoute moduleSlug="quotes"><QuoteList /></ModuleRoute></SafePage>} />
 
           {/* Job Cards */}
           <Route path="/job-cards" element={<SafePage name="job-cards"><ModuleRoute moduleSlug="jobs"><JobCardList /></ModuleRoute></SafePage>} />
@@ -512,34 +537,40 @@ function AppRoutes() {
           {/* Franchise location detail */}
           <Route path="/locations/:id" element={<SafePage name="location-detail"><ModuleRoute moduleSlug="franchise"><LocationDetailRoute /></ModuleRoute></SafePage>} />
 
-          {/* Catch-all */}
-          <Route
-            path="*"
-            element={<Navigate to={isGlobalAdmin ? '/admin/dashboard' : '/dashboard'} replace />}
-          />
+          {/* No internal catch-all here — unknown paths fall through to the
+              top-level public catch-all (PublicPageRenderer) so editor-created
+              pages can serve every visitor regardless of auth state.
+              See the bottom of <Routes> for the public catch-all. */}
         </Route>
       </Route>
 
-      {/* Kiosk (standalone, outside OrgLayout) */}
+      {/* Kiosk (standalone, outside OrgLayout) — noindex */}
       <Route element={<RequireAuth />}>
-        <Route path="/kiosk" element={<SafePage name="kiosk"><KioskPage /></SafePage>} />
+        <Route element={<NoIndexRoute />}>
+          <Route path="/kiosk" element={<SafePage name="kiosk"><KioskPage /></SafePage>} />
+        </Route>
       </Route>
 
-      {/* Customer portal (public, token-based access) */}
-      <Route path="/portal/signed-out" element={<SafePage name="portal-signed-out"><PortalSignedOut /></SafePage>} />
-      <Route path="/portal/recover" element={<SafePage name="portal-recover"><PortalRecover /></SafePage>} />
-      <Route path="/portal/:token/payment-success" element={<SafePage name="payment-success"><PaymentSuccess /></SafePage>} />
-      <Route path="/portal/:token" element={<SafePage name="portal"><PortalPage /></SafePage>} />
+      {/* Customer portal (public, token-based access) — noindex, tokens should
+          never be crawled or indexed. */}
+      <Route element={<NoIndexRoute />}>
+        <Route path="/portal/signed-out" element={<SafePage name="portal-signed-out"><PortalSignedOut /></SafePage>} />
+        <Route path="/portal/recover" element={<SafePage name="portal-recover"><PortalRecover /></SafePage>} />
+        <Route path="/portal/:token/payment-success" element={<SafePage name="payment-success"><PaymentSuccess /></SafePage>} />
+        <Route path="/portal/:token" element={<SafePage name="portal"><PortalPage /></SafePage>} />
 
-      {/* Invoice payment page (public, token-based access — Stripe Elements) */}
-      <Route path="/pay/:token" element={<SafePage name="invoice-payment"><InvoicePaymentPage /></SafePage>} />
+        {/* Invoice payment page (public, token-based access — Stripe Elements) */}
+        <Route path="/pay/:token" element={<SafePage name="invoice-payment"><InvoicePaymentPage /></SafePage>} />
+      </Route>
 
-      {/* Fallback */}
+      {/* Public catch-all — resolves the path against editor_pages /
+          editor_page_redirects via the backend. Renders published Puck
+          content, follows redirects, or shows the 404 page when no
+          slug matches. Must remain the LAST route so it only fires
+          when no explicit route matched. (Requirement 7.2, 14.5) */}
       <Route
         path="*"
-        element={
-          <Navigate to={isAuthenticated ? (isKiosk ? '/kiosk' : isGlobalAdmin ? '/admin/dashboard' : '/dashboard') : '/login'} replace />
-        }
+        element={<SafePage name="public-page-renderer"><PublicPageRenderer /></SafePage>}
       />
     </Routes>
   )

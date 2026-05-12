@@ -4,6 +4,7 @@ import apiClient from '../../api/client'
 import { Button, Input, Select, Spinner, Modal } from '../../components/ui'
 import { CustomerCreateModal } from '../../components/customers/CustomerCreateModal'
 import { VehicleLiveSearch } from '../../components/vehicles/VehicleLiveSearch'
+import { AddToStockModal } from '../../components/inventory/AddToStockModal'
 import { useTenant } from '../../contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
 import { useAuth } from '../../contexts/AuthContext'
@@ -1100,6 +1101,7 @@ export default function InvoiceCreate() {
 
   // Inventory stock picker state
   const [stockPickerOpen, setStockPickerOpen] = useState(false)
+  const [quickAddStockOpen, setQuickAddStockOpen] = useState(false)
   const [stockItems, setStockItems] = useState<{id:string;catalogue_item_id:string;catalogue_type:string;item_name:string;part_number:string|null;brand:string|null;subtitle:string|null;current_quantity:number;reserved_quantity:number;available_quantity:number;sell_price:number|null;cost_per_unit:number|null;gst_mode:string|null;supplier_name:string|null;location:string|null}[]>([])
   const [stockLoading, setStockLoading] = useState(false)
   const [stockSearch, setStockSearch] = useState('')
@@ -2159,7 +2161,10 @@ export default function InvoiceCreate() {
       {/* Inventory Stock Picker Modal */}
       <Modal open={stockPickerOpen} onClose={() => setStockPickerOpen(false)} title="Add from Inventory">
         <div className="space-y-3">
-          <input type="text" placeholder="Search by name, part number, brand..." value={stockSearch} onChange={e => setStockSearch(e.target.value)} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+          <div className="flex gap-2">
+            <input type="text" placeholder="Search by name, part number, brand..." value={stockSearch} onChange={e => setStockSearch(e.target.value)} className="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm" />
+            <button type="button" onClick={() => setQuickAddStockOpen(true)} className="shrink-0 rounded-md bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 transition-colors whitespace-nowrap">+ Quick Add Stock</button>
+          </div>
           <div className="flex gap-2">
             {(['all', 'part', 'tyre'] as const).map(f => (
               <button key={f} type="button" onClick={() => setStockFilter(f)}
@@ -2205,6 +2210,13 @@ export default function InvoiceCreate() {
           )}
         </div>
       </Modal>
+
+      {/* Quick Add Stock Modal — same workflow as inventory page's "Add to Stock" */}
+      <AddToStockModal
+        isOpen={quickAddStockOpen}
+        onClose={() => setQuickAddStockOpen(false)}
+        onSuccess={() => { openStockPicker() }}
+      />
 
       {/* Labour Picker Modal */}
       <Modal open={labourPickerOpen} onClose={() => setLabourPickerOpen(false)} title="Add Labour Charge">

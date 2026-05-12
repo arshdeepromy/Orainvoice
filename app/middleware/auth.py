@@ -46,6 +46,8 @@ PUBLIC_PATHS: set[str] = {
     "/docs",
     "/redoc",
     "/openapi.json",
+    "/sitemap.xml",
+    "/robots.txt",
     "/api/v1/auth/login",
     "/api/v1/auth/login/google",
     "/api/v1/auth/login/passkey",

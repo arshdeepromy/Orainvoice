@@ -5,6 +5,7 @@ import { Button, Modal } from '../../components/ui'
 import { useModules } from '../../contexts/ModuleContext'
 import { useTenant } from '../../contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
+import { useAuth } from '../../contexts/AuthContext'
 import { setNavigationGuard, clearNavigationGuard } from '@/utils/navigationGuard'
 import { VehicleLiveSearch } from '../../components/vehicles/VehicleLiveSearch'
 import QuoteMultiVehicleSection from '../../components/quotes/QuoteMultiVehicleSection'
@@ -311,17 +312,38 @@ function ItemTableRow({
   }
 
   const handleItemSelect = (ci: CatalogueItem) => {
-    const taxRate = (ci.gst_inclusive || !ci.gst_applicable) ? 0 : 15
-    const taxId = taxRate === 0 ? 'gst_0' : 'gst_15'
+    // Match InvoiceCreate pattern:
+    // GST-inclusive: back-calculate ex-GST rate so quote shows proper breakdown
+    // GST-exempt: rate as-is, 0% tax
+    // GST-exclusive (default): rate as-is, 15% tax
+    const isGstInclusive = ci.gst_inclusive === true
+    const isGstExempt = !ci.gst_applicable
+    let rate: number
+    let taxRate: number
+    let taxId: string
+    if (isGstExempt) {
+      rate = ci.default_price
+      taxRate = 0
+      taxId = 'gst_0'
+    } else if (isGstInclusive) {
+      rate = Math.round((ci.default_price / 1.15) * 100) / 100
+      taxRate = 15
+      taxId = 'gst_15'
+    } else {
+      rate = ci.default_price
+      taxRate = 15
+      taxId = 'gst_15'
+    }
     update({
       item_id: ci.id,
       description: ci.name,
       line_description: ci.description || '',
       original_description: ci.description || '',
-      rate: ci.default_price,
+      rate,
       tax_rate: taxRate,
       tax_id: taxId,
-      gst_inclusive: ci.gst_inclusive,
+      gst_inclusive: isGstInclusive,
+      inclusive_price: isGstInclusive ? ci.default_price : null,
     })
     setShowItemDropdown(false)
     setItemSearch('')
@@ -535,6 +557,7 @@ export default function QuoteCreate() {
   const isEditMode = Boolean(editId)
   const { tradeFamily, settings } = useTenant()
   const { selectedBranchId } = useBranch()
+  const { user } = useAuth()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const { isEnabled } = useModules()
   const projectsEnabled = isEnabled('projects')
@@ -582,6 +605,7 @@ export default function QuoteCreate() {
   // Form state
   const [saving, setSaving] = useState(false)
   const [sendingAndSaving, setSendingAndSaving] = useState(false)
+  const [issuing, setIssuing] = useState(false)
   const [errors, setErrors] = useState<FormErrors>({})
   const [loadingQuote, setLoadingQuote] = useState(isEditMode)
 
@@ -593,7 +617,20 @@ export default function QuoteCreate() {
     ? (subTotal * discountValue / 100)
     : discountValue
   const afterDiscount = subTotal - discountAmount
-  const taxAmount = lineItems.reduce((sum, item) => sum + (item.amount * item.tax_rate / 100), 0)
+  // For GST-inclusive items, derive GST from the inclusive price to avoid
+  // rounding errors. Ex: $150 incl → GST = $150 - ($150/1.15) = $19.57
+  // instead of $130.43 × 0.15 = $19.56 (loses 1 cent).
+  const taxAmount = lineItems.reduce((sum, item) => {
+    if (item.tax_rate <= 0) return sum
+    if (item.gst_inclusive && item.inclusive_price) {
+      // Reconstruct the inclusive total for the line (qty × inclusive unit price)
+      const inclTotal = Math.round(item.quantity * item.inclusive_price * 100) / 100
+      // GST = inclusive - ex-GST amount
+      const gst = Math.round((inclTotal - item.amount) * 100) / 100
+      return sum + gst
+    }
+    return sum + Math.round(item.amount * item.tax_rate) / 100
+  }, 0)
   const total = afterDiscount + taxAmount + shippingCharges + adjustment
 
   // Load existing quote for edit mode
@@ -725,15 +762,23 @@ export default function QuoteCreate() {
     const controller = new AbortController()
     async function load() {
       try {
-        const res = await apiClient.get<{ salespeople: { id: string; first_name: string; last_name: string; email: string }[] }>(
+        const res = await apiClient.get<{ salespeople: { id: string; name?: string; first_name?: string; last_name?: string; email?: string }[] }>(
           '/org/salespeople',
           { signal: controller.signal }
         )
         const people = res.data?.salespeople ?? []
-        setSalespersonOptions(people.map(p => ({
+        const mapped = people.map(p => ({
           id: p.id,
-          name: `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim() || p.email,
-        })))
+          name: p.name || `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim() || p.email || 'Unknown',
+        }))
+        setSalespersonOptions(mapped)
+        // Auto-select the logged-in user as salesperson (matches InvoiceCreate)
+        if (!isEditMode && !salespersonId && user?.id) {
+          const currentUser = mapped.find(s => s.id === user.id)
+          if (currentUser) {
+            setSalespersonId(currentUser.id)
+          }
+        }
       } catch { /* non-blocking */ }
     }
     load()
@@ -783,16 +828,19 @@ export default function QuoteCreate() {
   const [inventoryPickerOpen, setInventoryPickerOpen] = useState(false)
   const handleInventorySelect = (item: { id: string; catalogue_item_id: string | null; name: string; sell_price: number | string; gst_inclusive: boolean }) => {
     const price = typeof item.sell_price === 'string' ? parseFloat(item.sell_price) : (item.sell_price ?? 0)
+    // Match InvoiceCreate pattern: back-calculate ex-GST rate for inclusive items
+    const isGstInclusive = item.gst_inclusive === true
+    const rate = isGstInclusive ? Math.round((price / 1.15) * 100) / 100 : price
     setLineItems(prev => [...prev, {
       key: crypto.randomUUID(),
       description: item.name,
       quantity: 1,
-      rate: item.gst_inclusive ? price : price,
+      rate,
       tax_id: 'gst_15',
       tax_rate: 15,
-      amount: price,
-      gst_inclusive: item.gst_inclusive,
-      inclusive_price: item.gst_inclusive ? price : null,
+      amount: rate,
+      gst_inclusive: isGstInclusive,
+      inclusive_price: isGstInclusive ? price : null,
       catalogue_item_id: item.catalogue_item_id ?? null,
       stock_item_id: item.id,
     }])
@@ -932,7 +980,7 @@ export default function QuoteCreate() {
     } finally { setSaving(false) }
   }
 
-  // Save and Send
+  // Save and Send (Email to customer)
   const handleSaveAndSend = async () => {
     if (!validate()) return
     setSendingAndSaving(true)
@@ -954,6 +1002,31 @@ export default function QuoteCreate() {
       const detail = (err as any)?.response?.data?.detail
       setErrors({ submit: detail ?? 'Failed to save and send quote' })
     } finally { setSendingAndSaving(false) }
+  }
+
+  // Issue Quote (save + set status to "sent" without emailing)
+  const handleIssueQuote = async () => {
+    if (!validate()) return
+    setIssuing(true)
+    try {
+      let quoteId = editId
+      if (isEditMode && editId) {
+        await apiClient.put(`/quotes/${editId}`, buildPayload())
+      } else {
+        const createRes = await apiClient.post('/quotes', buildPayload())
+        const quoteData = (createRes.data as any)?.quote ?? createRes.data
+        quoteId = quoteData?.id
+      }
+      if (quoteId) {
+        await uploadPendingFiles(quoteId)
+        // Just update status to "sent" without emailing
+        await apiClient.put(`/quotes/${quoteId}`, { status: 'sent' })
+      }
+      navigate('/quotes')
+    } catch (err: unknown) {
+      const detail = (err as any)?.response?.data?.detail
+      setErrors({ submit: detail ?? 'Failed to issue quote' })
+    } finally { setIssuing(false) }
   }
 
   const handleCancel = () => {
@@ -987,7 +1060,7 @@ export default function QuoteCreate() {
     return () => clearNavigationGuard()
   }, [])
 
-  const isBusy = saving || sendingAndSaving
+  const isBusy = saving || sendingAndSaving || issuing
 
   if (loadingQuote) {
     return (
@@ -1006,7 +1079,8 @@ export default function QuoteCreate() {
           <div className="flex items-center gap-2">
             <Button variant="secondary" size="sm" onClick={handleCancel} disabled={isBusy}>Cancel</Button>
             <Button variant="secondary" size="sm" onClick={handleSaveDraft} loading={saving} disabled={isBusy}>Save as Draft</Button>
-            <Button size="sm" onClick={handleSaveAndSend} loading={sendingAndSaving} disabled={isBusy}>Save and Send</Button>
+            <Button variant="secondary" size="sm" onClick={handleIssueQuote} loading={issuing} disabled={isBusy}>Issue Quote</Button>
+            <Button size="sm" onClick={handleSaveAndSend} loading={sendingAndSaving} disabled={isBusy}>Email</Button>
           </div>
         </div>
       </div>
@@ -1175,10 +1249,7 @@ export default function QuoteCreate() {
               <Button variant="secondary" size="sm" onClick={addLineItem}>+ Add New Row</Button>
               <Button variant="secondary" size="sm" onClick={() => setInventoryPickerOpen(true)}>+ Add from Inventory</Button>
               {isAutomotive && vehiclesEnabled && (
-                <>
-                  <Button variant="secondary" size="sm" onClick={openPartsPicker}>+ Add Parts</Button>
-                  <Button variant="secondary" size="sm" onClick={openLabourPicker}>+ Labour Charge</Button>
-                </>
+                <Button variant="secondary" size="sm" onClick={openLabourPicker}>+ Labour Charge</Button>
               )}
             </div>
           </div>
@@ -1422,7 +1493,8 @@ export default function QuoteCreate() {
           <div className="flex justify-end gap-2 pt-4 border-t border-gray-200">
             <Button variant="secondary" size="sm" onClick={handleCancel} disabled={isBusy}>Cancel</Button>
             <Button variant="secondary" size="sm" onClick={handleSaveDraft} loading={saving} disabled={isBusy}>Save as Draft</Button>
-            <Button size="sm" onClick={handleSaveAndSend} loading={sendingAndSaving} disabled={isBusy}>Save and Send</Button>
+            <Button variant="secondary" size="sm" onClick={handleIssueQuote} loading={issuing} disabled={isBusy}>Issue Quote</Button>
+            <Button size="sm" onClick={handleSaveAndSend} loading={sendingAndSaving} disabled={isBusy}>Email</Button>
           </div>
         </div>
       </div>

@@ -1,6 +1,66 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { LandingHeader, LandingFooter, DemoRequestModal } from '@/components/public'
+import { usePageMeta } from '@/hooks/usePageMeta'
+
+/* ------------------------------------------------------------------ */
+/*  SEO: structured data for the landing page                          */
+/*  (Organization + WebSite are emitted globally from index.html;      */
+/*   here we add a SoftwareApplication entity describing OraInvoice.)  */
+/* ------------------------------------------------------------------ */
+
+const LANDING_JSON_LD = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'OraInvoice',
+  alternateName: 'WorkshopPro NZ',
+  applicationCategory: 'BusinessApplication',
+  applicationSubCategory: 'Invoicing and Job Management',
+  operatingSystem: 'Web',
+  url: 'https://one.oraflows.co.nz/',
+  description:
+    'All-in-one invoicing, quoting, customer management and job card platform built for New Zealand trade businesses — automotive workshops, electricians, plumbers and builders.',
+  inLanguage: 'en-NZ',
+  audience: {
+    '@type': 'BusinessAudience',
+    audienceType: 'Trade businesses in New Zealand',
+    geographicArea: { '@type': 'Country', name: 'New Zealand' },
+  },
+  provider: {
+    '@type': 'Organization',
+    name: 'Oraflows Limited',
+    url: 'https://one.oraflows.co.nz/',
+  },
+  offers: {
+    '@type': 'Offer',
+    name: 'Mech Pro Plan',
+    price: '60',
+    priceCurrency: 'NZD',
+    priceSpecification: {
+      '@type': 'UnitPriceSpecification',
+      price: '60',
+      priceCurrency: 'NZD',
+      unitText: 'month',
+      valueAddedTaxIncluded: false,
+    },
+    category: 'Subscription',
+    availability: 'https://schema.org/InStock',
+  },
+  featureList: [
+    'Invoicing and quoting',
+    'Job cards with vehicle linking',
+    'CarJam vehicle database integration',
+    'Customer management',
+    'Online bookings and scheduling',
+    'Staff management and time tracking',
+    'Inventory and purchase orders',
+    'Recurring invoices',
+    'Online payments via Stripe',
+    'Xero accounting integration',
+    'Multi-branch support',
+    'Multi-factor authentication',
+  ],
+}
 
 /* ------------------------------------------------------------------ */
 /*  Feature data — 8 categories with all features from Requirement 4.4 */
@@ -274,6 +334,19 @@ const TESTIMONIALS = [
 
 export default function LandingPage() {
   const [demoModalOpen, setDemoModalOpen] = useState(false)
+
+  // SEO: title, description, canonical URL, and JSON-LD structured data.
+  usePageMeta({
+    title: 'OraInvoice — Invoicing and Job Management for NZ Trade Businesses',
+    description:
+      'Invoicing, quoting and job management for New Zealand trade businesses — workshops, mechanics, electricians, plumbers and builders. Built in NZ, 100% NZ hosted.',
+    canonical: 'https://one.oraflows.co.nz/',
+    jsonLd: LANDING_JSON_LD,
+    openGraph: {
+      type: 'website',
+      image: 'https://one.oraflows.co.nz/icons/icon-512x512.png',
+    },
+  })
 
   // Enable smooth scrolling and allow document scroll on public pages
   useEffect(() => {

@@ -1,14 +1,93 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en-NZ">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0f172a" />
-    <meta name="description" content="Workshop invoicing and business management platform for New Zealand" />
+
+    <!-- Primary SEO meta (overridden by per-page meta via React 19 hoisting) -->
+    <title>OraInvoice — Invoicing and Job Management for NZ Trade Businesses</title>
+    <meta
+      name="description"
+      content="OraInvoice is the all-in-one invoicing, quoting and job management platform for New Zealand trade businesses — mechanics, electricians, plumbers and builders. 100% NZ hosted."
+    />
+    <meta
+      name="keywords"
+      content="NZ invoicing software, workshop management, automotive invoicing, job cards, trade business software, CarJam integration, New Zealand mechanics software, WOF tracking, electrician invoicing, plumber invoicing"
+    />
+    <meta name="author" content="Oraflows Limited" />
+
+    <!-- Canonical URL (primary domain) -->
+    <link rel="canonical" href="https://one.oraflows.co.nz/" />
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="OraInvoice" />
+    <meta property="og:title" content="OraInvoice — Invoicing and Job Management for NZ Trade Businesses" />
+    <meta
+      property="og:description"
+      content="All-in-one invoicing, quoting and job management for NZ workshops, mechanics, electricians, plumbers and builders. 100% NZ hosted."
+    />
+    <meta property="og:url" content="https://one.oraflows.co.nz/" />
+    <meta property="og:image" content="https://one.oraflows.co.nz/icons/icon-512x512.png" />
+    <meta property="og:image:width" content="512" />
+    <meta property="og:image:height" content="512" />
+    <meta property="og:image:alt" content="OraInvoice logo" />
+    <meta property="og:locale" content="en_NZ" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="OraInvoice — Invoicing and Job Management for NZ Trade Businesses" />
+    <meta
+      name="twitter:description"
+      content="All-in-one invoicing, quoting and job management for NZ workshops, mechanics, electricians, plumbers and builders. 100% NZ hosted."
+    />
+    <meta name="twitter:image" content="https://one.oraflows.co.nz/icons/icon-512x512.png" />
+    <meta name="twitter:image:alt" content="OraInvoice logo" />
+
+    <!-- Favicons and PWA -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="manifest" href="/manifest.json" />
     <link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
-    <title>WorkshopPro NZ</title>
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- Default structured data: Organization + WebSite
+         (Per-page SoftwareApplication / BreadcrumbList etc. are injected by the React pages.) -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://one.oraflows.co.nz/#organization",
+            "name": "OraInvoice",
+            "alternateName": "WorkshopPro NZ",
+            "url": "https://one.oraflows.co.nz/",
+            "logo": "https://one.oraflows.co.nz/icons/icon-512x512.png",
+            "email": "support@oraflows.co.nz",
+            "areaServed": {
+              "@type": "Country",
+              "name": "New Zealand"
+            },
+            "parentOrganization": {
+              "@type": "Organization",
+              "name": "Oraflows Limited"
+            },
+            "sameAs": [
+              "https://invoice.oraflows.co.nz",
+              "https://one.oraflows.com"
+            ]
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://one.oraflows.co.nz/#website",
+            "url": "https://one.oraflows.co.nz/",
+            "name": "OraInvoice",
+            "inLanguage": "en-NZ",
+            "publisher": { "@id": "https://one.oraflows.co.nz/#organization" }
+          }
+        ]
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

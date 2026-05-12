@@ -61,11 +61,6 @@ export function KioskPage() {
     setScreen('vehicle-summary')
   }, [])
 
-  /** KioskRegoEntry: skip → go to form. */
-  const handleRegoSkip = useCallback(() => {
-    setScreen('form')
-  }, [])
-
   /** KioskRegoEntry: back → go to welcome. */
   const handleRegoBack = useCallback(() => {
     resetToWelcome()
@@ -143,7 +138,6 @@ export function KioskPage() {
         <KioskRegoEntry
           vehicleCount={vehicles.length}
           onVehicleFound={handleVehicleFound}
-          onSkip={handleRegoSkip}
           onBack={handleRegoBack}
         />
       )}

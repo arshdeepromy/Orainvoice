@@ -39,6 +39,20 @@
   .accepted-badge { display: inline-block; padding: 12px 32px; background: #dcfce7; color: #166534; font-size: 16px; font-weight: 600; border-radius: 6px; }
   .expired-badge { display: inline-block; padding: 12px 32px; background: #fef2f2; color: #991b1b; font-size: 16px; font-weight: 600; border-radius: 6px; }
   .logo { max-height: 50px; max-width: 180px; margin-bottom: 8px; }
+  /* Mobile responsive */
+  @media (max-width: 600px) {
+    .container { margin: 0; border-radius: 0; box-shadow: none; }
+    .header { flex-direction: column; padding: 20px 16px; gap: 16px; }
+    .header-left { max-width: 100%; }
+    .quote-title { text-align: left; }
+    .quote-meta { text-align: left; }
+    .body { padding: 16px; }
+    .details-grid { flex-direction: column; gap: 16px; }
+    .items-table th, .items-table td { padding: 8px 4px; font-size: 12px; }
+    .totals table { min-width: auto; width: 100%; }
+    .accept-section { padding: 24px 16px; }
+    .accept-btn { width: 100%; padding: 16px 24px; }
+  }
 </style>
 </head>
 <body>

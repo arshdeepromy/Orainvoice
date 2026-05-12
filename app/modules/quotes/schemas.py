@@ -201,6 +201,24 @@ class QuoteResponse(BaseModel):
     additional_vehicles: list[dict] = Field(default_factory=list)
     fluid_usage: list[dict] = Field(default_factory=list)
     attachment_count: int = 0
+    # Org info for template preview (Phase 6 — mobile parity)
+    org_name: str | None = None
+    org_logo_url: str | None = None
+    org_address: str | None = None
+    org_address_unit: str | None = None
+    org_address_street: str | None = None
+    org_address_city: str | None = None
+    org_address_state: str | None = None
+    org_address_country: str | None = None
+    org_address_postcode: str | None = None
+    org_phone: str | None = None
+    org_email: str | None = None
+    org_website: str | None = None
+    org_gst_number: str | None = None
+    invoice_template_id: str | None = None
+    invoice_template_colours: dict | None = None
+    customer_name: str | None = None
+    customer_email: str | None = None
 
 
 class QuoteCreateResponse(BaseModel):

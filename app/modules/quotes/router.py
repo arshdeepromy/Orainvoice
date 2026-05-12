@@ -383,6 +383,7 @@ async def send_quote_endpoint(
             user_id=user_uuid,
             quote_id=quote_id,
             ip_address=ip_address,
+            base_url=request.headers.get("origin") or None,
         )
         await db.commit()
     except ValueError as exc:

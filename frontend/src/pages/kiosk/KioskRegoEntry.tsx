@@ -7,7 +7,6 @@ import type { VehicleLookupResult } from './types'
 interface KioskRegoEntryProps {
   vehicleCount: number
   onVehicleFound: (result: VehicleLookupResult) => void
-  onSkip: () => void
   onBack: () => void
 }
 
@@ -16,7 +15,6 @@ interface KioskRegoEntryProps {
 export function KioskRegoEntry({
   vehicleCount,
   onVehicleFound,
-  onSkip,
   onBack,
 }: KioskRegoEntryProps) {
   const [rego, setRego] = useState('')
@@ -58,7 +56,7 @@ export function KioskRegoEntry({
       // Determine error type from axios response
       const status = (err as { response?: { status?: number } })?.response?.status
       if (status === 404) {
-        setError('Vehicle not found. Please check the registration and try again, or tap Skip.')
+        setError('Vehicle not found. Please check the registration and try again.')
       } else if (status === 429) {
         setError('Too many lookups, please wait a moment and try again.')
       } else {
@@ -156,16 +154,6 @@ export function KioskRegoEntry({
           ) : (
             'Confirm'
           )}
-        </button>
-
-        {/* Skip button */}
-        <button
-          type="button"
-          onClick={onSkip}
-          disabled={loading}
-          className="inline-flex w-full min-h-[48px] items-center justify-center rounded-lg border border-gray-300 bg-white px-6 py-3 text-lg font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Skip
         </button>
 
         {/* Back button */}

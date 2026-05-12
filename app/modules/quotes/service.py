@@ -438,6 +438,42 @@ async def get_quote(
         if customer:
             result["customer_portal_token"] = str(customer.portal_token) if customer.portal_token else None
             result["customer_enable_portal"] = bool(customer.enable_portal)
+            result["customer_name"] = (
+                customer.display_name
+                or f"{customer.first_name or ''} {customer.last_name or ''}".strip()
+                or None
+            )
+            result["customer_email"] = customer.email
+
+    # Enrich with org info for template preview (mirrors invoice detail)
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org:
+        settings = org.settings or {}
+        result["org_name"] = org.name
+        result["org_address"] = ", ".join(filter(None, [
+            settings.get("address_unit"),
+            settings.get("address_street"),
+            settings.get("address_city"),
+            settings.get("address_state"),
+            settings.get("address_postcode"),
+            settings.get("address_country"),
+        ])) or settings.get("address") or settings.get("business_address")
+        result["org_address_unit"] = settings.get("address_unit")
+        result["org_address_street"] = settings.get("address_street")
+        result["org_address_city"] = settings.get("address_city")
+        result["org_address_state"] = settings.get("address_state")
+        result["org_address_country"] = settings.get("address_country")
+        result["org_address_postcode"] = settings.get("address_postcode")
+        result["org_phone"] = settings.get("phone") or settings.get("business_phone")
+        result["org_email"] = settings.get("email") or settings.get("business_email")
+        result["org_logo_url"] = settings.get("logo_url")
+        result["org_gst_number"] = settings.get("gst_number") or settings.get("tax_number")
+        result["org_website"] = settings.get("website")
+        result["invoice_template_id"] = settings.get("invoice_template_id")
+        result["invoice_template_colours"] = settings.get("invoice_template_colours")
 
     return result
 
@@ -822,13 +858,26 @@ async def generate_quote_pdf(
     org_context = {
         "name": org.name,
         "logo_url": None,
-        "primary_colour": settings.get("primary_colour", "#1a1a1a"),
+        "primary_colour": settings.get("primary_colour", "#3b5bdb"),
         "secondary_colour": settings.get("secondary_colour"),
-        "address": settings.get("address"),
+        "address": ", ".join(filter(None, [
+            settings.get("address_unit"),
+            settings.get("address_street"),
+            settings.get("address_city"),
+            settings.get("address_state"),
+            settings.get("address_postcode"),
+        ])) or settings.get("address"),
+        "address_unit": settings.get("address_unit"),
+        "address_street": settings.get("address_street"),
+        "address_city": settings.get("address_city"),
+        "address_state": settings.get("address_state"),
+        "address_country": settings.get("address_country"),
+        "address_postcode": settings.get("address_postcode"),
         "phone": settings.get("phone"),
         "email": settings.get("email"),
+        "website": settings.get("website"),
         "gst_number": settings.get("gst_number"),
-        "invoice_footer": settings.get("invoice_footer"),
+        "invoice_footer": settings.get("invoice_footer_text") or settings.get("invoice_footer"),
     }
 
     # Resolve logo for PDF rendering (base64 data URI for WeasyPrint)
@@ -867,6 +916,8 @@ async def generate_quote_pdf(
         terms_and_conditions=terms_and_conditions,
         order_number=quote_dict.get("order_number"),
         salesperson_name=quote_dict.get("salesperson_name"),
+        additional_vehicles=quote_dict.get("additional_vehicles") or [],
+        fluid_usage=quote_dict.get("fluid_usage") or [],
     )
 
     # Generate PDF (in-memory only)
@@ -882,6 +933,7 @@ async def send_quote(
     quote_id: uuid.UUID,
     recipient_email: str | None = None,
     ip_address: str | None = None,
+    base_url: str | None = None,
 ) -> dict:
     """Generate a branded PDF quote and email it to the customer.
 
@@ -957,9 +1009,11 @@ async def send_quote(
         acceptance_token = quote_obj.acceptance_token
     view_link_text = ""
     if acceptance_token:
+        from app.config import settings as app_settings
+        frontend_base = (base_url or app_settings.frontend_base_url or "http://localhost").rstrip("/")
         view_link_text = (
             f"\nYou can also view and accept this quote online at:\n"
-            f"/api/v1/public/quotes/view/{acceptance_token}\n"
+            f"{frontend_base}/api/v1/public/quotes/view/{acceptance_token}\n"
         )
 
     # Find all active email providers ordered by priority (failover)
@@ -1122,7 +1176,28 @@ async def convert_quote_to_invoice(
             "is_gst_exempt": li.get("is_gst_exempt", False),
             "warranty_note": li.get("warranty_note"),
             "sort_order": li.get("sort_order", 0),
+            "catalogue_item_id": li.get("catalogue_item_id"),
+            "stock_item_id": li.get("stock_item_id"),
         })
+
+    # Build additional vehicles list if present
+    additional_vehicles = quote_dict.get("additional_vehicles") or []
+    vehicles_data = None
+    if additional_vehicles:
+        vehicles_data = [
+            {
+                "rego": v.get("rego"),
+                "make": v.get("make"),
+                "model": v.get("model"),
+                "year": v.get("year"),
+                "odometer": v.get("odometer"),
+            }
+            for v in additional_vehicles
+        ]
+
+    # Build fluid usage data if present
+    fluid_usage = quote_dict.get("fluid_usage") or []
+    fluid_usage_data = fluid_usage if fluid_usage else None
 
     # Create draft invoice with quote details
     invoice_dict = await create_invoice(
@@ -1134,9 +1209,14 @@ async def convert_quote_to_invoice(
         vehicle_make=quote_dict.get("vehicle_make"),
         vehicle_model=quote_dict.get("vehicle_model"),
         vehicle_year=quote_dict.get("vehicle_year"),
+        vehicles=vehicles_data,
         status="draft",
         line_items_data=invoice_line_items,
+        fluid_usage_data=fluid_usage_data,
         notes_customer=quote_dict.get("notes"),
+        terms_and_conditions=quote_dict.get("terms"),
+        discount_type=quote_dict.get("discount_type"),
+        discount_value=Decimal(str(quote_dict.get("discount_value") or 0)) if quote_dict.get("discount_value") else None,
         ip_address=ip_address,
     )
 

@@ -3,6 +3,7 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFeatureFlags } from '@/contexts/FeatureFlagContext'
 import { GlobalSearchBar } from '@/components/search'
+import { usePageMeta } from '@/hooks/usePageMeta'
 
 /* Icons for profile menu */
 const UserIcon = () => (
@@ -39,6 +40,9 @@ const adminNavItems: AdminNavItem[] = [
   { to: '/admin/integrations', label: 'Integrations' },
   { to: '/admin/settings', label: 'Settings' },
   { to: '/admin/security', label: 'Security' },
+  { type: 'section', label: 'Content' },
+  { to: '/admin/page-editor', label: 'Page Editor' },
+  { to: '/admin/page-editor/redirects', label: 'Redirects' },
   { type: 'section', label: 'Monitoring' },
   { to: '/admin/analytics', label: 'Analytics', flagKey: 'analytics' },
   { to: '/admin/reports', label: 'Reports', flagKey: 'reports' },
@@ -58,6 +62,9 @@ export function AdminLayout() {
   const { user, logout } = useAuth()
   const { flags } = useFeatureFlags()
   const navigate = useNavigate()
+
+  // SEO: admin pages must never be indexed by search engines.
+  usePageMeta({ noindex: true })
 
   // Close user menu when clicking outside
   useEffect(() => {

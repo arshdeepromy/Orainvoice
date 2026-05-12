@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { LandingHeader, LandingFooter, DemoRequestModal } from '@/components/public'
+import { usePageMeta } from '@/hooks/usePageMeta'
 
 /* ------------------------------------------------------------------ */
 /*  Trade data                                                         */
@@ -50,6 +51,32 @@ const TRADES: Trade[] = [
 
 export default function TradesPage() {
   const [demoModalOpen, setDemoModalOpen] = useState(false)
+
+  // SEO metadata for the Trades page.
+  usePageMeta({
+    title: 'Trades Supported by OraInvoice — Automotive, Plumbing, Electrical',
+    description:
+      'See the trade industries OraInvoice supports today — automotive workshops, general invoicing, plumbing and gas, electrical and mechanical. Built for NZ trade businesses.',
+    canonical: 'https://one.oraflows.co.nz/trades',
+    jsonLd: {
+      '@context': 'https://schema.org',
+      '@type': 'BreadcrumbList',
+      itemListElement: [
+        {
+          '@type': 'ListItem',
+          position: 1,
+          name: 'Home',
+          item: 'https://one.oraflows.co.nz/',
+        },
+        {
+          '@type': 'ListItem',
+          position: 2,
+          name: 'Trades',
+          item: 'https://one.oraflows.co.nz/trades',
+        },
+      ],
+    },
+  })
 
   // Allow document scroll on public pages
   useEffect(() => {

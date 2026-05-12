@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import axios from 'axios'
 import { LandingHeader, LandingFooter } from '@/components/public'
+import { usePageMeta } from '@/hooks/usePageMeta'
 
 /* ------------------------------------------------------------------ */
 /*  Simple Markdown-to-HTML renderer                                   */
@@ -102,6 +103,32 @@ export default function PrivacyPage() {
   const [customContent, setCustomContent] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+
+  // SEO metadata for the Privacy Policy page.
+  usePageMeta({
+    title: 'Privacy Policy — OraInvoice',
+    description:
+      'Read the OraInvoice privacy policy. How we collect, use and protect personal information under the NZ Privacy Act 2020. All data is hosted in New Zealand.',
+    canonical: 'https://one.oraflows.co.nz/privacy',
+    jsonLd: {
+      '@context': 'https://schema.org',
+      '@type': 'BreadcrumbList',
+      itemListElement: [
+        {
+          '@type': 'ListItem',
+          position: 1,
+          name: 'Home',
+          item: 'https://one.oraflows.co.nz/',
+        },
+        {
+          '@type': 'ListItem',
+          position: 2,
+          name: 'Privacy Policy',
+          item: 'https://one.oraflows.co.nz/privacy',
+        },
+      ],
+    },
+  })
 
   // Allow document scroll on public pages
   useEffect(() => {
