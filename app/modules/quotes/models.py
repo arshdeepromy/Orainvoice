@@ -125,6 +125,20 @@ class Quote(Base):
         UUID(as_uuid=True), ForeignKey("branches.id"), nullable=True
     )
 
+    # NEW — Phase 5 (Quote ↔ Invoice Parity)
+    order_number: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    salesperson_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    additional_vehicles: Mapped[list[dict] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    fluid_usage: Mapped[list[dict] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+
     __table_args__ = (
         CheckConstraint(
             "status IN ('draft','sent','accepted','declined','expired','converted')",
@@ -184,6 +198,23 @@ class QuoteLineItem(Base):
     )
     sort_order: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
+    )
+
+    # NEW — Phase 5 (Quote ↔ Invoice Parity)
+    catalogue_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    stock_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    gst_inclusive: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    inclusive_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    tax_rate: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, server_default="15"
     )
 
     __table_args__ = (

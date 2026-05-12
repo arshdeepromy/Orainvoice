@@ -265,6 +265,8 @@ def create_app() -> FastAPI:
     app.include_router(storage_router, prefix="/api/v1/storage", tags=["storage"])
     app.include_router(notifications_router, prefix="/api/v1/notifications", tags=["notifications"])
     app.include_router(quotes_router, prefix="/api/v1/quotes", tags=["quotes"])
+    from app.modules.quotes.attachment_router import router as quote_attachment_router
+    app.include_router(quote_attachment_router, prefix="/api/v1/quotes", tags=["quotes"])
     app.include_router(job_cards_router, prefix="/api/v1/job-cards", tags=["job-cards"])
     app.include_router(job_card_attachments_router, prefix="/api/v1/job-cards", tags=["job-card-attachments"])
     app.include_router(bookings_router, prefix="/api/v1/bookings", tags=["bookings"])
@@ -601,6 +603,13 @@ def create_app() -> FastAPI:
     app.include_router(landing_public_router, prefix="/api/v1/public", tags=["public-landing"])
     app.include_router(landing_admin_router, prefix="/api/v1/admin", tags=["admin"])
 
+    # --- Visual page editor (Puck) ---
+    from app.modules.page_editor.router import router as page_editor_router
+    from app.modules.page_editor.router import public_router as page_editor_public_router
+    app.include_router(page_editor_router, prefix="/api/v2/admin/page-editor", tags=["v2-admin-page-editor"])
+    # Public routes already include full paths (/api/v2/public/pages/*, /sitemap.xml, /robots.txt)
+    app.include_router(page_editor_public_router, tags=["v2-public-page-editor"])
+
     @app.get("/health")
     async def health_check():
         import os
@@ -741,6 +750,20 @@ def create_app() -> FastAPI:
                     await vol_svc.start_periodic_sync(db)
         except Exception as exc:
             logger.warning("Volume sync periodic task failed to start: %s", exc)
+
+    @app.on_event("startup")
+    async def _sync_page_editor_registry() -> None:
+        """Sync hand-coded page registry to the editor_pages table (idempotent)."""
+        try:
+            from app.core.database import async_session_factory
+            from app.modules.page_editor import service as page_svc
+            async with async_session_factory() as db:
+                async with db.begin():
+                    created = await page_svc.sync_registry(db)
+                    if created:
+                        logger.info("Synced %d hand-coded page(s) into editor_pages", created)
+        except Exception as exc:
+            logger.warning("Page editor registry sync failed on startup: %s", exc)
 
     @app.on_event("shutdown")
     async def _stop_connexus_token_refresher() -> None:

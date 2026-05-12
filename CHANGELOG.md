@@ -2,6 +2,46 @@
 
 All notable changes to OraInvoice are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.6.0] - 2026-05-12
+
+### Added
+- Quotes: Order number field (PO/reference number) on create and detail views
+- Quotes: Salesperson dropdown with auto-populated org staff list
+- Quotes: GST-inclusive line items with back-calculation (unit_price = inclusive_price / 1.15)
+- Quotes: Multi-vehicle support (additional vehicles section, JSONB storage)
+- Quotes: Fluid usage tracking (non-billable, automotive-gated)
+- Quotes: File attachments (upload, list, download, delete) — mirrors invoice attachments
+- Quotes: "Save terms as default" checkbox persists T&C to org settings
+- Quotes: 📎 attachment count badge on quote list view
+- Quotes: PDF download and Print buttons per row in quote list
+- Quotes: `QuoteAttachmentList` component on quote detail (conditional on attachment_count > 0)
+- Quotes: `QuoteMultiVehicleSection` component for multi-vehicle entry
+- Quotes: `InventoryPickerModal` for adding stock items as line items
+- Quotes: Inline fluid usage section (add/remove, litres tracking)
+- Quotes: GST number read-only display from org settings
+- Backend: `POST/GET/GET/DELETE /api/v1/quotes/{id}/attachments` endpoints
+- Backend: `quote_attachments` table with RLS and HA publication (migration 0184)
+- Backend: Property tests for GST-inclusive round-trip (CP-3) and migration reversibility (CP-4)
+
+### Changed
+- `quotes` table: added `order_number`, `salesperson_id`, `additional_vehicles` (JSONB), `fluid_usage` (JSONB)
+- `quote_line_items` table: added `catalogue_item_id`, `stock_item_id`, `gst_inclusive`, `inclusive_price`, `tax_rate`
+- Quotes router: passes all parity fields from payload to service (create + update)
+- QuoteCreate payload extended with new fields (additive, backward-compatible)
+- QuoteResponse schema extended with `order_number`, `salesperson_name`, `additional_vehicles`, `fluid_usage`, `attachment_count`
+- QuoteSearchResult schema extended with `attachment_count`
+
+## [1.5.0] - 2026-05-12
+
+### Added
+- Quotes: Download PDF button on quote detail page
+- Quotes: Browser print button with print-optimised layout on quote detail page
+- Quotes: `GET /api/v1/quotes/{id}/pdf` backend endpoint (inline disposition, matches invoice PDF)
+- Quotes: Copy Link button on quote detail page (surfaces acceptance_token public URL)
+
+### Changed
+- mobile: version bumped to 1.5.0 (no functional change) to align with backend + frontend
+
 ## [1.4.0] - 2026-05-08
 
 ### Added

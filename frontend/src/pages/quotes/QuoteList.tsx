@@ -18,6 +18,7 @@ interface Quote {
   valid_until: string | null
   created_at: string | null
   branch_id?: string | null
+  attachment_count?: number
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -173,6 +174,26 @@ export default function QuoteList() {
   const canRequote = (status: string) => status === 'sent'
   const canEdit = (status: string) => status === 'draft'
 
+  const handleDownloadPDF = async (e: React.MouseEvent, quoteId: string, quoteNumber: string) => {
+    e.stopPropagation()
+    try {
+      const res = await apiClient.get(`/quotes/${quoteId}/pdf`, { responseType: 'blob' })
+      const url = URL.createObjectURL(res.data as Blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${quoteNumber || 'DRAFT'}.pdf`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      setError('Failed to download PDF')
+    }
+  }
+
+  const handlePrintQuote = (e: React.MouseEvent, quoteId: string) => {
+    e.stopPropagation()
+    navigate(`/quotes/${quoteId}?print=1`)
+  }
+
   return (
     <div className="px-4 py-6 sm:px-6 lg:px-8">
       {/* Header */}
@@ -287,6 +308,11 @@ export default function QuoteList() {
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-blue-600 hover:text-blue-800">
                         {q.quote_number}
+                        {(q.attachment_count ?? 0) > 0 && (
+                          <span className="ml-1.5 inline-flex items-center text-xs text-gray-500" title={`${q.attachment_count ?? 0} attachment(s)`}>
+                            📎 {q.attachment_count ?? 0}
+                          </span>
+                        )}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">
                         {q.customer_name || '—'}
@@ -309,6 +335,20 @@ export default function QuoteList() {
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-right">
                         <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={(e) => handleDownloadPDF(e, q.id, q.quote_number)}
+                            className="rounded px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100"
+                            title="Download PDF"
+                          >
+                            PDF
+                          </button>
+                          <button
+                            onClick={(e) => handlePrintQuote(e, q.id)}
+                            className="rounded px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100"
+                            title="Print Quote"
+                          >
+                            Print
+                          </button>
                           {canEdit(q.status) && (
                             <button
                               onClick={() => navigate(`/quotes/${q.id}/edit`)}

@@ -9,7 +9,7 @@ import uuid
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
@@ -29,6 +29,7 @@ from app.modules.quotes.service import (
     convert_quote_to_invoice,
     create_quote,
     delete_quote,
+    generate_quote_pdf,
     get_quote,
     list_quotes,
     send_quote,
@@ -93,6 +94,11 @@ async def create_quote_endpoint(
             "is_gst_exempt": li.is_gst_exempt,
             "warranty_note": li.warranty_note,
             "sort_order": li.sort_order,
+            "catalogue_item_id": li.catalogue_item_id,
+            "stock_item_id": li.stock_item_id,
+            "gst_inclusive": li.gst_inclusive,
+            "inclusive_price": li.inclusive_price,
+            "tax_rate": li.tax_rate,
         }
         for li in payload.line_items
     ]
@@ -118,6 +124,11 @@ async def create_quote_endpoint(
             shipping_charges=payload.shipping_charges,
             adjustment=payload.adjustment,
             ip_address=ip_address,
+            order_number=payload.order_number,
+            salesperson_id=payload.salesperson_id,
+            additional_vehicles_data=[v.model_dump() for v in payload.vehicles] if payload.vehicles else None,
+            fluid_usage_data=[f.model_dump() for f in payload.fluid_usage] if payload.fluid_usage else None,
+            save_terms_as_default=payload.save_terms_as_default,
         )
         await db.commit()
     except ValueError as exc:
@@ -278,6 +289,16 @@ async def update_quote_endpoint(
         updates["shipping_charges"] = payload.shipping_charges
     if payload.adjustment is not None:
         updates["adjustment"] = payload.adjustment
+    if payload.order_number is not None:
+        updates["order_number"] = payload.order_number
+    if payload.salesperson_id is not None:
+        updates["salesperson_id"] = payload.salesperson_id
+    if payload.vehicles is not None:
+        updates["additional_vehicles"] = [v.model_dump() for v in payload.vehicles]
+    if payload.fluid_usage:
+        updates["fluid_usage"] = [f.model_dump() for f in payload.fluid_usage]
+    if payload.save_terms_as_default:
+        updates["save_terms_as_default"] = True
     if payload.line_items is not None:
         updates["line_items"] = [
             {
@@ -290,6 +311,11 @@ async def update_quote_endpoint(
                 "is_gst_exempt": li.is_gst_exempt,
                 "warranty_note": li.warranty_note,
                 "sort_order": li.sort_order,
+                "catalogue_item_id": li.catalogue_item_id,
+                "stock_item_id": li.stock_item_id,
+                "gst_inclusive": li.gst_inclusive,
+                "inclusive_price": li.inclusive_price,
+                "tax_rate": li.tax_rate,
             }
             for li in payload.line_items
         ]
@@ -464,3 +490,51 @@ async def delete_quote_endpoint(
         raise
 
     return result
+
+
+@router.get(
+    "/{quote_id}/pdf",
+    responses={
+        200: {"content": {"application/pdf": {}}, "description": "Quote PDF"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        404: {"description": "Quote not found"},
+    },
+    summary="Generate and stream quote PDF on-the-fly",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def get_quote_pdf_endpoint(
+    quote_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Generate a quote PDF in-memory and stream it to the client.
+
+    The PDF is never written to permanent storage.
+    Organisation branding is applied at generation time.
+
+    Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.11
+    """
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        pdf_bytes = await generate_quote_pdf(
+            db, org_id=org_uuid, quote_id=quote_id
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    # Determine a filename for the download
+    quote_dict = await get_quote(db, org_id=org_uuid, quote_id=quote_id)
+    filename = f"{quote_dict.get('quote_number') or 'DRAFT'}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )

@@ -3,10 +3,72 @@
  */
 
 import { useEffect, useState, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { useTenant } from '../../contexts/TenantContext'
 import { Button } from '../../components/ui'
+import QuoteAttachmentList from '../../components/quotes/QuoteAttachmentList'
+
+const PRINT_STYLES = `
+@media print {
+  /* Hide navigation, sidebar, action bar, and interactive controls */
+  nav, aside, header, footer,
+  [data-print-hide],
+  .no-print {
+    display: none !important;
+  }
+
+  /* Reset page layout */
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  /* Break out of app shell layout */
+  .flex.h-screen,
+  .flex.h-screen.overflow-hidden,
+  .flex-1.flex-col.overflow-hidden,
+  main.flex-1.overflow-y-auto {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+  }
+
+  /* Print the quote card edge-to-edge */
+  [data-print-content] {
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 20px !important;
+    box-shadow: none !important;
+    border: none !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  /* Keep tables intact across pages */
+  table { page-break-inside: avoid; }
+  tr    { page-break-inside: avoid; }
+
+  /* Status badge backgrounds must print */
+  .badge-print {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  @page {
+    margin: 10mm;
+    size: A4;
+  }
+}
+`
 
 interface LineItem {
   id: string
@@ -20,6 +82,27 @@ interface LineItem {
   warranty_note: string | null
   line_total: string | number
   sort_order: number
+  catalogue_item_id: string | null
+  stock_item_id: string | null
+  gst_inclusive: boolean
+  inclusive_price: string | number | null
+  tax_rate: string | number
+}
+
+interface Vehicle {
+  id?: string | null
+  rego?: string | null
+  make?: string | null
+  model?: string | null
+  year?: number | null
+  odometer?: number | null
+}
+
+interface FluidUsage {
+  stock_item_id: string
+  catalogue_item_id: string
+  litres: number
+  item_name: string
 }
 
 interface QuoteData {
@@ -51,6 +134,12 @@ interface QuoteData {
   created_by: string
   created_at: string
   updated_at: string
+  order_number: string | null
+  salesperson_id: string | null
+  salesperson_name: string | null
+  additional_vehicles: Vehicle[]
+  fluid_usage: FluidUsage[]
+  attachment_count: number
 }
 
 interface QuoteDetailProps {
@@ -80,6 +169,7 @@ function formatDate(dateStr: string | null | undefined): string {
 
 export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { tradeFamily } = useTenant()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const [quote, setQuote] = useState<QuoteData | null>(null)
@@ -88,6 +178,8 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   const [error, setError] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const [downloading, setDownloading] = useState<boolean>(false)
+  const [copied, setCopied] = useState<boolean>(false)
 
   const fetchQuote = useCallback(async () => {
     setLoading(true)
@@ -105,6 +197,60 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   }, [quoteId])
 
   useEffect(() => { fetchQuote() }, [fetchQuote])
+
+  // Auto-print when navigated with ?print=1 from QuoteList
+  useEffect(() => {
+    if (searchParams.get('print') === '1' && quote && !loading) {
+      setTimeout(() => window.print(), 300)
+    }
+  }, [searchParams, quote, loading])
+
+  // Inject print styles on mount, remove on unmount
+  useEffect(() => {
+    const style = document.createElement('style')
+    style.setAttribute('data-quote-print', 'true')
+    style.textContent = PRINT_STYLES
+    document.head.appendChild(style)
+    return () => {
+      style.remove()
+    }
+  }, [])
+
+  const handleDownloadPDF = async (): Promise<void> => {
+    if (!quote) return
+    setDownloading(true)
+    setError(null)
+    try {
+      const res = await apiClient.get(`/quotes/${quote.id}/pdf`, { responseType: 'blob' })
+      const url = URL.createObjectURL(res.data as Blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${quote.quote_number || 'DRAFT'}.pdf`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setError(detail ?? 'Failed to download PDF. Please try again.')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const handlePrint = (): void => {
+    window.print()
+  }
+
+  const handleCopyLink = async (): Promise<void> => {
+    if (!quote?.acceptance_token) return
+    const shareUrl = `${window.location.origin}/api/v1/public/quotes/view/${quote.acceptance_token}`
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setError('Could not copy link to clipboard. Please copy manually.')
+    }
+  }
 
   const handleSend = async () => {
     setActionLoading(true)
@@ -203,7 +349,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
-          <button onClick={() => navigate('/quotes')} className="text-gray-400 hover:text-gray-600" aria-label="Back">
+          <button onClick={() => navigate('/quotes')} className="text-gray-400 hover:text-gray-600" aria-label="Back" data-print-hide>
             ← Back
           </button>
           <div>
@@ -214,7 +360,23 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
             {quote.status}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" data-print-hide>
+          <Button variant="secondary" onClick={handlePrint}>
+            Print
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={handleDownloadPDF}
+            loading={downloading}
+            disabled={downloading}
+          >
+            {downloading ? 'Downloading…' : 'Download PDF'}
+          </Button>
+          {quote.acceptance_token && (
+            <Button variant="secondary" onClick={handleCopyLink}>
+              {copied ? 'Copied!' : 'Copy Link'}
+            </Button>
+          )}
           {canSend && (
             <>
               <Button variant="secondary" onClick={() => navigate(`/quotes/${quoteId}/edit`)}>
@@ -267,19 +429,19 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
 
       {/* Messages */}
       {error && (
-        <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
+        <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert" data-print-hide>
           {error}
         </div>
       )}
       {successMsg && (
-        <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700" role="status">
+        <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700" role="status" data-print-hide>
           {successMsg}
         </div>
       )}
 
       {/* Converted invoice link */}
       {quote.converted_invoice_id && (
-        <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+        <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700" data-print-hide>
           This quote has been converted to an invoice.{' '}
           <button onClick={() => navigate(`/invoices/${quote.converted_invoice_id}`)}
             className="font-medium underline hover:text-blue-900">
@@ -288,7 +450,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
         </div>
       )}
 
-      <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
+      <div className="bg-white rounded-lg border border-gray-200 shadow-sm" data-print-content>
         {/* Quote info grid */}
         <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="space-y-3">
@@ -321,8 +483,49 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
               <span className="text-xs font-medium uppercase text-gray-500">Quote Number</span>
               <p className="text-sm text-gray-900 font-medium">{quote.quote_number}</p>
             </div>
+            {quote.order_number && (
+              <div>
+                <span className="text-xs font-medium uppercase text-gray-500">Order Number</span>
+                <p className="text-sm text-gray-900">{quote.order_number}</p>
+              </div>
+            )}
+            {quote.salesperson_name && (
+              <div>
+                <span className="text-xs font-medium uppercase text-gray-500">Salesperson</span>
+                <p className="text-sm text-gray-900">{quote.salesperson_name}</p>
+              </div>
+            )}
           </div>
         </div>
+
+        {/* Additional Vehicles */}
+        {(quote.additional_vehicles ?? []).length > 0 && (
+          <div className="border-t border-gray-200 p-6">
+            <h3 className="text-sm font-semibold text-gray-900 mb-2">Additional Vehicles</h3>
+            <ul className="space-y-1">
+              {(quote.additional_vehicles ?? []).map((v, i) => (
+                <li key={i} className="text-sm text-gray-700">
+                  {v.rego && <span className="font-medium">{v.rego}</span>}
+                  {' '}{v.year ?? ''} {v.make ?? ''} {v.model ?? ''}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Fluid Usage (non-billable) */}
+        {(quote.fluid_usage ?? []).length > 0 && (
+          <div className="border-t border-gray-200 p-6">
+            <h3 className="text-sm font-semibold text-gray-900 mb-2">Fluid Usage <span className="text-xs text-gray-400 font-normal">(non-billable)</span></h3>
+            <ul className="space-y-1">
+              {(quote.fluid_usage ?? []).map((f, i) => (
+                <li key={i} className="text-sm text-gray-700">
+                  {f.item_name ?? 'Unknown'} — {f.litres ?? 0}L
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Line Items Table */}
         <div className="border-t border-gray-200 p-6">
@@ -359,7 +562,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
                         {formatNZD(item.item_type === 'labour' ? item.hourly_rate : item.unit_price)}
                       </td>
                       <td className="py-2.5 px-2 text-center text-gray-500 text-xs">
-                        {item.is_gst_exempt ? 'Exempt' : 'GST 15%'}
+                        {item.is_gst_exempt ? 'Exempt' : item.gst_inclusive ? 'Incl.' : 'Ex-GST'}
                       </td>
                       <td className="py-2.5 px-2 text-right font-medium text-gray-900">
                         {formatNZD(item.line_total)}
@@ -437,6 +640,11 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
               </div>
             )}
           </div>
+        )}
+
+        {/* Attachments (only rendered when attachment_count > 0) */}
+        {(quote.attachment_count ?? 0) > 0 && (
+          <QuoteAttachmentList quoteId={quote.id} isDraft={quote.status === 'draft'} />
         )}
       </div>
     </div>

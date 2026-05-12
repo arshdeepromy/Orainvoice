@@ -14,11 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.modules.admin.models import Organisation
+from app.modules.auth.models import User
 from app.modules.customers.models import Customer
+from app.modules.quotes.attachment_models import QuoteAttachment
+from app.modules.quotes.attachment_service import get_attachment_count
 from app.modules.quotes.models import Quote, QuoteLineItem
 
 
 TWO_PLACES = Decimal("0.01")
+GST_RATE_DECIMAL = Decimal("0.15")
+GST_DIVISOR = Decimal("1.15")
 
 # Valid status transitions
 VALID_TRANSITIONS: dict[str, set[str]] = {
@@ -39,34 +44,50 @@ def _calculate_quote_totals(
     line_items_data: list[dict],
     gst_rate: Decimal,
 ) -> dict:
-    """Calculate subtotal, GST, total for a quote."""
+    """Calculate subtotal, GST, total for a quote.
+
+    Supports GST-inclusive lines: when a line has gst_inclusive=True and
+    inclusive_price is set, unit_price is back-calculated as
+    inclusive_price / 1.15 (rounded half-up to 2 d.p.), and GST on that
+    line = line_total * 0.15 (rounded half-up to 2 d.p.).
+    """
     line_totals: list[Decimal] = []
+    line_unit_prices: list[Decimal] = []
     subtotal = Decimal("0")
     gst_amount = Decimal("0")
 
     for item in line_items_data:
-        lt = _calculate_line_total(item["quantity"], item["unit_price"])
+        quantity = Decimal(str(item["quantity"]))
+        gst_inclusive = item.get("gst_inclusive", False)
+        inclusive_price = item.get("inclusive_price")
+
+        if gst_inclusive and inclusive_price is not None:
+            # GST-inclusive back-calculation
+            inc_price = Decimal(str(inclusive_price))
+            unit_price = (inc_price / GST_DIVISOR).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+            lt = (quantity * unit_price).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+            line_gst = (lt * GST_RATE_DECIMAL).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+            gst_amount += line_gst
+        else:
+            unit_price = Decimal(str(item["unit_price"]))
+            lt = _calculate_line_total(quantity, unit_price)
+            # GST on non-exempt items (per-line)
+            if not item.get("is_gst_exempt", False):
+                line_gst = (lt * GST_RATE_DECIMAL).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+                gst_amount += line_gst
+
         line_totals.append(lt)
+        line_unit_prices.append(unit_price)
         subtotal += lt
-
-    # GST on non-exempt items
-    taxable_subtotal = Decimal("0")
-    for i, item in enumerate(line_items_data):
-        if not item.get("is_gst_exempt", False):
-            taxable_subtotal += line_totals[i]
-
-    if taxable_subtotal > 0:
-        gst_amount = (taxable_subtotal * gst_rate / Decimal("100")).quantize(
-            TWO_PLACES, rounding=ROUND_HALF_UP
-        )
 
     total = (subtotal + gst_amount).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     return {
         "subtotal": subtotal.quantize(TWO_PLACES),
-        "gst_amount": gst_amount,
+        "gst_amount": gst_amount.quantize(TWO_PLACES),
         "total": total,
         "line_totals": line_totals,
+        "line_unit_prices": line_unit_prices,
     }
 
 
@@ -147,6 +168,10 @@ def _quote_to_dict(quote: Quote, line_items: list[QuoteLineItem]) -> dict:
         "subject": quote.subject,
         "acceptance_token": quote.acceptance_token,
         "converted_invoice_id": quote.converted_invoice_id,
+        "order_number": quote.order_number,
+        "salesperson_id": quote.salesperson_id,
+        "additional_vehicles": quote.additional_vehicles or [],
+        "fluid_usage": quote.fluid_usage or [],
         "line_items": [_line_item_to_dict(li) for li in line_items],
         "created_by": quote.created_by,
         "created_at": quote.created_at,
@@ -168,6 +193,11 @@ def _line_item_to_dict(li: QuoteLineItem) -> dict:
         "warranty_note": li.warranty_note,
         "line_total": li.line_total,
         "sort_order": li.sort_order,
+        "catalogue_item_id": li.catalogue_item_id,
+        "stock_item_id": li.stock_item_id,
+        "gst_inclusive": li.gst_inclusive,
+        "inclusive_price": li.inclusive_price,
+        "tax_rate": li.tax_rate,
     }
 
 
@@ -193,6 +223,11 @@ async def create_quote(
     adjustment: Decimal | None = None,
     ip_address: str | None = None,
     branch_id: uuid.UUID | None = None,
+    order_number: str | None = None,
+    salesperson_id: uuid.UUID | None = None,
+    additional_vehicles_data: list[dict] | None = None,
+    fluid_usage_data: list[dict] | None = None,
+    save_terms_as_default: bool = False,
 ) -> dict:
     """Create a new quote in Draft status.
 
@@ -275,6 +310,10 @@ async def create_quote(
         terms=terms,
         subject=subject,
         created_by=user_id,
+        order_number=order_number,
+        salesperson_id=salesperson_id,
+        additional_vehicles=additional_vehicles_data,
+        fluid_usage=fluid_usage_data,
     )
     db.add(quote)
     await db.flush()
@@ -289,13 +328,18 @@ async def create_quote(
             item_type=item_data["item_type"],
             description=item_data["description"],
             quantity=item_data["quantity"],
-            unit_price=item_data["unit_price"],
+            unit_price=totals["line_unit_prices"][i],
             hours=item_data.get("hours"),
             hourly_rate=item_data.get("hourly_rate"),
             is_gst_exempt=item_data.get("is_gst_exempt", False),
             warranty_note=item_data.get("warranty_note"),
             line_total=totals["line_totals"][i],
             sort_order=item_data.get("sort_order", i),
+            catalogue_item_id=item_data.get("catalogue_item_id"),
+            stock_item_id=item_data.get("stock_item_id"),
+            gst_inclusive=item_data.get("gst_inclusive", False),
+            inclusive_price=item_data.get("inclusive_price"),
+            tax_rate=Decimal(str(item_data.get("tax_rate", 15))),
         )
         db.add(li)
         await db.flush()
@@ -320,6 +364,24 @@ async def create_quote(
         },
         ip_address=ip_address,
     )
+
+    # Save terms as org default if requested (task 5.4)
+    if save_terms_as_default and terms:
+        org_settings = dict(org.settings or {})
+        org_settings["terms_and_conditions"] = terms
+        org.settings = org_settings
+        await db.flush()
+
+        await write_audit_log(
+            session=db,
+            org_id=org_id,
+            user_id=user_id,
+            action="org.settings_updated",
+            entity_type="organisation",
+            entity_id=org_id,
+            after_value={"terms_and_conditions": terms},
+            ip_address=ip_address,
+        )
 
     return _quote_to_dict(quote, created_line_items)
 
@@ -346,6 +408,26 @@ async def get_quote(
     line_items = list(li_result.scalars().all())
 
     result = _quote_to_dict(quote, line_items)
+
+    # Enrich with salesperson name (task 5.5)
+    salesperson_name: str | None = None
+    if quote.salesperson_id:
+        sp_result = await db.execute(
+            select(User.first_name, User.last_name, User.email)
+            .where(User.id == quote.salesperson_id)
+        )
+        sp_row = sp_result.first()
+        if sp_row:
+            first = sp_row.first_name or ""
+            last = sp_row.last_name or ""
+            name = f"{first} {last}".strip()
+            salesperson_name = name if name else sp_row.email
+    result["salesperson_name"] = salesperson_name
+
+    # Enrich with attachment count (task 5.5)
+    result["attachment_count"] = await get_attachment_count(
+        db, org_id=org_id, quote_id=quote_id
+    )
 
     # Include customer portal token info for mobile share link
     if quote.customer_id:
@@ -402,6 +484,14 @@ async def list_quotes(
     total = total_result.scalar() or 0
 
     # Data query
+    attachment_count_subq = (
+        select(sa_func.count(QuoteAttachment.id))
+        .where(QuoteAttachment.quote_id == Quote.id)
+        .correlate(Quote)
+        .scalar_subquery()
+        .label("attachment_count")
+    )
+
     data_q = (
         select(
             Quote.id,
@@ -413,6 +503,7 @@ async def list_quotes(
             Quote.status,
             Quote.valid_until,
             Quote.created_at,
+            attachment_count_subq,
         )
         .join(Customer, Quote.customer_id == Customer.id, isouter=True)
         .where(*base_filter)
@@ -437,6 +528,7 @@ async def list_quotes(
                 "status": row.status,
                 "valid_until": row.valid_until,
                 "created_at": row.created_at,
+                "attachment_count": row.attachment_count or 0,
             }
         )
 
@@ -490,9 +582,16 @@ async def update_quote(
         for field in ("customer_id", "vehicle_rego", "vehicle_make",
                        "vehicle_model", "vehicle_year", "notes",
                        "terms", "subject", "project_id",
-                       "discount_type", "discount_value", "shipping_charges", "adjustment"):
+                       "discount_type", "discount_value", "shipping_charges", "adjustment",
+                       "order_number", "salesperson_id"):
             if field in updates and updates[field] is not None:
                 setattr(quote, field, updates[field])
+
+        # Handle JSONB fields that can be set to empty list or None
+        if "additional_vehicles" in updates:
+            quote.additional_vehicles = updates["additional_vehicles"]
+        if "fluid_usage" in updates:
+            quote.fluid_usage = updates["fluid_usage"]
 
         # Update validity period
         if "validity_days" in updates and updates["validity_days"] is not None:
@@ -541,20 +640,39 @@ async def update_quote(
                     item_type=item_data["item_type"],
                     description=item_data["description"],
                     quantity=item_data["quantity"],
-                    unit_price=item_data["unit_price"],
+                    unit_price=totals["line_unit_prices"][i],
                     hours=item_data.get("hours"),
                     hourly_rate=item_data.get("hourly_rate"),
                     is_gst_exempt=item_data.get("is_gst_exempt", False),
                     warranty_note=item_data.get("warranty_note"),
                     line_total=totals["line_totals"][i],
                     sort_order=item_data.get("sort_order", i),
+                    catalogue_item_id=item_data.get("catalogue_item_id"),
+                    stock_item_id=item_data.get("stock_item_id"),
+                    gst_inclusive=item_data.get("gst_inclusive", False),
+                    inclusive_price=item_data.get("inclusive_price"),
+                    tax_rate=Decimal(str(item_data.get("tax_rate", 15))),
                 )
                 db.add(li)
             await db.flush()
+
+        # Handle save_terms_as_default on update
+        if updates.get("save_terms_as_default") and quote.terms:
+            org_result2 = await db.execute(
+                select(Organisation).where(Organisation.id == org_id)
+            )
+            org_for_terms = org_result2.scalar_one_or_none()
+            if org_for_terms:
+                org_s = dict(org_for_terms.settings or {})
+                org_s["terms_and_conditions"] = quote.terms
+                org_for_terms.settings = org_s
+                await db.flush()
     elif new_status is None:
-        # Non-draft quotes only allow notes updates
+        # Non-draft quotes only allow notes/terms updates
         if "notes" in updates:
             quote.notes = updates["notes"]
+        if "terms" in updates:
+            quote.terms = updates["terms"]
 
     await db.flush()
 
@@ -747,6 +865,8 @@ async def generate_quote_pdf(
         customer=customer_context,
         gst_percentage=gst_percentage,
         terms_and_conditions=terms_and_conditions,
+        order_number=quote_dict.get("order_number"),
+        salesperson_name=quote_dict.get("salesperson_name"),
     )
 
     # Generate PDF (in-memory only)

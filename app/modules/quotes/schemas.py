@@ -30,6 +30,28 @@ class QuoteStatus(str, Enum):
 VALID_VALIDITY_DAYS = {7, 14, 30}
 
 
+class VehicleItem(BaseModel):
+    """A vehicle entry for multi-vehicle quotes."""
+
+    model_config = {"extra": "ignore"}
+    id: uuid.UUID | None = None
+    rego: str | None = None
+    make: str | None = None
+    model: str | None = None
+    year: int | None = None
+    odometer: int | None = None
+
+
+class FluidUsageItem(BaseModel):
+    """A fluid/oil usage entry tracked for inventory purposes (non-billable)."""
+
+    model_config = {"extra": "ignore"}
+    stock_item_id: uuid.UUID
+    catalogue_item_id: uuid.UUID
+    litres: Decimal = Field(..., gt=0)
+    item_name: str = ""
+
+
 class QuoteLineItemCreate(BaseModel):
     """Schema for creating a single quote line item."""
 
@@ -42,6 +64,12 @@ class QuoteLineItemCreate(BaseModel):
     is_gst_exempt: bool = False
     warranty_note: str | None = None
     sort_order: int = 0
+    # NEW — Phase 5 (Quote ↔ Invoice Parity)
+    catalogue_item_id: uuid.UUID | None = None
+    stock_item_id: uuid.UUID | None = None
+    gst_inclusive: bool = False
+    inclusive_price: Decimal | None = Field(default=None, ge=0)
+    tax_rate: Decimal | None = Field(default=None, ge=0, le=100)
 
 
 class QuoteCreate(BaseModel):
@@ -62,6 +90,12 @@ class QuoteCreate(BaseModel):
     discount_value: Decimal = Field(default=Decimal("0"), ge=0)
     shipping_charges: Decimal = Field(default=Decimal("0"), ge=0)
     adjustment: Decimal = Field(default=Decimal("0"))
+    # NEW — Phase 5 (Quote ↔ Invoice Parity)
+    order_number: str | None = Field(default=None, max_length=100)
+    salesperson_id: uuid.UUID | None = None
+    vehicles: list[VehicleItem] | None = None
+    fluid_usage: list[FluidUsageItem] = Field(default_factory=list)
+    save_terms_as_default: bool = False
 
     @field_validator("validity_days")
     @classmethod
@@ -90,6 +124,12 @@ class QuoteUpdate(BaseModel):
     discount_value: Decimal | None = None
     shipping_charges: Decimal | None = None
     adjustment: Decimal | None = None
+    # NEW — Phase 5 (Quote ↔ Invoice Parity)
+    order_number: str | None = Field(default=None, max_length=100)
+    salesperson_id: uuid.UUID | None = None
+    vehicles: list[VehicleItem] | None = None
+    fluid_usage: list[FluidUsageItem] = Field(default_factory=list)
+    save_terms_as_default: bool = False
 
     @field_validator("validity_days")
     @classmethod
@@ -113,6 +153,12 @@ class QuoteLineItemResponse(BaseModel):
     warranty_note: str | None = None
     line_total: Decimal
     sort_order: int
+    # NEW — Phase 5 (Quote ↔ Invoice Parity)
+    catalogue_item_id: uuid.UUID | None = None
+    stock_item_id: uuid.UUID | None = None
+    gst_inclusive: bool = False
+    inclusive_price: Decimal | None = None
+    tax_rate: Decimal = Decimal("15")
 
 
 class QuoteResponse(BaseModel):
@@ -148,6 +194,13 @@ class QuoteResponse(BaseModel):
     created_by: uuid.UUID
     created_at: datetime
     updated_at: datetime
+    # NEW — Phase 5 (Quote ↔ Invoice Parity)
+    order_number: str | None = None
+    salesperson_id: uuid.UUID | None = None
+    salesperson_name: str | None = None
+    additional_vehicles: list[dict] = Field(default_factory=list)
+    fluid_usage: list[dict] = Field(default_factory=list)
+    attachment_count: int = 0
 
 
 class QuoteCreateResponse(BaseModel):
@@ -168,6 +221,8 @@ class QuoteSearchResult(BaseModel):
     status: str
     valid_until: date | None = None
     created_at: datetime | None = None
+    # NEW — Phase 5 (Quote ↔ Invoice Parity)
+    attachment_count: int = 0
 
 
 class QuoteListResponse(BaseModel):

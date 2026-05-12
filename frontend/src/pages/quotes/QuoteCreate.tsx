@@ -5,6 +5,11 @@ import { Button, Modal } from '../../components/ui'
 import { useModules } from '../../contexts/ModuleContext'
 import { useTenant } from '../../contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
+import { setNavigationGuard, clearNavigationGuard } from '@/utils/navigationGuard'
+import { VehicleLiveSearch } from '../../components/vehicles/VehicleLiveSearch'
+import QuoteMultiVehicleSection from '../../components/quotes/QuoteMultiVehicleSection'
+import InventoryPickerModal from '../../components/quotes/InventoryPickerModal'
+import { CustomerCreateModal } from '../../components/customers/CustomerCreateModal'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -63,6 +68,16 @@ interface LineItem {
   tax_rate: number
   amount: number
   gst_inclusive?: boolean
+  inclusive_price?: number | null
+  catalogue_item_id?: string | null
+  stock_item_id?: string | null
+}
+
+interface FluidUsageItem {
+  stock_item_id: string
+  catalogue_item_id: string
+  litres: number
+  item_name: string
 }
 
 interface FormErrors {
@@ -136,6 +151,7 @@ function CustomerSearch({
   const [results, setResults] = useState<Customer[]>([])
   const [loading, setLoading] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
+  const [showCreateModal, setShowCreateModal] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
@@ -226,8 +242,21 @@ function CustomerSearch({
           {!loading && query.length >= 2 && results.length === 0 && (
             <div className="px-4 py-3 text-sm text-gray-500">No customers found</div>
           )}
+          <button type="button" onClick={() => { setShowDropdown(false); setShowCreateModal(true) }}
+            className="w-full border-t border-gray-100 px-4 py-3 text-left text-sm font-medium text-blue-600 hover:bg-blue-50">
+            + Add New Customer
+          </button>
         </div>
       )}
+      <CustomerCreateModal
+        open={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        onCustomerCreated={(created: Customer) => {
+          onSelect(created)
+          setQuery(`${created.first_name} ${created.last_name}`)
+          setShowCreateModal(false)
+        }}
+      />
     </div>
   )
 }
@@ -504,7 +533,7 @@ export default function QuoteCreate() {
   const navigate = useNavigate()
   const { id: editId } = useParams<{ id: string }>()
   const isEditMode = Boolean(editId)
-  const { tradeFamily } = useTenant()
+  const { tradeFamily, settings } = useTenant()
   const { selectedBranchId } = useBranch()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const { isEnabled } = useModules()
@@ -514,8 +543,6 @@ export default function QuoteCreate() {
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [vehicle, setVehicle] = useState<Vehicle | null>(null)
   const [vehicleRego, setVehicleRego] = useState('')
-  const [vehicleLookupLoading, setVehicleLookupLoading] = useState(false)
-  const [vehicleLookupError, setVehicleLookupError] = useState('')
   const [subject, setSubject] = useState('')
   const [validityDays, setValidityDays] = useState('30')
   const [quoteDate] = useState(() => formatDateISO(new Date()))
@@ -538,6 +565,19 @@ export default function QuoteCreate() {
   // Notes and terms
   const [notes, setNotes] = useState('')
   const [terms, setTerms] = useState('')
+
+  // Parity fields (Phase 5)
+  const [orderNumber, setOrderNumber] = useState('')
+  const [salespersonId, setSalespersonId] = useState<string | null>(null)
+  const [salespersonOptions, setSalespersonOptions] = useState<{ id: string; name: string }[]>([])
+  const [additionalVehicles, setAdditionalVehicles] = useState<{ rego?: string; make?: string; model?: string; year?: number | null }[]>([])
+  const [fluidUsage, setFluidUsage] = useState<FluidUsageItem[]>([])
+  const [saveTermsAsDefault, setSaveTermsAsDefault] = useState(false)
+
+  // Attachments (Task 16)
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [existingAttachments, setExistingAttachments] = useState<{ id: string; file_name: string; file_size: number; mime_type: string }[]>([])
+  const [uploadError, setUploadError] = useState<string | null>(null)
 
   // Form state
   const [saving, setSaving] = useState(false)
@@ -586,6 +626,10 @@ export default function QuoteCreate() {
         setSubject(q.subject || '')
         setNotes(q.notes || '')
         setTerms(q.terms || '')
+        if (q.order_number) setOrderNumber(q.order_number)
+        if (q.salesperson_id) setSalespersonId(q.salesperson_id)
+        if (q.additional_vehicles?.length) setAdditionalVehicles(q.additional_vehicles)
+        if (q.fluid_usage?.length) setFluidUsage(q.fluid_usage)
         if (q.project_id) setSelectedProjectId(q.project_id)
 
         // Populate discount/shipping/adjustment
@@ -605,6 +649,10 @@ export default function QuoteCreate() {
             tax_id: li.is_gst_exempt ? 'gst_0' : 'gst_15',
             tax_rate: li.is_gst_exempt ? 0 : 15,
             amount: Number(li.line_total) || 0,
+            gst_inclusive: li.gst_inclusive ?? false,
+            inclusive_price: li.inclusive_price != null ? Number(li.inclusive_price) : null,
+            catalogue_item_id: li.catalogue_item_id ?? null,
+            stock_item_id: li.stock_item_id ?? null,
           })))
         }
       } catch {
@@ -615,6 +663,19 @@ export default function QuoteCreate() {
     }
     loadQuote()
     return () => { cancelled = true }
+  }, [editId])
+
+  // Fetch existing attachments when editing (Task 16)
+  useEffect(() => {
+    if (!editId) return
+    const controller = new AbortController()
+    apiClient.get<{ attachments: { id: string; file_name: string; file_size: number; mime_type: string }[]; total: number }>(
+      `/quotes/${editId}/attachments`,
+      { signal: controller.signal }
+    )
+      .then(res => setExistingAttachments(res.data?.attachments ?? []))
+      .catch(() => {})
+    return () => controller.abort()
   }, [editId])
 
   // Load catalogue items
@@ -659,21 +720,48 @@ export default function QuoteCreate() {
     return () => { cancelled = true }
   }, [projectsEnabled, customer])
 
-  // Vehicle lookup
-  const lookupVehicle = async () => {
-    const cleaned = vehicleRego.trim().toUpperCase()
-    if (!cleaned) return
-    setVehicleLookupLoading(true)
-    setVehicleLookupError('')
-    try {
-      const res = await apiClient.get(`/vehicles/lookup/${encodeURIComponent(cleaned)}`)
-      setVehicle(res.data as Vehicle)
-    } catch (err: unknown) {
-      const status = (err as { response?: { status?: number } })?.response?.status
-      setVehicleLookupError(status === 404 ? 'Vehicle not found' : 'Lookup failed')
-      setVehicle(null)
-    } finally { setVehicleLookupLoading(false) }
-  }
+  // Load salespeople for dropdown (Task 11.2)
+  useEffect(() => {
+    const controller = new AbortController()
+    async function load() {
+      try {
+        const res = await apiClient.get<{ salespeople: { id: string; first_name: string; last_name: string; email: string }[] }>(
+          '/org/salespeople',
+          { signal: controller.signal }
+        )
+        const people = res.data?.salespeople ?? []
+        setSalespersonOptions(people.map(p => ({
+          id: p.id,
+          name: `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim() || p.email,
+        })))
+      } catch { /* non-blocking */ }
+    }
+    load()
+    return () => controller.abort()
+  }, [])
+
+  // Auto-fill linked vehicle when customer is selected (Task 11.6)
+  useEffect(() => {
+    if (!customer || !isAutomotive || !isEnabled('vehicles') || isEditMode) return
+    const customerId = customer.id
+    const controller = new AbortController()
+    async function fetchLinkedVehicles() {
+      try {
+        const res = await apiClient.get<{ vehicles?: { id: string; rego: string; make: string; model: string; year: number | null }[] }>(
+          `/customers/${customerId}/vehicles`,
+          { signal: controller.signal }
+        )
+        const linked = res.data?.vehicles ?? []
+        if (linked.length > 0 && !vehicle) {
+          const first = linked[0]
+          setVehicle({ id: first.id, rego: first.rego, make: first.make, model: first.model, year: first.year, colour: '' })
+          setVehicleRego(first.rego)
+        }
+      } catch { /* non-blocking */ }
+    }
+    fetchLinkedVehicles()
+    return () => controller.abort()
+  }, [customer])
 
   // Line item management
   const addLineItem = () => setLineItems(prev => [...prev, newLineItem()])
@@ -690,6 +778,25 @@ export default function QuoteCreate() {
   const [labourLoading, setLabourLoading] = useState(false)
 
   const vehiclesEnabled = isEnabled('vehicles')
+
+  // Inventory picker (Task 13.2-13.3)
+  const [inventoryPickerOpen, setInventoryPickerOpen] = useState(false)
+  const handleInventorySelect = (item: { id: string; catalogue_item_id: string | null; name: string; sell_price: number | string; gst_inclusive: boolean }) => {
+    const price = typeof item.sell_price === 'string' ? parseFloat(item.sell_price) : (item.sell_price ?? 0)
+    setLineItems(prev => [...prev, {
+      key: crypto.randomUUID(),
+      description: item.name,
+      quantity: 1,
+      rate: item.gst_inclusive ? price : price,
+      tax_id: 'gst_15',
+      tax_rate: 15,
+      amount: price,
+      gst_inclusive: item.gst_inclusive,
+      inclusive_price: item.gst_inclusive ? price : null,
+      catalogue_item_id: item.catalogue_item_id ?? null,
+      stock_item_id: item.id,
+    }])
+  }
 
   const openPartsPicker = async () => {
     setPartsPickerOpen(true); setPartsSearch(''); setPartsLoading(true)
@@ -766,15 +873,42 @@ export default function QuoteCreate() {
     discount_value: discountValue,
     shipping_charges: shippingCharges,
     adjustment: adjustment,
+    order_number: orderNumber.trim() || undefined,
+    salesperson_id: salespersonId || undefined,
+    vehicles: additionalVehicles.length > 0 ? additionalVehicles : undefined,
+    fluid_usage: fluidUsage.length > 0 ? fluidUsage : undefined,
+    save_terms_as_default: saveTermsAsDefault,
     line_items: lineItems.filter(item => item.description.trim()).map((item, i) => ({
       item_type: 'service',
       description: (item.line_description ? `${item.description}\n${item.line_description}` : item.description).slice(0, 2000),
       quantity: item.quantity,
-      unit_price: item.rate,
+      unit_price: item.gst_inclusive ? (item.inclusive_price ?? item.rate) : item.rate,
       is_gst_exempt: item.tax_rate === 0,
       sort_order: i,
+      catalogue_item_id: item.catalogue_item_id || undefined,
+      stock_item_id: item.stock_item_id || undefined,
+      gst_inclusive: item.gst_inclusive ?? false,
+      inclusive_price: item.gst_inclusive ? (item.inclusive_price ?? item.rate) : undefined,
+      tax_rate: item.tax_rate,
     })),
   })
+
+  // Upload pending attachments after quote is saved (Task 16)
+  const uploadPendingFiles = async (quoteId: string) => {
+    if (pendingFiles.length === 0) return
+    for (const file of pendingFiles) {
+      try {
+        const formData = new FormData()
+        formData.append('file', file)
+        await apiClient.post(`/quotes/${quoteId}/attachments`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+      } catch {
+        // Non-blocking — continue with remaining files
+      }
+    }
+    setPendingFiles([])
+  }
 
   // Save as Draft
   const handleSaveDraft = async () => {
@@ -783,10 +917,14 @@ export default function QuoteCreate() {
     try {
       if (isEditMode && editId) {
         await apiClient.put(`/quotes/${editId}`, buildPayload())
+        await uploadPendingFiles(editId)
         navigate(`/quotes/${editId}`)
       } else {
-        await apiClient.post('/quotes', buildPayload())
-        navigate('/quotes')
+        const createRes = await apiClient.post('/quotes', buildPayload())
+        const quoteData = (createRes.data as any)?.quote ?? createRes.data
+        const newId = quoteData?.id
+        if (newId) await uploadPendingFiles(newId)
+        navigate(newId ? `/quotes/${newId}` : '/quotes')
       }
     } catch (err: unknown) {
       const detail = (err as any)?.response?.data?.detail
@@ -807,7 +945,10 @@ export default function QuoteCreate() {
         const quoteData = (createRes.data as any)?.quote ?? createRes.data
         quoteId = quoteData?.id
       }
-      if (quoteId) await apiClient.post(`/quotes/${quoteId}/send`)
+      if (quoteId) {
+        await uploadPendingFiles(quoteId)
+        await apiClient.post(`/quotes/${quoteId}/send`)
+      }
       navigate('/quotes')
     } catch (err: unknown) {
       const detail = (err as any)?.response?.data?.detail
@@ -818,6 +959,33 @@ export default function QuoteCreate() {
   const handleCancel = () => {
     navigate(isEditMode && editId ? `/quotes/${editId}` : '/quotes')
   }
+
+  // Navigation guard — warn on unsaved changes (Task 15.2)
+  const isDirtyRef = useRef(false)
+  const handleSaveDraftRef = useRef(handleSaveDraft)
+  handleSaveDraftRef.current = handleSaveDraft
+
+  isDirtyRef.current = Boolean(
+    customer ||
+    subject ||
+    orderNumber ||
+    salespersonId ||
+    notes ||
+    terms ||
+    lineItems.some(li => li.description.trim()) ||
+    additionalVehicles.length > 0 ||
+    fluidUsage.length > 0 ||
+    pendingFiles.length > 0 ||
+    saveTermsAsDefault
+  )
+
+  useEffect(() => {
+    setNavigationGuard({
+      isDirty: () => isDirtyRef.current,
+      onSave: () => handleSaveDraftRef.current(),
+    })
+    return () => clearNavigationGuard()
+  }, [])
 
   const isBusy = saving || sendingAndSaving
 
@@ -864,17 +1032,28 @@ export default function QuoteCreate() {
                         className="ml-auto text-gray-400 hover:text-gray-600" aria-label="Clear vehicle">✕</button>
                     </div>
                   ) : (
-                    <div>
-                      <div className="flex gap-2">
-                        <input type="text" value={vehicleRego} onChange={(e) => setVehicleRego(e.target.value.toUpperCase())}
-                          onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), lookupVehicle())}
-                          placeholder="e.g. ABC123"
-                          className="w-40 rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                        <Button size="sm" onClick={lookupVehicle} loading={vehicleLookupLoading}>Lookup</Button>
-                      </div>
-                      {vehicleLookupError && <p className="mt-1 text-xs text-red-600">{vehicleLookupError}</p>}
-                    </div>
+                    <VehicleLiveSearch
+                      vehicle={null}
+                      onVehicleFound={(v) => {
+                        if (v) {
+                          setVehicle({ id: v.id, rego: v.rego, make: v.make, model: v.model, year: v.year, colour: v.colour || '' })
+                          setVehicleRego(v.rego)
+                        }
+                      }}
+                      onCustomerAutoSelect={(c) => {
+                        if (!customer) {
+                          setCustomer({
+                            id: c.id,
+                            first_name: c.first_name,
+                            last_name: c.last_name,
+                            email: c.email || '',
+                            phone: c.phone || '',
+                          })
+                        }
+                      }}
+                    />
                   )}
+                  <QuoteMultiVehicleSection vehicles={additionalVehicles} onChange={setAdditionalVehicles} />
                 </div>
               )}
 
@@ -914,6 +1093,16 @@ export default function QuoteCreate() {
                   {VALIDITY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
+
+              {/* GST Number (read-only display) */}
+              {settings?.gst?.gst_number && (
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-gray-700">GST Number</label>
+                  <div className="rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                    {settings.gst.gst_number}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -923,6 +1112,30 @@ export default function QuoteCreate() {
             <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)}
               placeholder="Let your customer know what this quote is for"
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+
+          {/* Order Number + Salesperson (Phase 5 parity) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Order Number</label>
+              <input type="text" value={orderNumber} onChange={(e) => setOrderNumber(e.target.value)}
+                placeholder="PO or reference number"
+                maxLength={100}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Salesperson</label>
+              <select
+                value={salespersonId ?? ''}
+                onChange={(e) => setSalespersonId(e.target.value || null)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">— None —</option>
+                {salespersonOptions.map(sp => (
+                  <option key={sp.id} value={sp.id}>{sp.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
           {/* Line Items */}
@@ -960,6 +1173,7 @@ export default function QuoteCreate() {
 
             <div className="flex gap-3 mt-3">
               <Button variant="secondary" size="sm" onClick={addLineItem}>+ Add New Row</Button>
+              <Button variant="secondary" size="sm" onClick={() => setInventoryPickerOpen(true)}>+ Add from Inventory</Button>
               {isAutomotive && vehiclesEnabled && (
                 <>
                   <Button variant="secondary" size="sm" onClick={openPartsPicker}>+ Add Parts</Button>
@@ -968,6 +1182,64 @@ export default function QuoteCreate() {
               )}
             </div>
           </div>
+
+          {/* Fluid Usage Section (automotive only, non-billable) — Task 14 */}
+          {isAutomotive && isEnabled('vehicles') && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-sm font-medium text-gray-700">
+                  Fluid Usage <span className="text-xs text-gray-400 font-normal">(non-billable)</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setFluidUsage(prev => [...prev, { stock_item_id: '', catalogue_item_id: '', litres: 0, item_name: '' }])}
+                  className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                >
+                  + Add Fluid
+                </button>
+              </div>
+              {fluidUsage.length > 0 && (
+                <div className="space-y-2">
+                  {fluidUsage.map((f, i) => (
+                    <div key={i} className="flex items-center gap-2 rounded-md border border-gray-200 p-2">
+                      <input
+                        type="text"
+                        value={f.item_name}
+                        onChange={(e) => {
+                          const updated = [...fluidUsage]
+                          updated[i] = { ...updated[i], item_name: e.target.value }
+                          setFluidUsage(updated)
+                        }}
+                        placeholder="Fluid/oil name"
+                        className="flex-1 rounded border border-gray-300 px-2 py-1 text-sm"
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        value={f.litres || ''}
+                        onChange={(e) => {
+                          const updated = [...fluidUsage]
+                          updated[i] = { ...updated[i], litres: Number(e.target.value) || 0 }
+                          setFluidUsage(updated)
+                        }}
+                        placeholder="Litres"
+                        className="w-20 rounded border border-gray-300 px-2 py-1 text-sm"
+                      />
+                      <span className="text-xs text-gray-500">L</span>
+                      <button
+                        type="button"
+                        onClick={() => setFluidUsage(prev => prev.filter((_, idx) => idx !== i))}
+                        className="rounded px-2 py-1 text-xs text-red-500 hover:bg-red-50"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Totals Section — matches InvoiceCreate exactly */}
           <div className="flex justify-end">
@@ -1048,6 +1320,97 @@ export default function QuoteCreate() {
             <textarea rows={3} value={terms} onChange={(e) => setTerms(e.target.value)}
               placeholder="Enter the terms and conditions of your business to be displayed in your transaction"
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <label className="flex items-center gap-2 mt-2 text-sm text-gray-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={saveTermsAsDefault}
+                onChange={(e) => setSaveTermsAsDefault(e.target.checked)}
+                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              Save as default for all future quotes
+            </label>
+          </div>
+
+          {/* Attachments (Task 16) */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Attachments</label>
+
+            {/* Existing attachments (edit mode) */}
+            {existingAttachments.length > 0 && (
+              <ul className="space-y-1 mb-2">
+                {existingAttachments.map(att => (
+                  <li key={att.id} className="flex items-center justify-between rounded border border-gray-100 px-2 py-1.5 text-sm">
+                    <span className="truncate text-gray-700">{att.file_name}</span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await apiClient.delete(`/quotes/${editId}/attachments/${att.id}`)
+                          setExistingAttachments(prev => prev.filter(a => a.id !== att.id))
+                        } catch (err: unknown) {
+                          const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+                          setUploadError(detail ?? 'Failed to delete attachment')
+                        }
+                      }}
+                      className="ml-2 text-xs text-red-500 hover:text-red-700"
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {/* Pending files (not yet uploaded) */}
+            {pendingFiles.length > 0 && (
+              <ul className="space-y-1 mb-2">
+                {pendingFiles.map((file, i) => (
+                  <li key={i} className="flex items-center justify-between rounded border border-blue-100 bg-blue-50 px-2 py-1.5 text-sm">
+                    <span className="truncate text-gray-700">{file.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => setPendingFiles(prev => prev.filter((_, idx) => idx !== i))}
+                      className="ml-2 text-xs text-red-500 hover:text-red-700"
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {/* File picker */}
+            {(existingAttachments.length + pendingFiles.length) < 5 && (
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif,application/pdf"
+                multiple
+                onChange={(e) => {
+                  if (!e.target.files) return
+                  setUploadError(null)
+                  const maxAllowed = 5 - existingAttachments.length - pendingFiles.length
+                  const newFiles = Array.from(e.target.files).slice(0, maxAllowed)
+                  // Client-side validation
+                  const ALLOWED_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf']
+                  const MAX_SIZE = 20 * 1024 * 1024
+                  for (const f of newFiles) {
+                    if (!ALLOWED_MIMES.includes(f.type)) {
+                      setUploadError('Only JPEG, PNG, WebP, GIF, and PDF files are allowed')
+                      return
+                    }
+                    if (f.size > MAX_SIZE) {
+                      setUploadError('File exceeds 20 MB')
+                      return
+                    }
+                  }
+                  setPendingFiles(prev => [...prev, ...newFiles])
+                  e.target.value = ''
+                }}
+                className="text-sm text-gray-500 file:mr-3 file:rounded file:border-0 file:bg-blue-50 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
+              />
+            )}
+            {uploadError && <p className="mt-1 text-xs text-red-600">{uploadError}</p>}
+            <p className="mt-1 text-xs text-gray-400">JPEG, PNG, WebP, GIF, PDF — max 20 MB each, up to 5 files</p>
           </div>
 
           {/* Submit Error */}
@@ -1117,6 +1480,13 @@ export default function QuoteCreate() {
           </div>
         )}
       </Modal>
+
+      {/* Inventory Picker (Task 13.2) */}
+      <InventoryPickerModal
+        open={inventoryPickerOpen}
+        onClose={() => setInventoryPickerOpen(false)}
+        onSelect={handleInventorySelect}
+      />
     </div>
   )
 }
