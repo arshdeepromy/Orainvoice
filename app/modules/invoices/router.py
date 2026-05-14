@@ -138,6 +138,11 @@ async def create_invoice_endpoint(
     should_email = payload.status.value == "sent"
     effective_status = "issued" if should_email else payload.status.value
 
+    # mark_paid implies issuing and emailing (the paid email will be sent instead)
+    if payload.mark_paid:
+        effective_status = "issued"
+        should_email = True
+
     try:
         result = await create_invoice(
             db,
@@ -209,6 +214,48 @@ async def create_invoice_endpoint(
     # Commit so the invoice exists before emailing
     await db.commit()
 
+    # Handle mark_paid: record full payment after invoice is created and committed
+    _mark_paid_total = None
+    if payload.mark_paid and result.get("id"):
+        import asyncio as _asyncio_paid
+        from decimal import Decimal as _Decimal
+        _paid_invoice_id = result["id"] if isinstance(result["id"], uuid.UUID) else uuid.UUID(str(result["id"]))
+        _paid_total = result.get("total") or result.get("total_incl_gst") or _Decimal("0")
+        _mark_paid_total = _Decimal(str(_paid_total))
+        _paid_method = payload.payment_method or "cash"
+
+        async def _record_payment_and_email_bg():
+            try:
+                from app.core.database import async_session_factory, _set_rls_org_id
+                from app.modules.payments.service import record_cash_payment
+                from app.modules.invoices.service import email_invoice
+                async with async_session_factory() as pay_db:
+                    async with pay_db.begin():
+                        await _set_rls_org_id(pay_db, str(org_uuid))
+                        await record_cash_payment(
+                            pay_db,
+                            org_id=org_uuid,
+                            user_id=user_uuid,
+                            invoice_id=_paid_invoice_id,
+                            amount=_Decimal(str(_paid_total)),
+                            notes=f"Paid at invoice creation ({_paid_method})",
+                            ip_address=ip_address,
+                        )
+                # Send email with PAID status (fresh session)
+                async with async_session_factory() as email_db:
+                    async with email_db.begin():
+                        await _set_rls_org_id(email_db, str(org_uuid))
+                        await email_invoice(email_db, org_id=org_uuid, invoice_id=_paid_invoice_id)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Mark-paid background task failed for invoice %s: %s", _paid_invoice_id, exc
+                )
+
+        _asyncio_paid.create_task(_record_payment_and_email_bg())
+        # Don't send the initial "issued" email — the paid email will be sent instead
+        should_email = False
+
     # Auto-email the invoice PDF when status was "sent" — fire-and-forget
     email_status = None
     if should_email:
@@ -238,7 +285,16 @@ async def create_invoice_endpoint(
         line_items=[LineItemResponse(**li) for li in result["line_items"]],
     )
 
-    if should_email:
+    # Optimistically reflect paid status in the response when mark_paid was requested
+    if payload.mark_paid and _mark_paid_total is not None:
+        from decimal import Decimal as _Decimal
+        invoice_resp.status = "paid"
+        invoice_resp.amount_paid = _mark_paid_total
+        invoice_resp.balance_due = _Decimal("0")
+
+    if payload.mark_paid:
+        status_label = "Invoice issued, paid, and emailed"
+    elif should_email:
         status_label = "Invoice issued and emailed" if email_status != "email_failed" else "Invoice issued (email failed)"
     elif payload.status.value == "draft":
         status_label = "Draft saved"

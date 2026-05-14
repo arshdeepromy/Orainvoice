@@ -196,8 +196,8 @@
       <td style="color:#999;">{{ loop.index }}</td>
       <td>
         {% set desc_parts = item.description.split('\n') if item.description else [''] %}
-        {{ desc_parts[0] }}
-        {% if desc_parts | length > 1 %}<br><span style="color:#666; font-size:8pt;">{{ desc_parts[1:] | join('<br>') }}</span>{% endif %}
+        {{ desc_parts[0] | safe }}
+        {% if desc_parts | length > 1 %}<br><span style="color:#666; font-size:8pt;">{{ desc_parts[1:] | join('<br>') | safe }}</span>{% endif %}
         {% if item.warranty_note %}<br><span style="color:#2563eb; font-size:8pt;">Warranty: {{ item.warranty_note }}</span>{% endif %}
       </td>
       <td style="text-align:right; font-variant-numeric:tabular-nums;">

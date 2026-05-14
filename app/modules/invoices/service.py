@@ -1550,6 +1550,21 @@ async def get_invoice(
         result["invoice_template_id"] = settings.get("invoice_template_id")
         result["invoice_template_colours"] = settings.get("invoice_template_colours")
 
+        # Payment terms and T&C toggle state (uses defaults from get_org_settings)
+        from app.modules.organisations.service import get_org_settings as _get_org_settings
+        org_settings_full = await _get_org_settings(db, org_id=org_id)
+        payment_terms_enabled = org_settings_full.get("payment_terms_enabled", True)
+        terms_and_conditions_enabled = org_settings_full.get("terms_and_conditions_enabled", True)
+
+        # Always include the T&C toggle state
+        result["terms_and_conditions_enabled"] = terms_and_conditions_enabled
+
+        # Conditionally include payment_terms_text
+        if payment_terms_enabled:
+            payment_terms_text = org_settings_full.get("payment_terms_text")
+            if payment_terms_text:
+                result["payment_terms_text"] = payment_terms_text
+
     # Include customer details
     if invoice.customer_id:
         cust_result = await db.execute(
@@ -3719,9 +3734,24 @@ async def generate_invoice_pdf(
     org_context["logo_url"] = resolve_logo_for_pdf(org)
 
     gst_percentage = settings.get("gst_percentage", 15)
-    payment_terms = settings.get("payment_terms_text", "")
-    # Per-invoice terms_and_conditions take priority over org-level default
-    terms_and_conditions = invoice_dict.get("terms_and_conditions") or settings.get("terms_and_conditions", "")
+
+    # Toggle-aware content suppression (Requirements 5.3, 5.4, 6.3, 6.4, 10.1, 10.2)
+    payment_terms_enabled = settings.get("payment_terms_enabled", True)
+    terms_and_conditions_enabled = settings.get("terms_and_conditions_enabled", True)
+
+    # Payment terms: suppress org-level content when toggle is off
+    payment_terms = settings.get("payment_terms_text", "") if payment_terms_enabled else ""
+
+    # Per-invoice stored terms_and_conditions (from invoice_data_json) always
+    # renders regardless of org toggle — backward compatibility (Req 10.2).
+    # Only suppress the org-level fallback when the toggle is off.
+    per_invoice_tc = invoice_dict.get("terms_and_conditions")
+    if per_invoice_tc:
+        terms_and_conditions = per_invoice_tc
+    elif terms_and_conditions_enabled:
+        terms_and_conditions = settings.get("terms_and_conditions", "")
+    else:
+        terms_and_conditions = ""
     currency_symbol = get_currency_symbol(invoice_dict.get("currency", "NZD"))
 
     # Fetch customer -------------------------------------------------------
@@ -3977,6 +4007,15 @@ async def email_invoice(
         total_email_size += len(data)
         attachment_data.append((att["file_name"], att["mime_type"], data))
 
+    # Fetch org settings for email signature
+    _org_sig_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    _org_for_sig = _org_sig_result.scalar_one_or_none()
+    _org_settings_sig = (_org_for_sig.settings or {}) if _org_for_sig else {}
+    _email_signature_enabled = _org_settings_sig.get("email_signature_enabled", False)
+    _email_signature = _org_settings_sig.get("email_signature", "") or ""
+
     # Build the email message (reusable across provider attempts)
     def _build_message(from_name: str, from_email: str) -> MIMEMultipart:
         msg = MIMEMultipart("mixed")
@@ -4000,7 +4039,13 @@ async def email_invoice(
             body += (
                 "\nNote: Some attachments were too large to include in this email.\n"
             )
-        msg.attach(MIMEText(body, "plain"))
+
+        # Build HTML body with conditional email signature
+        html_body = body.replace("\n", "<br>")
+        if _email_signature_enabled and _email_signature.strip():
+            html_body += "<hr>" + _email_signature
+
+        msg.attach(MIMEText(html_body, "html"))
 
         pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
         pdf_attachment.add_header(

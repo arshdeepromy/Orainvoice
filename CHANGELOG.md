@@ -4,6 +4,19 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
+## [1.9.0] — 2026-05-15
+
+### Added
+
+- Invoice settings enable/disable toggles (email signature, default notes, payment terms, T&C)
+- Email signature append on invoice and quote emails
+- Default notes pre-fill on new invoices
+- Payment terms and T&C sections in invoice web preview
+- Toggle-aware PDF rendering for payment terms and T&C
+- Rich text T&C field in invoice form (HTML preserved)
+
+---
+
 ## [1.8.0] — 2026-05-08
 
 ### Added

@@ -152,6 +152,9 @@ interface InvoiceDetail {
   org_gst_number?: string
   fluid_usage?: { stock_item_id: string; item_name: string; litres: number; cost_per_litre?: number | null; total_cost?: number | null }[]
   fluid_cost_total?: number
+  payment_terms_text?: string | null
+  terms_and_conditions_enabled?: boolean
+  terms_and_conditions?: string | null
 }
 
 /* ------------------------------------------------------------------ */
@@ -1163,6 +1166,27 @@ export default function InvoiceDetail() {
               <div className="mt-1">{invoice.notes_internal}</div>
             </div>
           )}
+        </section>
+      )}
+
+      {/* ---- Payment Terms ---- */}
+      {invoice?.payment_terms_text && (
+        <section className="mb-6">
+          <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Payment Terms</h2>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+            {invoice.payment_terms_text}
+          </div>
+        </section>
+      )}
+
+      {/* ---- Terms & Conditions ---- */}
+      {invoice?.terms_and_conditions_enabled && invoice?.terms_and_conditions && (
+        <section className="mb-6">
+          <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Terms & Conditions</h2>
+          <div
+            className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 prose prose-sm"
+            dangerouslySetInnerHTML={{ __html: invoice.terms_and_conditions }}
+          />
         </section>
       )}
 

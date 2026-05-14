@@ -34,6 +34,10 @@ export interface InvoiceSettings {
   default_due_days: number
   payment_terms_text: string | null
   terms_and_conditions: string | null
+  default_notes: string | null
+  default_notes_enabled: boolean
+  payment_terms_enabled: boolean
+  terms_and_conditions_enabled: boolean
 }
 
 export interface TenantSettings {
@@ -110,6 +114,10 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         default_due_days: number
         payment_terms_text: string | null
         terms_and_conditions: string | null
+        default_notes?: string | null
+        default_notes_enabled?: boolean
+        payment_terms_enabled?: boolean
+        terms_and_conditions_enabled?: boolean
         trade_family: string | null
         trade_category: string | null
         sidebar_display_mode?: string
@@ -138,6 +146,10 @@ export function TenantProvider({ children }: { children: ReactNode }) {
           default_due_days: data.default_due_days,
           payment_terms_text: data.payment_terms_text,
           terms_and_conditions: data.terms_and_conditions,
+          default_notes: data?.default_notes ?? null,
+          default_notes_enabled: data?.default_notes_enabled ?? false,
+          payment_terms_enabled: data?.payment_terms_enabled ?? true,
+          terms_and_conditions_enabled: data?.terms_and_conditions_enabled ?? true,
         },
         addressCountry: data.address_country ?? null,
       }

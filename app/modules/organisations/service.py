@@ -224,6 +224,10 @@ SETTINGS_JSONB_KEYS = {
     "portal_token_ttl_days",
     "portal_enabled",
     "auto_expense_on_stock_purchase",
+    "email_signature_enabled",
+    "default_notes_enabled",
+    "payment_terms_enabled",
+    "terms_and_conditions_enabled",
 }
 
 
@@ -267,12 +271,26 @@ async def get_org_settings(
             trade_category = trade_row[0]
             trade_family = trade_row[1]
 
+    # Defaults for toggle keys when missing from JSONB
+    _TOGGLE_DEFAULTS = {
+        "email_signature_enabled": False,
+        "default_notes_enabled": False,
+        "payment_terms_enabled": True,
+        "terms_and_conditions_enabled": True,
+    }
+
+    settings_dict = {key: settings_data.get(key) for key in SETTINGS_JSONB_KEYS}
+    # Apply toggle defaults for missing keys
+    for toggle_key, default_val in _TOGGLE_DEFAULTS.items():
+        if settings_dict.get(toggle_key) is None:
+            settings_dict[toggle_key] = default_val
+
     return {
         "org_name": org.name,
         "country_code": org.country_code or settings_data.get("address_country"),
         "trade_family": trade_family,
         "trade_category": trade_category,
-        **{key: settings_data.get(key) for key in SETTINGS_JSONB_KEYS},
+        **settings_dict,
     }
 
 

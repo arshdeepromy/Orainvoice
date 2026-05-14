@@ -849,13 +849,19 @@ export default function InvoiceCreate() {
   const [adjustment, setAdjustment] = useState(0)
   
   // Notes and terms
-  const [customerNotes, setCustomerNotes] = useState('')
+  const [customerNotes, setCustomerNotes] = useState(() => {
+    // On create: conditionally pre-fill from org settings
+    if (!editId && settings?.invoice?.default_notes_enabled) {
+      return settings?.invoice?.default_notes ?? ''
+    }
+    return ''
+  })
   const [termsAndConditions, setTermsAndConditions] = useState(() => {
-    const raw = settings?.invoice?.terms_and_conditions || ''
-    if (!raw || !raw.includes('<')) return raw
-    const tmp = document.createElement('div')
-    tmp.innerHTML = raw
-    return tmp.textContent || tmp.innerText || ''
+    // On create: conditionally pre-fill from org settings (preserve HTML)
+    if (!editId && settings?.invoice?.terms_and_conditions_enabled) {
+      return settings?.invoice?.terms_and_conditions ?? ''
+    }
+    return ''
   })
   const [saveTermsAsDefault, setSaveTermsAsDefault] = useState(false)
   
@@ -901,6 +907,25 @@ export default function InvoiceCreate() {
   const isDirtyRef = useRef(isDirty)
   isDirtyRef.current = isDirty
   const handleSaveDraftRef = useRef<() => Promise<void>>(() => Promise.resolve())
+
+  // Rich text T&C editor ref
+  const tcEditorRef = useRef<HTMLDivElement>(null)
+  const tcUserEditingRef = useRef(false)
+
+  // Sync T&C state into contentEditable div when value changes externally (e.g., edit mode load, initial pre-fill)
+  useEffect(() => {
+    if (tcUserEditingRef.current) {
+      tcUserEditingRef.current = false
+      return
+    }
+    if (tcEditorRef.current) {
+      if (termsAndConditions && tcEditorRef.current.innerHTML !== termsAndConditions) {
+        tcEditorRef.current.innerHTML = termsAndConditions
+      } else if (!termsAndConditions && tcEditorRef.current.innerHTML !== '') {
+        tcEditorRef.current.innerHTML = ''
+      }
+    }
+  }, [termsAndConditions])
 
   useEffect(() => {
     setNavigationGuard({
@@ -994,6 +1019,7 @@ export default function InvoiceCreate() {
         if (inv.due_date) setDueDate(inv.due_date)
         if (inv.issue_date) setInvoiceDate(inv.issue_date)
         if (inv.notes_customer) setCustomerNotes(inv.notes_customer)
+        if (inv.terms_and_conditions != null) setTermsAndConditions(inv.terms_and_conditions)
         if (inv.discount_type) setDiscountType(inv.discount_type)
         if (inv.discount_value != null) setDiscountValue(Number(inv.discount_value))
         
@@ -1148,16 +1174,7 @@ export default function InvoiceCreate() {
     }
   }, [invoiceDate, terms])
 
-  // Update terms and conditions from settings
-  useEffect(() => {
-    if (settings?.invoice?.terms_and_conditions) {
-      // Strip HTML tags — settings stores rich text but the invoice form uses plain text
-      const html = settings.invoice.terms_and_conditions
-      const tmp = document.createElement('div')
-      tmp.innerHTML = html
-      setTermsAndConditions(tmp.textContent || tmp.innerText || '')
-    }
-  }, [settings])
+  // T&C pre-fill is handled in useState initializer (conditional on toggle + create/edit mode)
 
   // Calculate totals
   const subTotal = lineItems.reduce((sum, item) => sum + item.amount, 0)
@@ -1526,48 +1543,46 @@ export default function InvoiceCreate() {
     if (!validate()) return
     setPaidSaving(true)
     try {
-      // 1. Save as draft first
-      let invoiceId = editId
       if (isEditMode && editId) {
-        await apiClient.put(`/invoices/${editId}`, buildPayload('draft'))
+        // Edit mode: update + issue, then record payment separately (2 calls)
+        await apiClient.put(`/invoices/${editId}`, buildPayload('sent'))
+        await uploadAttachments(editId)
+        // Fetch issued invoice to get total for payment
+        const detailRes = await apiClient.get(`/invoices/${editId}`)
+        const inv = (detailRes.data as any)?.invoice || detailRes.data
+        const total = Number(inv?.total || inv?.total_incl_gst || 0)
+        if (total > 0) {
+          await apiClient.post('/payments/cash', {
+            invoice_id: editId,
+            amount: total,
+            method: paidMethod,
+            note: 'Paid at invoice creation',
+          })
+        }
+        await maybeSaveTermsAsDefault()
+        // Fetch final state with paid status
+        const finalRes = await apiClient.get(`/invoices/${editId}`)
+        const finalInv = (finalRes.data as any)?.invoice || finalRes.data
+        setPaidModalOpen(false)
+        navigate(`/invoices/${editId}`, { state: { invoice: finalInv } })
       } else {
-        const res = await apiClient.post('/invoices', buildPayload('draft'))
-        invoiceId = (res.data as any)?.id || (res.data as any)?.invoice?.id
+        // New invoice: single API call with mark_paid flag
+        const payload = {
+          ...buildPayload('sent'),
+          mark_paid: true,
+          payment_method: paidMethod,
+        }
+        const res = await apiClient.post('/invoices', payload)
+        await maybeSaveTermsAsDefault()
+        const inv = (res.data as any)?.invoice || res.data
+        const newId = inv?.id
+        if (newId) await uploadAttachments(newId)
+        setPaidModalOpen(false)
+        navigate(newId ? `/invoices/${newId}` : '/invoices', newId ? { state: { invoice: inv } } : undefined)
       }
-      if (!invoiceId) throw new Error('No invoice ID')
-
-      // 1b. Upload attachments before issuing (so they're included in the email)
-      await uploadAttachments(invoiceId)
-
-      // 2. Issue the invoice (assigns number, sets status to issued)
-      await apiClient.put(`/invoices/${invoiceId}/issue`)
-
-      // 3. Record full payment
-      const detailRes = await apiClient.get(`/invoices/${invoiceId}`)
-      const inv = (detailRes.data as any)?.invoice || detailRes.data
-      const total = Number(inv?.total || inv?.total_incl_gst || 0)
-      if (total > 0) {
-        await apiClient.post('/payments/cash', {
-          invoice_id: invoiceId,
-          amount: total,
-          method: paidMethod,
-          note: 'Paid at invoice creation',
-        })
-      }
-
-      // 4. The cash payment endpoint auto-sends the updated invoice email,
-      //    so no separate email call is needed here.
-
-      await maybeSaveTermsAsDefault()
-
-      // Fetch final state to pass to detail page
-      const finalRes = await apiClient.get(`/invoices/${invoiceId}`)
-      const finalInv = (finalRes.data as any)?.invoice || finalRes.data
-
-      setPaidModalOpen(false)
-      navigate(`/invoices/${invoiceId}`, { state: { invoice: finalInv } })
-    } catch {
-      setErrors({ submit: 'Failed to process. Please try again.' })
+    } catch (err: unknown) {
+      const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to process. Please try again.')
+      setErrors({ submit: msg })
     } finally {
       setPaidSaving(false)
     }
@@ -2054,12 +2069,19 @@ export default function InvoiceCreate() {
           {/* Terms & Conditions */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Terms & Conditions</label>
-            <textarea
-              value={termsAndConditions}
-              onChange={(e) => setTermsAndConditions(e.target.value)}
-              rows={3}
-              placeholder="Enter the terms and conditions of your business to be displayed in your transaction"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            <div
+              ref={tcEditorRef}
+              contentEditable
+              role="textbox"
+              aria-multiline="true"
+              aria-label="Terms and conditions"
+              onInput={() => {
+                if (tcEditorRef.current) {
+                  tcUserEditingRef.current = true
+                  setTermsAndConditions(tcEditorRef.current.innerHTML)
+                }
+              }}
+              className="w-full min-h-[80px] rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm prose prose-sm max-w-none focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <label className="mt-2 flex items-center gap-2 cursor-pointer">
               <input

@@ -154,6 +154,14 @@ class InvoiceCreateRequest(BaseModel):
         default=None,
         description="Payment gateway for this invoice (e.g. 'stripe', 'cash')",
     )
+    mark_paid: bool = Field(
+        default=False,
+        description="If true, immediately record full payment after issuing",
+    )
+    payment_method: str | None = Field(
+        default=None,
+        description="Payment method when mark_paid=True (e.g. 'cash', 'eftpos', 'bank_transfer')",
+    )
 
     @field_validator("global_vehicle_id", "branch_id", mode="before")
     @classmethod

@@ -1047,7 +1047,15 @@ async def send_quote(
             f"If you have any questions, please don't hesitate to contact us.\n\n"
             f"Kind regards,\n{org_name}\n"
         )
-        msg.attach(MIMEText(body, "plain"))
+
+        # Build HTML body with conditional email signature
+        html_body = body.replace("\n", "<br>")
+        _email_signature_enabled = org_settings.get("email_signature_enabled", False)
+        _email_signature = org_settings.get("email_signature", "") or ""
+        if _email_signature_enabled and _email_signature.strip():
+            html_body += "<hr>" + _email_signature
+
+        msg.attach(MIMEText(html_body, "html"))
 
         pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
         pdf_attachment.add_header(

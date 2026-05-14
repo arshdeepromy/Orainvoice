@@ -224,6 +224,12 @@ class OrgSettingsResponse(BaseModel):
         None, description="Trade category slug (e.g. 'general-automotive', 'plumber')"
     )
 
+    # Invoice settings toggles
+    email_signature_enabled: Optional[bool] = Field(None, description="Enable email signature on outgoing emails")
+    default_notes_enabled: Optional[bool] = Field(None, description="Pre-fill notes on new invoices")
+    payment_terms_enabled: Optional[bool] = Field(None, description="Show payment terms on invoices")
+    terms_and_conditions_enabled: Optional[bool] = Field(None, description="Show T&C on invoices")
+
 
 class OrgSettingsUpdateRequest(BaseModel):
     """PUT /api/v1/org/settings request body.
@@ -354,6 +360,12 @@ class OrgSettingsUpdateRequest(BaseModel):
         max_length=100,
         description="Trade category slug (e.g. 'general-automotive', 'plumber'). Changes the org's trade type.",
     )
+
+    # Invoice settings toggles
+    email_signature_enabled: Optional[bool] = Field(None, description="Enable email signature on outgoing emails")
+    default_notes_enabled: Optional[bool] = Field(None, description="Pre-fill notes on new invoices")
+    payment_terms_enabled: Optional[bool] = Field(None, description="Show payment terms on invoices")
+    terms_and_conditions_enabled: Optional[bool] = Field(None, description="Show T&C on invoices")
 
 
 class OrgSettingsUpdateResponse(BaseModel):

@@ -40,6 +40,7 @@ interface BrandingForm {
   invoice_header_text: string
   invoice_footer_text: string
   email_signature: string
+  email_signature_enabled: boolean
 }
 
 interface GstForm {
@@ -53,8 +54,10 @@ interface InvoiceForm {
   invoice_start_number: number
   default_due_days: number
   default_notes: string
+  default_notes_enabled: boolean
   payment_terms_days: number
   payment_terms_text: string
+  payment_terms_enabled: boolean
   allow_partial_payments: boolean
 }
 
@@ -66,6 +69,7 @@ function BrandingTab() {
     name: '', logo_url: null, primary_colour: '#2563eb', secondary_colour: '#1e40af', sidebar_display_mode: 'icon_and_name',
     address_unit: '', address_street: '', address_city: '', address_state: '', address_country: 'NZ', address_postcode: '',
     website: '', phone: '', email: '', invoice_header_text: '', invoice_footer_text: '', email_signature: '',
+    email_signature_enabled: false,
   })
   const [saving, setSaving] = useState(false)
   const { toasts, addToast, dismissToast } = useToast()
@@ -83,6 +87,7 @@ function BrandingTab() {
         website: data.website || '', phone: data.phone || '', email: data.email || '',
         invoice_header_text: data.invoice_header_text || '', invoice_footer_text: data.invoice_footer_text || '',
         email_signature: data.email_signature || '',
+        email_signature_enabled: data?.email_signature_enabled ?? false,
       })
     })
   }, [])
@@ -206,9 +211,19 @@ function BrandingTab() {
       <Input label="Invoice Header Text" value={form.invoice_header_text} onChange={(e) => update('invoice_header_text', e.target.value)} />
       <Input label="Invoice Footer Text" value={form.invoice_footer_text} onChange={(e) => update('invoice_footer_text', e.target.value)} />
       <div className="flex flex-col gap-1">
-        <label htmlFor="email-sig" className="text-sm font-medium text-gray-700">Email Signature</label>
-        <textarea id="email-sig" rows={3} value={form.email_signature} onChange={(e) => update('email_signature', e.target.value)}
-          className="rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        <div className="flex items-center gap-3 mb-1">
+          <label htmlFor="email-sig-toggle" className="text-sm font-medium text-gray-700">Enable email signature on outgoing emails</label>
+          <button id="email-sig-toggle" role="switch" aria-checked={form.email_signature_enabled}
+            onClick={() => setForm((p) => ({ ...p, email_signature_enabled: !p.email_signature_enabled }))}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${form.email_signature_enabled ? 'bg-blue-600' : 'bg-gray-300'}`}>
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${form.email_signature_enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+        </div>
+        <div className={!form.email_signature_enabled ? 'opacity-50 pointer-events-none' : ''}>
+          <label htmlFor="email-sig" className="text-sm font-medium text-gray-700">Email Signature</label>
+          <textarea id="email-sig" rows={3} value={form.email_signature} onChange={(e) => update('email_signature', e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
       </div>
       <Button onClick={save} loading={saving}>Save Branding</Button>
     </div>
@@ -280,7 +295,8 @@ function GstTab() {
 function InvoiceTab() {
   const [form, setForm] = useState<InvoiceForm>({
     invoice_prefix: 'INV-', invoice_start_number: 1, default_due_days: 14,
-    default_notes: '', payment_terms_days: 14, payment_terms_text: '', allow_partial_payments: false,
+    default_notes: '', default_notes_enabled: false, payment_terms_days: 14, payment_terms_text: '',
+    payment_terms_enabled: true, allow_partial_payments: false,
   })
   const [saving, setSaving] = useState(false)
   const { toasts, addToast, dismissToast } = useToast()
@@ -290,7 +306,9 @@ function InvoiceTab() {
       setForm({
         invoice_prefix: data.invoice_prefix || 'INV-', invoice_start_number: data.invoice_start_number ?? 1,
         default_due_days: data.default_due_days ?? 14, default_notes: data.default_notes || '',
+        default_notes_enabled: data?.default_notes_enabled ?? false,
         payment_terms_days: data.payment_terms_days ?? 14, payment_terms_text: data.payment_terms_text || '',
+        payment_terms_enabled: data?.payment_terms_enabled ?? true,
         allow_partial_payments: data.allow_partial_payments ?? false,
       })
     })
@@ -318,16 +336,34 @@ function InvoiceTab() {
       <Input label="Default Due Days" type="number" min={0} value={String(form.default_due_days)}
         onChange={(e) => setForm((p) => ({ ...p, default_due_days: parseInt(e.target.value) || 0 }))} helperText="Days from issue date" />
       <div className="flex flex-col gap-1">
-        <label htmlFor="default-notes" className="text-sm font-medium text-gray-700">Default Invoice Notes</label>
-        <textarea id="default-notes" rows={3} value={form.default_notes}
-          onChange={(e) => setForm((p) => ({ ...p, default_notes: e.target.value }))}
-          className="rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        <div className="flex items-center gap-3 mb-1">
+          <label htmlFor="default-notes-toggle" className="text-sm font-medium text-gray-700">Pre-fill notes on new invoices</label>
+          <button id="default-notes-toggle" role="switch" aria-checked={form.default_notes_enabled}
+            onClick={() => setForm((p) => ({ ...p, default_notes_enabled: !p.default_notes_enabled }))}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${form.default_notes_enabled ? 'bg-blue-600' : 'bg-gray-300'}`}>
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${form.default_notes_enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+        </div>
+        <div className={!form.default_notes_enabled ? 'opacity-50 pointer-events-none' : ''}>
+          <label htmlFor="default-notes" className="text-sm font-medium text-gray-700">Default Invoice Notes</label>
+          <textarea id="default-notes" rows={3} value={form.default_notes}
+            onChange={(e) => setForm((p) => ({ ...p, default_notes: e.target.value }))}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
       </div>
       <hr className="border-gray-200" />
       <h3 className="text-base font-medium text-gray-900">Payment Terms</h3>
+      <div className="flex items-center gap-3 mb-1">
+        <label htmlFor="payment-terms-toggle" className="text-sm font-medium text-gray-700">Show payment terms on invoices</label>
+        <button id="payment-terms-toggle" role="switch" aria-checked={form.payment_terms_enabled}
+          onClick={() => setForm((p) => ({ ...p, payment_terms_enabled: !p.payment_terms_enabled }))}
+          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${form.payment_terms_enabled ? 'bg-blue-600' : 'bg-gray-300'}`}>
+          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${form.payment_terms_enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+        </button>
+      </div>
       <Input label="Payment Terms (days)" type="number" min={0} value={String(form.payment_terms_days)}
         onChange={(e) => setForm((p) => ({ ...p, payment_terms_days: parseInt(e.target.value) || 0 }))} />
-      <div className="flex flex-col gap-1">
+      <div className={`flex flex-col gap-1 ${!form.payment_terms_enabled ? 'opacity-50 pointer-events-none' : ''}`}>
         <label htmlFor="payment-terms" className="text-sm font-medium text-gray-700">Payment Terms Statement</label>
         <textarea id="payment-terms" rows={2} value={form.payment_terms_text}
           onChange={(e) => setForm((p) => ({ ...p, payment_terms_text: e.target.value }))}
@@ -352,10 +388,12 @@ function InvoiceTab() {
 function TermsTab() {
   const editorRef = useRef<HTMLDivElement>(null)
   const [saving, setSaving] = useState(false)
+  const [termsEnabled, setTermsEnabled] = useState(true)
   const { toasts, addToast, dismissToast } = useToast()
 
   useEffect(() => {
     apiClient.get('/org/settings').then(({ data }) => {
+      setTermsEnabled(data?.terms_and_conditions_enabled ?? true)
       if (editorRef.current && data.terms_and_conditions) {
         editorRef.current.innerHTML = data.terms_and_conditions
       }
@@ -375,7 +413,10 @@ function TermsTab() {
   const save = async () => {
     setSaving(true)
     try {
-      await apiClient.put('/org/settings', { terms_and_conditions: editorRef.current?.innerHTML || '' })
+      await apiClient.put('/org/settings', {
+        terms_and_conditions: editorRef.current?.innerHTML || '',
+        terms_and_conditions_enabled: termsEnabled,
+      })
       addToast('success', 'Terms & Conditions saved')
     } catch {
       addToast('error', 'Failed to save T&C')
@@ -389,16 +430,27 @@ function TermsTab() {
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
       <p className="text-sm text-gray-600">Custom terms and conditions displayed at the bottom of every invoice PDF.</p>
 
-      <div className="flex flex-wrap gap-1 rounded-t-md border border-b-0 border-gray-300 bg-gray-50 p-2" role="toolbar" aria-label="Text formatting">
-        <ToolbarBtn label="Bold" onClick={() => exec('bold')}><strong>B</strong></ToolbarBtn>
-        <ToolbarBtn label="Heading" onClick={() => exec('formatBlock', 'h3')}>H</ToolbarBtn>
-        <ToolbarBtn label="Paragraph" onClick={() => exec('formatBlock', 'p')}>¶</ToolbarBtn>
-        <ToolbarBtn label="Bullet list" onClick={() => exec('insertUnorderedList')}>•</ToolbarBtn>
-        <ToolbarBtn label="Insert link" onClick={insertLink}>🔗</ToolbarBtn>
+      <div className="flex items-center gap-3 mb-1">
+        <label htmlFor="tc-toggle" className="text-sm font-medium text-gray-700">Show terms &amp; conditions on invoices</label>
+        <button id="tc-toggle" role="switch" aria-checked={termsEnabled}
+          onClick={() => setTermsEnabled((prev) => !prev)}
+          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${termsEnabled ? 'bg-blue-600' : 'bg-gray-300'}`}>
+          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${termsEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+        </button>
       </div>
 
-      <div ref={editorRef} contentEditable role="textbox" aria-multiline="true" aria-label="Terms and conditions editor"
-        className="min-h-[200px] rounded-b-md border border-gray-300 p-4 text-gray-900 prose prose-sm max-w-none focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      <div className={!termsEnabled ? 'opacity-50 pointer-events-none' : ''}>
+        <div className="flex flex-wrap gap-1 rounded-t-md border border-b-0 border-gray-300 bg-gray-50 p-2" role="toolbar" aria-label="Text formatting">
+          <ToolbarBtn label="Bold" onClick={() => exec('bold')}><strong>B</strong></ToolbarBtn>
+          <ToolbarBtn label="Heading" onClick={() => exec('formatBlock', 'h3')}>H</ToolbarBtn>
+          <ToolbarBtn label="Paragraph" onClick={() => exec('formatBlock', 'p')}>¶</ToolbarBtn>
+          <ToolbarBtn label="Bullet list" onClick={() => exec('insertUnorderedList')}>•</ToolbarBtn>
+          <ToolbarBtn label="Insert link" onClick={insertLink}>🔗</ToolbarBtn>
+        </div>
+
+        <div ref={editorRef} contentEditable role="textbox" aria-multiline="true" aria-label="Terms and conditions editor"
+          className="min-h-[200px] rounded-b-md border border-gray-300 p-4 text-gray-900 prose prose-sm max-w-none focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
 
       <Button onClick={save} loading={saving}>Save Terms &amp; Conditions</Button>
     </div>
