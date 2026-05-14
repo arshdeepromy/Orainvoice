@@ -36,6 +36,11 @@ interface LinkedVehicle {
   model: string | null
   year: number | null
   colour: string | null
+  odometer?: number | null
+  service_due_date?: string | null
+  wof_expiry?: string | null
+  cof_expiry?: string | null
+  inspection_type?: string | null
 }
 
 interface Vehicle {
@@ -777,9 +782,12 @@ export default function InvoiceCreate() {
         body_type: '',
         fuel_type: '',
         engine_size: '',
-        wof_expiry: null,
+        wof_expiry: v.wof_expiry ?? null,
+        cof_expiry: v.cof_expiry ?? null,
+        inspection_type: v.inspection_type ?? null,
         registration_expiry: null,
-        odometer: null,
+        odometer: v.odometer ?? null,
+        service_due_date: v.service_due_date ?? null,
       })))
       return
     }
@@ -804,9 +812,12 @@ export default function InvoiceCreate() {
             body_type: '',
             fuel_type: '',
             engine_size: '',
-            wof_expiry: null,
+            wof_expiry: v.wof_expiry ?? null,
+            cof_expiry: v.cof_expiry ?? null,
+            inspection_type: v.inspection_type ?? null,
             registration_expiry: null,
-            odometer: null,
+            odometer: v.odometer ?? null,
+            service_due_date: v.service_due_date ?? null,
           })))
         }
       } catch {
@@ -1541,9 +1552,12 @@ export default function InvoiceCreate() {
                       body_type: '',
                       fuel_type: '',
                       engine_size: '',
-                      wof_expiry: null,
+                      wof_expiry: v.wof_expiry ?? null,
+                      cof_expiry: v.cof_expiry ?? null,
+                      inspection_type: v.inspection_type ?? null,
                       registration_expiry: null,
-                      odometer: null,
+                      odometer: v.odometer ?? null,
+                      service_due_date: v.service_due_date ?? null,
                     }])
                   }
                 } : undefined}
@@ -1555,64 +1569,101 @@ export default function InvoiceCreate() {
               <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-700">Vehicles</label>
                 {vehicles.map((v, index) => (
-                  <div key={v.id || index} className="flex items-center gap-2">
-                    <div className="flex-1 rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <span className="font-medium">{v.rego}</span>
+                  <div key={v.id || index} className="flex items-start gap-2">
+                    <div className="flex-1 rounded-lg border border-gray-200 bg-white p-3 text-sm shadow-sm">
+                      {/* Header: Rego + Make/Model */}
+                      <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-100">
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex items-center rounded bg-yellow-100 px-2 py-0.5 text-xs font-bold font-mono text-gray-900">
+                            {v.rego}
+                          </span>
                           {(v.make || v.model) && (
-                            <span className="ml-2 text-gray-500">
+                            <span className="text-sm text-gray-700">
                               {[v.year, v.make, v.model].filter(Boolean).join(' ')}
                             </span>
                           )}
                         </div>
                       </div>
-                      <div className="mt-2">
-                        <div className="flex items-center gap-2">
-                          <label className="text-xs text-gray-500 whitespace-nowrap">New Odo Reading:</label>
+
+                      {/* Helper text */}
+                      <p className="text-xs text-blue-600 bg-blue-50 border border-blue-100 rounded px-2 py-1.5 mb-3">
+                        💡 These fields are pre-filled from last known values. Update them to reflect current readings.
+                      </p>
+
+                      {/* Vertical stack — each field on its own row for clarity */}
+                      <div className="space-y-3">
+                        {/* Odometer */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-xs font-semibold text-gray-700">
+                              Odometer (km)
+                            </label>
+                            {v.odometer != null && v.odometer > 0 && (
+                              <span className="text-[11px] text-gray-500">
+                                Last: <span className="font-semibold text-gray-900">{(v.odometer ?? 0).toLocaleString()} km</span>
+                              </span>
+                            )}
+                          </div>
                           <input
                             type="number"
                             min="0"
-                            placeholder={v.odometer ? `${v.odometer}` : 'km'}
-                            value={v.newOdometer ?? ''}
+                            placeholder="Enter new reading"
+                            value={v.newOdometer ?? v.odometer ?? ''}
                             onChange={(e) => {
                               const val = e.target.value ? Number(e.target.value) : null
                               setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newOdometer: val } : veh))
                             }}
-                            className="w-32 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                           />
-                          <span className="text-xs text-gray-400">Kms</span>
                         </div>
-                        {v.odometer != null && v.odometer > 0 && (
-                          <p className="mt-0.5 ml-[106px] text-xs text-blue-500">
-                            Current: {(v.odometer ?? 0).toLocaleString()} km
-                          </p>
-                        )}
-                      </div>
-                      <div className="mt-2">
-                        <div className="flex items-center gap-2">
-                          <label className="text-xs text-gray-500 whitespace-nowrap">Service Due:</label>
+
+                        {/* Service Due */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-xs font-semibold text-gray-700">
+                              Service Due
+                            </label>
+                            {v.service_due_date && (
+                              <span className="text-[11px] text-gray-500">
+                                Last: <span className="font-semibold text-gray-900">{new Date(v.service_due_date).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                              </span>
+                            )}
+                          </div>
                           <input
                             type="date"
+                            lang="en-NZ"
                             value={v.newServiceDueDate ?? v.service_due_date ?? ''}
                             onChange={(e) => {
                               const val = e.target.value || null
                               setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newServiceDueDate: val } : veh))
                             }}
-                            className="w-40 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                           />
                         </div>
-                        {v.service_due_date && (
-                          <p className="mt-0.5 ml-[106px] text-xs text-blue-500">
-                            Current: {new Date(v.service_due_date).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}
-                          </p>
-                        )}
-                      </div>
-                      <div className="mt-2">
-                        <div className="flex items-center gap-2">
-                          <label className="text-xs text-gray-500 whitespace-nowrap">{getInspectionLabel(v)}:</label>
+
+                        {/* WOF / COF */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-xs font-semibold text-gray-700">
+                              {getInspectionLabel(v)}
+                            </label>
+                            {v.inspection_type === 'cof' ? (
+                              v.cof_expiry && (
+                                <span className="text-[11px] text-gray-500">
+                                  Last: <span className="font-semibold text-gray-900">{new Date(v.cof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                                </span>
+                              )
+                            ) : (
+                              v.wof_expiry && (
+                                <span className="text-[11px] text-gray-500">
+                                  Last: <span className="font-semibold text-gray-900">{new Date(v.wof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                                </span>
+                              )
+                            )}
+                          </div>
                           <input
                             type="date"
+                            lang="en-NZ"
                             value={v.inspection_type === 'cof'
                               ? (v.newCofExpiry ?? v.cof_expiry ?? '')
                               : (v.newWofExpiry ?? v.wof_expiry ?? '')}
@@ -1624,28 +1675,15 @@ export default function InvoiceCreate() {
                                 setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newWofExpiry: val } : veh))
                               }
                             }}
-                            className="w-40 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                           />
                         </div>
-                        {v.inspection_type === 'cof' ? (
-                          v.cof_expiry && (
-                            <p className="mt-0.5 ml-[106px] text-xs text-blue-500">
-                              Current: {new Date(v.cof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}
-                            </p>
-                          )
-                        ) : (
-                          v.wof_expiry && (
-                            <p className="mt-0.5 ml-[106px] text-xs text-blue-500">
-                              Current: {new Date(v.wof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}
-                            </p>
-                          )
-                        )}
                       </div>
                     </div>
                     <button
                       type="button"
                       onClick={() => setVehicles(prev => prev.filter((_, i) => i !== index))}
-                      className="rounded p-1 text-gray-400 hover:text-red-500"
+                      className="mt-2 rounded p-1 text-gray-400 hover:text-red-500"
                       aria-label="Remove vehicle"
                     >
                       <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

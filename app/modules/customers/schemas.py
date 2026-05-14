@@ -312,6 +312,11 @@ class LinkedVehicleSummary(BaseModel):
     model: Optional[str] = Field(None, description="Vehicle model")
     year: Optional[int] = Field(None, description="Vehicle year")
     colour: Optional[str] = Field(None, description="Vehicle colour")
+    odometer: Optional[int] = Field(None, description="Last recorded odometer reading (km)")
+    service_due_date: Optional[str] = Field(None, description="Next service due date (ISO 8601)")
+    wof_expiry: Optional[str] = Field(None, description="WOF expiry date (ISO 8601)")
+    cof_expiry: Optional[str] = Field(None, description="COF expiry date (ISO 8601)")
+    inspection_type: Optional[str] = Field(None, description="'wof' or 'cof' or null")
 
 
 class CustomerSearchResult(BaseModel):

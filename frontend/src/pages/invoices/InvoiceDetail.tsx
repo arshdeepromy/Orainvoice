@@ -5,6 +5,7 @@ import { Button, Badge, Spinner, Modal } from '../../components/ui'
 import { ModuleGate } from '../../components/common/ModuleGate'
 import { useModules } from '../../contexts/ModuleContext'
 import { useTenant } from '../../contexts/TenantContext'
+import { useAuth } from '../../contexts/AuthContext'
 import { CreditNoteModal } from '../../components/invoices/CreditNoteModal'
 import { RefundModal } from '../../components/invoices/RefundModal'
 import {
@@ -88,6 +89,7 @@ interface LineItem {
   warranty_note?: string
   line_total: number
   gst_amount?: number
+  cost_price?: number | null
 }
 
 interface Payment {
@@ -259,8 +261,10 @@ export default function InvoiceDetail() {
   const location = useLocation()
   const { tradeFamily } = useTenant()
   const { isEnabled: isModuleEnabled } = useModules()
+  const { user } = useAuth()
   const smsEnabled = isModuleEnabled('sms')
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+  const canViewMargins = user?.role === 'org_admin' || user?.role === 'global_admin'
 
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -991,6 +995,11 @@ export default function InvoiceDetail() {
                         Discount: {item.discount_type === 'percentage' ? `${item.discount_value}%` : formatNZD(item.discount_value)}
                       </div>
                     )}
+                    {canViewMargins && item.cost_price != null && (
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        Cost: {formatNZD(item.cost_price)} | Margin: {((item.line_total ?? 0) > 0 ? (((item.line_total ?? 0) - (item.cost_price ?? 0) * (item.quantity ?? 0)) / (item.line_total ?? 1) * 100).toFixed(1) : '0.0')}%
+                      </div>
+                    )}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums">
                     {(item.item_type || item.type) === 'labour' ? (item.hours ?? 0) : item.quantity}
@@ -1086,6 +1095,50 @@ export default function InvoiceDetail() {
           </dl>
         </div>
       </section>
+
+      {/* ---- Profit Summary (internal, owner/admin only) ---- */}
+      {canViewMargins && (() => {
+        const totalCost = (invoice.line_items ?? []).reduce((sum, item) => {
+          if (item.cost_price == null) return sum
+          return sum + (item.cost_price ?? 0) * (item.quantity ?? 0)
+        }, 0)
+        const totalRevenue = invoice.subtotal ?? 0
+        const grossProfit = totalRevenue - totalCost
+        const marginPercent = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0
+        const hasCostData = (invoice.line_items ?? []).some(item => item.cost_price != null)
+
+        if (!hasCostData) return null
+
+        return (
+          <section className="mb-6 no-print" data-print-hide>
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 max-w-sm">
+              <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Profit Summary</h2>
+              <dl className="space-y-1 text-sm">
+                <div className="flex justify-between">
+                  <dt className="text-gray-500">Total Cost</dt>
+                  <dd className="text-gray-700 tabular-nums">{formatNZD(totalCost)}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-gray-500">Total Revenue</dt>
+                  <dd className="text-gray-700 tabular-nums">{formatNZD(totalRevenue)}</dd>
+                </div>
+                <div className="flex justify-between border-t border-gray-200 pt-1">
+                  <dt className="text-gray-500 font-medium">Gross Profit</dt>
+                  <dd className={`tabular-nums font-medium ${grossProfit >= 0 ? 'text-green-700' : 'text-red-600'}`}>
+                    {formatNZD(grossProfit)}
+                  </dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-gray-500 font-medium">Margin</dt>
+                  <dd className={`tabular-nums font-medium ${marginPercent >= 0 ? 'text-green-700' : 'text-red-600'}`}>
+                    {marginPercent.toFixed(1)}%
+                  </dd>
+                </div>
+              </dl>
+            </div>
+          </section>
+        )
+      })()}
 
       {/* ---- Notes ---- */}
       {(invoice.notes || invoice.notes_customer || invoice.notes_internal) && (

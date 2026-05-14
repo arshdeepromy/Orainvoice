@@ -2225,29 +2225,19 @@ async def notify_branch_created(
 
     Requirements: 22.1
     """
-    admins = await _get_org_admin_users(db, org_id)
-    sent_count = 0
+    from app.modules.in_app_notifications.service import create_in_app_notification
 
-    for admin in admins:
-        try:
-            await log_email_sent(
-                db,
-                org_id=org_id,
-                recipient=admin["email"],
-                template_type="branch_created",
-                subject=f"New branch added: {branch_name}",
-                status="queued",
-                channel="in_app",
-            )
-            sent_count += 1
-        except Exception:
-            logger.error(
-                "Failed to send branch_created notification to %s",
-                admin["email"],
-                exc_info=True,
-            )
-
-    return sent_count
+    result = await create_in_app_notification(
+        db,
+        org_id=org_id,
+        category="system",
+        severity="info",
+        title=f"New branch added: {branch_name}",
+        audience_roles=["org_admin"],
+        entity_type="branch",
+        entity_id=branch_id,
+    )
+    return 1 if result else 0
 
 
 async def notify_branch_deactivated(
@@ -2268,29 +2258,19 @@ async def notify_branch_deactivated(
     ):
         return 0
 
-    admins = await _get_org_admin_users(db, org_id)
-    sent_count = 0
+    from app.modules.in_app_notifications.service import create_in_app_notification
 
-    for admin in admins:
-        try:
-            await log_email_sent(
-                db,
-                org_id=org_id,
-                recipient=admin["email"],
-                template_type="branch_deactivated",
-                subject=f"Branch deactivated: {branch_name}",
-                status="queued",
-                channel="in_app",
-            )
-            sent_count += 1
-        except Exception:
-            logger.error(
-                "Failed to send branch_deactivated notification to %s",
-                admin["email"],
-                exc_info=True,
-            )
-
-    return sent_count
+    result = await create_in_app_notification(
+        db,
+        org_id=org_id,
+        category="system",
+        severity="info",
+        title=f"Branch deactivated: {branch_name}",
+        audience_roles=["org_admin"],
+        entity_type="branch",
+        entity_id=branch_id,
+    )
+    return 1 if result else 0
 
 
 async def notify_billing_updated(
@@ -2309,29 +2289,18 @@ async def notify_billing_updated(
     ):
         return 0
 
-    admins = await _get_org_admin_users(db, org_id)
-    sent_count = 0
+    from app.modules.in_app_notifications.service import create_in_app_notification
 
-    for admin in admins:
-        try:
-            await log_email_sent(
-                db,
-                org_id=org_id,
-                recipient=admin["email"],
-                template_type="billing_updated",
-                subject=f"Billing updated: new monthly total ${new_monthly_total}",
-                status="queued",
-                channel="in_app",
-            )
-            sent_count += 1
-        except Exception:
-            logger.error(
-                "Failed to send billing_updated notification to %s",
-                admin["email"],
-                exc_info=True,
-            )
-
-    return sent_count
+    result = await create_in_app_notification(
+        db,
+        org_id=org_id,
+        category="system",
+        severity="info",
+        title=f"Billing updated: new monthly total ${new_monthly_total}",
+        body=reason,
+        audience_roles=["org_admin"],
+    )
+    return 1 if result else 0
 
 
 async def notify_stock_transfer_request(
@@ -2353,26 +2322,16 @@ async def notify_stock_transfer_request(
     ):
         return 0
 
-    branch_users = await _get_branch_users(db, org_id, to_branch_id)
-    sent_count = 0
+    from app.modules.in_app_notifications.service import create_in_app_notification
 
-    for user in branch_users:
-        try:
-            await log_email_sent(
-                db,
-                org_id=org_id,
-                recipient=user["email"],
-                template_type="stock_transfer_request",
-                subject=f"Stock transfer request: {quantity} x {product_name} from {from_branch_name}",
-                status="queued",
-                channel="in_app",
-            )
-            sent_count += 1
-        except Exception:
-            logger.error(
-                "Failed to send stock_transfer_request notification to %s",
-                user["email"],
-                exc_info=True,
-            )
-
-    return sent_count
+    result = await create_in_app_notification(
+        db,
+        org_id=org_id,
+        category="system",
+        severity="info",
+        title=f"Stock transfer request: {quantity} x {product_name} from {from_branch_name}",
+        audience_roles=["org_admin"],
+        entity_type="branch",
+        entity_id=to_branch_id,
+    )
+    return 1 if result else 0

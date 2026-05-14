@@ -190,6 +190,7 @@ class LineItemResponse(BaseModel):
     warranty_note: str | None = None
     line_total: Decimal
     sort_order: int
+    cost_price: Decimal | None = None
 
 
 class CustomerSummary(BaseModel):

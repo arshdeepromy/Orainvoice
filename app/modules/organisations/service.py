@@ -223,6 +223,7 @@ SETTINGS_JSONB_KEYS = {
     "invoice_template_colours",
     "portal_token_ttl_days",
     "portal_enabled",
+    "auto_expense_on_stock_purchase",
 }
 
 

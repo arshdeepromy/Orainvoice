@@ -189,6 +189,9 @@ async def submit_demo_request(
             )
             continue
 
+    # NOTE: In-app notification skipped for demo request email failures.
+    # No org_id is available (public form) — failures stay in logs only.
+    # See in-app-notifications spec §4.3 / design §4.2.
     logger.error("All email providers failed for demo request. Last error: %s", last_error)
     return JSONResponse(
         status_code=500,

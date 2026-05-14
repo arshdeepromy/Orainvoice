@@ -2,6 +2,13 @@
 
 All notable changes to OraInvoice are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.7.0] - 2026-05-13
+
+### Added
+- In-app notification inbox: bell badge, dropdown, full inbox page (web), mobile screen and More-tab badge
+- Email-send failures across quotes, invoices, customers, vehicle reports, bookings, payments now surface in the inbox
+- Stock-out alerts on quote acceptance now surface in the inbox; replaces broken `notification_log` insert with `channel='in_app'`
+
 ## [1.6.0] - 2026-05-12
 
 ### Added

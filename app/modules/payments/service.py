@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
+from app.modules.in_app_notifications.service import create_in_app_notification
 from app.modules.invoices.models import Invoice
 from app.modules.invoices.service import _validate_transition
 from app.modules.payments.models import Payment
@@ -494,6 +495,23 @@ async def _send_receipt_email(
             continue
 
     logger.warning("All email providers failed for receipt email (invoice %s)", invoice.id)
+    await create_in_app_notification(
+        db,
+        org_id=invoice.org_id,
+        category="email_failure",
+        severity="error",
+        title=f"Failed to email payment receipt for invoice {inv_number} to {to_email}",
+        body=f"All email providers failed when sending payment receipt to {to_email}."[:1500],
+        link_url=f"/invoices/{invoice.id}",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        audience_roles=["org_admin"],
+        metadata={
+            "recipient_email": to_email,
+            "template_type": "payment_receipt",
+            "error_message": "All email providers failed for receipt email",
+        },
+    )
 
 
 async def handle_stripe_webhook(

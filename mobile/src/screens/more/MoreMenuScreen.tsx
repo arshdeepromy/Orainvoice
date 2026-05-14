@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useModules } from '@/contexts/ModuleContext'
 import { useAuth } from '@/contexts/AuthContext'
+import { useInboxBadge } from '@/hooks/useInboxBadge'
 import type { UserRole } from '@shared/types/auth'
 
 export interface MoreMenuItem {
@@ -191,6 +192,7 @@ export const MORE_MENU_ITEMS: MoreMenuItem[] = [
     iconPath: 'M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9',
     route: '/notifications',
     moduleSlug: '*',
+    roles: ['owner', 'admin', 'salesperson'] as UserRole[],
     category: 'tools',
   },
   {
@@ -244,6 +246,7 @@ export default function MoreMenuScreen() {
   const { isModuleEnabled, tradeFamily } = useModules()
   const { user } = useAuth()
   const userRole = (user?.role ?? 'salesperson') as UserRole
+  const { count: inboxBadgeCount } = useInboxBadge()
 
   const grouped = useMemo(() => {
     const visible = MORE_MENU_ITEMS.filter((item) =>
@@ -277,9 +280,14 @@ export default function MoreMenuScreen() {
                   <button
                     key={item.id}
                     onClick={() => navigate(item.route)}
-                    className="flex min-h-[44px] flex-col items-center justify-center gap-1.5 rounded-xl bg-gray-50 p-3 transition-colors active:bg-gray-100 dark:bg-gray-800 dark:active:bg-gray-700"
+                    className="relative flex min-h-[44px] flex-col items-center justify-center gap-1.5 rounded-xl bg-gray-50 p-3 transition-colors active:bg-gray-100 dark:bg-gray-800 dark:active:bg-gray-700"
                     aria-label={item.label}
                   >
+                    {item.id === 'notifications' && inboxBadgeCount > 0 && (
+                      <span className="absolute right-1.5 top-1.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
+                        {inboxBadgeCount > 99 ? '99+' : inboxBadgeCount}
+                      </span>
+                    )}
                     <svg
                       className="h-6 w-6 text-gray-600 dark:text-gray-300"
                       viewBox="0 0 24 24"

@@ -503,9 +503,40 @@ async def email_service_history_report(
             continue
 
     if used_provider is None:
-        raise ValueError(
-            f"All email providers failed. Last error: {last_error}"
+        error_msg = f"All email providers failed. Last error: {last_error}"
+
+        # Log the failed email attempt for parity with customers pattern
+        from app.modules.notifications.service import log_email_sent
+        try:
+            await log_email_sent(
+                db, org_id=org_id, recipient=recipient_email,
+                template_type="vehicle_report_send", subject=subject,
+                status="failed", error_message=str(last_error),
+            )
+        except Exception:
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Failed to log email failure for vehicle %s", vehicle_id)
+
+        # Create in-app notification for email failure (Req 4.3.1)
+        from app.modules.in_app_notifications.service import create_in_app_notification
+        await create_in_app_notification(
+            db, org_id=org_id,
+            category="email_failure",
+            severity="error",
+            title=f"Failed to email vehicle report {rego} to {recipient_email}",
+            body=str(last_error)[:1500],
+            link_url=f"/vehicles/{vehicle_id}",
+            entity_type="vehicle",
+            entity_id=vehicle_id,
+            audience_roles=["org_admin", "salesperson"],
+            metadata={
+                "recipient_email": recipient_email,
+                "template_type": "vehicle_report_send",
+                "error_message": str(last_error),
+            },
         )
+
+        raise ValueError(error_msg)
 
     # ------------------------------------------------------------------
     # 6. Audit log

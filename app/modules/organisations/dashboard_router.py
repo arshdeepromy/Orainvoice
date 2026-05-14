@@ -90,6 +90,69 @@ async def get_dashboard_widgets(
     return result
 
 
+@router.get(
+    "/widgets/cash-flow",
+    summary="Get cash flow data with configurable time period",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def get_cash_flow_widget(
+    request: Request,
+    period: str = "monthly",  # daily | weekly | monthly
+    days: int = 180,  # lookback days (default 6 months)
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return cash flow data for the specified period.
+
+    - period=daily: group by day, default last 30 days
+    - period=weekly: group by ISO week, default last 90 days
+    - period=monthly: group by month, default last 180 days
+    """
+    org_id = getattr(request.state, "org_id", None)
+    branch_id = getattr(request.state, "branch_id", None)
+
+    if not org_id:
+        return JSONResponse(status_code=400, content={"detail": "Organisation context required"})
+
+    from app.modules.organisations.dashboard_service import get_cash_flow_by_period
+    result = await get_cash_flow_by_period(
+        db, uuid.UUID(str(org_id)),
+        branch_id=branch_id,
+        period=period,
+        days=days,
+    )
+    return result
+
+
+@router.get(
+    "/widgets/recent-invoices",
+    summary="Get recent invoices with profit margin data",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def get_recent_invoices_widget(
+    request: Request,
+    period: str = "monthly",  # daily | weekly | monthly
+    offset: int = 0,
+    limit: int = 5,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return recent invoices for the specified period with cost/margin data."""
+    org_id = getattr(request.state, "org_id", None)
+    branch_id = getattr(request.state, "branch_id", None)
+
+    if not org_id:
+        return JSONResponse(status_code=400, content={"detail": "Organisation context required"})
+
+    from app.modules.organisations.dashboard_service import get_recent_invoices_by_period
+    result = await get_recent_invoices_by_period(
+        db, uuid.UUID(str(org_id)),
+        branch_id=branch_id,
+        period=period,
+        offset=offset,
+        limit=limit,
+    )
+    return result
+
+
 @router.post(
     "/reminders/{reminder_type}/dismiss",
     summary="Dismiss or mark a WOF/service reminder as sent",

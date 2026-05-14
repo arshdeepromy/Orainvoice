@@ -329,6 +329,9 @@ class LineItem(Base):
     line_total: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), nullable=False
     )
+    cost_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
     sort_order: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )

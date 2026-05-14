@@ -1,13 +1,13 @@
 /**
- * Cash Flow Chart Widget
+ * Cash Flow Chart Widget with period selector
  *
- * Renders a bar chart using recharts with monthly revenue (green)
- * and expenses (red) for the last 6 months. X-axis: month names,
- * Y-axis: NZD currency values. Tooltip on hover.
+ * Renders a bar chart with revenue (green) and expenses (red).
+ * Supports daily/weekly/monthly period selection.
  *
  * Requirements: 8.1, 8.2, 8.3, 8.4, 8.5
  */
 
+import { useState, useEffect, useRef } from 'react'
 import {
   BarChart,
   Bar,
@@ -17,6 +17,7 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from 'recharts'
+import apiClient from '@/api/client'
 import { WidgetCard } from './WidgetCard'
 import type { CashFlowMonth, WidgetDataSection } from './types'
 
@@ -24,6 +25,14 @@ interface CashFlowChartWidgetProps {
   data: WidgetDataSection<CashFlowMonth> | undefined | null
   isLoading: boolean
   error: string | null
+}
+
+type Period = 'daily' | 'weekly' | 'monthly'
+
+const PERIOD_CONFIG: Record<Period, { label: string; days: number }> = {
+  daily: { label: 'Daily', days: 30 },
+  weekly: { label: 'Weekly', days: 90 },
+  monthly: { label: 'Monthly', days: 180 },
 }
 
 function ChartIcon({ className }: { className?: string }) {
@@ -64,16 +73,77 @@ function CustomTooltip({ active, payload, label }: CustomTooltipProps) {
   )
 }
 
-export function CashFlowChartWidget({ data, isLoading, error }: CashFlowChartWidgetProps) {
-  const items = data?.items ?? []
+export function CashFlowChartWidget({ data, isLoading: initialLoading, error: initialError }: CashFlowChartWidgetProps) {
+  const [period, setPeriod] = useState<Period>('monthly')
+  const [chartData, setChartData] = useState<CashFlowMonth[]>(data?.items ?? [])
+  const [loading, setLoading] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+  const abortRef = useRef<AbortController>(undefined)
+  const initialDataUsed = useRef(false)
+
+  // Use initial data for monthly (default) on first load
+  useEffect(() => {
+    if (!initialDataUsed.current && (data?.items ?? []).length > 0) {
+      setChartData(data?.items ?? [])
+      initialDataUsed.current = true
+    }
+  }, [data])
+
+  // Fetch when period changes
+  useEffect(() => {
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    const fetchData = async () => {
+      setLoading(true)
+      setFetchError(null)
+      try {
+        const config = PERIOD_CONFIG[period]
+        const res = await apiClient.get<{ items: CashFlowMonth[]; total: number }>(
+          `/dashboard/widgets/cash-flow?period=${period}&days=${config.days}`,
+          { signal: controller.signal },
+        )
+        setChartData(res.data?.items ?? [])
+      } catch (err: unknown) {
+        if ((err as { name?: string })?.name === 'CanceledError') return
+        setFetchError('Failed to load cash flow data')
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
+
+    fetchData()
+    return () => controller.abort()
+  }, [period])
+
+  const items = chartData
+  const isWidgetLoading = initialLoading || loading
+  const widgetError = initialError || fetchError
 
   return (
     <WidgetCard
       title="Cash Flow"
       icon={ChartIcon}
-      isLoading={isLoading}
-      error={error}
+      isLoading={isWidgetLoading}
+      error={widgetError}
     >
+      {/* Period selector */}
+      <div className="flex gap-1 mb-3">
+        {(Object.entries(PERIOD_CONFIG) as [Period, { label: string; days: number }][]).map(([key, config]) => (
+          <button
+            key={key}
+            onClick={() => setPeriod(key)}
+            className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+              period === key
+                ? 'bg-indigo-600 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            {config.label}
+          </button>
+        ))}
+      </div>
+
       {items.length === 0 ? (
         <p className="text-sm text-gray-500">No financial data available</p>
       ) : (

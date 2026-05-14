@@ -19,6 +19,7 @@ import logging
 from app.core.audit import write_audit_log
 from app.modules.bookings.models import Booking
 from app.modules.customers.models import Customer
+from app.modules.in_app_notifications.service import create_in_app_notification
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +445,7 @@ async def create_booking(
             confirmation_sent = await _send_booking_confirmation_email(
                 db,
                 org_id=org_id,
+                booking_id=booking.id,
                 customer_first_name=customer.first_name,
                 customer_email=customer.email,
                 service_type=service_type,
@@ -1098,6 +1100,7 @@ async def _send_booking_confirmation_email(
     db: AsyncSession,
     *,
     org_id: uuid.UUID,
+    booking_id: uuid.UUID,
     customer_first_name: str,
     customer_email: str,
     service_type: str | None,
@@ -1207,4 +1210,16 @@ async def _send_booking_confirmation_email(
             continue
 
     logger.error("All email providers failed for booking confirmation. Last error: %s", last_error)
+    await create_in_app_notification(
+        db, org_id=org_id,
+        category="email_failure",
+        severity="error",
+        title=f"Failed to email booking confirmation to {customer_email}",
+        body=str(last_error)[:1500],
+        link_url=f"/bookings/{booking_id}",
+        entity_type="booking", entity_id=booking_id,
+        audience_roles=["org_admin"],
+        metadata={"recipient_email": customer_email, "template_type": "booking_confirmation",
+                  "error_message": str(last_error)},
+    )
     return False

@@ -218,7 +218,29 @@ async def test_email_provider(
     
     if not to_email:
         return {"success": False, "message": "No recipient email", "error": "Recipient email required"}
-    
+
+    # Brevo & SendGrid: prefer REST API when only an api_key is set, because the
+    # form only collects one credential field. If the user also supplied an
+    # smtp_login, fall through to the SMTP path (with smtp_login as username and
+    # api_key as password) so SMTP keys keep working.
+    api_key = credentials.get('api_key', '')
+    smtp_login = credentials.get('smtp_login', '')
+    if provider_key in ('brevo', 'sendgrid') and api_key and not smtp_login:
+        return await _send_test_via_rest_api(
+            db=db,
+            provider=provider,
+            provider_key=provider_key,
+            api_key=api_key,
+            to_email=to_email,
+            from_email=from_email,
+            from_name=from_name,
+            admin_user_id=admin_user_id,
+            ip_address=ip_address,
+        )
+    if smtp_login:
+        username = smtp_login
+        password = api_key or password
+
     if not smtp_host:
         # Use default hosts for known providers
         default_hosts = {
@@ -287,6 +309,86 @@ If you received this email, your email provider is configured correctly!
     except Exception as e:
         logger.error(f"SMTP error for {provider_key}: {e}")
         return {"success": False, "message": "Failed to send test email", "error": str(e)}
+
+
+async def _send_test_via_rest_api(
+    *,
+    db: AsyncSession,
+    provider: EmailProvider,
+    provider_key: str,
+    api_key: str,
+    to_email: str,
+    from_email: str,
+    from_name: str,
+    admin_user_id: uuid.UUID | None,
+    ip_address: str | None,
+) -> dict:
+    """Send a test email via Brevo or SendGrid REST API."""
+    import httpx
+
+    subject = f"Test Email from {provider.display_name}"
+    text_body = (
+        "This is a test email sent from your email provider configuration.\n\n"
+        f"Provider: {provider.display_name}\n"
+        "Transport: REST API\n\n"
+        "If you received this email, your email provider is configured correctly!"
+    )
+
+    if provider_key == "brevo":
+        url = "https://api.brevo.com/v3/smtp/email"
+        payload = {
+            "sender": {"name": from_name, "email": from_email},
+            "to": [{"email": to_email}],
+            "subject": subject,
+            "textContent": text_body,
+        }
+        headers = {"api-key": api_key, "Content-Type": "application/json"}
+        success_codes = (200, 201)
+    else:  # sendgrid
+        url = "https://api.sendgrid.com/v3/mail/send"
+        payload = {
+            "personalizations": [{"to": [{"email": to_email}]}],
+            "from": {"email": from_email, "name": from_name},
+            "subject": subject,
+            "content": [{"type": "text/plain", "value": text_body}],
+        }
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        success_codes = (200, 202)
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+    except Exception as e:
+        logger.error(f"REST API error for {provider_key}: {e}")
+        return {"success": False, "message": "Failed to send test email", "error": str(e)}
+
+    if resp.status_code in success_codes:
+        await write_audit_log(
+            session=db,
+            org_id=None,
+            user_id=admin_user_id,
+            action="admin.email_provider_test_sent",
+            entity_type="email_provider",
+            entity_id=provider.id,
+            after_value={"provider_key": provider_key, "to_email": to_email, "success": True},
+            ip_address=ip_address,
+        )
+        return {"success": True, "message": f"Test email sent to {to_email}"}
+
+    # 401/403 → auth failure; surface the API's message so the user knows why.
+    body_excerpt = (resp.text or "")[:300]
+    logger.error(f"{provider_key} API {resp.status_code}: {body_excerpt}")
+    if resp.status_code in (401, 403):
+        return {
+            "success": False,
+            "message": "Authentication failed",
+            "error": f"API key rejected ({resp.status_code}): {body_excerpt}",
+        }
+    return {
+        "success": False,
+        "message": "Failed to send test email",
+        "error": f"{provider.display_name} API error {resp.status_code}: {body_excerpt}",
+    }
 
 
 async def update_email_provider_priority(

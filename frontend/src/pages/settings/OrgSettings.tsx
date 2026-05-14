@@ -704,6 +704,59 @@ function PortalTab() {
   )
 }
 
+/* ── Inventory Tab ── */
+
+function InventoryTab() {
+  const [autoExpense, setAutoExpense] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const { toasts, addToast, dismissToast } = useToast()
+
+  useEffect(() => {
+    const controller = new AbortController()
+    apiClient.get('/org/settings', { signal: controller.signal }).then(({ data }) => {
+      setAutoExpense(data?.auto_expense_on_stock_purchase ?? true)
+    }).catch(() => {
+      // ignore abort errors
+    })
+    return () => controller.abort()
+  }, [])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await apiClient.put('/org/settings', { auto_expense_on_stock_purchase: autoExpense })
+      addToast('success', 'Inventory settings saved')
+    } catch {
+      addToast('error', 'Failed to save inventory settings')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
+      <div>
+        <div className="flex items-center gap-3">
+          <label htmlFor="auto-expense-toggle" className="text-sm font-medium text-gray-700">Automatically create expense when adding stock</label>
+          <button id="auto-expense-toggle" role="switch" aria-checked={autoExpense}
+            onClick={() => setAutoExpense((prev) => !prev)}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${autoExpense ? 'bg-blue-600' : 'bg-gray-300'}`}>
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${autoExpense ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+          <span className="text-sm text-gray-600">{autoExpense ? 'Enabled' : 'Disabled'}</span>
+        </div>
+        <p className="text-xs text-gray-500 mt-1">
+          When enabled, adding stock items or positive adjustments with a purchase price will automatically create an expense entry.
+        </p>
+      </div>
+
+      <Button onClick={save} loading={saving}>Save Inventory Settings</Button>
+    </div>
+  )
+}
+
 /* ── Main Export ── */
 
 export function OrgSettings() {
@@ -712,6 +765,7 @@ export function OrgSettings() {
     { id: 'business-type', label: 'Business Type', content: <BusinessTypeTab /> },
     { id: 'gst', label: 'GST', content: <GstTab /> },
     { id: 'invoice', label: 'Invoice', content: <InvoiceTab /> },
+    { id: 'inventory', label: 'Inventory', content: <InventoryTab /> },
     { id: 'terms', label: 'Terms & Conditions', content: <TermsTab /> },
     { id: 'portal', label: 'Portal', content: <PortalTab /> },
   ]

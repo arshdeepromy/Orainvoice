@@ -4887,3 +4887,51 @@ In reality, `sync_public_holidays` performs `DELETE` + `INSERT` + `flush()` + wr
 **Lesson Learned**: Every scheduled task must be audited for DB writes before classifying it as safe for standby execution. The rule is simple: if a task does ANY INSERT, UPDATE, or DELETE, it must be in `WRITE_TASKS`. When in doubt, add it — a task not running on standby is harmless (data comes from replication), but a write task running on both nodes will permanently break replication.
 
 **Related Issues**: None
+
+---
+
+### ISSUE-148: Latent CHECK constraint violation — `notification_log` inserts with `channel='in_app'` would fail at INSERT time
+
+- **Date**: 2026-05-08
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: agent (discovered during in-app-notifications spec implementation)
+- **Regression of**: N/A
+
+**Symptoms**: Latent bug — never triggered in production because the affected code paths were never called with real data. If any of the 6 affected functions were ever invoked, the INSERT into `notification_log` would fail with:
+
+```
+CHECK constraint "ck_notification_log_channel" violated
+DETAIL: Failing row contains (..., 'in_app', ...).
+```
+
+The constraint only allows `channel IN ('email', 'sms')`.
+
+**Root Cause**: Six code sites created `NotificationLog` rows with `channel='in_app'`, which violates the `ck_notification_log_channel` CHECK constraint on the `notification_log` table. The constraint restricts the `channel` column to only `'email'` and `'sms'` values. The `'in_app'` channel was never a valid value for this table.
+
+**Affected code (4 sites in `app/modules/notifications/service.py`)**:
+- Branch admin notification: branch added (~line 2240)
+- Branch admin notification: branch deactivated (~line 2284)
+- Branch admin notification: billing updated (~line 2325)
+- Branch admin notification: stock transfer request (~line 2369)
+
+**Affected code (2 sites in `app/modules/quotes/service.py`)**:
+- Stock reorder alert during `accept_quote_by_token`
+- Stock reorder alert during `convert_quote_to_invoice`
+
+All six sites used `db.add(NotificationLog(... channel="in_app" ...))` which would fail at INSERT time if the functions were ever called.
+
+**Fix Applied**: Replaced all 6 broken `NotificationLog` inserts with calls to `create_in_app_notification()` from the new `app/modules/in_app_notifications/service.py` module. This writes to the dedicated `app_notifications` table (which has no channel constraint) instead of the `notification_log` table.
+
+- Stock-out alert cases: `category="stock_alert"`, severity `"warning"`, audience `["org_admin"]`
+- Branch admin cases: `category="system"`, severity `"info"`, audience `["org_admin"]`
+
+**Files Changed**:
+- `app/modules/notifications/service.py` — removed 4 broken `NotificationLog(channel='in_app')` inserts, replaced with `create_in_app_notification()` calls
+- `app/modules/quotes/service.py` — removed 2 broken `NotificationLog(channel='in_app')` inserts, replaced with `create_in_app_notification()` calls
+
+**Similar Bugs Found & Fixed**: All 6 instances of `channel='in_app'` in the codebase were identified and fixed in one pass. No other `notification_log` inserts use invalid channel values.
+
+**Related Issues**: None
+
+**Spec**: `.kiro/specs/in-app-notifications/` (Tasks 2.1–2.3)

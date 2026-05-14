@@ -264,6 +264,11 @@ async def search_customers(
                         "model": gv.model,
                         "year": gv.year,
                         "colour": gv.colour,
+                        "odometer": gv.odometer_last_recorded,
+                        "service_due_date": gv.service_due_date.isoformat() if gv.service_due_date else None,
+                        "wof_expiry": gv.wof_expiry.isoformat() if gv.wof_expiry else None,
+                        "cof_expiry": gv.cof_expiry.isoformat() if gv.cof_expiry else None,
+                        "inspection_type": gv.inspection_type,
                     })
             cust_dict["linked_vehicles"] = linked_vehicles
         
@@ -791,6 +796,28 @@ async def notify_customer(
                 )
             except Exception:
                 logger.warning("Failed to log email failure for customer %s", customer_id)
+
+            # Create in-app notification for email failure (Req 4.3.1)
+            from app.modules.in_app_notifications.service import create_in_app_notification
+
+            await create_in_app_notification(
+                db,
+                org_id=org_id,
+                category="email_failure",
+                severity="error",
+                title=f"Failed to email customer notification to {customer.email}",
+                body=str(last_error)[:1500],
+                link_url=f"/customers/{customer_id}",
+                entity_type="customer",
+                entity_id=customer_id,
+                audience_roles=["org_admin", "salesperson"],
+                metadata={
+                    "recipient_email": customer.email,
+                    "template_type": "customer_notify",
+                    "error_message": str(last_error),
+                },
+            )
+
             raise ValueError(f"All email providers failed. Last error: {last_error}")
 
     elif channel == "sms":

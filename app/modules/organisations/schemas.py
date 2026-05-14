@@ -211,6 +211,11 @@ class OrgSettingsResponse(BaseModel):
         None, description="Whether the customer portal is enabled for this org (default: true)"
     )
 
+    # Inventory / Expense automation
+    auto_expense_on_stock_purchase: Optional[bool] = Field(
+        None, description="Automatically create expense when adding stock with a purchase price"
+    )
+
     # Trade info (for trade-specific UI gating)
     trade_family: Optional[str] = Field(
         None, description="Trade family slug (e.g. 'automotive-transport', 'plumbing-gas')"
@@ -336,6 +341,11 @@ class OrgSettingsUpdateRequest(BaseModel):
     )
     portal_enabled: Optional[bool] = Field(
         None, description="Whether the customer portal is enabled for this org (default: true)"
+    )
+
+    # Inventory / Expense automation
+    auto_expense_on_stock_purchase: Optional[bool] = Field(
+        None, description="Automatically create expense when adding stock with a purchase price"
     )
 
     # Trade category

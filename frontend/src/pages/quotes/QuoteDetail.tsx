@@ -48,6 +48,14 @@ const PRINT_STYLES = `
   }
   table { page-break-inside: avoid; }
   tr    { page-break-inside: avoid; }
+  .print-balance-bar {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color: #fff !important;
+  }
+  .print-balance-bar * {
+    color: #fff !important;
+  }
   .badge-print {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;

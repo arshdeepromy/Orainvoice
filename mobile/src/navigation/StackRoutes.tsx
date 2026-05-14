@@ -290,6 +290,16 @@ const NotificationPreferencesScreen = lazy(() =>
     default: () => <ScreenPlaceholder name="Notifications" />,
   })),
 )
+const NotificationsScreen = lazy(() =>
+  import('@/screens/notifications/NotificationsScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Notifications Inbox" />,
+  })),
+)
+const NotificationDetailScreen = lazy(() =>
+  import('@/screens/notifications/NotificationDetailScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Notification Detail" />,
+  })),
+)
 
 // POS
 const POSScreen = lazy(() =>
@@ -628,7 +638,9 @@ export function StackRoutes() {
         <Route path="/compliance/upload" element={<AuthGuard><ComplianceUploadScreen /></AuthGuard>} />
         <Route path="/reports" element={<AuthGuard><ReportsMenuScreen /></AuthGuard>} />
         <Route path="/reports/:type" element={<AuthGuard><ReportViewScreen /></AuthGuard>} />
-        <Route path="/notifications" element={<AuthGuard><NotificationPreferencesScreen /></AuthGuard>} />
+        <Route path="/notifications" element={<AuthGuard><NotificationsScreen /></AuthGuard>} />
+        <Route path="/notifications/:id" element={<AuthGuard><NotificationDetailScreen /></AuthGuard>} />
+        <Route path="/notification-preferences" element={<AuthGuard><NotificationPreferencesScreen /></AuthGuard>} />
         <Route path="/pos" element={<AuthGuard><POSScreen /></AuthGuard>} />
         <Route path="/construction/claims" element={<AuthGuard><ProgressClaimListScreen /></AuthGuard>} />
         <Route path="/construction/variations" element={<AuthGuard><VariationListScreen /></AuthGuard>} />

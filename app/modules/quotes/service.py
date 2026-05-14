@@ -1097,9 +1097,40 @@ async def send_quote(
             continue
 
     if used_provider is None:
-        raise ValueError(
-            f"All email providers failed. Last error: {last_error}"
+        error_msg = f"All email providers failed. Last error: {last_error}"
+
+        # Log the failed email attempt for parity with customers pattern
+        from app.modules.notifications.service import log_email_sent
+        try:
+            await log_email_sent(
+                db, org_id=org_id, recipient=recipient_email,
+                template_type="quote_send", subject=f"Quote {quote_dict['quote_number']} from {org_name}",
+                status="failed", error_message=str(last_error),
+            )
+        except Exception:
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Failed to log email failure for quote %s", quote_id)
+
+        # Create in-app notification for email failure (Req 4.3.1)
+        from app.modules.in_app_notifications.service import create_in_app_notification
+        await create_in_app_notification(
+            db, org_id=org_id,
+            category="email_failure",
+            severity="error",
+            title=f"Failed to email quote {quote_dict['quote_number']} to {recipient_email}",
+            body=str(last_error)[:1500],
+            link_url=f"/quotes/{quote_id}",
+            entity_type="quote",
+            entity_id=quote_id,
+            audience_roles=["org_admin", "salesperson"],
+            metadata={
+                "recipient_email": recipient_email,
+                "template_type": "quote_send",
+                "error_message": str(last_error),
+            },
         )
+
+        raise ValueError(error_msg)
 
     # Audit log
     await write_audit_log(
@@ -1234,6 +1265,49 @@ async def convert_quote_to_invoice(
         quote_obj.converted_invoice_id = invoice_dict["id"]
         await db.flush()
 
+    # Check stock availability — alert if items are out of stock
+    stock_alerts = []
+    for li in quote_dict.get("line_items", []):
+        sid = li.get("stock_item_id")
+        if sid:
+            from app.modules.inventory.models import StockItem
+            si_result = await db.execute(
+                select(StockItem).where(StockItem.id == uuid.UUID(str(sid)) if not isinstance(sid, uuid.UUID) else sid)
+            )
+            si = si_result.scalar_one_or_none()
+            if si:
+                available = float(si.current_quantity) - float(si.reserved_quantity)
+                needed = float(li.get("quantity", 0)) if li.get("item_type") != 'labour' else float(li.get("hours") or 0)
+                if available < needed:
+                    stock_alerts.append({
+                        "stock_item_id": str(sid),
+                        "description": li.get("description", "Unknown item"),
+                        "needed": needed,
+                        "available": available,
+                    })
+
+    if stock_alerts:
+        from app.modules.in_app_notifications.service import create_in_app_notification
+        for alert in stock_alerts:
+            await create_in_app_notification(
+                db,
+                org_id=org_id,
+                category="stock_alert",
+                severity="warning",
+                title=f"Restock needed: {alert['description']} (Quote {quote_dict['quote_number']} converted)",
+                audience_roles=["org_admin"],
+                entity_type="quote",
+                entity_id=quote_id,
+                link_url=f"/inventory?search={alert.get('stock_item_id', '')}",
+                metadata={
+                    "stock_item_id": alert["stock_item_id"],
+                    "description": alert["description"],
+                    "needed": alert["needed"],
+                    "available": alert["available"],
+                    "quote_number": quote_dict["quote_number"],
+                },
+            )
+
     # Audit log
     await write_audit_log(
         db,
@@ -1337,6 +1411,64 @@ async def accept_quote_by_token(
 
     quote.converted_invoice_id = invoice_dict["id"]
     await db.flush()
+
+    # Check stock availability for items on the quote — alert if out of stock
+    stock_alerts = []
+    for li in line_items:
+        if li.stock_item_id:
+            from app.modules.inventory.models import StockItem
+            si_result = await db.execute(
+                select(StockItem).where(StockItem.id == li.stock_item_id)
+            )
+            si = si_result.scalar_one_or_none()
+            if si:
+                available = float(si.current_quantity) - float(si.reserved_quantity)
+                needed = float(li.quantity) if li.item_type != 'labour' else float(li.hours or 0)
+                if available < needed:
+                    stock_alerts.append({
+                        "stock_item_id": str(li.stock_item_id),
+                        "description": li.description,
+                        "needed": needed,
+                        "available": available,
+                    })
+
+    # Create in-app notifications for out-of-stock items
+    if stock_alerts:
+        from app.modules.in_app_notifications.service import create_in_app_notification
+        for alert in stock_alerts:
+            await create_in_app_notification(
+                db,
+                org_id=quote.org_id,
+                category="stock_alert",
+                severity="warning",
+                title=f"Restock needed: {alert['description']} (Quote {quote.quote_number} accepted)",
+                audience_roles=["org_admin"],
+                entity_type="quote",
+                entity_id=quote.id,
+                link_url=f"/inventory?search={alert.get('stock_item_id', '')}",
+                metadata={
+                    "stock_item_id": alert["stock_item_id"],
+                    "description": alert["description"],
+                    "needed": alert["needed"],
+                    "available": alert["available"],
+                    "quote_number": quote.quote_number,
+                },
+            )
+
+        # Also log to audit trail for visibility
+        await write_audit_log(
+            session=db,
+            org_id=quote.org_id,
+            user_id=None,
+            action="inventory.restock_alert",
+            entity_type="quote",
+            entity_id=quote.id,
+            after_value={
+                "quote_number": quote.quote_number,
+                "out_of_stock_items": stock_alerts,
+                "message": f"{len(stock_alerts)} item(s) need restocking for accepted quote {quote.quote_number}",
+            },
+        )
 
     # Audit log
     await write_audit_log(

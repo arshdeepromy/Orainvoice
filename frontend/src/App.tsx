@@ -68,6 +68,7 @@ const ReportsPage = lazy(() => import('@/pages/reports/ReportsPage'))
 const OrgSettingsPage = lazy(() => import('@/pages/settings/Settings').then(m => ({ default: m.Settings })))
 const OnlinePaymentsSettings = lazy(() => import('@/pages/settings/OnlinePaymentsSettings'))
 const NotificationsPage = lazy(() => import('@/pages/notifications/NotificationsPage'))
+const InboxPage = lazy(() => import('@/pages/notifications/InboxPage'))
 
 /* Extended org pages */
 const StaffList = lazy(() => import('@/pages/staff/StaffList'))
@@ -416,6 +417,7 @@ function AppRoutes() {
           </Route>
 
           {/* Notifications */}
+          <Route path="/notifications/inbox" element={<SafePage name="notifications-inbox"><InboxPage /></SafePage>} />
           <Route path="/notifications" element={<SafePage name="notifications"><NotificationsPage /></SafePage>} />
 
           {/* Staff */}

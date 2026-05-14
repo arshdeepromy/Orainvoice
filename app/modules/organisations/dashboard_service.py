@@ -277,26 +277,25 @@ async def get_public_holidays(
 async def get_inventory_overview(
     db: AsyncSession, org_id: uuid.UUID, branch_id: uuid.UUID | None = None
 ) -> dict:
-    """Inventory grouped by category with low-stock counts."""
+    """Inventory grouped by catalogue_type with low-stock counts."""
     from sqlalchemy import text as sa_text
-    # products columns: category_id (not category), stock_quantity (not current_stock)
     params: dict = {"org_id": str(org_id)}
     sql = sa_text("""
-        SELECT COALESCE(category_id::text, 'other') AS category,
+        SELECT COALESCE(catalogue_type, 'other') AS category,
                COUNT(*) AS total_count,
-               COUNT(*) FILTER (WHERE stock_quantity <= low_stock_threshold) AS low_stock_count
-        FROM products
+               COUNT(*) FILTER (WHERE current_quantity <= min_threshold) AS low_stock_count
+        FROM stock_items
         WHERE org_id = :org_id
-        GROUP BY COALESCE(category_id::text, 'other')
+        GROUP BY COALESCE(catalogue_type, 'other')
     """)
     if branch_id is not None:
         sql = sa_text("""
-            SELECT COALESCE(category_id::text, 'other') AS category,
+            SELECT COALESCE(catalogue_type, 'other') AS category,
                    COUNT(*) AS total_count,
-                   COUNT(*) FILTER (WHERE stock_quantity <= low_stock_threshold) AS low_stock_count
-            FROM products
-            WHERE org_id = :org_id AND location_id = :branch_id
-            GROUP BY COALESCE(category_id::text, 'other')
+                   COUNT(*) FILTER (WHERE current_quantity <= min_threshold) AS low_stock_count
+            FROM stock_items
+            WHERE org_id = :org_id AND branch_id = :branch_id
+            GROUP BY COALESCE(catalogue_type, 'other')
         """)
         params["branch_id"] = str(branch_id)
 
@@ -370,6 +369,180 @@ async def get_cash_flow(
             "expenses": exp_map.get(m, 0.0),
         })
     return {"items": items, "total": len(items)}
+
+
+async def get_cash_flow_by_period(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
+    period: str = "monthly",
+    days: int = 180,
+) -> dict:
+    """Revenue and expenses grouped by the specified period.
+
+    period: 'daily' | 'weekly' | 'monthly'
+    days: lookback window in days
+    """
+    from sqlalchemy import text as sa_text
+
+    cutoff = date.today() - timedelta(days=days)
+
+    # SQL format strings for each period type
+    if period == "daily":
+        date_format = "YYYY-MM-DD"
+        label_format = "DD Mon"
+        date_col_rev = "created_at::date"
+        date_col_exp = "date"
+    elif period == "weekly":
+        date_format = "IYYY-IW"  # ISO year-week
+        label_format = "IYYY-IW"  # Just use the key as label (W20 2026 style handled in Python)
+        date_col_rev = "created_at"
+        date_col_exp = "date"
+    else:  # monthly (default)
+        date_format = "YYYY-MM"
+        label_format = "Mon YYYY"
+        date_col_rev = "created_at"
+        date_col_exp = "date"
+
+    params: dict = {"org_id": str(org_id), "cutoff": cutoff}
+    branch_filter = ""
+    if branch_id is not None:
+        branch_filter = "AND branch_id = :branch_id"
+        params["branch_id"] = str(branch_id)
+
+    rev_sql = sa_text(f"""
+        SELECT to_char({date_col_rev}, '{date_format}') AS period_key,
+               to_char({date_col_rev}, '{label_format}') AS period_label,
+               COALESCE(SUM(subtotal), 0) AS revenue
+        FROM invoices
+        WHERE org_id = :org_id AND status NOT IN ('voided', 'draft')
+          AND created_at >= :cutoff {branch_filter}
+        GROUP BY to_char({date_col_rev}, '{date_format}'), to_char({date_col_rev}, '{label_format}')
+        ORDER BY to_char({date_col_rev}, '{date_format}')
+    """)
+
+    rev_result = await db.execute(rev_sql, params)
+    rev_rows = {r.period_key: r for r in rev_result.all()}
+
+    # Expenses
+    exp_map: dict[str, float] = {}
+    try:
+        exp_savepoint = await db.begin_nested()
+        try:
+            exp_params: dict = {"org_id": str(org_id), "cutoff": cutoff}
+            exp_branch = ""
+            if branch_id is not None:
+                exp_branch = "AND branch_id = :branch_id"
+                exp_params["branch_id"] = str(branch_id)
+
+            exp_sql = sa_text(f"""
+                SELECT to_char({date_col_exp}, '{date_format}') AS period_key,
+                       COALESCE(SUM(amount), 0) AS expenses
+                FROM expenses
+                WHERE org_id = :org_id AND date >= :cutoff {exp_branch}
+                GROUP BY to_char({date_col_exp}, '{date_format}')
+            """)
+            exp_result = await db.execute(exp_sql, exp_params)
+            exp_map = {r.period_key: float(r.expenses) for r in exp_result.all()}
+        except Exception:
+            await exp_savepoint.rollback()
+    except Exception:
+        pass
+
+    all_keys = sorted(set(list(rev_rows.keys()) + list(exp_map.keys())))
+    items = []
+    for k in all_keys:
+        rev_row = rev_rows.get(k)
+        # Build a human-readable label
+        if rev_row and rev_row.period_label != k:
+            label = rev_row.period_label
+        elif period == "weekly" and "-" in k:
+            # Convert "2026-20" to "W20"
+            parts = k.split("-")
+            label = f"W{parts[1]}" if len(parts) == 2 else k
+        else:
+            label = rev_row.period_label if rev_row else k
+        items.append({
+            "month": k,  # keep "month" key for frontend compat
+            "month_label": label,
+            "revenue": float(rev_row.revenue) if rev_row else 0.0,
+            "expenses": exp_map.get(k, 0.0),
+        })
+
+    return {"items": items, "total": len(items)}
+
+
+async def get_recent_invoices_by_period(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
+    period: str = "monthly",
+    offset: int = 0,
+    limit: int = 5,
+) -> dict:
+    """Recent invoices with profit margin data for the specified period.
+
+    period: 'daily' (last 1 day) | 'weekly' (last 7 days) | 'monthly' (last 30 days)
+    """
+    from sqlalchemy import text as sa_text
+
+    days_map = {"daily": 1, "weekly": 7, "monthly": 30}
+    lookback_days = days_map.get(period, 30)
+    cutoff = date.today() - timedelta(days=lookback_days)
+
+    params: dict = {"org_id": str(org_id), "cutoff": cutoff, "lim": limit, "off": offset}
+    branch_filter = ""
+    if branch_id is not None:
+        branch_filter = "AND i.branch_id = :branch_id"
+        params["branch_id"] = str(branch_id)
+
+    # Count total matching invoices
+    count_sql = sa_text(f"""
+        SELECT COUNT(*) FROM invoices i
+        WHERE i.org_id = :org_id AND i.status NOT IN ('voided', 'draft')
+          AND i.created_at >= :cutoff {branch_filter}
+    """)
+    count_result = await db.execute(count_sql, params)
+    total = count_result.scalar() or 0
+
+    # Fetch invoices with line item cost data for margin calculation
+    sql = sa_text(f"""
+        SELECT i.id, i.invoice_number, i.status, i.created_at,
+               i.subtotal, i.total,
+               COALESCE(c.display_name, c.first_name || ' ' || COALESCE(c.last_name, '')) AS customer_name,
+               (SELECT COALESCE(SUM(li.cost_price * li.quantity), 0)
+                FROM line_items li WHERE li.invoice_id = i.id AND li.cost_price IS NOT NULL) AS total_cost
+        FROM invoices i
+        LEFT JOIN customers c ON i.customer_id = c.id
+        WHERE i.org_id = :org_id AND i.status NOT IN ('voided', 'draft')
+          AND i.created_at >= :cutoff {branch_filter}
+        ORDER BY i.created_at DESC
+        LIMIT :lim OFFSET :off
+    """)
+
+    result = await db.execute(sql, params)
+    rows = result.all()
+
+    items = []
+    for r in rows:
+        revenue = float(r.subtotal or 0)
+        cost = float(r.total_cost or 0)
+        profit = revenue - cost
+        margin_pct = (profit / revenue * 100) if revenue > 0 else None
+        items.append({
+            "id": str(r.id),
+            "invoice_number": r.invoice_number or "DRAFT",
+            "customer_name": (r.customer_name or "").strip() or "Unknown",
+            "status": r.status,
+            "date": r.created_at.strftime("%d %b %Y") if r.created_at else "",
+            "total": float(r.total or 0),
+            "revenue": revenue,
+            "cost": cost,
+            "profit": profit,
+            "margin_pct": round(margin_pct, 1) if margin_pct is not None else None,
+        })
+
+    return {"items": items, "total": int(total)}
 
 
 async def get_recent_claims(

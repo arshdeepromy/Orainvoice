@@ -119,12 +119,17 @@ async def create_stock_item_endpoint(
             content={"detail": "Organisation context required"},
         )
 
+    branch_id = getattr(request.state, "branch_id", None)
+    if branch_id and isinstance(branch_id, str):
+        branch_id = uuid.UUID(branch_id)
+
     try:
         return await create_stock_item(
             db,
             org_id=org_uuid,
             user_id=user_uuid,
             payload=payload,
+            branch_id=branch_id,
         )
     except ValueError as exc:
         error_msg = str(exc)

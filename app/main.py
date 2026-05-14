@@ -209,6 +209,7 @@ def create_app() -> FastAPI:
     from app.modules.banking import models as _banking_models  # noqa: F401
     from app.modules.tax_wallets import models as _tax_wallet_models  # noqa: F401
     from app.modules.ird import models as _ird_models  # noqa: F401
+    from app.modules.in_app_notifications import models as _in_app_notif_models  # noqa: F401
 
     # Force SQLAlchemy to resolve all relationship references now,
     # while all models are loaded. This prevents lazy mapper configuration
@@ -264,6 +265,8 @@ def create_app() -> FastAPI:
     app.include_router(service_types_router, prefix="/api/v1/service-types", tags=["service-types"])
     app.include_router(storage_router, prefix="/api/v1/storage", tags=["storage"])
     app.include_router(notifications_router, prefix="/api/v1/notifications", tags=["notifications"])
+    from app.modules.in_app_notifications.router import router as in_app_notifications_router
+    app.include_router(in_app_notifications_router, prefix="/api/v1/notifications", tags=["in-app-notifications"])
     app.include_router(quotes_router, prefix="/api/v1/quotes", tags=["quotes"])
     from app.modules.quotes.attachment_router import router as quote_attachment_router
     app.include_router(quote_attachment_router, prefix="/api/v1/quotes", tags=["quotes"])
@@ -529,6 +532,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(notif_admin_router, prefix="/api/v2/admin/notifications", tags=["v2-admin-notifications"])
     app.include_router(notif_org_router, prefix="/api/v2/notifications", tags=["v2-notifications"])
+    app.include_router(in_app_notifications_router, prefix="/api/v2/notifications", tags=["v2-in-app-notifications"])
 
     # --- Migration tool routers ---
     from app.modules.admin.migration_router import router as migration_router

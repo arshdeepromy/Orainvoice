@@ -73,6 +73,19 @@ export interface ReminderConfig {
   service_days: number;
 }
 
+export interface RecentInvoiceItem {
+  id: string;
+  invoice_number: string;
+  customer_name: string;
+  status: string;
+  date: string;
+  total: number;
+  revenue: number;
+  cost: number;
+  profit: number;
+  margin_pct: number | null;
+}
+
 // ---------------------------------------------------------------------------
 // Container interfaces
 // ---------------------------------------------------------------------------

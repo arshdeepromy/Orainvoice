@@ -25,7 +25,8 @@ interface EmailProvider {
 
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string; placeholder: string; type?: string; isSelect?: boolean; options?: string[] }[]> = {
   brevo: [
-    { key: 'api_key', label: 'SMTP Key / API Key', placeholder: 'xkeysib-...', type: 'password' },
+    { key: 'api_key', label: 'SMTP Key or API Key', placeholder: 'xkeysib-... (API key) or your SMTP key', type: 'password' },
+    { key: 'smtp_login', label: 'SMTP Login (only if using SMTP key)', placeholder: 'e.g. 9xxxxxx001@smtp-brevo.com — leave blank if using API key' },
     { key: 'from_email', label: 'From Email', placeholder: 'noreply@yourdomain.com' },
     { key: 'from_name', label: 'From Name', placeholder: 'My App' },
   ],

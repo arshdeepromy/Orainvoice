@@ -487,6 +487,9 @@ async def _send_permanent_lockout_email(email: str) -> None:
                 )
                 continue
 
+        # NOTE: In-app notification skipped for auth email failures in v1.
+        # Auth flows run on sessions without org_id context.
+        # Known limitation — see in-app-notifications design §4.2.
         logger.warning(
             "All email providers failed for lockout email to %s: %s",
             email, last_error,
@@ -2597,6 +2600,9 @@ async def _send_invitation_email(
             )
             continue
 
+    # NOTE: In-app notification skipped for auth email failures in v1.
+    # Auth flows run on sessions without org_id context.
+    # Known limitation — see in-app-notifications design §4.2.
     logger.warning(
         "All email providers failed for invite to %s: %s (token: %s...)",
         email, last_error, token[:8],
@@ -2874,6 +2880,9 @@ async def send_verification_email(
             )
             continue
 
+    # NOTE: In-app notification skipped for auth email failures in v1.
+    # Auth flows run on sessions without org_id context.
+    # Known limitation — see in-app-notifications design §4.2.
     logger.warning(
         "All email providers failed for verification email to %s: %s (token: %s...)",
         email, last_error, verification_token[:8],
@@ -3142,6 +3151,9 @@ async def send_receipt_email(
             )
             continue
 
+    # NOTE: In-app notification skipped for auth email failures in v1.
+    # Auth flows run on sessions without org_id context.
+    # Known limitation — see in-app-notifications design §4.2.
     logger.warning(
         "All email providers failed for receipt email to %s: %s (token: %s...)",
         email, last_error, verification_token[:8],

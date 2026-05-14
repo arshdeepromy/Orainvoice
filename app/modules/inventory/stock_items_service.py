@@ -9,8 +9,10 @@ Requirements: 1.1, 1.2, 1.3, 5.5, 5.6, 6.1, 6.4, 7.3, 8.4, 9.1, 9.2, 9.3, 9.5,
 
 from __future__ import annotations
 
+import logging
 import uuid
-from decimal import Decimal
+from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,10 +33,145 @@ from app.modules.inventory.stock_items_schemas import (
 from app.modules.stock.models import StockMovement
 from app.modules.suppliers.models import Supplier
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _resolve_gst_mode(catalogue_item) -> str:
+    """Resolve GST mode from a catalogue item (PartsCatalogue or FluidOilProduct).
+
+    Priority:
+    1. catalogue_item.gst_mode (if explicitly set)
+    2. catalogue_item.is_gst_exempt → "exempt"
+    3. catalogue_item.gst_inclusive → "inclusive"
+    4. Default → "exclusive"
+    """
+    gst_mode = getattr(catalogue_item, "gst_mode", None)
+    if gst_mode is not None:
+        return gst_mode
+    if getattr(catalogue_item, "is_gst_exempt", False):
+        return "exempt"
+    if getattr(catalogue_item, "gst_inclusive", False):
+        return "inclusive"
+    return "exclusive"
+
+
+def _calculate_tax_amount(amount: Decimal, gst_mode: str) -> tuple[Decimal, bool]:
+    """Calculate tax_amount and tax_inclusive flag for a given amount and GST mode.
+
+    Returns: (tax_amount, tax_inclusive)
+    - "inclusive": tax_amount = amount × 3 / 23, tax_inclusive = True
+    - "exclusive": tax_amount = amount × 0.15, tax_inclusive = False
+    - "exempt": tax_amount = 0, tax_inclusive = False
+    """
+    two_dp = Decimal("0.01")
+    if gst_mode == "inclusive":
+        tax = (amount * Decimal("3") / Decimal("23")).quantize(
+            two_dp, rounding=ROUND_HALF_UP
+        )
+        return tax, True
+    elif gst_mode == "exclusive":
+        tax = (amount * Decimal("0.15")).quantize(two_dp, rounding=ROUND_HALF_UP)
+        return tax, False
+    else:  # exempt
+        return Decimal("0"), False
+
+
+async def _maybe_create_stock_expense(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    stock_item: StockItem,
+    movement: StockMovement,
+    catalogue_item,  # PartsCatalogue | FluidOilProduct
+    quantity: Decimal,
+    description: str,
+) -> None:
+    """Create an auto-expense for a stock purchase/adjustment if conditions are met.
+
+    Conditions:
+    1. stock_item.purchase_price is not None and > 0
+    2. org setting auto_expense_on_stock_purchase is True (or absent → default True)
+    3. movement.reference_id is not already set (idempotency guard)
+
+    On failure: logs warning, does NOT raise.
+    """
+    # 1. Idempotency guard: if movement.reference_id is set, return early
+    if movement.reference_id is not None:
+        return
+
+    # 2. Check stock_item.purchase_price is not None and > 0
+    if stock_item.purchase_price is None or stock_item.purchase_price <= 0:
+        return
+
+    try:
+        # 3. Fetch org settings, check auto_expense_on_stock_purchase (default True if absent)
+        from app.modules.organisations.service import get_org_settings
+
+        settings = await get_org_settings(db, org_id=org_id)
+        auto_expense_enabled = settings.get("auto_expense_on_stock_purchase", True)
+        if auto_expense_enabled is False:
+            return
+
+        # 4. Resolve GST mode
+        gst_mode = _resolve_gst_mode(catalogue_item)
+
+        # 5. Calculate amount = purchase_price × quantity
+        amount = stock_item.purchase_price * quantity
+
+        # 6. Calculate tax_amount and tax_inclusive
+        tax_amount, tax_inclusive = _calculate_tax_amount(amount, gst_mode)
+
+        # 7. Build ExpenseCreate payload
+        from app.modules.expenses.schemas import ExpenseCreate
+        from app.modules.expenses.service import ExpenseService
+
+        # Resolve item name for notes
+        item_name = ""
+        if hasattr(catalogue_item, "name"):
+            item_name = catalogue_item.name or ""
+        elif hasattr(catalogue_item, "product_name"):
+            item_name = catalogue_item.product_name or ""
+
+        payload = ExpenseCreate(
+            date=date.today(),
+            description=description,
+            amount=amount,
+            tax_amount=tax_amount,
+            tax_inclusive=tax_inclusive,
+            category="materials",
+            expense_type="expense",
+            reference_number=f"SM:{movement.id}",
+            notes=f"Auto-created for stock item: {item_name} (id: {stock_item.id})",
+        )
+
+        # 8. Call ExpenseService to create the expense
+        expense = await ExpenseService(db).create_expense(
+            org_id,
+            payload,
+            created_by=user_id,
+            branch_id=stock_item.branch_id,
+        )
+
+        # 9. Set movement.reference_id and reference_type
+        movement.reference_id = expense.id
+        movement.reference_type = "expense"
+
+        # 10. Flush to persist the movement linkage
+        await db.flush()
+
+    except Exception as exc:
+        logger.warning(
+            "Auto-expense creation failed for stock_item %s, movement %s: %s",
+            stock_item.id,
+            movement.id,
+            exc,
+        )
 
 
 def _resolve_catalogue_query(
@@ -217,14 +354,7 @@ async def list_stock_items(
                 part_number = cat.part_number
                 brand = cat.brand
                 # Resolve GST mode from catalogue fields
-                gst_mode = getattr(cat, "gst_mode", None)
-                if gst_mode is None:
-                    if getattr(cat, "is_gst_exempt", False):
-                        gst_mode = "exempt"
-                    elif getattr(cat, "gst_inclusive", False):
-                        gst_mode = "inclusive"
-                    else:
-                        gst_mode = "exclusive"
+                gst_mode = _resolve_gst_mode(cat)
                 # Build tyre size subtitle
                 if si.catalogue_type == "tyre":
                     tyre_parts = []
@@ -249,7 +379,7 @@ async def list_stock_items(
                 item_name = _fluid_display_name(cat_fluid)
                 part_number = None  # fluids don't have part numbers
                 brand = cat_fluid.brand_name
-                gst_mode = getattr(cat_fluid, "gst_mode", None) or "exclusive"
+                gst_mode = _resolve_gst_mode(cat_fluid)
 
         supplier_name = suppliers_map.get(si.supplier_id) if si.supplier_id else None
 
@@ -282,6 +412,7 @@ async def create_stock_item(
     org_id: uuid.UUID,
     user_id: uuid.UUID,
     payload: CreateStockItemRequest,
+    branch_id: uuid.UUID | None = None,
 ) -> StockItemResponse:
     """Create a new stock item from a catalogue item.
 
@@ -332,6 +463,7 @@ async def create_stock_item(
         location=payload.location,
         created_by=user_id,
     )
+    stock_item.branch_id = branch_id
     db.add(stock_item)
     await db.flush()
 
@@ -347,6 +479,19 @@ async def create_stock_item(
     )
     db.add(movement)
     await db.flush()
+
+    # 5b. Auto-create expense for stock purchase
+    item_name_for_expense = getattr(catalogue_item, "name", None) or getattr(catalogue_item, "product_name", "") or ""
+    await _maybe_create_stock_expense(
+        db,
+        org_id=org_id,
+        user_id=user_id,
+        stock_item=stock_item,
+        movement=movement,
+        catalogue_item=catalogue_item,
+        quantity=Decimal(str(payload.quantity)),
+        description=f"Inventory purchase: {payload.quantity}x {item_name_for_expense}",
+    )
 
     # 6. Build response with catalogue data
     item_name = ""
@@ -452,7 +597,9 @@ async def delete_stock_item(
 ) -> None:
     """Remove a stock item from inventory.
 
-    Requirements: 1.4
+    Flags linked expenses (appends " [Stock item deleted]" to notes) before deletion.
+
+    Requirements: 1.4, 8.1, 8.2, 8.3, 8.4
     """
     result = await db.execute(
         select(StockItem).where(
@@ -463,6 +610,29 @@ async def delete_stock_item(
     stock_item = result.scalar_one_or_none()
     if stock_item is None:
         raise ValueError("Stock item not found")
+
+    # Flag linked expenses before deletion
+    linked_movements_result = await db.execute(
+        select(StockMovement).where(
+            StockMovement.stock_item_id == stock_item.id,
+            StockMovement.reference_type == "expense",
+            StockMovement.reference_id.isnot(None),
+        )
+    )
+    linked_movements = linked_movements_result.scalars().all()
+
+    if linked_movements:
+        from app.modules.expenses.models import Expense
+
+        for mov in linked_movements:
+            expense_result = await db.execute(
+                select(Expense).where(Expense.id == mov.reference_id)
+            )
+            expense = expense_result.scalar_one_or_none()
+            if expense:
+                expense.notes = (expense.notes or "") + " [Stock item deleted]"
+
+        await db.flush()
 
     await db.delete(stock_item)
     await db.flush()
@@ -506,6 +676,26 @@ async def adjust_stock_item(
     )
     db.add(movement)
     await db.flush()
+
+    # Auto-create expense for positive stock adjustment
+    if payload.quantity_change > 0:
+        # Load catalogue item for GST resolution
+        cat_query = _resolve_catalogue_query(stock_item.catalogue_type, stock_item.catalogue_item_id)
+        cat_result = await db.execute(cat_query)
+        catalogue_item = cat_result.scalar_one_or_none()
+
+        if catalogue_item:
+            item_name = getattr(catalogue_item, "name", None) or getattr(catalogue_item, "product_name", "") or ""
+            await _maybe_create_stock_expense(
+                db,
+                org_id=org_id,
+                user_id=user_id,
+                stock_item=stock_item,
+                movement=movement,
+                catalogue_item=catalogue_item,
+                quantity=Decimal(str(payload.quantity_change)),
+                description=f"Stock adjustment: +{payload.quantity_change}x {item_name}",
+            )
 
     return {
         "stock_item_id": str(stock_item.id),

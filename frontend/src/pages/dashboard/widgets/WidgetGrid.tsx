@@ -37,6 +37,7 @@ import { RecentClaimsWidget } from './RecentClaimsWidget'
 import { ActiveStaffWidget } from './ActiveStaffWidget'
 import { ExpiryRemindersWidget } from './ExpiryRemindersWidget'
 import { ReminderConfigWidget } from './ReminderConfigWidget'
+import { RecentInvoicesWidget } from './RecentInvoicesWidget'
 import type { DashboardWidgetData } from './types'
 
 // ---------------------------------------------------------------------------
@@ -65,10 +66,11 @@ const WIDGET_DEFINITIONS: WidgetDef[] = [
   { id: 'public-holidays', title: 'Upcoming Public Holidays', defaultOrder: 3 },
   { id: 'inventory-overview', title: 'Inventory Overview', module: 'inventory', defaultOrder: 4 },
   { id: 'cash-flow', title: 'Cash Flow', defaultOrder: 5 },
-  { id: 'recent-claims', title: 'Recent Claims', module: 'claims', defaultOrder: 6 },
-  { id: 'active-staff', title: 'Active Staff', defaultOrder: 7 },
-  { id: 'expiry-reminders', title: 'WOF / Service Expiry Reminders', module: 'vehicles', defaultOrder: 8 },
-  { id: 'reminder-config', title: 'Reminder Configuration', module: 'vehicles', defaultOrder: 9 },
+  { id: 'recent-invoices', title: 'Recent Invoices', defaultOrder: 6 },
+  { id: 'recent-claims', title: 'Recent Claims', module: 'claims', defaultOrder: 7 },
+  { id: 'active-staff', title: 'Active Staff', defaultOrder: 8 },
+  { id: 'expiry-reminders', title: 'WOF / Service Expiry Reminders', module: 'vehicles', defaultOrder: 9 },
+  { id: 'reminder-config', title: 'Reminder Configuration', module: 'vehicles', defaultOrder: 10 },
 ]
 
 // ---------------------------------------------------------------------------
@@ -163,6 +165,13 @@ function renderWidget(
       return (
         <CashFlowChartWidget
           data={data?.cash_flow}
+          isLoading={isLoading}
+          error={error}
+        />
+      )
+    case 'recent-invoices':
+      return (
+        <RecentInvoicesWidget
           isLoading={isLoading}
           error={error}
         />

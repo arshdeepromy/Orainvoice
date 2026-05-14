@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react'
 import { Tabbar, TabbarLink } from 'konsta/react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useModules } from '@/contexts/ModuleContext'
+import { useInboxBadge } from '@/hooks/useInboxBadge'
 import {
   buildTabs,
   JOBS_TAB,
@@ -36,6 +37,30 @@ function TabIcon({ d }: { d: string }) {
 export { HOME_TAB, INVOICES_TAB, CUSTOMERS_TAB, JOBS_TAB, QUOTES_TAB, BOOKINGS_TAB, REPORTS_TAB, MORE_TAB }
 export { buildTabs, resolveFourthTab } from '@/navigation/TabConfig'
 
+// ─── Badge icon wrapper ─────────────────────────────────────────────────────
+
+/**
+ * Wraps a tab icon with a small red notification badge dot.
+ * Shown on the More tab when unread notification count > 0.
+ *
+ * Requirements: 7.3
+ */
+function TabIconWithBadge({ d, count }: { d: string; count: number }) {
+  return (
+    <span className="relative inline-flex">
+      <TabIcon d={d} />
+      {count > 0 && (
+        <span
+          className="absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-500 px-0.5 text-[10px] font-bold leading-none text-white"
+          data-testid="more-tab-badge"
+        >
+          {count > 99 ? '99+' : count}
+        </span>
+      )}
+    </span>
+  )
+}
+
 // ─── KonstaTabbar component ─────────────────────────────────────────────────
 
 /**
@@ -49,12 +74,16 @@ export { buildTabs, resolveFourthTab } from '@/navigation/TabConfig'
  * The `onMorePress` callback is invoked when the More tab is tapped,
  * allowing the parent to open the MoreDrawer (task 3.4).
  *
- * Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8
+ * The More tab displays an unread notification badge when count > 0,
+ * powered by the useInboxBadge hook (polls every 30s).
+ *
+ * Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 7.3
  */
 export function KonstaTabbar({ onMorePress }: { onMorePress?: () => void }) {
   const navigate = useNavigate()
   const location = useLocation()
   const { enabledModules } = useModules()
+  const { count: inboxCount } = useInboxBadge()
 
   const tabs = useMemo(() => buildTabs(enabledModules), [enabledModules])
 
@@ -88,7 +117,13 @@ export function KonstaTabbar({ onMorePress }: { onMorePress?: () => void }) {
         <TabbarLink
           key={tab.id}
           active={isTabActive(tab)}
-          icon={<TabIcon d={tab.iconPath} />}
+          icon={
+            tab.id === 'more' ? (
+              <TabIconWithBadge d={tab.iconPath} count={inboxCount} />
+            ) : (
+              <TabIcon d={tab.iconPath} />
+            )
+          }
           label={tab.label}
           onClick={() => handleTabPress(tab)}
           data-testid={`tab-${tab.id}`}

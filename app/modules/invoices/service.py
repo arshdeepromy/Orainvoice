@@ -682,6 +682,53 @@ async def create_invoice(
             except Exception:
                 pass
 
+    # Capture cost_price snapshot for internal profit/margin tracking
+    from app.modules.inventory.models import StockItem
+    from app.modules.catalogue.models import PartsCatalogue
+    from app.modules.catalogue.fluid_oil_models import FluidOilProduct
+    for li_data, li in zip(items, created_line_items):
+        try:
+            stock_item_id = li_data.get("stock_item_id")
+            if stock_item_id:
+                sid = uuid.UUID(str(stock_item_id))
+                si_result = await db.execute(
+                    select(StockItem).where(StockItem.id == sid)
+                )
+                si = si_result.scalar_one_or_none()
+                if si:
+                    li.cost_price = (
+                        Decimal(str(si.purchase_price)).quantize(TWO_PLACES)
+                        if si.purchase_price is not None
+                        else (
+                            Decimal(str(si.cost_per_unit)).quantize(TWO_PLACES)
+                            if si.cost_per_unit is not None
+                            else None
+                        )
+                    )
+            elif li.catalogue_item_id:
+                # Try PartsCatalogue first, then FluidOilProduct
+                cat_result = await db.execute(
+                    select(PartsCatalogue).where(
+                        PartsCatalogue.id == li.catalogue_item_id
+                    )
+                )
+                cat = cat_result.scalar_one_or_none()
+                if cat and cat.purchase_price is not None:
+                    li.cost_price = Decimal(str(cat.purchase_price)).quantize(TWO_PLACES)
+                else:
+                    fluid_result = await db.execute(
+                        select(FluidOilProduct).where(
+                            FluidOilProduct.id == li.catalogue_item_id
+                        )
+                    )
+                    fluid = fluid_result.scalar_one_or_none()
+                    if fluid and fluid.purchase_price is not None:
+                        li.cost_price = Decimal(str(fluid.purchase_price)).quantize(TWO_PLACES)
+        except Exception:
+            # Never fail invoice creation because of a cost lookup failure
+            pass
+    await db.flush()
+
     # Process fluid/oil usage — reserve for drafts, decrement for issued
     fluid_usage_records = []
     if fluid_usage_data:
@@ -962,6 +1009,7 @@ def _line_item_to_dict(li: LineItem) -> dict:
         "warranty_note": li.warranty_note,
         "line_total": li.line_total,
         "sort_order": li.sort_order,
+        "cost_price": li.cost_price,
     }
 
 
@@ -1111,6 +1159,48 @@ async def add_line_item(
     )
     db.add(li)
     await db.flush()
+
+    # Capture cost_price snapshot for internal profit/margin tracking
+    stock_item_id = item_data.get("stock_item_id")
+    try:
+        if stock_item_id:
+            from app.modules.inventory.models import StockItem
+            sid = uuid.UUID(str(stock_item_id))
+            si_result = await db.execute(
+                select(StockItem).where(StockItem.id == sid)
+            )
+            si = si_result.scalar_one_or_none()
+            if si:
+                li.cost_price = (
+                    Decimal(str(si.purchase_price)).quantize(TWO_PLACES)
+                    if si.purchase_price is not None
+                    else (
+                        Decimal(str(si.cost_per_unit)).quantize(TWO_PLACES)
+                        if si.cost_per_unit is not None
+                        else None
+                    )
+                )
+                li.stock_item_id = sid
+        elif catalogue_item_id:
+            from app.modules.catalogue.models import PartsCatalogue
+            from app.modules.catalogue.fluid_oil_models import FluidOilProduct
+            cat_result = await db.execute(
+                select(PartsCatalogue).where(PartsCatalogue.id == catalogue_item_id)
+            )
+            cat = cat_result.scalar_one_or_none()
+            if cat and cat.purchase_price is not None:
+                li.cost_price = Decimal(str(cat.purchase_price)).quantize(TWO_PLACES)
+            else:
+                fluid_result = await db.execute(
+                    select(FluidOilProduct).where(FluidOilProduct.id == catalogue_item_id)
+                )
+                fluid = fluid_result.scalar_one_or_none()
+                if fluid and fluid.purchase_price is not None:
+                    li.cost_price = Decimal(str(fluid.purchase_price)).quantize(TWO_PLACES)
+        if li.cost_price is not None:
+            await db.flush()
+    except Exception:
+        pass
 
     result = await _recalculate_invoice(db, invoice, org_id)
 
@@ -3905,9 +3995,39 @@ async def email_invoice(
             continue
 
     if used_provider is None:
-        raise ValueError(
-            f"All email providers failed. Last error: {last_error}"
+        error_msg = f"All email providers failed. Last error: {last_error}"
+
+        # Log the failed email attempt for parity with customers pattern
+        from app.modules.notifications.service import log_email_sent as _log_email_sent
+        try:
+            await _log_email_sent(
+                db, org_id=org_id, recipient=recipient_email,
+                template_type="invoice_send", subject=f"Invoice {inv_number} from {org_name}",
+                status="failed", error_message=str(last_error),
+            )
+        except Exception:
+            logger.warning("Failed to log email failure for invoice %s", invoice_id)
+
+        # Create in-app notification for email failure (Req 4.3.1)
+        from app.modules.in_app_notifications.service import create_in_app_notification
+        await create_in_app_notification(
+            db, org_id=org_id,
+            category="email_failure",
+            severity="error",
+            title=f"Failed to email invoice {inv_number} to {recipient_email}",
+            body=str(last_error)[:1500],
+            link_url=f"/invoices/{invoice_id}",
+            entity_type="invoice",
+            entity_id=invoice_id,
+            audience_roles=["org_admin", "salesperson"],
+            metadata={
+                "recipient_email": recipient_email,
+                "template_type": "invoice_send",
+                "error_message": str(last_error),
+            },
         )
+
+        raise ValueError(error_msg)
 
     # Auto-issue the invoice if it's still a draft
     inv_result = await db.execute(
@@ -4079,7 +4199,38 @@ async def send_payment_reminder(
                 continue
 
         if used_provider is None:
-            raise ValueError(f"All email providers failed. Last error: {last_error}")
+            error_msg = f"All email providers failed. Last error: {last_error}"
+
+            # Log the failed email attempt for parity with customers pattern
+            try:
+                await log_email_sent(
+                    db, org_id=org_id, recipient=customer.email,
+                    template_type="payment_reminder", subject=subject,
+                    status="failed", error_message=str(last_error),
+                )
+            except Exception:
+                logger.warning("Failed to log email failure for payment reminder invoice %s", invoice_id)
+
+            # Create in-app notification for email failure (Req 4.3.1)
+            from app.modules.in_app_notifications.service import create_in_app_notification
+            await create_in_app_notification(
+                db, org_id=org_id,
+                category="email_failure",
+                severity="error",
+                title=f"Failed to email payment reminder for {inv_number} to {customer.email}",
+                body=str(last_error)[:1500],
+                link_url=f"/invoices/{invoice_id}",
+                entity_type="invoice",
+                entity_id=invoice_id,
+                audience_roles=["org_admin", "salesperson"],
+                metadata={
+                    "recipient_email": customer.email,
+                    "template_type": "payment_reminder",
+                    "error_message": str(last_error),
+                },
+            )
+
+            raise ValueError(error_msg)
 
         await log_email_sent(
             db,

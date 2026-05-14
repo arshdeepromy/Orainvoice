@@ -28,6 +28,10 @@ vi.mock('@/contexts/ModuleContext', () => ({
   useModules: () => mockUseModules(),
 }))
 
+vi.mock('@/hooks/useInboxBadge', () => ({
+  useInboxBadge: () => ({ count: 0 }),
+}))
+
 function renderTabbar(
   route = '/dashboard',
   onMorePress?: () => void,

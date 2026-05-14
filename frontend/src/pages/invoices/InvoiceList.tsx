@@ -4,6 +4,7 @@ import apiClient from '../../api/client'
 import { Button, Spinner, Modal, Badge } from '../../components/ui'
 import { useTenant } from '@/contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
+import { useAuth } from '@/contexts/AuthContext'
 import { checkNavigationGuard } from '@/utils/navigationGuard'
 import { CreditNoteModal } from '../../components/invoices/CreditNoteModal'
 import { RefundModal } from '../../components/invoices/RefundModal'
@@ -100,6 +101,7 @@ interface LineItem {
   warranty_note?: string
   line_total: number
   gst_amount?: number
+  cost_price?: number | null
 }
 
 interface PaymentRecord {
@@ -381,8 +383,10 @@ export default function InvoiceList() {
   const isCreating = location.pathname === '/invoices/new'
   const { tradeFamily } = useTenant()
   const { branches: branchList, selectedBranchId } = useBranch()
+  const { user } = useAuth()
   // Null tradeFamily treated as automotive for backward compat
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+  const canViewMargins = user?.role === 'org_admin' || user?.role === 'global_admin'
 
   /* --- List state --- */
   const [searchQuery, setSearchQuery] = useState('')
@@ -1533,6 +1537,11 @@ export default function InvoiceList() {
                               {item.warranty_note && (
                                 <p className="text-xs text-blue-500 mt-0.5">Warranty: {item.warranty_note}</p>
                               )}
+                              {canViewMargins && item.cost_price != null && (
+                                <div className="text-xs text-gray-500 mt-0.5 no-print">
+                                  Cost: {formatNZDUtil(item.cost_price)} | Margin: {((item.line_total ?? 0) > 0 ? (((item.line_total ?? 0) - (item.cost_price ?? 0) * (item.quantity ?? 0)) / (item.line_total ?? 1) * 100).toFixed(1) : '0.0')}%
+                                </div>
+                              )}
                             </td>
                             <td className={`px-4 ${templateStyles.layoutType === 'compact' ? 'py-1.5' : 'py-3'} text-sm text-gray-900 text-right tabular-nums`}>
                               {(item.item_type || item.type) === 'labour' ? Number(item.hours ?? 0).toFixed(2) : Number(item.quantity).toFixed(2)}
@@ -1632,6 +1641,44 @@ export default function InvoiceList() {
                       </div>
                     </div>
                   </div>
+
+                  {/* Profit Summary (internal, owner/admin only) */}
+                  {canViewMargins && (() => {
+                    const totalCost = (invoice.line_items ?? []).reduce((sum: number, item: LineItem) => {
+                      if (item.cost_price == null) return sum
+                      return sum + (item.cost_price ?? 0) * (item.quantity ?? 0)
+                    }, 0)
+                    const totalRevenue = invoice.subtotal ?? 0
+                    const grossProfit = totalRevenue - totalCost
+                    const marginPercent = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0
+                    const hasCostData = (invoice.line_items ?? []).some((item: LineItem) => item.cost_price != null)
+                    if (!hasCostData) return null
+                    return (
+                      <div className="relative z-10 px-8 pb-4 no-print" data-print-hide>
+                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 max-w-xs">
+                          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Profit Summary</h3>
+                          <dl className="space-y-1 text-sm">
+                            <div className="flex justify-between">
+                              <dt className="text-gray-500">Total Cost</dt>
+                              <dd className="text-gray-700 tabular-nums">{formatNZDUtil(totalCost)}</dd>
+                            </div>
+                            <div className="flex justify-between">
+                              <dt className="text-gray-500">Revenue</dt>
+                              <dd className="text-gray-700 tabular-nums">{formatNZDUtil(totalRevenue)}</dd>
+                            </div>
+                            <div className="flex justify-between border-t border-gray-200 pt-1">
+                              <dt className="text-gray-500 font-medium">Gross Profit</dt>
+                              <dd className={`tabular-nums font-medium ${grossProfit >= 0 ? 'text-green-700' : 'text-red-600'}`}>{formatNZDUtil(grossProfit)}</dd>
+                            </div>
+                            <div className="flex justify-between">
+                              <dt className="text-gray-500 font-medium">Margin</dt>
+                              <dd className={`tabular-nums font-medium ${marginPercent >= 0 ? 'text-green-700' : 'text-red-600'}`}>{marginPercent.toFixed(1)}%</dd>
+                            </div>
+                          </dl>
+                        </div>
+                      </div>
+                    )
+                  })()}
 
                   {/* Notes & footer */}
                   <div className="relative z-10 px-8 pb-8">

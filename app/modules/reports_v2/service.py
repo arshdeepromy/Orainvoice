@@ -348,6 +348,24 @@ class ReportService:
             except (ImportError, ConnectionError, OSError) as exc:
                 logger.warning("Failed to fetch job revenue for job %s: %s", job.id, exc)
 
+            # Material cost from line item cost_price snapshots
+            try:
+                from app.modules.invoices.models import Invoice, LineItem
+                mat_stmt = select(
+                    func.coalesce(
+                        func.sum(LineItem.cost_price * LineItem.quantity), 0
+                    )
+                ).join(Invoice, Invoice.id == LineItem.invoice_id).where(
+                    Invoice.org_id == org_id,
+                    Invoice.job_id == job.id,
+                    Invoice.status.in_(["issued", "paid", "partially_paid"]),
+                    LineItem.cost_price.isnot(None),
+                    LineItem.item_type != "labour",
+                )
+                material = Decimal(str((await self.db.execute(mat_stmt)).scalar() or 0))
+            except (ImportError, ConnectionError, OSError) as exc:
+                logger.warning("Failed to fetch job material costs for job %s: %s", job.id, exc)
+
             # Labour from time entries
             try:
                 from app.modules.time_tracking_v2.models import TimeEntry
