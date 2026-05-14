@@ -5,10 +5,11 @@ Requirements: 27.1, 27.2, 27.3
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +121,52 @@ class ServiceUpdateResponse(BaseModel):
 
 
 # ===========================================================================
+# Package Component schema — Requirements: 7.2, 7.3
+# ===========================================================================
+
+
+class PackageComponent(BaseModel):
+    """A single inventory component within a service package.
+
+    Requirements: 7.2, 7.3
+    """
+
+    catalogue_item_id: uuid.UUID = Field(
+        ..., description="UUID of the part or fluid product"
+    )
+    catalogue_type: Literal["part", "tyre", "fluid"] = Field(
+        ..., description="Component type"
+    )
+    quantity: int | None = Field(
+        None, description="Quantity for parts/tyres (>= 1)"
+    )
+    volume: float | None = Field(
+        None, description="Volume in litres for fluids (> 0)"
+    )
+    cost_per_unit_snapshot: float | None = Field(
+        None, description="Cost per unit at time of package creation"
+    )
+    fluid_type: str | None = Field(None, description="oil or non-oil")
+    oil_type: str | None = Field(None, description="Engine, hydraulic, etc.")
+    grade: str | None = Field(None, description="Oil grade e.g. 5W-30")
+
+    @model_validator(mode="after")
+    def validate_quantity_or_volume(self) -> "PackageComponent":
+        """Parts/tyres require quantity >= 1; fluids require volume > 0."""
+        if self.catalogue_type in ("part", "tyre"):
+            if self.quantity is None or self.quantity < 1:
+                raise ValueError(
+                    f"quantity must be >= 1 for catalogue_type '{self.catalogue_type}'"
+                )
+        elif self.catalogue_type == "fluid":
+            if self.volume is None or self.volume <= 0:
+                raise ValueError(
+                    "volume must be > 0 for catalogue_type 'fluid'"
+                )
+        return self
+
+
+# ===========================================================================
 # Items Catalogue schemas — Requirements: 7.3, 7.4, 7.5
 # ===========================================================================
 
@@ -149,6 +196,21 @@ class ItemCreateRequest(BaseModel):
         None, max_length=100, description="Free-text category"
     )
     is_active: bool = Field(True, description="Whether the item is active")
+    is_package: bool = Field(
+        False, description="True if this item is a service package"
+    )
+    package_components: list[PackageComponent] | None = Field(
+        None, description="List of inventory components for the package"
+    )
+
+    @model_validator(mode="after")
+    def validate_package_consistency(self) -> "ItemCreateRequest":
+        """If package_components is non-empty, is_package must be true."""
+        if self.package_components and not self.is_package:
+            raise ValueError(
+                "is_package must be true when package_components is provided"
+            )
+        return self
 
 
 class ItemUpdateRequest(BaseModel):
@@ -179,6 +241,21 @@ class ItemUpdateRequest(BaseModel):
     is_active: Optional[bool] = Field(
         None, description="Active/inactive toggle"
     )
+    is_package: Optional[bool] = Field(
+        None, description="True if this item is a service package"
+    )
+    package_components: list[PackageComponent] | None = Field(
+        None, description="List of inventory components for the package"
+    )
+
+    @model_validator(mode="after")
+    def validate_package_consistency(self) -> "ItemUpdateRequest":
+        """If package_components is non-empty, is_package must be true."""
+        if self.package_components and self.is_package is False:
+            raise ValueError(
+                "is_package must be true when package_components is provided"
+            )
+        return self
 
 
 class ItemResponse(BaseModel):
@@ -195,6 +272,19 @@ class ItemResponse(BaseModel):
     gst_inclusive: bool = Field(False, description="Price includes GST")
     category: Optional[str] = Field(None, description="Free-text category")
     is_active: bool = Field(True, description="Active/inactive status")
+    is_package: bool = Field(False, description="True if this item is a service package")
+    package_components: list[dict] | None = Field(
+        None, description="Package component metadata (JSONB)"
+    )
+    package_cost: float | None = Field(
+        None, description="Total package cost (admin roles only)"
+    )
+    package_profit: float | None = Field(
+        None, description="Package profit: sell price minus cost (admin roles only)"
+    )
+    has_unavailable_components: bool = Field(
+        False, description="True if any component is deactivated/unavailable"
+    )
     created_at: str = Field(..., description="ISO 8601 creation timestamp")
     updated_at: str = Field(..., description="ISO 8601 last update timestamp")
 

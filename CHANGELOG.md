@@ -1,153 +1,57 @@
 # Changelog
 
-All notable changes to OraInvoice are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
+All notable changes to OraInvoice are documented in this file.
 
-## [1.7.0] - 2026-05-13
+---
 
-### Added
-- In-app notification inbox: bell badge, dropdown, full inbox page (web), mobile screen and More-tab badge
-- Email-send failures across quotes, invoices, customers, vehicle reports, bookings, payments now surface in the inbox
-- Stock-out alerts on quote acceptance now surface in the inbox; replaces broken `notification_log` insert with `channel='in_app'`
-
-## [1.6.0] - 2026-05-12
+## [1.8.0] — 2026-05-08
 
 ### Added
-- Mobile: `QuotePDFScreen` at `/quotes/:id/pdf` — full-screen PDF preview
-- Mobile: `QuoteDetailScreen` — Preview PDF hero button
-- Mobile: `QuoteDetailScreen` action sheet — Download PDF and Print items
-- Mobile: `QuoteDetailScreen` — attachments carousel with inline camera upload and draft-only delete
-- Quotes: Order number field (PO/reference number) on create and detail views
-- Quotes: Salesperson dropdown with auto-populated org staff list
-- Quotes: GST-inclusive line items with back-calculation (unit_price = inclusive_price / 1.15)
-- Quotes: Multi-vehicle support (additional vehicles section, JSONB storage)
-- Quotes: Fluid usage tracking (non-billable, automotive-gated)
-- Quotes: File attachments (upload, list, download, delete) — mirrors invoice attachments
-- Quotes: "Save terms as default" checkbox persists T&C to org settings
-- Quotes: 📎 attachment count badge on quote list view
-- Quotes: PDF download and Print buttons per row in quote list
-- Quotes: `QuoteAttachmentList` component on quote detail (conditional on attachment_count > 0)
-- Quotes: `QuoteMultiVehicleSection` component for multi-vehicle entry
-- Quotes: `InventoryPickerModal` for adding stock items as line items
-- Quotes: Inline fluid usage section (add/remove, litres tracking)
-- Quotes: GST number read-only display from org settings
-- Backend: `POST/GET/GET/DELETE /api/v1/quotes/{id}/attachments` endpoints
-- Backend: `quote_attachments` table with RLS and HA publication (migration 0184)
-- Backend: Property tests for GST-inclusive round-trip (CP-3) and migration reversibility (CP-4)
 
-### Changed
-- `quotes` table: added `order_number`, `salesperson_id`, `additional_vehicles` (JSONB), `fluid_usage` (JSONB)
-- `quote_line_items` table: added `catalogue_item_id`, `stock_item_id`, `gst_inclusive`, `inclusive_price`, `tax_rate`
-- Quotes router: passes all parity fields from payload to service (create + update)
-- QuoteCreate payload extended with new fields (additive, backward-compatible)
-- QuoteResponse schema extended with `order_number`, `salesperson_name`, `additional_vehicles`, `fluid_usage`, `attachment_count`
-- QuoteSearchResult schema extended with `attachment_count`
+- **Service Package Builder** — bundled service items that combine labour with inventory components (parts, fluids, tyres). Includes live cost calculation, profit tracking, invoice integration with automatic inventory deduction, and property-based test coverage.
+  - Database: `is_package` and `package_components` JSONB columns on `items_catalogue`
+  - Backend: package CRUD, cost resolution from live stock prices, component search endpoints, duplication support
+  - Frontend: PackageBuilder component with inventory type selectors, fluid cascading dropdowns, cost summary (admin-only), package preview with stock warnings
+  - Invoice integration: automatic inventory deduction on issue, fluid usage recording, snapshot cost fallback for unavailable components
+  - Access control: cost/profit data restricted to admin roles
+  - Module gating: requires both `vehicles` and `inventory` modules enabled
+  - 18 property-based tests (Hypothesis) covering cost calculation, persistence, role gating, and inventory deduction correctness
+  - Integration tests covering full lifecycle, invoice deduction, quote safety, and access control
 
-## [1.5.0] - 2026-05-12
+---
+
+## [1.7.0] — 2026-05-01
 
 ### Added
-- Quotes: Download PDF button on quote detail page
-- Quotes: Browser print button with print-optimised layout on quote detail page
-- Quotes: `GET /api/v1/quotes/{id}/pdf` backend endpoint (inline disposition, matches invoice PDF)
-- Quotes: Copy Link button on quote detail page (surfaces acceptance_token public URL)
 
-### Changed
-- mobile: version bumped to 1.5.0 (no functional change) to align with backend + frontend
+- Kiosk vehicle check-in multi-step flow (rego → vehicle summary → customer details)
+- COF (Certificate of Fitness) expiry support alongside WOF
 
-## [1.4.0] - 2026-05-08
+---
+
+## [1.6.0] — 2026-04-15
 
 ### Added
-- COF (Certificate of Fitness) expiry support alongside existing WOF system
-  - CarJam integration: parses `expiry_date_of_last_successful_cof` and `subject_to_cof` fields, derives `inspection_type` ("wof"/"cof"/null)
-  - Database: migration 0181 adds `cof_expiry` (DATE) and `inspection_type` (VARCHAR(3)) to `global_vehicles` and `org_vehicles`
-  - Backend schemas: COF fields added to vehicle, kiosk, invoice, portal, and notification schemas
-  - Vehicle service: lookup, refresh, and manual creation all map COF fields
-  - Invoice service: accepts `vehicle_cof_expiry_date` to update COF expiry on vehicle records
-  - Notifications: `cof_expiry_reminder` template type with email/SMS support, dedup, and preference gating
-  - Dashboard: upcoming expirations widget includes COF vehicles with correct "cof" label
-  - Frontend helpers: `getInspectionLabel()` and `getInspectionExpiry()` for dynamic WOF/COF display
-  - Frontend: all 12 vehicle display components use dynamic labels (kiosk, profile, list, invoices, portal, search)
-  - Manual vehicle entry: inspection type selector (WOF/COF) with dynamic expiry input
-  - Customer reminders: COF expiry toggle alongside WOF in customer notification preferences
-  - Bulk import: preview table shows COF Expiry and Inspection Type columns
-- Kiosk vehicle check-in: odometer source constraint updated to include 'kiosk' (migration 0182)
 
-## [1.2.0] - 2026-04-28
+- Xero accounting integration with webhooks and auto-sync
+- Branch management and stock transfers
+
+---
+
+## [1.5.0] — 2026-04-01
 
 ### Added
-- Public landing page at `/` for unauthenticated visitors — hero section, 8 feature categories (26 features), pricing card ($60/month Mech Pro Plan), testimonials, CTA, responsive from 320px to 1920px
-- Public privacy policy page at `/privacy` — full NZ Privacy Act 2020 compliant default policy covering all 13 IPPs, with admin-editable custom content via Markdown
-- Public supported trades page at `/trades` — Automotive & Transport, General Invoicing (available), Plumbing & Gas, Electrical & Mechanical (coming soon)
-- Demo request flow: `POST /api/v1/public/demo-request` with honeypot bot filtering, Redis rate limiting (5/hr/IP), SMTP email failover
-- Privacy policy admin editor: new "Privacy Policy" tab in Global Admin Settings with Markdown editor, preview, and reset to default
-- Privacy policy API: `GET /api/v1/public/privacy-policy` (public) and `PUT /api/v1/admin/privacy-policy` (global_admin)
-- Dark mode logo support: new `dark_logo_url` field in platform branding — upload via admin branding page, automatically used on dark/coloured backgrounds (landing page header, admin sidebar preview), regular logo used on light backgrounds
-- Migration 0164: add `dark_logo_url` column to `platform_branding`
-- Shared public page components: LandingHeader (sticky nav, mobile hamburger), LandingFooter (4-column responsive), DemoRequestModal (form with honeypot)
-- Landing page module: `app/modules/landing/` with router, schemas, public + admin endpoints
-- Plumbing service types: trade-family-gated service type management
-- Job card attachments: file upload/download for job cards
-- Job card invoice appendix: HTML snapshot of job card appended to invoice PDF
-- 44 backend tests for landing page (unit, integration, RBAC, validation)
-- 4 property-based tests (Hypothesis, 100 examples each): demo form validation, rate limiting, honeypot rejection, privacy policy round-trip
 
-### Fixed
-- ISSUE-144: `get_todays_bookings` referenced non-existent `bookings.customer_id` column — crashed entire dashboard widgets endpoint. Fixed to use `b.customer_name` directly.
-- ISSUE-145: Rate limiter `except Exception` handler called `self.app()` a second time after response already sent — caused ASGI double-response crash. Fixed to `raise` instead of retrying.
-- Public pages unable to scroll due to global `overflow: hidden` on html/body/#root — added `public-page` CSS class override applied by each public page on mount
-- Landing page logo too small (h-8 → h-12)
-- Mech Pro Plan price corrected from $99 to $60 NZD/month excluding GST
+- HA replication between Pi primary and local standby nodes
+- Claims and scheduling modules
 
-## [1.1.1] - 2026-04-28
+---
 
-### Fixed
-- Invoice vehicle FK fix: `create_invoice()` no longer crashes with `ForeignKeyViolationError` when creating invoices with org-scoped vehicles. Added `_resolve_vehicle_type()` helper that checks `global_vehicles` first, then `org_vehicles`, and routes linking/metadata logic to the correct table.
-- Invoice vehicle FK fix: `update_invoice()` now correctly updates `org_vehicles` metadata (service_due_date, wof_expiry) instead of silently skipping when the vehicle is org-scoped.
-- Invoice vehicle FK fix: duplicate-link detection now works for org vehicles (queries `org_vehicle_id` column instead of only `global_vehicle_id`).
-- Invoice vehicle FK fix: odometer recording for org vehicles updates `OrgVehicle.odometer_last_recorded` directly (bypasses `record_odometer_reading()` which only supports global vehicles).
-- Items catalogue GST badge: table now correctly shows "Incl." / "Excl." / "Exempt" instead of showing "Incl." for all non-exempt items. Added missing `gst_inclusive` field to the frontend `Item` interface.
-
-## [1.1.0] - 2026-04-26
+## [1.4.0] — 2026-03-15
 
 ### Added
-- Setup guide: question-driven module onboarding replacing wizard step 5
-  - Backend: migration 0158 (setup_question columns + seed data), schemas, router with 6 correctness properties
-  - Frontend: WelcomeScreen, QuestionCard, SummaryScreen, SetupGuide page
-  - 26 property-based tests, 10 unit tests, 18 integration tests
-  - Steering doc for future module developers
-  - Settings re-run button + user menu link
-- Mobile dashboard: Zoho-style redesign with quick actions, receivables summary, aging chart, recent transactions tabs, income/expense chart, top expenses
-- Mobile customer list: avatar initials with colored backgrounds, Active/Unpaid/All filter tabs, receivables/credits per customer, FAB button
-- Mobile customer profile: quick action circles (Call/Mail/Message/More), financial summary, billing/shipping addresses, primary contact, More bottom sheet, Edit button
-- Mobile customer edit screen: type toggle, salutation, name fields, payment terms, sends only changed fields
-- Setup wizard auto-redirect for new org admins on first login
-- Migration 0159: backfill wizard_completed=true for existing orgs (safe prod deploy)
-- Expenses page: list-first layout with "+ Expense" modal containing all three tabs
-- Setup Guide link in top-right user menu for org admins
-- Versioning steering doc and CHANGELOG
 
-### Changed
-- Setup wizard: removed Country/Trade steps (captured during signup, no longer needed)
-- Setup wizard: structured address fields (unit, street, city, state, postcode) matching Settings page
-- Setup wizard ReadyStep fetches real org data from backend instead of local state
-- Expense modal widened to max-w-3xl for proper form display
-- NZ IRD validation: accepts 8-9 digits with auto-dash formatting as user types
-- Watch-build.sh: disabled aggressive stale asset cleanup that was deleting lazy-loaded chunks
-
-### Fixed
-- ISSUE-113: v2 double-prefix bug in 16 files (setup wizard + inventory pages)
-- Setup wizard country defaults crash from double-encoded JSONB tax rates
-- CataloguePage corrupted import statement
-- Setup wizard step key mismatch (step_X_complete vs step_X in progress response)
-- JSONB merge syntax error (::jsonb cast vs CAST() for asyncpg compatibility)
-- Expense form: hidden Customer Name, Projects, Billable fields (features not yet complete)
-
-## [1.0.0] - 2026-04-08
-
-### Notes
-- Initial production release
-- 132 database tables, 112 issues tracked and resolved
-- Full invoicing, quoting, job management, inventory, POS, scheduling, staff, bookings
-- Multi-org, multi-branch, role-based access, trade-family gating
-- Stripe billing, Xero accounting integration, SMS via Connexus
-- Mobile app (Capacitor) with offline support
-- HA replication between Pi primary and local standby
+- Initial production deployment
+- Multi-tenant invoicing, quoting, customer management
+- Role-based access control with JWT + Firebase auth
+- Stripe billing integration

@@ -150,6 +150,8 @@ interface InvoiceDetail {
   org_phone?: string
   org_email?: string
   org_gst_number?: string
+  fluid_usage?: { stock_item_id: string; item_name: string; litres: number; cost_per_litre?: number | null; total_cost?: number | null }[]
+  fluid_cost_total?: number
 }
 
 /* ------------------------------------------------------------------ */
@@ -1101,11 +1103,11 @@ export default function InvoiceDetail() {
         const totalCost = (invoice.line_items ?? []).reduce((sum, item) => {
           if (item.cost_price == null) return sum
           return sum + (item.cost_price ?? 0) * (item.quantity ?? 0)
-        }, 0)
+        }, 0) + (invoice.fluid_cost_total ?? 0)
         const totalRevenue = invoice.subtotal ?? 0
         const grossProfit = totalRevenue - totalCost
         const marginPercent = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0
-        const hasCostData = (invoice.line_items ?? []).some(item => item.cost_price != null)
+        const hasCostData = (invoice.line_items ?? []).some(item => item.cost_price != null) || (invoice.fluid_cost_total ?? 0) > 0
 
         if (!hasCostData) return null
 
@@ -1118,6 +1120,12 @@ export default function InvoiceDetail() {
                   <dt className="text-gray-500">Total Cost</dt>
                   <dd className="text-gray-700 tabular-nums">{formatNZD(totalCost)}</dd>
                 </div>
+                {(invoice.fluid_cost_total ?? 0) > 0 && (
+                  <div className="flex justify-between">
+                    <dt className="text-gray-500 text-xs">incl. fluid cost</dt>
+                    <dd className="text-gray-500 tabular-nums text-xs">{formatNZD(invoice.fluid_cost_total ?? 0)}</dd>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <dt className="text-gray-500">Total Revenue</dt>
                   <dd className="text-gray-700 tabular-nums">{formatNZD(totalRevenue)}</dd>

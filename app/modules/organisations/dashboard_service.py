@@ -511,7 +511,12 @@ async def get_recent_invoices_by_period(
                i.subtotal, i.total,
                COALESCE(c.display_name, c.first_name || ' ' || COALESCE(c.last_name, '')) AS customer_name,
                (SELECT COALESCE(SUM(li.cost_price * li.quantity), 0)
-                FROM line_items li WHERE li.invoice_id = i.id AND li.cost_price IS NOT NULL) AS total_cost
+                FROM line_items li WHERE li.invoice_id = i.id AND li.cost_price IS NOT NULL) AS total_cost,
+               COALESCE(
+                   (SELECT SUM((elem->>'total_cost')::numeric)
+                    FROM jsonb_array_elements(i.invoice_data_json->'fluid_usage') AS elem
+                    WHERE elem->>'total_cost' IS NOT NULL), 0
+               ) AS fluid_cost
         FROM invoices i
         LEFT JOIN customers c ON i.customer_id = c.id
         WHERE i.org_id = :org_id AND i.status NOT IN ('voided', 'draft')
@@ -526,7 +531,7 @@ async def get_recent_invoices_by_period(
     items = []
     for r in rows:
         revenue = float(r.subtotal or 0)
-        cost = float(r.total_cost or 0)
+        cost = float(r.total_cost or 0) + float(r.fluid_cost or 0)
         profit = revenue - cost
         margin_pct = (profit / revenue * 100) if revenue > 0 else None
         items.append({

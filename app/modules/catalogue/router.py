@@ -9,6 +9,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
@@ -43,12 +44,16 @@ from app.modules.catalogue.service import (
     create_item,
     create_labour_rate,
     create_part,
+    duplicate_item,
     list_items,
     list_labour_rates,
     list_parts,
+    resolve_package_costs,
     update_item,
 )
 from app.modules.catalogue.models import ItemsCatalogue, PartsCatalogue
+from app.modules.catalogue.fluid_oil_models import FluidOilProduct
+from app.modules.inventory.models import StockItem
 
 router = APIRouter()
 
@@ -113,6 +118,7 @@ async def list_items_endpoint(
         search=search,
         limit=limit,
         offset=offset,
+        user_role=getattr(request.state, "role", None),
     )
 
     return ItemListResponse(
@@ -161,6 +167,8 @@ async def create_item_endpoint(
             gst_inclusive=getattr(payload, 'gst_inclusive', False),
             category=payload.category,
             is_active=payload.is_active,
+            is_package=getattr(payload, 'is_package', False),
+            package_components=[c.model_dump(mode="json") for c in payload.package_components] if payload.package_components else None,
             ip_address=ip_address,
         )
     except ValueError as exc:
@@ -216,6 +224,13 @@ async def update_item_endpoint(
     update_kwargs = {
         k: v for k, v in payload.model_dump().items() if v is not None
     }
+
+    # Convert package_components from Pydantic models to dicts for the service
+    if "package_components" in update_kwargs and update_kwargs["package_components"]:
+        update_kwargs["package_components"] = [
+            c if isinstance(c, dict) else c
+            for c in update_kwargs["package_components"]
+        ]
 
     try:
         item_data = await update_item(
@@ -405,6 +420,7 @@ async def list_services_endpoint(
         category=category,
         limit=limit,
         offset=offset,
+        user_role=getattr(request.state, "role", None),
     )
 
     return ServiceListResponse(
@@ -1062,3 +1078,279 @@ async def create_part_category(
     db.add(cat)
     await db.flush()
     return {"id": str(cat.id), "name": cat.name, "created": True}
+
+
+# ===========================================================================
+# Package endpoints — Requirements: 5.1, 5.6, 4.1, 4.5, 3.3, 3.4, 3.5, 9.4
+# ===========================================================================
+
+
+@router.get(
+    "/items/{item_id}/package-costs",
+    summary="Resolve live costs for a package item's components",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def get_package_costs_endpoint(
+    item_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Resolve live costs for all components of a package item.
+
+    Returns component list with costs, availability, and totals.
+    Cost fields are omitted for non-admin roles.
+
+    Requirements: 5.1, 5.6, 10.1, 10.3
+    """
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        item_uuid = uuid.UUID(item_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid item ID format"},
+        )
+
+    try:
+        result = await resolve_package_costs(
+            db,
+            org_id=org_uuid,
+            item_id=item_uuid,
+            user_role=getattr(request.state, "role", None),
+        )
+    except ValueError as exc:
+        error_msg = str(exc)
+        status = 404 if "not found" in error_msg.lower() else 400
+        return JSONResponse(
+            status_code=status,
+            content={"detail": error_msg},
+        )
+
+    return result
+
+
+@router.get(
+    "/parts/search",
+    summary="Search parts catalogue for package builder",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def search_parts_endpoint(
+    request: Request,
+    q: str = Query("", description="Search string"),
+    part_type: str | None = Query(None, description="Filter by part_type: 'part' or 'tyre'"),
+    limit: int = Query(20, ge=1, le=100, description="Max results"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Search parts catalogue where is_active = true and org_id matches.
+
+    Returns id, name, part_number, part_type, brand, cost_per_unit, stock_available.
+    Cost fields are omitted for non-admin roles.
+
+    Requirements: 4.1, 4.5
+    """
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    user_role = getattr(request.state, "role", None)
+    is_admin = user_role in ("org_admin", "global_admin")
+
+    # Build query
+    stmt = (
+        select(PartsCatalogue)
+        .where(
+            PartsCatalogue.org_id == org_uuid,
+            PartsCatalogue.is_active.is_(True),
+        )
+    )
+
+    if part_type:
+        stmt = stmt.where(PartsCatalogue.part_type == part_type)
+
+    if q.strip():
+        search_term = f"%{q.strip()}%"
+        stmt = stmt.where(
+            PartsCatalogue.name.ilike(search_term)
+            | PartsCatalogue.part_number.ilike(search_term)
+        )
+
+    stmt = stmt.order_by(PartsCatalogue.name).limit(limit)
+
+    result = await db.execute(stmt)
+    parts = result.scalars().all()
+
+    items = []
+    for part in parts:
+        # Get stock availability from stock_items
+        stock_stmt = select(StockItem.current_quantity).where(
+            StockItem.catalogue_item_id == part.id,
+            StockItem.org_id == org_uuid,
+        )
+        stock_result = await db.execute(stock_stmt)
+        stock_rows = stock_result.all()
+        stock_available = sum(float(row.current_quantity) for row in stock_rows) if stock_rows else 0.0
+
+        item_data: dict = {
+            "id": str(part.id),
+            "name": part.name,
+            "part_number": part.part_number,
+            "part_type": part.part_type,
+            "brand": part.brand,
+            "stock_available": stock_available,
+        }
+        if is_admin:
+            item_data["cost_per_unit"] = float(part.cost_per_unit) if part.cost_per_unit else None
+
+        items.append(item_data)
+
+    return {"items": items}
+
+
+@router.get(
+    "/fluids/search",
+    summary="Search fluid/oil products for package builder",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def search_fluids_endpoint(
+    request: Request,
+    q: str = Query("", description="Search string"),
+    fluid_type: str | None = Query(None, description="Filter: 'oil' or 'non-oil'"),
+    oil_type: str | None = Query(None, description="Filter by oil_type (engine, hydraulic, etc.)"),
+    limit: int = Query(20, ge=1, le=100, description="Max results"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Search fluid_oil_products where is_active = true.
+
+    Returns id, product_name, brand_name, fluid_type, oil_type, grade,
+    cost_per_unit, stock_available.
+    Cost fields are omitted for non-admin roles.
+
+    Requirements: 3.3, 3.4, 3.5
+    """
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    user_role = getattr(request.state, "role", None)
+    is_admin = user_role in ("org_admin", "global_admin")
+
+    # Build query
+    stmt = (
+        select(FluidOilProduct)
+        .where(
+            FluidOilProduct.org_id == org_uuid,
+            FluidOilProduct.is_active.is_(True),
+        )
+    )
+
+    if fluid_type:
+        stmt = stmt.where(FluidOilProduct.fluid_type == fluid_type)
+
+    if oil_type:
+        stmt = stmt.where(FluidOilProduct.oil_type == oil_type)
+
+    if q.strip():
+        search_term = f"%{q.strip()}%"
+        stmt = stmt.where(
+            FluidOilProduct.product_name.ilike(search_term)
+            | FluidOilProduct.brand_name.ilike(search_term)
+        )
+
+    stmt = stmt.order_by(FluidOilProduct.product_name).limit(limit)
+
+    result = await db.execute(stmt)
+    fluids = result.scalars().all()
+
+    items = []
+    for fluid in fluids:
+        # Get stock availability from stock_items
+        stock_stmt = select(StockItem.current_quantity).where(
+            StockItem.catalogue_item_id == fluid.id,
+            StockItem.org_id == org_uuid,
+        )
+        stock_result = await db.execute(stock_stmt)
+        stock_rows = stock_result.all()
+        stock_available = sum(float(row.current_quantity) for row in stock_rows) if stock_rows else 0.0
+
+        item_data: dict = {
+            "id": str(fluid.id),
+            "product_name": fluid.product_name,
+            "brand_name": fluid.brand_name,
+            "fluid_type": fluid.fluid_type,
+            "oil_type": fluid.oil_type,
+            "grade": fluid.grade,
+            "stock_available": stock_available,
+        }
+        if is_admin:
+            item_data["cost_per_unit"] = float(fluid.cost_per_unit) if fluid.cost_per_unit else None
+
+        items.append(item_data)
+
+    return {"items": items}
+
+
+@router.post(
+    "/items/{item_id}/duplicate",
+    status_code=201,
+    summary="Duplicate a package item",
+    dependencies=[require_role("org_admin")],
+)
+async def duplicate_item_endpoint(
+    item_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a copy of a package item with all its components.
+
+    Returns 404 if item not found, 400 if item is not a package.
+
+    Requirements: 9.4
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        item_uuid = uuid.UUID(item_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid item ID format"},
+        )
+
+    try:
+        result = await duplicate_item(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid or uuid.uuid4(),
+            item_id=item_uuid,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        error_msg = str(exc)
+        if "not found" in error_msg.lower():
+            return JSONResponse(
+                status_code=404,
+                content={"detail": error_msg},
+            )
+        return JSONResponse(
+            status_code=400,
+            content={"detail": error_msg},
+        )
+
+    return result

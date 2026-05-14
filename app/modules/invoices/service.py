@@ -754,11 +754,27 @@ async def create_invoice(
                         )
                     except Exception:
                         pass
+                # Look up cost_per_unit for this fluid stock item
+                fluid_cost_per_unit = None
+                try:
+                    fu_si_result = await db.execute(
+                        select(StockItem).where(StockItem.id == sid)
+                    )
+                    fu_si = fu_si_result.scalar_one_or_none()
+                    if fu_si:
+                        fluid_cost_per_unit = float(fu_si.cost_per_unit) if fu_si.cost_per_unit else (
+                            float(fu_si.purchase_price) if fu_si.purchase_price else None
+                        )
+                except Exception:
+                    pass
+
                 fluid_usage_records.append({
                     "stock_item_id": str(stock_item_id),
                     "catalogue_item_id": str(fu.get("catalogue_item_id", "")),
                     "item_name": fu.get("item_name", ""),
                     "litres": litres,
+                    "cost_per_litre": fluid_cost_per_unit,
+                    "total_cost": round(fluid_cost_per_unit * litres, 2) if fluid_cost_per_unit else None,
                     "vehicle_id": str(global_vehicle_id) if global_vehicle_id else None,
                     "vehicle_rego": vehicle_rego,
                 })
@@ -984,6 +1000,10 @@ def _invoice_to_dict(invoice: Invoice, line_items: list[LineItem]) -> dict:
         "terms_and_conditions": (invoice.invoice_data_json or {}).get("terms_and_conditions"),
         "additional_vehicles": (invoice.invoice_data_json or {}).get("additional_vehicles", []),
         "fluid_usage": (invoice.invoice_data_json or {}).get("fluid_usage", []),
+        "fluid_cost_total": sum(
+            (fu.get("total_cost") or 0)
+            for fu in (invoice.invoice_data_json or {}).get("fluid_usage", [])
+        ),
         "payment_page_url": invoice.payment_page_url,
         "payment_gateway": (invoice.invoice_data_json or {}).get("payment_gateway"),
         "job_card_appendix_html": invoice.job_card_appendix_html,
@@ -2226,11 +2246,28 @@ async def update_invoice(
                     )
                 except Exception:
                     pass
+                # Look up cost_per_unit for this fluid stock item
+                fluid_cost_per_unit = None
+                try:
+                    from app.modules.inventory.models import StockItem as _StockItem
+                    fu_si_result = await db.execute(
+                        select(_StockItem).where(_StockItem.id == sid)
+                    )
+                    fu_si = fu_si_result.scalar_one_or_none()
+                    if fu_si:
+                        fluid_cost_per_unit = float(fu_si.cost_per_unit) if fu_si.cost_per_unit else (
+                            float(fu_si.purchase_price) if fu_si.purchase_price else None
+                        )
+                except Exception:
+                    pass
+
                 fluid_records.append({
                     "stock_item_id": str(stock_item_id),
                     "catalogue_item_id": str(fu.get("catalogue_item_id", "")),
                     "item_name": fu.get("item_name", ""),
                     "litres": litres,
+                    "cost_per_litre": fluid_cost_per_unit,
+                    "total_cost": round(fluid_cost_per_unit * litres, 2) if fluid_cost_per_unit else None,
                     "vehicle_id": str(updates.get("global_vehicle_id", "")) if updates.get("global_vehicle_id") else None,
                     "vehicle_rego": updates.get("vehicle_rego") or invoice.vehicle_rego,
                 })

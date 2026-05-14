@@ -1,23 +1,22 @@
 import { useState, useEffect, useCallback } from 'react'
 import apiClient from '../../api/client'
-import { Button, Input, Badge, Spinner, Modal, ToastContainer, useToast } from '../../components/ui'
+import { useAuth } from '../../contexts/AuthContext'
+import {
+  Button,
+  Input,
+  Badge,
+  Spinner,
+  Modal,
+  ConfirmDialog,
+  ToastContainer,
+  useToast,
+} from '../../components/ui'
+import type { CatalogueItem, PackageComponent } from './types'
+import PackageBuilder from './components/PackageBuilder'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
-
-interface Item {
-  id: string
-  name: string
-  description: string | null
-  default_price: string
-  is_gst_exempt: boolean
-  gst_inclusive: boolean
-  category: string | null
-  is_active: boolean
-  created_at: string
-  updated_at: string
-}
 
 interface ItemForm {
   name: string
@@ -27,6 +26,8 @@ interface ItemForm {
   is_gst_exempt: boolean
   gst_mode: 'inclusive' | 'exclusive' | 'exempt' | ''
   is_active: boolean
+  is_package: boolean
+  package_components: PackageComponent[]
 }
 
 const EMPTY_FORM: ItemForm = {
@@ -37,6 +38,8 @@ const EMPTY_FORM: ItemForm = {
   is_gst_exempt: false,
   gst_mode: '',
   is_active: true,
+  is_package: false,
+  package_components: [],
 }
 
 const PAGE_SIZE = 20
@@ -46,7 +49,11 @@ const PAGE_SIZE = 20
 /* ------------------------------------------------------------------ */
 
 export default function ItemsCatalogue() {
-  const [items, setItems] = useState<Item[]>([])
+  const { user } = useAuth()
+  const userRole = user?.role ?? 'salesperson'
+  const isAdmin = userRole === 'org_admin' || userRole === 'global_admin'
+
+  const [items, setItems] = useState<CatalogueItem[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
@@ -64,6 +71,10 @@ export default function ItemsCatalogue() {
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
 
+  /* Duplicate modal */
+  const [duplicateItem, setDuplicateItem] = useState<CatalogueItem | null>(null)
+  const [duplicating, setDuplicating] = useState(false)
+
   const fetchItems = useCallback(async () => {
     setLoading(true)
     try {
@@ -73,7 +84,7 @@ export default function ItemsCatalogue() {
       }
       if (search.trim()) params.search = search.trim()
 
-      const res = await apiClient.get<{ items: Item[]; total: number }>('/catalogue/items', { params })
+      const res = await apiClient.get<{ items: CatalogueItem[]; total: number }>('/catalogue/items', { params })
       setItems(res.data?.items ?? [])
       setTotal(res.data?.total ?? 0)
     } catch {
@@ -103,7 +114,7 @@ export default function ItemsCatalogue() {
     setModalOpen(true)
   }
 
-  const openEdit = (item: Item) => {
+  const openEdit = (item: CatalogueItem) => {
     setEditingId(item.id)
     setForm({
       name: item.name,
@@ -113,6 +124,8 @@ export default function ItemsCatalogue() {
       is_gst_exempt: item.is_gst_exempt,
       gst_mode: item.is_gst_exempt ? 'exempt' : item.gst_inclusive ? 'inclusive' : 'exclusive',
       is_active: item.is_active,
+      is_package: item.is_package ?? false,
+      package_components: item.package_components ?? [],
     })
     setFormError('')
     setModalOpen(true)
@@ -140,6 +153,15 @@ export default function ItemsCatalogue() {
       if (form.description.trim()) body.description = form.description.trim()
       if (form.category.trim()) body.category = form.category.trim()
 
+      // Include package data
+      const hasComponents = (form.package_components ?? []).length > 0
+      body.is_package = hasComponents
+      if (hasComponents) {
+        body.package_components = form.package_components
+      } else {
+        body.package_components = null
+      }
+
       if (editingId) {
         await apiClient.put(`/catalogue/items/${editingId}`, body)
         addToast('success', 'Item updated successfully.')
@@ -158,7 +180,7 @@ export default function ItemsCatalogue() {
     }
   }
 
-  const handleToggleActive = async (item: Item) => {
+  const handleToggleActive = async (item: CatalogueItem) => {
     try {
       await apiClient.put(`/catalogue/items/${item.id}`, { is_active: !item.is_active })
       addToast('success', `Item ${item.is_active ? 'deactivated' : 'activated'}.`)
@@ -181,6 +203,29 @@ export default function ItemsCatalogue() {
       addToast('error', msg)
       setDeleteId(null)
     } finally { setDeleting(false) }
+  }
+
+  const handleDuplicate = async () => {
+    if (!duplicateItem) return
+    setDuplicating(true)
+    try {
+      await apiClient.post(`/catalogue/items/${duplicateItem.id}/duplicate`)
+      addToast('success', 'Package duplicated.')
+      setDuplicateItem(null)
+      fetchItems()
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || 'Failed to duplicate package.'
+      addToast('error', msg)
+      setDuplicateItem(null)
+    } finally { setDuplicating(false) }
+  }
+
+  const handlePackageComponentsChange = (components: PackageComponent[]) => {
+    setForm((prev) => ({
+      ...prev,
+      package_components: components,
+      is_package: components.length > 0,
+    }))
   }
 
   const updateField = <K extends keyof ItemForm>(field: K, value: ItemForm[K]) => {
@@ -226,6 +271,12 @@ export default function ItemsCatalogue() {
                     <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Name</th>
                     <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Category</th>
                     <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Price (ex-GST)</th>
+                    {isAdmin && (
+                      <>
+                        <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Cost</th>
+                        <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Profit</th>
+                      </>
+                    )}
                     <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">GST Exempt</th>
                     <th scope="col" className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
                     <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Actions</th>
@@ -235,7 +286,15 @@ export default function ItemsCatalogue() {
                   {items.map((item) => (
                     <tr key={item.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => openEdit(item)}>
                       <td className="px-4 py-3 text-sm">
-                        <div className="font-medium text-gray-900">{item.name}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-gray-900">{item.name}</span>
+                          {(item.is_package ?? false) && (
+                            <Badge variant="info" className="text-[10px]">Package</Badge>
+                          )}
+                          {(item.has_unavailable_components ?? false) && (
+                            <span className="text-amber-500" title="Has unavailable components" aria-label="Warning: has unavailable components">⚠️</span>
+                          )}
+                        </div>
                         {item.description && <div className="text-gray-500 text-xs mt-0.5 truncate max-w-xs">{item.description}</div>}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">
@@ -244,6 +303,24 @@ export default function ItemsCatalogue() {
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 text-right tabular-nums font-medium">
                         ${item.default_price}
                       </td>
+                      {isAdmin && (
+                        <>
+                          <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700 text-right tabular-nums">
+                            {(item.is_package ?? false) && item.package_cost != null
+                              ? `$${(item.package_cost ?? 0).toFixed(2)}`
+                              : <span className="text-gray-400">—</span>}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums">
+                            {(item.is_package ?? false) && item.package_profit != null
+                              ? (
+                                <span className={(item.package_profit ?? 0) < 0 ? 'text-red-600 font-medium' : 'text-green-700'}>
+                                  ${(item.package_profit ?? 0).toFixed(2)}
+                                </span>
+                              )
+                              : <span className="text-gray-400">—</span>}
+                          </td>
+                        </>
+                      )}
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
                         {item.is_gst_exempt ? (
                           <Badge variant="neutral">Exempt</Badge>
@@ -267,6 +344,9 @@ export default function ItemsCatalogue() {
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-right">
                         <div className="flex justify-end gap-1">
                           <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); openEdit(item) }}>Edit</Button>
+                          {(item.is_package ?? false) && (
+                            <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); setDuplicateItem(item) }}>Duplicate</Button>
+                          )}
                           <Button size="sm" variant="danger" onClick={(e) => { e.stopPropagation(); setDeleteId(item.id) }}>Delete</Button>
                         </div>
                       </td>
@@ -370,6 +450,28 @@ export default function ItemsCatalogue() {
               </label>
             )}
           </div>
+
+          {/* Unavailable component warning banner (edit mode) */}
+          {editingId && (form.is_package ?? false) && (form.package_components ?? []).length > 0 && (() => {
+            const unavailable = (form.package_components ?? []).filter(
+              (c) => (c as any).is_available === false
+            )
+            if (unavailable.length === 0) return null
+            return (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+                <span className="font-medium">⚠ {unavailable.length} component{unavailable.length > 1 ? 's are' : ' is'} no longer available in inventory.</span>
+              </div>
+            )
+          })()}
+
+          {/* PackageBuilder integration */}
+          <PackageBuilder
+            components={form.package_components ?? []}
+            onChange={handlePackageComponentsChange}
+            sellPrice={Number(form.default_price) || 0}
+            userRole={userRole}
+            itemId={editingId}
+          />
         </div>
         {formError && <p className="mt-2 text-sm text-red-600" role="alert">{formError}</p>}
         <div className="mt-4 flex justify-end gap-2">
@@ -386,6 +488,19 @@ export default function ItemsCatalogue() {
           <Button size="sm" variant="danger" onClick={handleDelete} loading={deleting}>Delete</Button>
         </div>
       </Modal>
+
+      {/* Duplicate confirm */}
+      <ConfirmDialog
+        open={!!duplicateItem}
+        title="Duplicate Package"
+        message={`Create a copy of '${duplicateItem?.name ?? ''}'?`}
+        confirmLabel="Duplicate"
+        cancelLabel="Cancel"
+        variant="primary"
+        loading={duplicating}
+        onConfirm={handleDuplicate}
+        onCancel={() => setDuplicateItem(null)}
+      />
 
       {/* Toast notifications */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />

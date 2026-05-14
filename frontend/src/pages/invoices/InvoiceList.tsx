@@ -174,6 +174,8 @@ interface InvoiceDetailData {
   payment_terms?: string
   salesperson_name?: string
   attachment_count?: number
+  fluid_usage?: { stock_item_id: string; item_name: string; litres: number; cost_per_litre?: number | null; total_cost?: number | null }[]
+  fluid_cost_total?: number
 }
 
 /* ------------------------------------------------------------------ */
@@ -1647,11 +1649,11 @@ export default function InvoiceList() {
                     const totalCost = (invoice.line_items ?? []).reduce((sum: number, item: LineItem) => {
                       if (item.cost_price == null) return sum
                       return sum + (item.cost_price ?? 0) * (item.quantity ?? 0)
-                    }, 0)
+                    }, 0) + (invoice.fluid_cost_total ?? 0)
                     const totalRevenue = invoice.subtotal ?? 0
                     const grossProfit = totalRevenue - totalCost
                     const marginPercent = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0
-                    const hasCostData = (invoice.line_items ?? []).some((item: LineItem) => item.cost_price != null)
+                    const hasCostData = (invoice.line_items ?? []).some((item: LineItem) => item.cost_price != null) || (invoice.fluid_cost_total ?? 0) > 0
                     if (!hasCostData) return null
                     return (
                       <div className="relative z-10 px-8 pb-4 no-print" data-print-hide>
@@ -1662,6 +1664,12 @@ export default function InvoiceList() {
                               <dt className="text-gray-500">Total Cost</dt>
                               <dd className="text-gray-700 tabular-nums">{formatNZDUtil(totalCost)}</dd>
                             </div>
+                            {(invoice.fluid_cost_total ?? 0) > 0 && (
+                              <div className="flex justify-between">
+                                <dt className="text-gray-500 text-xs">incl. fluid cost</dt>
+                                <dd className="text-gray-500 tabular-nums text-xs">{formatNZDUtil(invoice.fluid_cost_total ?? 0)}</dd>
+                              </div>
+                            )}
                             <div className="flex justify-between">
                               <dt className="text-gray-500">Revenue</dt>
                               <dd className="text-gray-700 tabular-nums">{formatNZDUtil(totalRevenue)}</dd>

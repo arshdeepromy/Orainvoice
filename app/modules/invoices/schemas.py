@@ -281,6 +281,7 @@ class InvoiceResponse(BaseModel):
     vehicle: dict | None = None
     additional_vehicles: list[dict] = Field(default_factory=list)
     fluid_usage: list[dict] = Field(default_factory=list)
+    fluid_cost_total: float = 0
     payment_page_url: str | None = None
     payment_gateway: str | None = None
     attachment_count: int = 0
