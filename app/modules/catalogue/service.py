@@ -117,6 +117,7 @@ async def _validate_and_snapshot_components(
             raise ValueError(f"Invalid catalogue_type: {catalogue_type}")
 
         # Try to get cost from stock_items first (more accurate, branch-specific)
+        # NOTE: cost_per_unit is the per-unit cost; purchase_price is the batch total
         stock_result = await db.execute(
             select(StockItem.purchase_price, StockItem.cost_per_unit).where(
                 StockItem.catalogue_item_id == catalogue_item_id,
@@ -125,8 +126,8 @@ async def _validate_and_snapshot_components(
         )
         stock_row = stock_result.one_or_none()
         if stock_row is not None:
-            # Prefer purchase_price, fall back to cost_per_unit
-            cost = stock_row.purchase_price or stock_row.cost_per_unit
+            # Prefer cost_per_unit (per-unit), fall back to purchase_price only if no per-unit
+            cost = stock_row.cost_per_unit or stock_row.purchase_price
             snapshot_cost = float(cost) if cost else catalogue_cost
         else:
             snapshot_cost = catalogue_cost
@@ -518,7 +519,8 @@ async def _calculate_package_cost(
         if isinstance(catalogue_item_id, str):
             catalogue_item_id = uuid.UUID(catalogue_item_id)
 
-        # Try stock_items first
+        # Try stock_items first — prefer cost_per_unit (per-unit cost),
+        # NOT purchase_price (which is the total batch purchase price)
         stock_result = await db.execute(
             select(StockItem.purchase_price, StockItem.cost_per_unit).where(
                 StockItem.catalogue_item_id == catalogue_item_id,
@@ -528,7 +530,8 @@ async def _calculate_package_cost(
         stock_row = stock_result.one_or_none()
 
         if stock_row is not None:
-            cost = stock_row.purchase_price or stock_row.cost_per_unit
+            # cost_per_unit is the derived per-unit cost; purchase_price is the batch total
+            cost = stock_row.cost_per_unit or stock_row.purchase_price
             unit_cost = float(cost) if cost else 0.0
         else:
             # Fall back to catalogue
@@ -671,7 +674,7 @@ async def resolve_package_costs(
 
         if len(stock_items) == 1:
             si = stock_items[0]
-            cost_per_unit = float(si.purchase_price or si.cost_per_unit or 0)
+            cost_per_unit = float(si.cost_per_unit or si.purchase_price or 0)
             stock_available = float(si.current_quantity)
         elif len(stock_items) > 1:
             # Multiple stock items — return all options
@@ -684,11 +687,11 @@ async def resolve_package_costs(
                     "available_qty": float(si.current_quantity),
                 }
                 if is_admin:
-                    option["cost_per_unit"] = float(si.purchase_price or si.cost_per_unit or 0)
+                    option["cost_per_unit"] = float(si.cost_per_unit or si.purchase_price or 0)
                 stock_options.append(option)
             # Use first stock item's cost as default
             si = stock_items[0]
-            cost_per_unit = float(si.purchase_price or si.cost_per_unit or 0)
+            cost_per_unit = float(si.cost_per_unit or si.purchase_price or 0)
             stock_available = sum(float(s.current_quantity) for s in stock_items)
         # else: no stock items, use catalogue_cost (already set)
 

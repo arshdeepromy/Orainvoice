@@ -74,6 +74,7 @@ interface CatalogueItem {
   gst_inclusive?: boolean
   category?: string
   sku?: string
+  is_package?: boolean
 }
 
 interface TaxRate {
@@ -593,7 +594,12 @@ function ItemTableRow({
                   onClick={() => handleItemSelect(ci)}
                   className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50"
                 >
-                  <div className="font-medium text-gray-900">{ci.name}</div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-gray-900">{ci.name}</span>
+                    {(ci.is_package ?? false) && (
+                      <span className="inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">📦 Package</span>
+                    )}
+                  </div>
                   {ci.sku && <div className="text-xs text-gray-500">SKU: {ci.sku}</div>}
                   <div className="text-xs text-gray-500">{formatNZD(ci.default_price)}</div>
                 </button>
@@ -752,6 +758,11 @@ export default function InvoiceCreate() {
   const { isEnabled } = useModules()
   const vehiclesEnabled = isEnabled('vehicles')
   const [loadingInvoice, setLoadingInvoice] = useState(isEditMode)
+
+  // Read pre-fill params from URL (e.g., /invoices/new?customer_id=xxx&vehicle_rego=yyy)
+  const [searchParams] = useState(() => new URLSearchParams(window.location.search))
+  const prefillCustomerId = searchParams.get('customer_id')
+  const prefillVehicleRego = searchParams.get('vehicle_rego')
   
   // Invoice header fields
   const [customer, setCustomer] = useState<Customer | null>(null)
@@ -1044,6 +1055,7 @@ export default function InvoiceCreate() {
             gst_inclusive: item.gst_inclusive ?? false,
             category: item.category ?? undefined,
             sku: item.sku ?? undefined,
+            is_package: item.is_package ?? false,
           })))
           // Set salespeople from API
           const salespeopleData = salespeopleRes.data
@@ -1064,6 +1076,70 @@ export default function InvoiceCreate() {
     load()
     return () => { cancelled = true }
   }, [])
+
+  // Pre-fill customer and vehicle from URL query params (e.g., from Customer Profile "Issue Invoice" button)
+  useEffect(() => {
+    if (!prefillCustomerId || isEditMode) return
+    let cancelled = false
+    async function prefill() {
+      try {
+        const res = await apiClient.get<any>(`/customers/${prefillCustomerId}`)
+        if (cancelled) return
+        const c = res.data
+        if (c) {
+          const customerObj: Customer = {
+            id: c.id,
+            first_name: c.first_name ?? '',
+            last_name: c.last_name ?? '',
+            display_name: `${c.first_name ?? ''} ${c.last_name ?? ''}`.trim(),
+            email: c.email ?? null,
+            phone: c.phone ?? null,
+            linked_vehicles: (c.vehicles ?? []).map((v: any) => ({
+              id: v.id,
+              rego: v.rego ?? '',
+              make: v.make ?? '',
+              model: v.model ?? '',
+              year: v.year ?? null,
+            })),
+          }
+          setCustomer(customerObj)
+          // Pre-fill vehicle if rego provided and vehicles module enabled
+          if (prefillVehicleRego && vehiclesEnabled && (c.vehicles ?? []).length > 0) {
+            const matchedVehicle = (c.vehicles ?? []).find((v: any) => v.rego === prefillVehicleRego)
+            if (matchedVehicle) {
+              setVehicles([{
+                id: matchedVehicle.id,
+                rego: matchedVehicle.rego ?? '',
+                make: matchedVehicle.make ?? '',
+                model: matchedVehicle.model ?? '',
+                year: matchedVehicle.year ?? null,
+                odometer: matchedVehicle.odometer ?? null,
+                wof_expiry: matchedVehicle.wof_expiry ?? null,
+                cof_expiry: matchedVehicle.cof_expiry ?? null,
+              }])
+            }
+          } else if (vehiclesEnabled && (c.vehicles ?? []).length > 0) {
+            // Auto-fill first linked vehicle
+            const v = c.vehicles[0]
+            setVehicles([{
+              id: v.id,
+              rego: v.rego ?? '',
+              make: v.make ?? '',
+              model: v.model ?? '',
+              year: v.year ?? null,
+              odometer: v.odometer ?? null,
+              wof_expiry: v.wof_expiry ?? null,
+              cof_expiry: v.cof_expiry ?? null,
+            }])
+          }
+        }
+      } catch {
+        // Non-blocking — user can still manually select customer
+      }
+    }
+    prefill()
+    return () => { cancelled = true }
+  }, [prefillCustomerId, prefillVehicleRego, isEditMode, vehiclesEnabled])
 
   // Update due date when terms or invoice date changes
   useEffect(() => {

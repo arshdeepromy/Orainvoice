@@ -684,8 +684,9 @@ async def create_invoice(
 
     # Capture cost_price snapshot for internal profit/margin tracking
     from app.modules.inventory.models import StockItem
-    from app.modules.catalogue.models import PartsCatalogue
+    from app.modules.catalogue.models import PartsCatalogue, ItemsCatalogue
     from app.modules.catalogue.fluid_oil_models import FluidOilProduct
+    from app.modules.invoices.package_service import resolve_package_line_item
     for li_data, li in zip(items, created_line_items):
         try:
             stock_item_id = li_data.get("stock_item_id")
@@ -696,34 +697,46 @@ async def create_invoice(
                 )
                 si = si_result.scalar_one_or_none()
                 if si:
+                    # Prefer cost_per_unit (per-unit), fall back to purchase_price (batch total)
                     li.cost_price = (
-                        Decimal(str(si.purchase_price)).quantize(TWO_PLACES)
-                        if si.purchase_price is not None
+                        Decimal(str(si.cost_per_unit)).quantize(TWO_PLACES)
+                        if si.cost_per_unit is not None
                         else (
-                            Decimal(str(si.cost_per_unit)).quantize(TWO_PLACES)
-                            if si.cost_per_unit is not None
+                            Decimal(str(si.purchase_price)).quantize(TWO_PLACES)
+                            if si.purchase_price is not None
                             else None
                         )
                     )
             elif li.catalogue_item_id:
-                # Try PartsCatalogue first, then FluidOilProduct
-                cat_result = await db.execute(
-                    select(PartsCatalogue).where(
-                        PartsCatalogue.id == li.catalogue_item_id
-                    )
+                # Check if this is a package item first
+                pkg_result = await resolve_package_line_item(
+                    db, org_id=org_id, catalogue_item_id=li.catalogue_item_id
                 )
-                cat = cat_result.scalar_one_or_none()
-                if cat and cat.purchase_price is not None:
-                    li.cost_price = Decimal(str(cat.purchase_price)).quantize(TWO_PLACES)
+                if pkg_result.get("is_package") and pkg_result.get("cost_price") is not None:
+                    li.cost_price = Decimal(str(pkg_result["cost_price"])).quantize(TWO_PLACES)
                 else:
-                    fluid_result = await db.execute(
-                        select(FluidOilProduct).where(
-                            FluidOilProduct.id == li.catalogue_item_id
+                    # Try PartsCatalogue first, then FluidOilProduct
+                    cat_result = await db.execute(
+                        select(PartsCatalogue).where(
+                            PartsCatalogue.id == li.catalogue_item_id
                         )
                     )
-                    fluid = fluid_result.scalar_one_or_none()
-                    if fluid and fluid.purchase_price is not None:
-                        li.cost_price = Decimal(str(fluid.purchase_price)).quantize(TWO_PLACES)
+                    cat = cat_result.scalar_one_or_none()
+                    if cat and cat.cost_per_unit is not None:
+                        li.cost_price = Decimal(str(cat.cost_per_unit)).quantize(TWO_PLACES)
+                    elif cat and cat.purchase_price is not None:
+                        li.cost_price = Decimal(str(cat.purchase_price)).quantize(TWO_PLACES)
+                    else:
+                        fluid_result = await db.execute(
+                            select(FluidOilProduct).where(
+                                FluidOilProduct.id == li.catalogue_item_id
+                            )
+                        )
+                        fluid = fluid_result.scalar_one_or_none()
+                        if fluid and fluid.cost_per_unit is not None:
+                            li.cost_price = Decimal(str(fluid.cost_per_unit)).quantize(TWO_PLACES)
+                        elif fluid and fluid.purchase_price is not None:
+                            li.cost_price = Decimal(str(fluid.purchase_price)).quantize(TWO_PLACES)
         except Exception:
             # Never fail invoice creation because of a cost lookup failure
             pass
@@ -1191,32 +1204,45 @@ async def add_line_item(
             )
             si = si_result.scalar_one_or_none()
             if si:
+                # Prefer cost_per_unit (per-unit), fall back to purchase_price (batch total)
                 li.cost_price = (
-                    Decimal(str(si.purchase_price)).quantize(TWO_PLACES)
-                    if si.purchase_price is not None
+                    Decimal(str(si.cost_per_unit)).quantize(TWO_PLACES)
+                    if si.cost_per_unit is not None
                     else (
-                        Decimal(str(si.cost_per_unit)).quantize(TWO_PLACES)
-                        if si.cost_per_unit is not None
+                        Decimal(str(si.purchase_price)).quantize(TWO_PLACES)
+                        if si.purchase_price is not None
                         else None
                     )
                 )
                 li.stock_item_id = sid
         elif catalogue_item_id:
-            from app.modules.catalogue.models import PartsCatalogue
-            from app.modules.catalogue.fluid_oil_models import FluidOilProduct
-            cat_result = await db.execute(
-                select(PartsCatalogue).where(PartsCatalogue.id == catalogue_item_id)
+            # Check if this is a package item first
+            from app.modules.invoices.package_service import resolve_package_line_item
+            pkg_result = await resolve_package_line_item(
+                db, org_id=org_id, catalogue_item_id=catalogue_item_id
             )
-            cat = cat_result.scalar_one_or_none()
-            if cat and cat.purchase_price is not None:
-                li.cost_price = Decimal(str(cat.purchase_price)).quantize(TWO_PLACES)
+            if pkg_result.get("is_package") and pkg_result.get("cost_price") is not None:
+                li.cost_price = Decimal(str(pkg_result["cost_price"])).quantize(TWO_PLACES)
             else:
-                fluid_result = await db.execute(
-                    select(FluidOilProduct).where(FluidOilProduct.id == catalogue_item_id)
+                from app.modules.catalogue.models import PartsCatalogue
+                from app.modules.catalogue.fluid_oil_models import FluidOilProduct
+                cat_result = await db.execute(
+                    select(PartsCatalogue).where(PartsCatalogue.id == catalogue_item_id)
                 )
-                fluid = fluid_result.scalar_one_or_none()
-                if fluid and fluid.purchase_price is not None:
-                    li.cost_price = Decimal(str(fluid.purchase_price)).quantize(TWO_PLACES)
+                cat = cat_result.scalar_one_or_none()
+                if cat and cat.cost_per_unit is not None:
+                    li.cost_price = Decimal(str(cat.cost_per_unit)).quantize(TWO_PLACES)
+                elif cat and cat.purchase_price is not None:
+                    li.cost_price = Decimal(str(cat.purchase_price)).quantize(TWO_PLACES)
+                else:
+                    fluid_result = await db.execute(
+                        select(FluidOilProduct).where(FluidOilProduct.id == catalogue_item_id)
+                    )
+                    fluid = fluid_result.scalar_one_or_none()
+                    if fluid and fluid.cost_per_unit is not None:
+                        li.cost_price = Decimal(str(fluid.cost_per_unit)).quantize(TWO_PLACES)
+                    elif fluid and fluid.purchase_price is not None:
+                        li.cost_price = Decimal(str(fluid.purchase_price)).quantize(TWO_PLACES)
         if li.cost_price is not None:
             await db.flush()
     except Exception:

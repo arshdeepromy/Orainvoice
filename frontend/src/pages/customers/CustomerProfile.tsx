@@ -5,6 +5,7 @@ import { Button, Badge, Spinner, Modal, Tabs, Input, Select } from '../../compon
 import { useTenant } from '../../contexts/TenantContext'
 import { useModules } from '../../contexts/ModuleContext'
 import { useCustomerClaims } from '../../hooks/useCustomerClaims'
+import { CustomerEditModal } from '../../components/customers/CustomerEditModal'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -276,6 +277,9 @@ export default function CustomerProfilePage() {
   const [notifying, setNotifying] = useState(false)
   const [notifyResult, setNotifyResult] = useState('')
   const [notifyError, setNotifyError] = useState('')
+
+  /* Edit modal */
+  const [editOpen, setEditOpen] = useState(false)
 
   /* Merge modal */
   const [mergeOpen, setMergeOpen] = useState(false)
@@ -678,6 +682,21 @@ export default function CustomerProfilePage() {
           {customer.is_anonymised && <Badge variant="neutral">Anonymised</Badge>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="secondary" onClick={() => setEditOpen(true)}>
+            Edit
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              const firstVehicle = (customer.vehicles ?? [])[0]
+              const params = new URLSearchParams({ customer_id: customer.id })
+              if (firstVehicle?.rego) params.set('vehicle_rego', firstVehicle.rego)
+              navigate(`/invoices/new?${params.toString()}`)
+            }}
+          >
+            Issue Invoice
+          </Button>
           {remindersConfigured ? (
             <Button
               size="sm"
@@ -1323,6 +1342,14 @@ export default function CustomerProfilePage() {
           <Button size="sm" onClick={handleSaveReminders} loading={reminderSaving}>Save</Button>
         </div>
       </Modal>
+
+      {/* ---- Edit Customer Modal ---- */}
+      <CustomerEditModal
+        open={editOpen}
+        customerId={editOpen ? customer.id : null}
+        onClose={() => setEditOpen(false)}
+        onSaved={() => { setEditOpen(false); fetchProfile() }}
+      />
     </div>
   )
 }

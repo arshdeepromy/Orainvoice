@@ -49,6 +49,7 @@ interface CatalogueItem {
   gst_inclusive?: boolean
   category?: string
   sku?: string
+  is_package?: boolean
 }
 
 interface TaxRate {
@@ -451,7 +452,12 @@ function ItemTableRow({
               {filteredItems.slice(0, 10).map((ci) => (
                 <button key={ci.id} type="button" onClick={() => handleItemSelect(ci)}
                   className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50">
-                  <div className="font-medium text-gray-900">{ci.name}</div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-gray-900">{ci.name}</span>
+                    {(ci.is_package ?? false) && (
+                      <span className="inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">📦 Package</span>
+                    )}
+                  </div>
                   {ci.sku && <div className="text-xs text-gray-500">SKU: {ci.sku}</div>}
                   <div className="text-xs text-gray-500">{formatNZD(ci.default_price)}</div>
                 </button>
@@ -732,6 +738,7 @@ export default function QuoteCreate() {
           gst_inclusive: item.gst_inclusive ?? false,
           category: item.category ?? undefined,
           sku: item.sku ?? undefined,
+          is_package: item.is_package ?? false,
         })))
       } catch { /* non-blocking */ }
     }

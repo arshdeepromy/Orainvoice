@@ -121,11 +121,11 @@ async def resolve_package_line_item(
 
             if stock_item is not None:
                 stock_item_id = stock_item.id
-                # Prefer purchase_price, fall back to cost_per_unit
-                if stock_item.purchase_price is not None:
-                    unit_cost = Decimal(str(stock_item.purchase_price))
-                elif stock_item.cost_per_unit is not None:
+                # Prefer cost_per_unit (per-unit cost), fall back to purchase_price (batch total)
+                if stock_item.cost_per_unit is not None:
                     unit_cost = Decimal(str(stock_item.cost_per_unit))
+                elif stock_item.purchase_price is not None:
+                    unit_cost = Decimal(str(stock_item.purchase_price))
             else:
                 # Catalogue fallback
                 if catalogue_type in ("part", "tyre"):
