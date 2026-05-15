@@ -3624,6 +3624,12 @@ async def bulk_delete_invoices(
             .values(invoice_id=None)
         )
 
+    # Delete payment tokens (NOT NULL FK — can't null, must delete)
+    from app.modules.payments.models import PaymentToken
+    await db.execute(
+        delete(PaymentToken).where(PaymentToken.invoice_id.in_(deleted_ids))
+    )
+
     # Delete invoices (cascade deletes line_items, credit_notes, payments)
     for inv in invoices:
         await db.delete(inv)

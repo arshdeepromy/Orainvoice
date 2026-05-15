@@ -3490,6 +3490,32 @@ async def list_error_logs(
             "created_at": r[9],
         })
 
+    # Resolve org names and user emails for display
+    org_ids = {e["org_id"] for e in errors if e["org_id"]}
+    user_ids = {e["user_id"] for e in errors if e["user_id"]}
+
+    org_names: dict[str, str] = {}
+    if org_ids:
+        org_result = await db.execute(
+            sa_text("SELECT id, name FROM organisations WHERE id = ANY(:ids)"),
+            {"ids": list(org_ids)},
+        )
+        for row in org_result:
+            org_names[str(row[0])] = row[1]
+
+    user_names: dict[str, str] = {}
+    if user_ids:
+        user_result = await db.execute(
+            sa_text("SELECT id, email FROM users WHERE id = ANY(:ids)"),
+            {"ids": list(user_ids)},
+        )
+        for row in user_result:
+            user_names[str(row[0])] = row[1]
+
+    for e in errors:
+        e["org_name"] = org_names.get(e["org_id"]) if e["org_id"] else None
+        e["user_email"] = user_names.get(e["user_id"]) if e["user_id"] else None
+
     return {"errors": errors, "total": total, "page": page, "page_size": page_size}
 
 
@@ -3518,7 +3544,7 @@ async def get_error_detail(db: AsyncSession, error_id: uuid.UUID) -> dict | None
     if row is None:
         return None
 
-    return {
+    detail = {
         "id": str(row[0]),
         "severity": row[1],
         "category": row[2],
@@ -3535,7 +3561,31 @@ async def get_error_detail(db: AsyncSession, error_id: uuid.UUID) -> dict | None
         "status": row[13],
         "resolution_notes": row[14],
         "created_at": row[15],
+        "org_name": None,
+        "user_email": None,
     }
+
+    # Resolve org name
+    if detail["org_id"]:
+        org_result = await db.execute(
+            sa_text("SELECT name FROM organisations WHERE id = :oid"),
+            {"oid": detail["org_id"]},
+        )
+        org_row = org_result.one_or_none()
+        if org_row:
+            detail["org_name"] = org_row[0]
+
+    # Resolve user email
+    if detail["user_id"]:
+        user_result = await db.execute(
+            sa_text("SELECT email FROM users WHERE id = :uid"),
+            {"uid": detail["user_id"]},
+        )
+        user_row = user_result.one_or_none()
+        if user_row:
+            detail["user_email"] = user_row[0]
+
+    return detail
 
 
 async def update_error_status(

@@ -40,6 +40,8 @@ export interface ErrorRecord {
   stack_trace: string
   org_id: string | null
   user_id: string | null
+  org_name?: string | null
+  user_email?: string | null
   http_method: string | null
   http_endpoint: string | null
   request_body: string | null
@@ -237,13 +239,13 @@ function ErrorDetailModal({
             {error.org_id && (
               <div>
                 <h4 className="text-xs font-medium text-gray-500 uppercase">Organisation</h4>
-                <p className="text-sm font-mono text-gray-700">{error.org_id}</p>
+                <p className="text-sm text-gray-700">{error.org_name || error.org_id}</p>
               </div>
             )}
             {error.user_id && (
               <div>
                 <h4 className="text-xs font-medium text-gray-500 uppercase">User</h4>
-                <p className="text-sm font-mono text-gray-700">{error.user_id}</p>
+                <p className="text-sm text-gray-700">{error.user_email || error.user_id}</p>
               </div>
             )}
           </div>
@@ -464,6 +466,8 @@ export function ErrorLog() {
         stack_trace: e.stack_trace ?? '',
         org_id: e.org_id,
         user_id: e.user_id,
+        org_name: e.org_name ?? null,
+        user_email: e.user_email ?? null,
         http_method: e.http_method,
         http_endpoint: e.http_endpoint,
         request_body: e.request_body_sanitised ? JSON.stringify(e.request_body_sanitised, null, 2) : null,

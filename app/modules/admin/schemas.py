@@ -789,6 +789,8 @@ class ErrorLogListItem(BaseModel):
     message: str
     org_id: str | None = None
     user_id: str | None = None
+    org_name: str | None = None
+    user_email: str | None = None
     status: str
     created_at: datetime
 
@@ -828,6 +830,8 @@ class ErrorLogDetailResponse(BaseModel):
     stack_trace: str | None = None
     org_id: str | None = None
     user_id: str | None = None
+    org_name: str | None = None
+    user_email: str | None = None
     http_method: str | None = None
     http_endpoint: str | None = None
     request_body_sanitised: dict | None = None
