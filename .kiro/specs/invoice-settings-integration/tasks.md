@@ -309,14 +309,14 @@ Tasks are ordered by layer: backend schema → backend service → backend API �
     - Added: Rich text T&C field in invoice form (HTML preserved)
     - _Requirements: (release discipline)_
 
-- [-] 16. Git push and update local dev environment
-  - [-] 16.1 Commit all changes and push to GitHub
+- [x] 16. Git push and update local dev environment
+  - [x] 16.1 Commit all changes and push to GitHub
     - `git add -A`
     - `git commit -m "feat: invoice settings integration — enable/disable toggles for email signature, notes, payment terms, T&C"`
     - `git push origin main`
     - _Requirements: (release discipline)_
 
-  - [~] 16.2 Rebuild local dev backend (picks up new code + auto-reloads)
+  - [x] 16.2 Rebuild local dev backend (picks up new code + auto-reloads)
     - `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build --force-recreate app`
     - Confirm app starts and no migration is needed (JSONB keys only)
     - _Requirements: (release discipline)_
