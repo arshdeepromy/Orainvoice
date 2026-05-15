@@ -292,6 +292,10 @@ class InvoiceResponse(BaseModel):
     fluid_cost_total: float = 0
     payment_page_url: str | None = None
     payment_gateway: str | None = None
+    terms_and_conditions: str | None = None
+    terms_and_conditions_enabled: bool | None = None
+    payment_terms_text: str | None = None
+    org_invoice_footer_text: str | None = None
     attachment_count: int = 0
     customer_portal_token: str | None = None
     customer_enable_portal: bool = False

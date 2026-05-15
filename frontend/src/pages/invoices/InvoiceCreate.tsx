@@ -849,21 +849,23 @@ export default function InvoiceCreate() {
   const [adjustment, setAdjustment] = useState(0)
   
   // Notes and terms
-  const [customerNotes, setCustomerNotes] = useState(() => {
-    // On create: conditionally pre-fill from org settings
-    if (!editId && settings?.invoice?.default_notes_enabled) {
-      return settings?.invoice?.default_notes ?? ''
-    }
-    return ''
-  })
-  const [termsAndConditions, setTermsAndConditions] = useState(() => {
-    // On create: conditionally pre-fill from org settings (preserve HTML)
-    if (!editId && settings?.invoice?.terms_and_conditions_enabled) {
-      return settings?.invoice?.terms_and_conditions ?? ''
-    }
-    return ''
-  })
+  const [customerNotes, setCustomerNotes] = useState('')
+  const [termsAndConditions, setTermsAndConditions] = useState('')
   const [saveTermsAsDefault, setSaveTermsAsDefault] = useState(false)
+
+  // Pre-fill notes from org settings once loaded (only on create, not edit)
+  useEffect(() => {
+    if (!editId && settings?.invoice?.default_notes_enabled && settings?.invoice?.default_notes) {
+      setCustomerNotes(prev => prev || settings.invoice.default_notes || '')
+    }
+  }, [editId, settings?.invoice?.default_notes_enabled, settings?.invoice?.default_notes])
+
+  // Pre-fill T&C from org settings once loaded (only on create, not edit)
+  useEffect(() => {
+    if (!editId && settings?.invoice?.terms_and_conditions_enabled && settings?.invoice?.terms_and_conditions) {
+      setTermsAndConditions(prev => prev || settings.invoice.terms_and_conditions || '')
+    }
+  }, [editId, settings?.invoice?.terms_and_conditions_enabled, settings?.invoice?.terms_and_conditions])
   
   // Attachments
   const [attachments, setAttachments] = useState<File[]>([])

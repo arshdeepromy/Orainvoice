@@ -176,6 +176,10 @@ interface InvoiceDetailData {
   attachment_count?: number
   fluid_usage?: { stock_item_id: string; item_name: string; litres: number; cost_per_litre?: number | null; total_cost?: number | null }[]
   fluid_cost_total?: number
+  payment_terms_text?: string | null
+  terms_and_conditions_enabled?: boolean
+  terms_and_conditions?: string | null
+  org_invoice_footer_text?: string | null
 }
 
 /* ------------------------------------------------------------------ */
@@ -1697,14 +1701,28 @@ export default function InvoiceList() {
                       </div>
                     )}
 
-                    {/* Payment instructions */}
-                    <div className="border-t border-gray-100 pt-4 text-xs text-gray-400">
-                      <p>Thank you for your business.</p>
-                      {invoice.org_gst_number && (
-                        <p className="mt-1">
-                          Payments can be paid by direct bank transfer. Please use your Invoice number as your ref number on your bank transfer.
-                        </p>
-                      )}
+                    {/* Payment Terms */}
+                    {invoice?.payment_terms_text && (
+                      <div className="border-t border-gray-100 pt-4 mb-4">
+                        <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">Payment Terms</p>
+                        <p className="text-sm text-gray-600">{invoice.payment_terms_text}</p>
+                      </div>
+                    )}
+
+                    {/* Terms & Conditions */}
+                    {invoice?.terms_and_conditions_enabled && invoice?.terms_and_conditions && (
+                      <div className="border-t border-gray-100 pt-4 mb-4">
+                        <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">Terms & Conditions</p>
+                        <div
+                          className="text-sm text-gray-600 prose prose-sm max-w-none"
+                          dangerouslySetInnerHTML={{ __html: invoice.terms_and_conditions }}
+                        />
+                      </div>
+                    )}
+
+                    {/* Footer — configurable with default fallback */}
+                    <div className="border-t border-gray-100 pt-4 text-xs text-gray-400 text-center">
+                      <p>{invoice?.org_invoice_footer_text || 'Thank you for your business.'}</p>
                     </div>
                   </div>
                 </div>

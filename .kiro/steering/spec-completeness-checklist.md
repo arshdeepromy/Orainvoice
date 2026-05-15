@@ -110,6 +110,7 @@ Before considering a design document complete, ask:
 4. **Do I know what happens on every error?** If not, the error handling UI is missing.
 5. **Do I know how to navigate TO this feature?** If not, the navigation section is missing.
 6. **Do I know how to navigate AWAY from this feature?** If not, the unsaved-changes guard is missing.
+7. **Have I added new fields to BOTH the service dict AND the Pydantic response schema?** If not, the API will silently drop them (see Rule 8 in `frontend-backend-contract-alignment.md`).
 
 ## Example: Minimum Frontend Section for a CRUD Feature
 

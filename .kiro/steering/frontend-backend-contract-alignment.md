@@ -82,6 +82,44 @@ When consuming an existing endpoint from new frontend code:
 2. Check if the response is wrapped (`{ items: [...] }`) or bare (`[...]`)
 3. Check the HTTP method — some endpoints are POST even for "read" operations (e.g., report generation)
 
+## Rule 8: Adding Fields to API Responses — Pydantic Schema Gate
+
+**CRITICAL**: When adding a new field to an API response in a service function, you MUST also add it to the corresponding Pydantic response schema. Pydantic silently drops fields not defined in the schema.
+
+This pattern caused a production bug where `terms_and_conditions_enabled`, `payment_terms_text`, and `org_invoice_footer_text` were added to the invoice detail dict in `service.py` but never added to `InvoiceResponse` in `schemas.py`. The API appeared to work (no errors), but the fields were silently stripped from the JSON response, causing the frontend to never receive them.
+
+**Checklist when adding fields to a service response dict:**
+1. Add the field to the service dict: `result["new_field"] = value`
+2. Add the field to the Pydantic response schema: `new_field: str | None = None`
+3. Verify the router passes the dict through the schema (check `response_model` or explicit schema instantiation like `InvoiceResponse(**result)`)
+4. Restart the backend container (schema changes require process restart)
+5. Verify the field appears in the actual API response (curl or browser devtools)
+
+**Common locations for response schemas:**
+- `app/modules/invoices/schemas.py` → `InvoiceResponse`
+- `app/modules/customers/schemas.py` → `CustomerResponse`, `CustomerSearchResult`
+- `app/modules/quotes/schemas.py` → `QuoteResponse`
+- `app/modules/organisations/schemas.py` → `OrgSettingsResponse`
+
+**Why this is silent**: Pydantic's default `model_config` does not raise errors for extra fields — it just ignores them. The service function runs fine, the dict has the data, but `InvoiceResponse(**result)` drops any keys not in the model. No error, no warning, no log entry.
+
+## Rule 9: Frontend Build Deployment in Dev
+
+The dev frontend container uses a watch-build pattern (not Vite HMR dev server):
+- Source files are mounted at `/app/src/`
+- A file watcher detects `.tsx`/`.ts`/`.css` changes
+- Runs `npx vite build --outDir /tmp/dist-new --emptyOutDir`
+- Copies output to `/app/dist/` (served by nginx)
+- Browser must be refreshed to pick up new chunks (hashed filenames)
+
+**Key implications:**
+- Changes to source files trigger a rebuild automatically
+- The browser serves static built files — no HMR websocket
+- After a rebuild, a hard refresh (Ctrl+Shift+R) is needed to load new chunks
+- If the build fails (TypeScript errors), the old chunks remain served
+- Check `docker logs invoicing-frontend-1 --tail 20` to verify build success
+- The entry point `index.html` references the main chunk by hash — new builds produce new hashes
+
 ## Rule 7: Rate Limiting Awareness for Dev
 
 Development rate limits are 5x production (set in ISSUE-016). React Strict Mode doubles all requests. When implementing features that make multiple API calls on mount (like MFA settings loading multiple method statuses), be aware that:

@@ -203,9 +203,5 @@
 </div>
 <div style="padding-top:10px; text-align:center;">
   {% if org.invoice_footer %}<p class="footer-text">{{ org.invoice_footer }}</p>{% endif %}
-  <p class="footer-text" style="color:var(--primary); font-weight:600; font-size:9pt;">Thank you for your business.</p>
-  {% if org.gst_number %}
-  <p class="footer-text">Payments can be paid by direct bank transfer. Please use your Invoice number as your ref number.</p>
-  {% endif %}
 </div>
 {% endblock %}

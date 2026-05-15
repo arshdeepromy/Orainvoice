@@ -99,18 +99,6 @@
 
 {% block footer %}
 <div style="background:var(--header-bg); margin:24px -14mm -22mm -14mm; padding:14px 14mm 22mm 14mm; -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important;">
-  <table style="width:100%;" cellpadding="0" cellspacing="0">
-    <tr>
-      <td style="width:50%; vertical-align:top;">
-        {% if org.invoice_footer %}<p style="font-size:8pt; color:#c7d2fe; line-height:1.6;">{{ org.invoice_footer }}</p>{% endif %}
-      </td>
-      <td style="width:50%; vertical-align:top; text-align:right;">
-        <p style="font-size:8pt; color:#fff; font-weight:600; line-height:1.6;">Thank you for your business.</p>
-        {% if org.gst_number %}
-        <p style="font-size:8pt; color:#a5b4fc; line-height:1.6;">Please use Invoice # as bank transfer reference.</p>
-        {% endif %}
-      </td>
-    </tr>
-  </table>
+  {% if org.invoice_footer %}<p style="font-size:8pt; color:#c7d2fe; line-height:1.6;">{{ org.invoice_footer }}</p>{% endif %}
 </div>
 {% endblock %}

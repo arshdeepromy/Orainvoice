@@ -1565,6 +1565,9 @@ async def get_invoice(
             if payment_terms_text:
                 result["payment_terms_text"] = payment_terms_text
 
+        # Include org invoice footer text for split-panel rendering
+        result["org_invoice_footer_text"] = org_settings_full.get("invoice_footer_text")
+
     # Include customer details
     if invoice.customer_id:
         cust_result = await db.execute(

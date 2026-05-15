@@ -189,23 +189,6 @@
 
 {% block footer %}
 <div style="margin-top:24px; padding-top:10px; border-top:2px solid var(--primary);">
-  <table style="width:100%;" cellpadding="0" cellspacing="0">
-    <tr>
-      <td style="width:33%; vertical-align:top;">
-        {% if org.gst_number %}
-        <p class="footer-text" style="font-weight:600; color:var(--accent);">Payment Info</p>
-        <p class="footer-text">Bank transfer — use Invoice # as ref.</p>
-        {% endif %}
-      </td>
-      <td style="width:34%; vertical-align:top; text-align:center;">
-        {% if org.phone %}<p class="footer-text">{{ org.phone }}</p>{% endif %}
-        {% if org.email %}<p class="footer-text">{{ org.email }}</p>{% endif %}
-      </td>
-      <td style="width:33%; vertical-align:top; text-align:right;">
-        {% if org.invoice_footer %}<p class="footer-text">{{ org.invoice_footer }}</p>{% endif %}
-        <p class="footer-text" style="color:var(--primary); font-weight:600;">Thank you for your business.</p>
-      </td>
-    </tr>
-  </table>
+  {% if org.invoice_footer %}<p class="footer-text">{{ org.invoice_footer }}</p>{% endif %}
 </div>
 {% endblock %}

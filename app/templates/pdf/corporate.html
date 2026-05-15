@@ -189,10 +189,5 @@
 {% block footer %}
 <div style="margin-top:24px; padding-top:12px; border-top:3px double var(--primary); text-align:center;">
   {% if org.invoice_footer %}<p class="footer-text" style="color:#64748b;">{{ org.invoice_footer }}</p>{% endif %}
-  <p class="footer-text" style="color:var(--primary); font-weight:600; font-size:9pt;">Thank you for your business.</p>
-  {% if org.gst_number %}
-  <p class="footer-text" style="color:#94a3b8;">Payments can be paid by direct bank transfer. Please use your Invoice number as your ref number.</p>
-  {% endif %}
-  <p class="footer-text" style="color:#cbd5e1; margin-top:4px; font-style:italic;">Terms and Conditions apply.</p>
 </div>
 {% endblock %}

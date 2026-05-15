@@ -36,6 +36,7 @@ export interface InvoiceForReceipt {
     amount: number;
   }>;
   notes_customer: string | null;
+  org_invoice_footer_text?: string | null;
 }
 
 export function invoiceToReceiptData(invoice: InvoiceForReceipt): ReceiptData {
@@ -84,7 +85,7 @@ export function invoiceToReceiptData(invoice: InvoiceForReceipt): ReceiptData {
     paymentBreakdown: nonRefundPayments.length > 1
       ? nonRefundPayments.map((p) => ({ method: p.method, amount: Number(p.amount ?? 0) }))
       : undefined,
-    footer: invoice.notes_customer || 'Thank you for your business!',
+    footer: invoice.org_invoice_footer_text || 'Thank you for your business!',
   };
 }
 

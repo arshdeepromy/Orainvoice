@@ -128,7 +128,5 @@
 {% block footer %}
 <div style="margin-top:10px; border-top:1px solid #999; padding-top:6px; text-align:center;">
   {% if org.invoice_footer %}<p class="footer-text" style="color:#666;">{{ org.invoice_footer }}</p>{% endif %}
-  <p class="footer-text" style="color:#333; font-weight:700;">Thank you for your business.</p>
-  {% if org.gst_number %}<p class="footer-text" style="color:#999;">Use Invoice # as bank transfer ref.</p>{% endif %}
 </div>
 {% endblock %}
