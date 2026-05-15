@@ -6,7 +6,20 @@ inclusion: auto
 
 ## Environments
 
-### DEV — Local Ubuntu Machine
+### Overview
+
+| # | Environment | Location | Role | Compose Files | Project Name | Port | Env File |
+|---|---|---|---|---|---|---|---|
+| 1 | DEV | Local Ubuntu | Primary dev | `docker-compose.yml` + `docker-compose.dev.yml` | `invoicing` | 80 | `.env` |
+| 2 | Prod Standby | Local Ubuntu | HA standby for prod | `docker-compose.standby-prod.yml` | `invoicing-standby-prod` | 8082 | `.env.standby-prod` |
+| 3 | PROD | Raspberry Pi | Primary production | `docker-compose.yml` + `docker-compose.pi.yml` | `invoicing` | 8999 | `.env.pi` (as `.env`) |
+| 4 | Dev Standby | Raspberry Pi | HA standby for dev | `docker-compose.ha-standby.yml` | `invoicing-standby` | 8081 | `.env.ha-standby` |
+
+**HA Pairing:**
+- DEV (local primary) ↔ Dev Standby (Pi standby)
+- PROD (Pi primary) ↔ Prod Standby (local standby)
+
+### 1. DEV — Local Ubuntu Machine (Primary)
 - OS: Ubuntu 25.04 (x86_64, Linux 7.0)
 - Containers: `invoicing-*` (app, frontend, mobile, nginx, postgres, redis)
 - Compose: `docker-compose.yml` + `docker-compose.dev.yml` (auto-loaded via `COMPOSE_FILE` in `.env`)
@@ -18,13 +31,26 @@ inclusion: auto
 - Never deploy untested code to prod
 - Git + GitHub CLI (`gh`) authenticated for push/pull
 - SSH key auth to Pi (192.168.1.90) for deployments
+- HA role: primary (paired with Dev Standby on Pi)
 
-### PROD — Raspberry Pi
+### 2. Prod Standby — Local Ubuntu Machine
+- Containers: `invoicing-standby-prod-*` (app, frontend, nginx, postgres, redis)
+- Compose: `docker-compose.standby-prod.yml`
+- Project name: `invoicing-standby-prod`
+- Env file: `.env.standby-prod`
+- URL: `http://localhost:8082`
+- Postgres exposed on host port 5435
+- HA role: standby (paired with PROD on Pi)
+- Receives replicated data from Pi production via PostgreSQL logical replication
+- Deploy command: `docker compose -p invoicing-standby-prod -f docker-compose.standby-prod.yml up -d --build --force-recreate app frontend nginx`
+
+### 3. PROD — Raspberry Pi (Primary)
 - Host: `192.168.1.90`
 - User: `nerdy` (SSH key auth, no password needed for SSH; password required for sudo)
 - Project path: `~/invoicing/` (git repo, pulls from GitHub)
 - Containers: `invoicing-*` (app, frontend, mobile, nginx, postgres, redis — ARM64 native builds)
 - Compose: `docker-compose.yml` + `docker-compose.pi.yml`
+- Project name: `invoicing`
 - Env file: `.env.pi` (copied as `.env` on Pi, gitignored)
 - URL: `http://192.168.1.90:8999`
 - Port 8999 (nginx-proxy-manager occupies 80/443)
@@ -32,6 +58,19 @@ inclusion: auto
 - DATABASE_URL includes `?ssl=disable` in docker-compose.yml on Pi
 - Has active customer data — treat with care
 - Code deployed via `git pull origin main` (no tar/scp needed)
+- HA role: primary (paired with Prod Standby on local)
+
+### 4. Dev Standby — Raspberry Pi
+- Host: `192.168.1.90` (same Pi, different Docker project)
+- Containers: `invoicing-standby-*` (app, frontend, nginx, postgres, redis)
+- Compose: `docker-compose.ha-standby.yml`
+- Project name: `invoicing-standby`
+- Env file: `.env.ha-standby`
+- Postgres exposed on host port 5433
+- HA role: standby (paired with DEV on local)
+- Receives replicated data from local dev via PostgreSQL logical replication
+- Deploy command: `ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -p invoicing-standby -f docker-compose.ha-standby.yml up -d --build --force-recreate app frontend nginx'`
+- After frontend rebuild: `ssh nerdy@192.168.1.90 'docker exec invoicing-standby-frontend-1 chmod -R 755 /app/dist/assets'`
 
 ## Workflow Rules
 

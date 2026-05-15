@@ -32,12 +32,12 @@ OraInvoice is a multi-tenant SaaS invoicing and business management platform bui
 
 ## Deployment Environments
 
-| Environment | Location | Compose Files | Port | DB Port |
-|---|---|---|---|---|
-| Dev (local) | Windows desktop | docker-compose.yml + docker-compose.dev.yml | 80 | 5434 |
-| HA Standby (local) | Windows desktop | docker-compose.ha-standby.yml (project: invoicing-standby) | 8081 | 5433 |
-| Standby Prod (local) | Windows desktop | docker-compose.standby-prod.yml (project: invoicing-standby-prod) | 8082 | 5435 |
-| Production | Raspberry Pi 5 (192.168.1.90, user: nerdy) | docker-compose.yml + docker-compose.pi.yml (project: invoicing) | 8999 | 5432 |
+| Environment | Location | Compose Files | Project Name | Port | DB Port | HA Role |
+|---|---|---|---|---|---|---|
+| DEV (primary) | Local Ubuntu | docker-compose.yml + docker-compose.dev.yml | invoicing | 80 | 5434 | Primary (paired with Dev Standby on Pi) |
+| Prod Standby | Local Ubuntu | docker-compose.standby-prod.yml | invoicing-standby-prod | 8082 | 5435 | Standby (paired with PROD on Pi) |
+| PROD (primary) | Raspberry Pi (192.168.1.90) | docker-compose.yml + docker-compose.pi.yml | invoicing | 8999 | 5432 | Primary (paired with Prod Standby on local) |
+| Dev Standby | Raspberry Pi (192.168.1.90) | docker-compose.ha-standby.yml | invoicing-standby | 8081 | 5433 | Standby (paired with DEV on local) |
 
 ## Deployment Process (Pi Prod)
 
