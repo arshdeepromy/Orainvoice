@@ -204,6 +204,6 @@
   <div style="border-top:1px solid var(--primary); margin-top:2px;"></div>
 </div>
 <div style="padding-top:10px; text-align:center;">
-  {% if org.invoice_footer %}<p class="footer-text" style="color:#7c7c7c; font-style:italic;">{{ org.invoice_footer }}</p>{% endif %}
+  <p class="footer-text" style="color:#7c7c7c; font-style:italic;">{{ org.invoice_footer or 'Thank you for your business.' }}</p>
 </div>
 {% endblock %}

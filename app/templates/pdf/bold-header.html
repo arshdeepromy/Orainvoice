@@ -100,6 +100,6 @@
 
 {% block footer %}
 <div style="margin-top:24px; background:var(--header-bg); margin-left:-14mm; margin-right:-14mm; margin-bottom:-22mm; padding:14px 14mm 22mm 14mm; text-align:center; -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important;">
-  {% if org.invoice_footer %}<p style="font-size:8pt; color:#d4d4d4; line-height:1.6; font-weight:600;">{{ org.invoice_footer }}</p>{% endif %}
+  <p style="font-size:8pt; color:#d4d4d4; line-height:1.6; font-weight:600;">{{ org.invoice_footer or 'Thank you for your business.' }}</p>
 </div>
 {% endblock %}

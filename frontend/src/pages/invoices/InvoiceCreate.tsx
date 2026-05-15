@@ -1580,7 +1580,14 @@ export default function InvoiceCreate() {
         const newId = inv?.id
         if (newId) await uploadAttachments(newId)
         setPaidModalOpen(false)
-        navigate(newId ? `/invoices/${newId}` : '/invoices', newId ? { state: { invoice: inv } } : undefined)
+        // Fetch full invoice detail for instant preview (includes org, customer, payments)
+        if (newId) {
+          const detailRes = await apiClient.get(`/invoices/${newId}`)
+          const fullInv = (detailRes.data as any)?.invoice || detailRes.data
+          navigate(`/invoices/${newId}`, { state: { invoice: fullInv } })
+        } else {
+          navigate('/invoices')
+        }
       }
     } catch (err: unknown) {
       const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to process. Please try again.')

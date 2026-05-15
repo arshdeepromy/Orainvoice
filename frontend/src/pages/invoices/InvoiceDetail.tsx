@@ -1173,7 +1173,7 @@ export default function InvoiceDetail() {
       {invoice?.payment_terms_text && (
         <section className="mb-6">
           <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-2">Payment Terms</h2>
-          <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 whitespace-pre-wrap">
             {invoice.payment_terms_text}
           </div>
         </section>

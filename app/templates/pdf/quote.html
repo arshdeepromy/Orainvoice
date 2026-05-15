@@ -253,11 +253,9 @@
 {% endif %}
 
 <!-- Footer -->
-{% if org.invoice_footer %}
 <div style="margin-top:20px; padding-top:8px; border-top:1px solid #eee;">
-  <p class="footer-text" style="text-align:center;">{{ org.invoice_footer }}</p>
+  <p class="footer-text" style="text-align:center;">{{ org.invoice_footer or 'Thank you for your business.' }}</p>
 </div>
-{% endif %}
 
 <div style="margin-top:16px; text-align:center;">
   <p class="footer-text">Thank you for considering our quote.</p>

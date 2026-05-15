@@ -116,7 +116,7 @@
   /* Notes & footer */
   .notes-section { margin-top: 20px; }
   .section-title { font-size: 10px; font-weight: 700; text-transform: uppercase; color: #9ca3af; letter-spacing: 0.5px; border-bottom: 1px solid #f3f4f6; padding-bottom: 4px; margin-bottom: 6px; }
-  .notes-text { font-size: 13px; color: #6b7280; }
+  .notes-text { font-size: 13px; color: #6b7280; white-space: pre-wrap; }
   .footer { margin-top: 24px; padding-top: 12px; border-top: 1px solid #f3f4f6; text-align: center; font-size: 12px; color: #9ca3af; line-height: 1.7; }
 
   /* Print styles */
@@ -329,7 +329,7 @@
 
       <!-- Footer -->
       <div class="footer">
-        {% if org.invoice_footer %}<p>{{ org.invoice_footer }}</p>{% endif %}
+        <p>{{ org.invoice_footer or 'Thank you for your business.' }}</p>
       </div>
 
     </div>

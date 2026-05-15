@@ -1705,7 +1705,7 @@ export default function InvoiceList() {
                     {invoice?.payment_terms_text && (
                       <div className="border-t border-gray-100 pt-4 mb-4">
                         <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">Payment Terms</p>
-                        <p className="text-sm text-gray-600">{invoice.payment_terms_text}</p>
+                        <p className="text-sm text-gray-600 whitespace-pre-wrap">{invoice.payment_terms_text}</p>
                       </div>
                     )}
 

@@ -502,7 +502,7 @@
 {% if payment_terms %}
 <div style="margin-top:12px;">
   <div class="section-title">Payment Terms</div>
-  <p style="font-size:9pt; color:#555;">{{ payment_terms }}</p>
+  <p style="font-size:9pt; color:#555; white-space: pre-wrap;">{{ payment_terms }}</p>
 </div>
 {% endif %}
 {% endblock %}
@@ -524,7 +524,7 @@
 <!-- ============================================================ -->
 {% block footer %}
 <div style="margin-top:24px; padding-top:10px; border-top:1px solid #eee; text-align:center;">
-  {% if org.invoice_footer %}<p class="footer-text">{{ org.invoice_footer }}</p>{% endif %}
+  <p class="footer-text">{{ org.invoice_footer or 'Thank you for your business.' }}</p>
 </div>
 {% endblock %}
 

@@ -188,6 +188,6 @@
 
 {% block footer %}
 <div style="margin-top:28px; border-top:1px solid #e5e7eb; padding-top:8px;">
-  {% if org.invoice_footer %}<p style="font-size:8pt; color:#9ca3af; line-height:1.6;">{{ org.invoice_footer }}</p>{% endif %}
+  <p style="font-size:8pt; color:#9ca3af; line-height:1.6;">{{ org.invoice_footer or 'Thank you for your business.' }}</p>
 </div>
 {% endblock %}

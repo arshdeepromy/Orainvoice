@@ -129,3 +129,53 @@ Development rate limits are 5x production (set in ISSUE-016). React Strict Mode 
 - Rapid navigation can stack requests
 
 Use AbortController cleanup in useEffect hooks (pattern established in ISSUE-014) and avoid firing unnecessary requests.
+
+## Rule 10: PDF Templates — Jinja2 Fallback Defaults
+
+When rendering configurable text in PDF templates (WeasyPrint), always use Jinja2's `or` operator to provide a sensible default. Never use `{% if %}` conditionals that result in empty space when the setting is not configured.
+
+```jinja2
+{# WRONG — shows nothing when setting is empty/null #}
+{% if org.invoice_footer %}<p>{{ org.invoice_footer }}</p>{% endif %}
+
+{# RIGHT — shows default when setting is empty/null #}
+<p>{{ org.invoice_footer or 'Thank you for your business.' }}</p>
+```
+
+This applies to all user-configurable text fields rendered in PDFs: footer text, payment terms, notes, etc. The frontend split-panel preview should use the same fallback pattern (`value || 'default'`) to ensure PDF and preview always match.
+
+**Key locations for PDF templates:**
+- `app/templates/pdf/invoice.html` — default standalone template (used when no template_id is set)
+- `app/templates/pdf/_invoice_base.html` — base template extended by themed templates
+- `app/templates/pdf/invoice_share.html` — public share/portal view
+- `app/templates/pdf/*.html` — 12 themed child templates
+
+**Important:** The default template used for PDF generation is `invoice.html` (standalone), NOT `_invoice_base.html`. When fixing template issues, always check `invoice.html` first — it's what most orgs use.
+
+## Rule 11: Whitespace Preservation for Multi-Line Text Fields
+
+Any text field that accepts multi-line input (textarea) must preserve formatting when displayed:
+
+- **Frontend (Tailwind):** Add `whitespace-pre-wrap` class to the rendering element
+- **PDF templates (WeasyPrint):** Add `white-space: pre-wrap;` to the inline style
+
+Fields that need this treatment: `payment_terms_text`, `notes_customer`, `terms_and_conditions` (if plain text), item `description`. The pattern is already established for `notes_customer` — apply it consistently to all multi-line fields.
+
+## Rule 12: Navigation with location.state — Ensure Complete Data
+
+When navigating from a create/edit page to a list/detail page using `navigate('/path', { state: { invoice: data } })`, the passed data MUST include all fields needed for the preview to render correctly.
+
+The create endpoint (`POST /invoices`) returns `_invoice_to_dict()` which only has basic invoice columns — it does NOT include `org_name`, `customer` object, `payments`, etc. The detail endpoint (`GET /invoices/{id}`) returns the full enriched response.
+
+**Pattern to follow:**
+```typescript
+// After creating/updating, fetch full detail before navigating
+const createRes = await apiClient.post('/invoices', payload)
+const newId = (createRes.data as any)?.invoice?.id
+// Fetch full detail for instant preview
+const detailRes = await apiClient.get(`/invoices/${newId}`)
+const fullInv = (detailRes.data as any)?.invoice || detailRes.data
+navigate(`/invoices/${newId}`, { state: { invoice: fullInv } })
+```
+
+This ensures the split-panel renders instantly with all data (org name, customer, payments) instead of showing an empty template while the background refresh loads.
