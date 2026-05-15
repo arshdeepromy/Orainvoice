@@ -891,19 +891,74 @@ export default function InvoiceCreate() {
   const [paidMethod, setPaidMethod] = useState('cash')
   const [paidSaving, setPaidSaving] = useState(false)
 
+  // Ref to store initial loaded state for edit mode dirty comparison
+  const initialStateRef = useRef<{
+    customerId: string | null
+    subject: string
+    orderNumber: string
+    customerNotes: string
+    lineItems: string  // JSON-stringified (without keys) for comparison
+    vehicles: string   // JSON-stringified (without transients) for comparison
+    discountValue: number
+    shippingCharges: number
+    adjustment: number
+    attachmentsCount: number
+  } | null>(null)
+
+  // Flag to capture initial state on next render after loadInvoice completes
+  const [captureInitialState, setCaptureInitialState] = useState(false)
+
   // Unsaved changes detection
-  const isDirty = Boolean(
-    customer ||
-    subject.trim() ||
-    orderNumber.trim() ||
-    customerNotes.trim() ||
-    lineItems.some(li => li.description.trim() || li.quantity !== 1 || li.rate !== 0) ||
-    vehicles.length > 0 ||
-    discountValue > 0 ||
-    shippingCharges > 0 ||
-    adjustment !== 0 ||
-    attachments.length > 0
-  )
+  // Helper to compare line items ignoring the `key` field (which is a random UUID for React rendering)
+  const stripLineItemKeys = (items: LineItem[]) => items.map(({ key, ...rest }) => rest)
+  const stripVehicleTransients = (vehs: Vehicle[]) => vehs.map(({ newOdometer, newServiceDueDate, newWofExpiry, newCofExpiry, ...rest }) => rest)
+
+  const isDirty = isEditMode && initialStateRef.current
+    ? Boolean(
+        (customer?.id || null) !== initialStateRef.current.customerId ||
+        subject.trim() !== initialStateRef.current.subject ||
+        orderNumber.trim() !== initialStateRef.current.orderNumber ||
+        customerNotes.trim() !== initialStateRef.current.customerNotes ||
+        JSON.stringify(stripLineItemKeys(lineItems)) !== initialStateRef.current.lineItems ||
+        JSON.stringify(stripVehicleTransients(vehicles)) !== initialStateRef.current.vehicles ||
+        discountValue !== initialStateRef.current.discountValue ||
+        shippingCharges !== initialStateRef.current.shippingCharges ||
+        adjustment !== initialStateRef.current.adjustment ||
+        attachments.length !== initialStateRef.current.attachmentsCount
+      )
+    : isEditMode && !initialStateRef.current
+    ? false  // Edit mode but initial state not yet captured — not dirty
+    : Boolean(
+        customer ||
+        subject.trim() ||
+        orderNumber.trim() ||
+        customerNotes.trim() ||
+        lineItems.some(li => li.description.trim() || li.quantity !== 1 || li.rate !== 0) ||
+        vehicles.length > 0 ||
+        discountValue > 0 ||
+        shippingCharges > 0 ||
+        adjustment !== 0 ||
+        attachments.length > 0
+      )
+
+  // Capture initial state after loadInvoice populates form (runs once on the render after load)
+  useEffect(() => {
+    if (captureInitialState) {
+      initialStateRef.current = {
+        customerId: customer?.id || null,
+        subject: subject.trim(),
+        orderNumber: orderNumber.trim(),
+        customerNotes: customerNotes.trim(),
+        lineItems: JSON.stringify(stripLineItemKeys(lineItems)),
+        vehicles: JSON.stringify(stripVehicleTransients(vehicles)),
+        discountValue,
+        shippingCharges,
+        adjustment,
+        attachmentsCount: attachments.length,
+      }
+      setCaptureInitialState(false)
+    }
+  }, [captureInitialState])
 
   // Register navigation guard with layout
   const isDirtyRef = useRef(isDirty)
@@ -1051,6 +1106,9 @@ export default function InvoiceCreate() {
             catalogue_item_id: String(fu.catalogue_item_id || ''),
           })))
         }
+
+        // Signal to capture initial state on next render (after React processes the state updates above)
+        setCaptureInitialState(true)
       } catch {
         // Failed to load invoice for editing
       } finally {
@@ -1486,7 +1544,7 @@ export default function InvoiceCreate() {
     setUploading(false)
   }
 
-  const handleSaveDraft = async () => {
+  const handleSaveDraft = async (options?: { skipNavigation?: boolean }) => {
     if (!validate()) return
     setSaving(true)
     try {
@@ -1495,14 +1553,18 @@ export default function InvoiceCreate() {
         await maybeSaveTermsAsDefault()
         await uploadAttachments(editId)
         const inv = (res.data as any)?.invoice || res.data
-        navigate(`/invoices/${editId}`, { state: { invoice: inv } })
+        if (!options?.skipNavigation) {
+          navigate(`/invoices/${editId}`, { state: { invoice: inv } })
+        }
       } else {
         const res = await apiClient.post('/invoices', buildPayload('draft'))
         await maybeSaveTermsAsDefault()
         const inv = (res.data as any)?.invoice || res.data
         const newId = inv?.id
         if (newId) await uploadAttachments(newId)
-        navigate(newId ? `/invoices/${newId}` : '/invoices', newId ? { state: { invoice: inv } } : undefined)
+        if (!options?.skipNavigation) {
+          navigate(newId ? `/invoices/${newId}` : '/invoices', newId ? { state: { invoice: inv } } : undefined)
+        }
       }
     } catch (err: unknown) {
       const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to save draft. Please try again.')
@@ -1512,8 +1574,8 @@ export default function InvoiceCreate() {
     }
   }
 
-  // Wire up the ref so the navigation guard can call handleSaveDraft
-  handleSaveDraftRef.current = handleSaveDraft
+  // Wire up the ref so the navigation guard can call handleSaveDraft (skip internal navigation — OrgLayout handles post-save nav)
+  handleSaveDraftRef.current = () => handleSaveDraft({ skipNavigation: true })
 
   const handleSaveAndSend = async () => {
     if (!validate()) return
@@ -1618,7 +1680,7 @@ export default function InvoiceCreate() {
           <h1 className="text-lg font-semibold text-gray-900">{isEditMode ? 'Edit Invoice' : 'New Invoice'}</h1>
           <div className="flex items-center gap-2">
             <Button variant="secondary" size="sm" onClick={handleCancel}>Cancel</Button>
-            <Button variant="secondary" size="sm" onClick={handleSaveDraft} loading={saving}>Save as Draft</Button>
+            <Button variant="secondary" size="sm" onClick={() => handleSaveDraft()} loading={saving}>Save as Draft</Button>
             <Button variant="secondary" size="sm" onClick={() => { if (validate()) setPaidModalOpen(true) }} loading={paidSaving}>Mark Paid &amp; Email</Button>
             <Button size="sm" onClick={handleSaveAndSend} loading={saving}>Save and Send</Button>
           </div>
@@ -2271,7 +2333,7 @@ export default function InvoiceCreate() {
           {/* Bottom Actions */}
           <div className="flex justify-end gap-2 pt-4 border-t border-gray-200">
             <Button variant="secondary" size="sm" onClick={handleCancel}>Cancel</Button>
-            <Button variant="secondary" size="sm" onClick={handleSaveDraft} loading={saving}>Save as Draft</Button>
+            <Button variant="secondary" size="sm" onClick={() => handleSaveDraft()} loading={saving}>Save as Draft</Button>
             <Button variant="secondary" size="sm" onClick={() => { if (validate()) setPaidModalOpen(true) }} loading={paidSaving}>Mark Paid &amp; Email</Button>
             <Button size="sm" onClick={handleSaveAndSend} loading={saving}>Save and Send</Button>
           </div>

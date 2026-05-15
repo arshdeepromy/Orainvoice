@@ -534,12 +534,14 @@ export function OrgLayout() {
         <Button
           size="sm"
           onClick={async () => {
+            const dest = unsavedDestination
             if (unsavedGuardRef.current) {
               await unsavedGuardRef.current.onSave()
             }
             setUnsavedModalOpen(false)
             setUnsavedDestination(null)
             unsavedGuardRef.current = null
+            if (dest) navigate(dest)
           }}
         >
           Save as Draft
