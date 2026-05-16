@@ -116,12 +116,18 @@ The `.env` file is gitignored and untouched by `git pull`.
 
 ### Step 5: Rebuild and restart containers on Pi
 ```bash
-# Rebuild app container (backend)
+# Copy VERSION into frontend dir (Dockerfile context can't access parent)
+ssh nerdy@192.168.1.90 'cp ~/invoicing/VERSION ~/invoicing/frontend/VERSION'
+
+# Rebuild app container (backend — includes alembic migrations on startup)
 ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml up -d --build --force-recreate app'
 
-# Rebuild frontend + nginx (delete old volume to clear cached assets)
-ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml stop frontend nginx && docker compose -f docker-compose.yml -f docker-compose.pi.yml rm -f frontend nginx && docker volume rm invoicing_frontend_dist 2>/dev/null && docker compose -f docker-compose.yml -f docker-compose.pi.yml up -d --build --force-recreate frontend nginx'
+# Rebuild frontend + nginx (MUST delete volume to clear stale cached assets)
+ssh nerdy@192.168.1.90 'cd ~/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml stop frontend nginx && docker compose -f docker-compose.yml -f docker-compose.pi.yml rm -f frontend nginx && docker volume rm invoicing_frontend_dist 2>/dev/null; docker compose -f docker-compose.yml -f docker-compose.pi.yml up -d --build frontend nginx'
 ```
+
+**CRITICAL — Volume deletion is mandatory for frontend updates:**
+Docker named volumes persist old build artifacts. Without deleting `invoicing_frontend_dist`, the old JS/CSS bundles remain and the new build output is hidden by the volume mount. See "Known Deployment Issues" below.
 
 **CRITICAL:** After frontend container starts, fix the assets directory permissions:
 ```bash
@@ -187,8 +193,20 @@ rm -rf frontend_dist_export
 **Fix:** If `docker compose up --build frontend` fails on Pi, build locally and transfer the dist. See "Fallback: If Vite build fails on Pi ARM" above. As of April 2026, Vite builds successfully on Pi in most cases.
 
 ### Issue: Old frontend assets still showing after deployment
-**Cause:** The Docker volume `invoicing_frontend_dist` caches old assets. New deployment adds new files but doesn't remove old ones.
-**Fix:** Delete the volume before recreating the frontend container: `docker volume rm invoicing_frontend_dist`
+**Cause:** Docker named volumes (`invoicing_frontend_dist`) persist data across container rebuilds. When the frontend image is rebuilt with new code, the `COPY . .` and `RUN npx vite build` produce new assets inside the image at `/app/dist`. However, the named volume mount at `/app/dist` OVERRIDES the image's filesystem — the old volume contents take precedence over the freshly built files in the image. Simply doing `--build --force-recreate` does NOT clear the volume.
+**Fix:** You MUST stop the containers, remove them, delete the volume, then recreate. This is the ONLY reliable way to get fresh frontend assets:
+```bash
+# The correct frontend deployment sequence (all environments):
+docker compose stop frontend nginx
+docker compose rm -f frontend nginx
+docker volume rm <project>_frontend_dist   # e.g., invoicing_frontend_dist
+docker compose up -d --build frontend nginx
+```
+Also ensure the VERSION file is copied into `frontend/` before building on Pi (since the Dockerfile context is `./frontend` and can't access the parent VERSION file):
+```bash
+cp VERSION frontend/VERSION
+```
+**Why `--build --force-recreate` alone doesn't work:** Docker volumes are designed to persist data. Even with a new image, the existing volume data is mounted over `/app/dist`, hiding the new build output. The volume must be deleted to allow the new image's build output to populate a fresh empty volume.
 
 ### Issue: Directory permissions on Pi prevent file extraction
 **Cause:** Docker sets directories to read-only (`dr-xr-xr-x`) when building images. The `nerdy` user can't write to them.
