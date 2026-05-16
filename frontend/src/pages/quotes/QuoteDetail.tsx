@@ -659,6 +659,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
                   <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: '#fff' }}>Description</th>
                   <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider" style={{ color: '#fff' }}>Qty</th>
                   <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider" style={{ color: '#fff' }}>Rate</th>
+                  <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider" style={{ color: '#fff' }}>Tax</th>
                   <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wider rounded-tr-lg" style={{ color: '#fff' }}>Amount</th>
                 </tr>
               </thead>
@@ -682,14 +683,21 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
                     <td className={`px-4 ${templateStyles.layoutType === 'compact' ? 'py-1.5' : 'py-3'} text-sm text-gray-900 text-right tabular-nums`}>
                       {Number(item.item_type === 'labour' ? (item.hourly_rate ?? 0) : (item.unit_price ?? 0)).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
+                    <td className={`px-4 ${templateStyles.layoutType === 'compact' ? 'py-1.5' : 'py-3'} text-sm text-gray-700 text-right tabular-nums`}>
+                      {item.is_gst_exempt
+                        ? '0.00'
+                        : (Number(item.line_total ?? 0) * 0.15).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
                     <td className={`px-4 ${templateStyles.layoutType === 'compact' ? 'py-1.5' : 'py-3'} text-sm font-medium text-gray-900 text-right tabular-nums`}>
-                      {Number(item.line_total ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {item.is_gst_exempt
+                        ? Number(item.line_total ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                        : (Number(item.line_total ?? 0) * 1.15).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                   </tr>
                 ))}
                 {lineItems.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-sm text-gray-400">No line items</td>
+                    <td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-400">No line items</td>
                   </tr>
                 )}
               </tbody>
@@ -702,7 +710,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
               <div className="w-72">
                 <dl className="space-y-1.5 text-sm">
                   <div className="flex justify-between py-1">
-                    <dt className="text-gray-500">Sub Total</dt>
+                    <dt className="text-gray-500">Sub Total (Ex GST)</dt>
                     <dd className="text-gray-900 tabular-nums font-medium">
                       {Number(quote.subtotal ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </dd>

@@ -187,6 +187,7 @@
       <th style="text-align:left;">Description</th>
       <th style="text-align:right; width:60px;">Qty</th>
       <th style="text-align:right; width:80px;">Rate</th>
+      <th style="text-align:right; width:70px;">Tax</th>
       <th style="text-align:right; width:80px;">Amount</th>
     </tr>
   </thead>
@@ -206,8 +207,11 @@
       <td style="text-align:right; font-variant-numeric:tabular-nums;">
         {% if item.item_type == 'labour' %}{{ "%.2f" | format(item.hourly_rate | float) }}{% else %}{{ "%.2f" | format(item.unit_price | float) }}{% endif %}
       </td>
+      <td style="text-align:right; font-variant-numeric:tabular-nums;">
+        {% if not item.is_gst_exempt %}{{ "%.2f" | format((item.line_total | float) * (gst_percentage | default(15) | float) / 100) }}{% else %}0.00{% endif %}
+      </td>
       <td style="text-align:right; font-weight:600; font-variant-numeric:tabular-nums;">
-        {{ "%.2f" | format(item.line_total | float) }}
+        {% if not item.is_gst_exempt %}{{ "%.2f" | format((item.line_total | float) * (1 + (gst_percentage | default(15) | float) / 100)) }}{% else %}{{ "%.2f" | format(item.line_total | float) }}{% endif %}
       </td>
     </tr>
     {% endfor %}
@@ -220,7 +224,7 @@
 <div style="display:flex; justify-content:flex-end; margin-bottom:16px;">
   <div>
     <table class="totals-table">
-      <tr><td class="lbl">Sub Total</td><td class="val">{{ "%.2f" | format(quote.subtotal | float) }}</td></tr>
+      <tr><td class="lbl">Sub Total (Ex GST)</td><td class="val">{{ "%.2f" | format(quote.subtotal | float) }}</td></tr>
       {% if quote.discount_amount and quote.discount_amount | float > 0 %}
       <tr><td class="lbl" style="color:#059669;">Discount{% if quote.discount_type == 'percentage' and quote.discount_value %} ({{ quote.discount_value }}%){% endif %}</td><td class="val" style="color:#059669;">-{{ "%.2f" | format(quote.discount_amount | float) }}</td></tr>
       {% endif %}

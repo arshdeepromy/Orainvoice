@@ -245,6 +245,7 @@
             <th style="text-align:left;">Description</th>
             <th style="text-align:right; width:70px;">Qty</th>
             <th style="text-align:right; width:90px;">Rate</th>
+            <th style="text-align:right; width:80px;">Tax</th>
             <th style="text-align:right; width:100px;">Amount</th>
           </tr>
         </thead>
@@ -265,11 +266,16 @@
             <td style="text-align:right;">
               {% if item.item_type == 'labour' %}{{ "%.2f" | format((item.hourly_rate or 0) | float) }}{% else %}{{ "%.2f" | format(item.unit_price | float) }}{% endif %}
             </td>
-            <td style="text-align:right; font-weight:600;">{{ "%.2f" | format(item.line_total | float) }}</td>
+            <td style="text-align:right;">
+              {% if not item.is_gst_exempt %}{{ "%.2f" | format((item.line_total | float) * (gst_percentage | default(15) | float) / 100) }}{% else %}0.00{% endif %}
+            </td>
+            <td style="text-align:right; font-weight:600;">
+              {% if not item.is_gst_exempt %}{{ "%.2f" | format((item.line_total | float) * (1 + (gst_percentage | default(15) | float) / 100)) }}{% else %}{{ "%.2f" | format(item.line_total | float) }}{% endif %}
+            </td>
           </tr>
           {% endfor %}
           {% if not invoice.line_items %}
-          <tr><td colspan="5" style="text-align:center; padding:24px; color:#9ca3af;">No line items</td></tr>
+          <tr><td colspan="6" style="text-align:center; padding:24px; color:#9ca3af;">No line items</td></tr>
           {% endif %}
         </tbody>
       </table>
@@ -277,7 +283,7 @@
       <!-- Totals -->
       <div class="totals-wrapper">
         <div class="totals-block">
-          <div class="total-line"><span class="lbl">Sub Total</span><span class="val">{{ "%.2f" | format(invoice.subtotal | float) }}</span></div>
+          <div class="total-line"><span class="lbl">Sub Total (Ex GST)</span><span class="val">{{ "%.2f" | format(invoice.subtotal | float) }}</span></div>
           {% if invoice.discount_amount and invoice.discount_amount > 0 %}
           <div class="total-line discount">
             <span class="lbl">Discount</span>

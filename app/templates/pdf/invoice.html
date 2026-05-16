@@ -93,9 +93,48 @@
     border-bottom: 1px solid #eee; padding-bottom: 3px; margin-bottom: 6px;
   }
   .footer-text { font-size: 8pt; color: #aaa; line-height: 1.6; }
+  /* PAID stamp overlay — floats over content, no space taken */
+  .paid-stamp {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(-20deg);
+    z-index: 9999;
+    pointer-events: none;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .paid-stamp-inner {
+    border: 6px solid rgba(22, 163, 74, 0.55);
+    border-radius: 50%;
+    width: 160px;
+    height: 160px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .paid-stamp-text {
+    font-size: 38pt;
+    font-weight: 900;
+    color: rgba(22, 163, 74, 0.55);
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  }
 </style>
 </head>
 <body>
+
+<!-- PAID stamp renders as fixed overlay in center of page -->
+{% if invoice.status == 'paid' %}
+<div class="paid-stamp">
+  <div class="paid-stamp-inner">
+    <span class="paid-stamp-text">PAID</span>
+  </div>
+</div>
+{% endif %}
 
 <!-- ============================================================ -->
 <!--  HEADER: Org info (left) + Invoice title & balance (right)    -->
@@ -253,6 +292,7 @@
       <th style="text-align:left;">Description</th>
       <th style="text-align:right; width:65px;">Qty</th>
       <th style="text-align:right; width:80px;">Rate</th>
+      <th style="text-align:right; width:70px;">Tax</th>
       <th style="text-align:right; width:90px;">Amount</th>
     </tr>
   </thead>
@@ -273,13 +313,16 @@
       <td style="text-align:right; color:#1a1a1a;">
         {% if item.item_type == 'labour' %}{{ "%.2f" | format((item.hourly_rate or 0) | float) }}{% else %}{{ "%.2f" | format(item.unit_price | float) }}{% endif %}
       </td>
+      <td style="text-align:right; color:#1a1a1a;">
+        {% if not item.is_gst_exempt %}{{ "%.2f" | format((item.line_total | float) * (gst_percentage | default(15) | float) / 100) }}{% else %}0.00{% endif %}
+      </td>
       <td style="text-align:right; color:#1a1a1a; font-weight:600;">
-        {{ "%.2f" | format(item.line_total | float) }}
+        {% if not item.is_gst_exempt %}{{ "%.2f" | format((item.line_total | float) * (1 + (gst_percentage | default(15) | float) / 100)) }}{% else %}{{ "%.2f" | format(item.line_total | float) }}{% endif %}
       </td>
     </tr>
     {% endfor %}
     {% if not invoice.line_items %}
-    <tr><td colspan="5" style="text-align:center; padding:20px; color:#999;">No line items</td></tr>
+    <tr><td colspan="6" style="text-align:center; padding:20px; color:#999;">No line items</td></tr>
     {% endif %}
   </tbody>
 </table>
@@ -292,7 +335,7 @@
     <td>
       <table class="totals-table">
         <tr>
-          <td class="lbl">Sub Total</td>
+          <td class="lbl">Sub Total (Ex GST)</td>
           <td class="val">{{ "%.2f" | format(invoice.subtotal | float) }}</td>
         </tr>
         {% if invoice.discount_amount and invoice.discount_amount > 0 %}
@@ -374,9 +417,7 @@
 <!--  PAYMENT STATUS BANNERS                                       -->
 <!-- ============================================================ -->
 {% if invoice.status == 'paid' %}
-<div style="text-align:center; margin:14px 0; padding:8px; background:#dcfce7; border:1px solid #4ade80; border-radius:6px; font-weight:700; color:#166534; font-size:10pt;">
-  PAID IN FULL
-</div>
+<!-- stamp already rendered as fixed overlay -->
 {% elif invoice.status == 'refunded' %}
 <div style="text-align:center; margin:14px 0; padding:8px; background:#fff7ed; border:1px solid #fb923c; border-radius:6px; font-weight:700; color:#9a3412; font-size:10pt;">
   REFUNDED
@@ -392,50 +433,6 @@
 {% elif invoice.status == 'overdue' %}
 <div style="text-align:center; margin:14px 0; padding:8px; background:#fff7ed; border:1px solid #fb923c; border-radius:6px; font-weight:700; color:#9a3412; font-size:10pt;">
   OVERDUE
-</div>
-{% endif %}
-
-<!-- ============================================================ -->
-<!--  PAYMENT HISTORY (shown when payments exist)                  -->
-<!-- ============================================================ -->
-{% if invoice.payments and invoice.payments | length > 0 %}
-<div style="margin-top:14px;">
-  <div class="section-title">Payment History</div>
-  <table style="width:100%; font-size:9pt; border-collapse:collapse; margin-top:6px;">
-    <thead>
-      <tr style="border-bottom:1px solid #ddd;">
-        <th style="text-align:left; padding:4px 8px; color:#888; font-size:8pt; text-transform:uppercase;">Date</th>
-        <th style="text-align:left; padding:4px 8px; color:#888; font-size:8pt; text-transform:uppercase;">Type</th>
-        <th style="text-align:right; padding:4px 8px; color:#888; font-size:8pt; text-transform:uppercase;">Amount</th>
-        <th style="text-align:left; padding:4px 8px; color:#888; font-size:8pt; text-transform:uppercase;">Method</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for p in invoice.payments %}
-      <tr style="border-bottom:1px solid #f0f0f0;">
-        <td style="padding:6px 8px;">{{ p.date | pdfdate }}</td>
-        <td style="padding:6px 8px;">
-          {% if p.is_refund %}
-            <span style="color:#dc2626; font-weight:600;">Refund</span>
-          {% else %}
-            <span style="color:#059669; font-weight:600;">Payment</span>
-          {% endif %}
-        </td>
-        <td style="text-align:right; padding:6px 8px; font-weight:600; {{ 'color:#dc2626;' if p.is_refund else 'color:#1a1a1a;' }}">
-          NZD{{ "%.2f" | format(p.amount | float) }}
-        </td>
-        <td style="padding:6px 8px; text-transform:capitalize;">{{ p.method }}</td>
-      </tr>
-      {% if p.is_refund and p.refund_note %}
-      <tr>
-        <td colspan="4" style="padding:2px 8px 6px 8px; font-size:8pt; color:#666; font-style:italic;">
-          Reason: {{ p.refund_note }}
-        </td>
-      </tr>
-      {% endif %}
-      {% endfor %}
-    </tbody>
-  </table>
 </div>
 {% endif %}
 

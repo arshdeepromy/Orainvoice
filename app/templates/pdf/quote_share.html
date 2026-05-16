@@ -101,7 +101,7 @@
           <th>Description</th>
           <th class="text-center">Qty</th>
           <th class="text-right">Rate</th>
-          <th class="text-center">GST</th>
+          <th class="text-right">Tax</th>
           <th class="text-right">Amount</th>
         </tr>
       </thead>
@@ -115,8 +115,12 @@
           </td>
           <td class="text-center">{% if item.item_type == 'labour' %}{{ item.hours or '' }}{% else %}{{ item.quantity }}{% endif %}</td>
           <td class="text-right">${% if item.item_type == 'labour' %}{{ "%.2f" | format(item.hourly_rate or 0) }}{% else %}{{ "%.2f" | format(item.unit_price) }}{% endif %}</td>
-          <td class="text-center">{% if item.is_gst_exempt %}Exempt{% else %}✓{% endif %}</td>
-          <td class="text-right"><strong>${{ "%.2f" | format(item.line_total) }}</strong></td>
+          <td class="text-right">
+            {% if not item.is_gst_exempt %}${{ "%.2f" | format((item.line_total | float) * (gst_percentage | default(15) | float) / 100) }}{% else %}$0.00{% endif %}
+          </td>
+          <td class="text-right">
+            <strong>{% if not item.is_gst_exempt %}${{ "%.2f" | format((item.line_total | float) * (1 + (gst_percentage | default(15) | float) / 100)) }}{% else %}${{ "%.2f" | format(item.line_total) }}{% endif %}</strong>
+          </td>
         </tr>
         {% endfor %}
       </tbody>
@@ -124,7 +128,7 @@
 
     <div class="totals">
       <table>
-        <tr><td>Subtotal (excl. GST)</td><td>${{ "%.2f" | format(quote.subtotal) }}</td></tr>
+        <tr><td>Sub Total (Ex GST)</td><td>${{ "%.2f" | format(quote.subtotal) }}</td></tr>
         <tr><td>GST ({{ gst_percentage }}%)</td><td>${{ "%.2f" | format(quote.gst_amount) }}</td></tr>
         <tr class="total-row"><td>Total (NZD)</td><td>${{ "%.2f" | format(quote.total) }}</td></tr>
       </table>

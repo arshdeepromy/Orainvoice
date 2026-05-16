@@ -108,7 +108,7 @@
       <div style="background:#ecfdf5; border:1px solid #a7f3d0; padding:10px 16px; border-radius:6px;">
         <table class="totals-table">
           <tr>
-            <td class="lbl">Sub Total</td>
+            <td class="lbl">Sub Total (Ex GST)</td>
             <td class="val">{{ "%.2f" | format(invoice.subtotal | float) }}</td>
           </tr>
           {% if invoice.discount_amount and invoice.discount_amount > 0 %}

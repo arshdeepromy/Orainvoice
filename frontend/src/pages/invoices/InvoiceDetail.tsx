@@ -978,8 +978,8 @@ export default function InvoiceDetail() {
                 <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Description</th>
                 <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Qty/Hrs</th>
                 <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Rate</th>
-                <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">GST</th>
-                <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Total</th>
+                <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Tax</th>
+                <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Amount</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 bg-white">
@@ -1017,11 +1017,14 @@ export default function InvoiceDetail() {
                     {(item.is_gst_exempt ?? item.gst_exempt) ? (
                       <span className="text-gray-400">Exempt</span>
                     ) : (
-                      <span className="text-gray-700">{item.gst_amount != null ? formatNZD(item.gst_amount) : '—'}</span>
+                      <span className="text-gray-700">{formatNZD((item.line_total ?? 0) * 0.15)}</span>
                     )}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-gray-900 text-right tabular-nums">
-                    {formatNZD(item.line_total)}
+                    {(item.is_gst_exempt ?? item.gst_exempt)
+                      ? formatNZD(item.line_total)
+                      : formatNZD((item.line_total ?? 0) * 1.15)
+                    }
                   </td>
                 </tr>
               ))}
@@ -1033,7 +1036,7 @@ export default function InvoiceDetail() {
         <div className="mt-4 flex justify-end">
           <dl className="w-64 space-y-1 text-sm">
             <div className="flex justify-between">
-              <dt className="text-gray-500">Subtotal (ex-GST)</dt>
+              <dt className="text-gray-500">Sub Total (Ex GST)</dt>
               <dd className="text-gray-900 tabular-nums">{formatNZD(invoice.subtotal_ex_gst ?? invoice.subtotal)}</dd>
             </div>
             {(invoice.discount_value ?? 0) > 0 && (

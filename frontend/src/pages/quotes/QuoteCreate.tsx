@@ -527,19 +527,29 @@ function ItemTableRow({
       </td>
       <td className="py-3 px-2 w-32">
         <input type="number" min="0" step="0.01" value={item.rate}
-          onChange={(e) => update({ rate: Math.max(0, Number(e.target.value) || 0) })}
+          onChange={(e) => update({ rate: Math.max(0, Number(e.target.value) || 0), gst_inclusive: false, inclusive_price: undefined })}
           className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" />
       </td>
+      {/* Tax */}
       <td className="py-3 px-2 w-36">
-        <select value={item.tax_id || ''} onChange={(e) => handleTaxChange(e.target.value)}
-          className="w-full rounded border border-gray-300 px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-          {taxRates.map((tax) => (
-            <option key={tax.id} value={tax.id}>{tax.name}</option>
-          ))}
-        </select>
+        <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5 text-center">
+          <span className="block text-sm font-semibold text-gray-900">
+            {formatNZD(item.tax_rate > 0 ? Math.round(item.amount * item.tax_rate) / 100 : 0)}
+          </span>
+          <select
+            value={item.tax_id || ''}
+            onChange={(e) => handleTaxChange(e.target.value)}
+            className="mt-0.5 w-full rounded border-0 bg-transparent px-0 py-0 text-[11px] text-blue-600 text-center cursor-pointer hover:text-blue-800 focus:outline-none focus:ring-0 appearance-none font-medium"
+          >
+            {taxRates.map((tax) => (
+              <option key={tax.id} value={tax.id}>{tax.name}</option>
+            ))}
+          </select>
+        </div>
       </td>
+      {/* Amount (line total including GST) */}
       <td className="py-3 px-2 w-28 text-right text-sm font-medium text-gray-900">
-        {formatNZD(item.amount)}
+        {formatNZD(item.amount + (item.tax_rate > 0 ? Math.round(item.amount * item.tax_rate) / 100 : 0))}
       </td>
       <td className="py-3 px-2 w-12">
         <button type="button" onClick={() => onRemove(index)}
@@ -1323,7 +1333,7 @@ export default function QuoteCreate() {
           <div className="flex justify-end">
             <div className="w-full max-w-sm space-y-3">
               <div className="flex justify-between text-sm">
-                <span className="text-gray-600">Sub Total</span>
+                <span className="text-gray-600">Sub Total (Ex GST)</span>
                 <span className="font-medium text-gray-900">{formatNZD(subTotal)}</span>
               </div>
 
