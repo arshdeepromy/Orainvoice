@@ -325,6 +325,12 @@ class LineItem(Base):
     is_gst_exempt: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
+    gst_inclusive: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    inclusive_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2), nullable=True
+    )
     warranty_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     line_total: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), nullable=False

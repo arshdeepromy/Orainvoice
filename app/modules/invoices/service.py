@@ -634,6 +634,8 @@ async def create_invoice(
             discount_type=item_data.get("discount_type"),
             discount_value=item_data.get("discount_value"),
             is_gst_exempt=item_data.get("is_gst_exempt", False),
+            gst_inclusive=item_data.get("gst_inclusive", False),
+            inclusive_price=Decimal(str(item_data["inclusive_price"])) if item_data.get("inclusive_price") else None,
             warranty_note=item_data.get("warranty_note"),
             line_total=totals["line_totals"][i],
             sort_order=item_data.get("sort_order", i),
@@ -1039,6 +1041,8 @@ def _line_item_to_dict(li: LineItem) -> dict:
         "discount_type": li.discount_type,
         "discount_value": li.discount_value,
         "is_gst_exempt": li.is_gst_exempt,
+        "gst_inclusive": li.gst_inclusive,
+        "inclusive_price": li.inclusive_price,
         "warranty_note": li.warranty_note,
         "line_total": li.line_total,
         "sort_order": li.sort_order,
@@ -1075,6 +1079,8 @@ async def _recalculate_invoice(
             "discount_type": li.discount_type,
             "discount_value": li.discount_value,
             "is_gst_exempt": li.is_gst_exempt,
+            "gst_inclusive": li.gst_inclusive,
+            "inclusive_price": li.inclusive_price,
         }
         for li in line_items
     ]
@@ -1856,13 +1862,8 @@ async def issue_invoice(
         gst_number=gst_number,
     )
 
-    if not compliance["is_compliant"]:
-        field_msgs = "; ".join(
-            f"{i['field']}: {i['message']}" for i in compliance["issues"]
-        )
-        raise ValueError(
-            f"Invoice does not meet NZ tax invoice requirements: {field_msgs}"
-        )
+    # Compliance is informational only — do not block issuing
+    # The frontend displays warnings on the invoice detail page instead
 
     gst_pct = Decimal(str(org_settings.get("gst_percentage", 15)))
     tax_details = get_line_item_tax_details(line_items, gst_pct)
@@ -2209,6 +2210,8 @@ async def update_invoice(
                 quantity=qty,
                 unit_price=rate,
                 is_gst_exempt=is_exempt,
+                gst_inclusive=bool(item_data.get("gst_inclusive", False)),
+                inclusive_price=Decimal(str(item_data["inclusive_price"])) if item_data.get("inclusive_price") else None,
                 line_total=amount,
                 sort_order=idx,
             )

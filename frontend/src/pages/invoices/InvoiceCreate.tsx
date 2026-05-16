@@ -705,7 +705,7 @@ function ItemTableRow({
           min="0"
           step="0.01"
           value={item.rate}
-          onChange={(e) => update({ rate: Math.max(0, Number(e.target.value) || 0) })}
+          onChange={(e) => update({ rate: Math.max(0, Number(e.target.value) || 0), gst_inclusive: false, inclusive_price: undefined })}
           className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </td>
@@ -1092,6 +1092,8 @@ export default function InvoiceCreate() {
             tax_id: li.is_gst_exempt ? 'gst_0' : 'gst_15',
             tax_rate: li.is_gst_exempt ? 0 : 15,
             amount: Number(li.line_total || 0),
+            gst_inclusive: Boolean(li.gst_inclusive),
+            inclusive_price: li.inclusive_price ? Number(li.inclusive_price) : undefined,
           })))
         }
 
