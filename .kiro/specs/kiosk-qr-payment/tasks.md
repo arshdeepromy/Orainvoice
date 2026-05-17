@@ -228,16 +228,16 @@ This plan implements the QR payment flow where clicking "QR Payment" on InvoiceC
   - Do NOT run the full test suite — only tests relevant to this feature
   - Ensure all pass, ask the user if questions arise.
 
-- [ ] 14. Git push and deploy to local DEV only
+- [x] 14. Git push and deploy to local DEV only
   - [x] 14.1 Bump VERSION to next patch (e.g., 1.5.1)
-  - [-] 14.2 Git add all changes, commit with message: "feat: kiosk QR payment via Stripe Checkout (Apple Pay, Google Pay, Afterpay)"
-  - [~] 14.3 Git push to origin main
-  - [~] 14.4 Deploy to LOCAL DEV only:
+  - [x] 14.2 Git add all changes, commit with message: "feat: kiosk QR payment via Stripe Checkout (Apple Pay, Google Pay, Afterpay)"
+  - [x] 14.3 Git push to origin main
+  - [x] 14.4 Deploy to LOCAL DEV only:
     - `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build --force-recreate app frontend`
     - Verify migration runs (check app logs for "Running upgrade")
     - Verify frontend builds successfully (check frontend logs)
     - Do NOT deploy to PROD or Pi — this is DEV-only until manually tested
-  - [~] 14.5 Verify deployment:
+  - [x] 14.5 Verify deployment:
     - Confirm app is running: `curl -s http://localhost/health`
     - Confirm new endpoints respond: `curl -s http://localhost/api/v1/payments/qr-session/pending` (should return 401 without auth)
     - Confirm frontend shows new version in sidebar
