@@ -208,6 +208,20 @@ cp VERSION frontend/VERSION
 ```
 **Why `--build --force-recreate` alone doesn't work:** Docker volumes are designed to persist data. Even with a new image, the existing volume data is mounted over `/app/dist`, hiding the new build output. The volume must be deleted to allow the new image's build output to populate a fresh empty volume.
 
+### Issue: Migration files missing on Pi after tar sync
+**Cause:** When syncing code to the Pi via `tar`, the `alembic/versions/` directory was not included in the tar command. The app container is built with `COPY . .` which bakes the code into the image at build time. If migration files aren't on disk when `docker compose up --build` runs, they won't be in the container, and `alembic upgrade head` silently does nothing (it thinks it's already at head because the file defining the next revision doesn't exist).
+**Fix:** Always include `alembic/` in the tar sync command, OR use `git pull` on the Pi (which gets everything). The correct tar sync command is:
+```bash
+tar -cf - --exclude='.git' --exclude='node_modules' --exclude='.hypothesis' \
+  --exclude='__pycache__' --exclude='.venv' --exclude='frontend/dist' \
+  --exclude='mobile/dist' --exclude='mobile/node_modules' \
+  --exclude='frontend/node_modules' \
+  app/ alembic/ frontend/src/ frontend/package.json frontend/vite.config.ts \
+  frontend/tsconfig.json frontend/index.html frontend/public/ VERSION shared/ \
+  | ssh nerdy@192.168.1.90 "cd /home/nerdy/invoicing && tar -xf -"
+```
+**Key insight:** After syncing, you MUST rebuild the app container (`--build`) for the new migration files to be included in the image. A simple `restart` won't pick them up because the files are baked into the Docker image layer, not mounted.
+
 ### Issue: Directory permissions on Pi prevent file extraction
 **Cause:** Docker sets directories to read-only (`dr-xr-xr-x`) when building images. The `nerdy` user can't write to them.
 **Fix:** Run `find . -maxdepth 5 -type d -exec chmod u+w {} \;` before extracting the tar.
