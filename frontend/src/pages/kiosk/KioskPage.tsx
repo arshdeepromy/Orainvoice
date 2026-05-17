@@ -1,10 +1,12 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useModules } from '@/contexts/ModuleContext'
+import apiClient from '@/api/client'
 import { KioskWelcome } from './KioskWelcome'
 import { KioskRegoEntry } from './KioskRegoEntry'
 import { KioskVehicleSummary } from './KioskVehicleSummary'
 import { KioskCheckInForm } from './KioskCheckInForm'
 import { KioskSuccess } from './KioskSuccess'
+import { KioskQrPopup } from './KioskQrPopup'
 import type {
   KioskVehicleEntry,
   VehicleLookupResult,
@@ -15,6 +17,18 @@ import type {
 /* ── Types ── */
 
 export type KioskScreen = 'welcome' | 'rego' | 'vehicle-summary' | 'form' | 'success' | 'error'
+
+/** Shape returned by GET /payments/qr-session/pending when a session exists. */
+interface QrSession {
+  session_id: string
+  checkout_url: string
+  amount: number
+  invoice_number: string
+  expires_at: string
+}
+
+/** Polling interval for pending QR sessions (ms). */
+const QR_POLL_INTERVAL = 2500
 
 /* ── Initial state helpers ── */
 
@@ -36,6 +50,45 @@ export function KioskPage() {
   const [currentLookupResult, setCurrentLookupResult] = useState<VehicleLookupResult | null>(null)
   const [formData, setFormData] = useState<KioskFormData>(EMPTY_FORM_DATA)
   const [successData, setSuccessData] = useState<KioskSuccessData | null>(null)
+  const [qrSession, setQrSession] = useState<QrSession | null>(null)
+
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  /** Poll for pending QR sessions while on the welcome screen. */
+  useEffect(() => {
+    if (screen !== 'welcome') return
+
+    const controller = new AbortController()
+
+    const pollPending = async () => {
+      try {
+        const res = await apiClient.get<{ session: QrSession | null }>(
+          '/payments/qr-session/pending',
+          { signal: controller.signal },
+        )
+        const session = res.data?.session ?? null
+        if (session) {
+          setQrSession(session)
+        }
+      } catch {
+        // Silent retry on network errors (Req 7.5)
+      }
+    }
+
+    // Initial poll
+    pollPending()
+
+    // Poll every 2.5 seconds
+    pollTimerRef.current = setInterval(pollPending, QR_POLL_INTERVAL)
+
+    return () => {
+      controller.abort()
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current)
+        pollTimerRef.current = null
+      }
+    }
+  }, [screen])
 
   /** Clear all session state and return to welcome. */
   const resetToWelcome = useCallback(() => {
@@ -44,6 +97,11 @@ export function KioskPage() {
     setCurrentLookupResult(null)
     setFormData(EMPTY_FORM_DATA)
     setSuccessData(null)
+  }, [])
+
+  /** Dismiss QR popup — payment completed or session expired. */
+  const handleQrDismiss = useCallback(() => {
+    setQrSession(null)
   }, [])
 
   /** Welcome → Check In: module-gated transition. */
@@ -200,6 +258,15 @@ export function KioskPage() {
             Start Over
           </button>
         </div>
+      )}
+
+      {/* QR Payment Popup — overlays welcome screen when a pending session is detected */}
+      {qrSession && (
+        <KioskQrPopup
+          session={qrSession}
+          onPaymentComplete={handleQrDismiss}
+          onExpired={handleQrDismiss}
+        />
       )}
     </div>
   )

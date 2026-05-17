@@ -27,6 +27,10 @@ from app.modules.payments.schemas import (
     PaymentMethodsResponse,
     PaymentMethodInfo,
     PayoutInfoResponse,
+    PendingQrSessionResponse,
+    QrPaymentSessionRequest,
+    QrPaymentSessionResponse,
+    QrSessionStatusResponse,
     RefundRequest,
     RefundResponse,
     RegeneratePaymentLinkResponse,
@@ -49,6 +53,10 @@ from app.modules.payments.service import (
     get_payment_history,
     handle_stripe_webhook,
     process_refund,
+    create_qr_payment_session,
+    get_pending_qr_session,
+    get_qr_session_status,
+    expire_qr_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -1008,6 +1016,286 @@ async def update_surcharge_settings(
         surcharge_acknowledged=updated_settings.get("surcharge_acknowledged", False),
         surcharge_rates=response_rates,
     )
+
+
+@router.post(
+    "/qr-session",
+    response_model=QrPaymentSessionResponse,
+    status_code=201,
+    responses={
+        400: {"description": "Validation error or Stripe Connect not configured"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        502: {"description": "Stripe API error"},
+    },
+    summary="Create a QR payment session (issue invoice + Stripe Checkout)",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def create_qr_payment_session_endpoint(
+    payload: QrPaymentSessionRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a QR payment session: issue invoice and create Stripe Checkout Session.
+
+    Issues the invoice (status="sent" → "issued") and creates a Stripe
+    Checkout Session in one call. The kiosk screen polls for pending
+    sessions and displays the QR code.
+
+    Requirements: 1.3, 2.1
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid or not user_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # Convert line items to dicts for the service layer
+    line_items_data = [
+        {
+            "item_type": li.item_type.value,
+            "description": li.description,
+            "catalogue_item_id": li.catalogue_item_id,
+            "stock_item_id": li.stock_item_id,
+            "part_number": li.part_number,
+            "quantity": li.quantity,
+            "unit_price": li.get_unit_price(),
+            "hours": li.hours,
+            "hourly_rate": li.hourly_rate,
+            "discount_type": li.discount_type,
+            "discount_value": li.discount_value,
+            "is_gst_exempt": li.is_gst_exempt,
+            "gst_inclusive": li.gst_inclusive,
+            "inclusive_price": li.inclusive_price,
+            "warranty_note": li.warranty_note,
+            "sort_order": li.sort_order,
+        }
+        for li in payload.line_items
+    ]
+
+    try:
+        result = await create_qr_payment_session(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            customer_id=payload.customer_id,
+            line_items_data=line_items_data,
+            vehicle_rego=payload.vehicle_rego,
+            vehicle_make=payload.vehicle_make,
+            vehicle_model=payload.vehicle_model,
+            vehicle_year=payload.vehicle_year,
+            vehicle_odometer=payload.vehicle_odometer,
+            global_vehicle_id=payload.global_vehicle_id,
+            vehicle_service_due_date=payload.vehicle_service_due_date,
+            vehicle_wof_expiry_date=payload.vehicle_wof_expiry_date,
+            vehicle_cof_expiry_date=payload.vehicle_cof_expiry_date,
+            vehicles=[v.model_dump() for v in payload.vehicles] if payload.vehicles else None,
+            branch_id=payload.branch_id,
+            fluid_usage_data=[fu.model_dump() for fu in payload.fluid_usage] if payload.fluid_usage else None,
+            notes_internal=payload.notes_internal,
+            notes_customer=payload.notes_customer,
+            terms_and_conditions=payload.terms_and_conditions,
+            issue_date=payload.issue_date,
+            due_date=payload.due_date,
+            payment_terms=payload.payment_terms,
+            discount_type=payload.discount_type,
+            discount_value=payload.discount_value,
+            currency=payload.currency,
+            exchange_rate_to_nzd=payload.exchange_rate_to_nzd,
+            payment_gateway=payload.payment_gateway,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        error_msg = str(exc)
+        # Distinguish Stripe API errors (502) from validation errors (400)
+        if "payment service" in error_msg.lower() or "stripe" in error_msg.lower():
+            return JSONResponse(status_code=502, content={"detail": error_msg})
+        return JSONResponse(status_code=400, content={"detail": error_msg})
+
+    return result
+
+
+@router.get(
+    "/qr-session/pending",
+    response_model=PendingQrSessionResponse,
+    status_code=200,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="Get pending QR session for the kiosk (polling endpoint)",
+    dependencies=[require_role("org_admin", "salesperson", "kiosk")],
+)
+async def get_pending_qr_session_endpoint(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the pending QR payment session for the requesting user's org.
+
+    Lightweight polling endpoint — no Stripe API calls. The kiosk polls
+    this every 2-3 seconds to detect when a new QR session has been created.
+
+    Returns the session details if one exists, or {"session": null} if not.
+
+    Requirements: 4.1, 4.4
+    """
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    session = await get_pending_qr_session(db, org_id=org_uuid)
+
+    if session is None:
+        return PendingQrSessionResponse(session=None)
+
+    from app.modules.payments.schemas import PendingQrSessionDetail
+    from datetime import datetime
+
+    return PendingQrSessionResponse(
+        session=PendingQrSessionDetail(
+            session_id=session["session_id"],
+            checkout_url=session["checkout_url"],
+            amount=session["amount"],
+            invoice_number=session["invoice_number"],
+            expires_at=datetime.fromisoformat(session["expires_at"]),
+            created_at=datetime.fromisoformat(session["created_at"]),
+        )
+    )
+
+
+@router.get(
+    "/qr-session/{session_id}/status",
+    response_model=QrSessionStatusResponse,
+    status_code=200,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        404: {"description": "Session not found"},
+    },
+    summary="Check the status of a QR payment session (polling endpoint)",
+    dependencies=[require_role("org_admin", "salesperson", "kiosk")],
+)
+async def get_qr_session_status_endpoint(
+    session_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Check the status of a Stripe Checkout Session for QR payment.
+
+    Polls the Stripe API to retrieve the session status. Returns a
+    simplified status (open/complete/expired) and the payment_intent_id
+    when the session is complete.
+
+    The kiosk and org user screens poll this every 3 seconds to detect
+    when payment has been completed.
+
+    Requirements: 11.1, 11.2, 11.3, 11.4
+    """
+    from app.modules.admin.models import Organisation
+
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # Fetch org's stripe_connect_account_id
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Organisation not found"},
+        )
+
+    if not org.stripe_connect_account_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Stripe Connect not configured for this organisation"},
+        )
+
+    try:
+        status_result = await get_qr_session_status(
+            db,
+            session_id=session_id,
+            stripe_connect_account_id=org.stripe_connect_account_id,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return QrSessionStatusResponse(
+        status=status_result["status"],
+        payment_intent_id=status_result.get("payment_intent_id"),
+    )
+
+
+@router.post(
+    "/qr-session/{session_id}/expire",
+    status_code=200,
+    responses={
+        400: {"description": "Failed to expire session"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+    },
+    summary="Expire/cancel a QR payment session",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def expire_qr_session_endpoint(
+    session_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Expire a Stripe Checkout Session used for QR payment.
+
+    Calls the Stripe API to expire the session and removes the pending
+    QR session from the database. If the session is already expired or
+    complete, handles gracefully.
+
+    Requirements: 3.3
+    """
+    from app.modules.admin.models import Organisation
+
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    # Fetch org's stripe_connect_account_id
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Organisation not found"},
+        )
+
+    if not org.stripe_connect_account_id:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Stripe Connect not configured for this organisation"},
+        )
+
+    try:
+        await expire_qr_session(
+            db,
+            session_id=session_id,
+            stripe_connect_account_id=org.stripe_connect_account_id,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return {"status": "expired"}
 
 
 @router.post(

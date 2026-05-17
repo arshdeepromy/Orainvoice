@@ -8,8 +8,11 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+from app.modules.invoices.schemas import InvoiceCreateRequest
 
 
 # ---------------------------------------------------------------------------
@@ -463,4 +466,62 @@ class UpdateSurchargeResponse(BaseModel):
     )
     payment_intent_updated: bool = Field(
         ..., description="Whether the Stripe PaymentIntent was updated"
+    )
+
+
+# ---------------------------------------------------------------------------
+# QR Payment schemas (Requirements: 2.1, 4.1, 11.1)
+# ---------------------------------------------------------------------------
+
+# Reuse InvoiceCreateRequest as the QR payment session request payload.
+# The field name for line items is `line_items` (same as InvoiceCreateRequest).
+QrPaymentSessionRequest = InvoiceCreateRequest
+
+
+class QrPaymentSessionResponse(BaseModel):
+    """Response from POST /api/v1/payments/qr-session.
+
+    Requirements: 2.1
+    """
+
+    session_id: str = Field(..., description="Stripe Checkout Session ID (cs_...)")
+    invoice_id: uuid.UUID = Field(..., description="ID of the issued invoice")
+    invoice_number: str = Field(..., description="Invoice number for display")
+    amount: Decimal = Field(..., description="Payment amount in NZD dollars")
+    amount_cents: int = Field(..., description="Payment amount in cents")
+    expires_at: datetime = Field(..., description="When the Checkout Session expires")
+    currency: str = Field(default="NZD", description="Currency code")
+
+
+class PendingQrSessionDetail(BaseModel):
+    """Detail of a pending QR session returned to the kiosk."""
+
+    session_id: str = Field(..., description="Stripe Checkout Session ID")
+    checkout_url: str = Field(..., description="Full Stripe Checkout URL for QR code")
+    amount: Decimal = Field(..., description="Payment amount in NZD dollars")
+    invoice_number: str = Field(..., description="Invoice number for display")
+    expires_at: datetime = Field(..., description="When the session expires")
+    created_at: datetime = Field(..., description="When the session was created")
+
+
+class PendingQrSessionResponse(BaseModel):
+    """Response from GET /api/v1/payments/qr-session/pending.
+
+    Requirements: 4.1
+    """
+
+    session: Optional[PendingQrSessionDetail] = Field(
+        None, description="Active pending QR session, or null if none exists"
+    )
+
+
+class QrSessionStatusResponse(BaseModel):
+    """Response from GET /api/v1/payments/qr-session/{session_id}/status.
+
+    Requirements: 11.1
+    """
+
+    status: str = Field(..., description="Session status: open, complete, or expired")
+    payment_intent_id: Optional[str] = Field(
+        None, description="Payment intent ID when status is complete"
     )

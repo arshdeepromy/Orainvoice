@@ -1,0 +1,260 @@
+# Implementation Plan: Kiosk QR Payment
+
+## Overview
+
+This plan implements the QR payment flow where clicking "QR Payment" on InvoiceCreate issues the invoice and creates a Stripe Checkout Session. The kiosk polls for pending sessions and displays the QR code. Payment detection happens via polling (UX) and webhook (authoritative recording). The implementation is split into backend (Python/FastAPI), database migration, and frontend (React/TypeScript) tasks.
+
+## Tasks
+
+- [x] 1. Create pending_qr_sessions database table
+  - [x] 1.1 Create Alembic migration for `pending_qr_sessions` table
+    - Table columns: id (UUID PK), org_id (UUID FK, UNIQUE), session_id (VARCHAR 255, UNIQUE), checkout_url (TEXT), amount (NUMERIC 12,2), invoice_number (VARCHAR 50), invoice_id (UUID FK), expires_at (TIMESTAMPTZ), created_at (TIMESTAMPTZ)
+    - Add index on org_id
+    - Use IF NOT EXISTS for idempotency
+    - _Requirements: 3.1, 3.2, 3.4_
+  - [x] 1.2 Create SQLAlchemy model `PendingQrSession` in `app/modules/payments/models.py`
+    - Define all columns matching the migration
+    - Add relationship to Organisation and Invoice
+    - _Requirements: 3.1, 3.2_
+
+- [x] 2. Implement backend QR payment service
+  - [x] 2.1 Create `create_qr_payment_session()` in `app/modules/payments/service.py`
+    - Accept invoice creation payload (same fields as InvoiceCreate — reuse `InvoiceCreateRequest` schema)
+    - Call existing `create_invoice()` with status="sent" (which internally maps to "issued")
+    - Fetch org's `stripe_connect_account_id`
+    - Retrieve Stripe secret key via `get_stripe_secret_key()`
+    - Create Stripe Checkout Session via NEW direct Stripe API call (do NOT reuse `create_payment_link()` which only supports "card"):
+      - `payment_method_types[]`: send BOTH `"card"` AND `"afterpay_clearpay"` as separate form fields
+      - `expires_at`: `int(time.time() + 1800)` (Unix timestamp, 30 minutes from now — Stripe requires integer seconds)
+      - `metadata[invoice_id]`, `metadata[org_id]`, `metadata[source]`: "kiosk_qr", `metadata[platform]`: "orainvoice"
+      - `payment_intent_data[application_fee_amount]`: calculated fee in cents
+      - `success_url`: `{base_url}/payments/qr-success?invoice_id={id}&session_id={CHECKOUT_SESSION_ID}`
+      - `cancel_url`: `{base_url}/payments/qr-cancel?invoice_id={id}`
+      - Header: `Stripe-Account: {org.stripe_connect_account_id}`
+    - Convert `expires_at` from Unix timestamp to ISO string for frontend response
+    - Upsert into `pending_qr_sessions` (DELETE existing for same org, then INSERT)
+    - Return session_id, invoice_id, invoice_number, amount, expires_at (ISO string)
+    - _Requirements: 1.3, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10, 3.1, 3.2, 10.1, 10.2, 10.3_
+  - [x] 2.2 Write property test for amount conversion (Property 3)
+    - **Property 3: Amount Conversion Accuracy**
+    - Generate random Decimal values, verify int(amount * 100) conversion has no floating-point drift
+    - **Validates: Requirements 2.2**
+  - [x] 2.3 Write property test for application fee calculation (Property 4)
+    - **Property 4: Application Fee Calculation**
+    - Generate random amounts and percentages, verify fee formula int(A * P / 100)
+    - **Validates: Requirements 2.4**
+  - [x] 2.4 Write property test for session metadata completeness (Property 5)
+    - **Property 5: Session Metadata Completeness**
+    - Generate random UUIDs, verify metadata dict contains invoice_id, org_id, source="kiosk_qr"
+    - **Validates: Requirements 2.5, 2.6, 2.8**
+  - [x] 2.5 Create `get_pending_qr_session()` in `app/modules/payments/service.py`
+    - Query `pending_qr_sessions` for the given org_id
+    - Return the session row or None
+    - Check if session has expired (expires_at < now) and delete if so
+    - _Requirements: 3.1, 4.1, 4.2, 4.3_
+  - [x] 2.6 Create `get_qr_session_status()` in `app/modules/payments/service.py`
+    - Call Stripe API: GET /v1/checkout/sessions/{session_id} with stripe_account header
+    - Return simplified status (open/complete/expired) and payment_intent_id if complete
+    - _Requirements: 11.1, 11.2, 11.4_
+  - [x] 2.7 Create `expire_qr_session()` in `app/modules/payments/service.py`
+    - Call Stripe API: POST /v1/checkout/sessions/{session_id}/expire with stripe_account header
+    - Delete the pending_qr_sessions row
+    - Handle already-expired/complete sessions gracefully
+    - _Requirements: 3.3_
+  - [x] 2.8 Create `clear_pending_qr_session()` in `app/modules/payments/service.py`
+    - Delete the pending_qr_sessions row by session_id or org_id
+    - Called by webhook handler after payment completes
+    - _Requirements: 3.3, 8.5_
+
+- [x] 3. Implement backend API router endpoints
+  - [x] 3.1 Add `POST /api/v1/payments/qr-session` endpoint in `app/modules/payments/router.py`
+    - Require org_admin or salesperson role: `dependencies=[require_role("org_admin", "salesperson")]`
+    - Accept invoice creation payload (reuse `InvoiceCreateRequest` schema from invoices module)
+    - Set `response_model=QrPaymentSessionResponse` on the endpoint decorator (Pydantic schema gate — steering Rule 8)
+    - Call `create_qr_payment_session()`
+    - Return 201 with session details
+    - _Requirements: 1.3, 2.1_
+  - [x] 3.2 Add `GET /api/v1/payments/qr-session/pending` endpoint
+    - Require org_admin, salesperson, OR kiosk role: `dependencies=[require_role("org_admin", "salesperson", "kiosk")]`
+    - Call `get_pending_qr_session()` for the requesting user's org
+    - Return session or `{"session": null}`
+    - _Requirements: 4.1, 4.4_
+  - [x] 3.3 Add `GET /api/v1/payments/qr-session/{session_id}/status` endpoint
+    - Require org_admin, salesperson, OR kiosk role: `dependencies=[require_role("org_admin", "salesperson", "kiosk")]`
+    - Call `get_qr_session_status()`
+    - _Requirements: 11.1, 11.2, 11.3, 11.4_
+  - [x] 3.4 Add `POST /api/v1/payments/qr-session/{session_id}/expire` endpoint
+    - Require org_admin or salesperson role
+    - Call `expire_qr_session()`
+    - _Requirements: 3.3_
+  - [x] 3.5 Add Pydantic request/response schemas in `app/modules/payments/schemas.py`
+    - `QrPaymentSessionRequest`: Reuse `InvoiceCreateRequest` from `app/modules/invoices/schemas.py` (import and alias, or accept same fields). Field name is `line_items` (not `items`).
+    - `QrPaymentSessionResponse` (session_id: str, invoice_id: UUID, invoice_number: str, amount: Decimal, amount_cents: int, expires_at: datetime, currency: str)
+    - `PendingQrSessionResponse` (session: Optional dict with session_id, checkout_url, amount, invoice_number, expires_at, created_at — or null)
+    - `QrSessionStatusResponse` (status: str, payment_intent_id: Optional[str])
+    - All response schemas MUST be used as `response_model` on their respective endpoints (steering Rule 8)
+    - _Requirements: 2.1, 4.1, 11.1_
+
+- [x] 4. Enhance webhook handler for QR payments
+  - [x] 4.1 Update `handle_stripe_webhook()` to detect `source: "kiosk_qr"` in metadata
+    - Set `payment_method_type = "qr_checkout"` when source is "kiosk_qr"
+    - Call `clear_pending_qr_session()` to remove the pending session after payment
+    - _Requirements: 8.1, 8.3, 8.4, 8.5_
+  - [x] 4.2 Write property test for idempotent payment recording (Property 8)
+    - **Property 8: Idempotent Payment Recording**
+    - Generate random payment_intent_ids, verify duplicate webhook events don't create duplicate records
+    - **Validates: Requirements 8.2**
+
+- [x] 5. Checkpoint - Backend complete
+  - Run only QR-related backend tests: `pytest tests/ -k "qr" --no-header -q`
+  - Run TypeScript diagnostics on changed frontend files (if any at this stage)
+  - Do NOT run the full test suite
+  - Ask the user if any questions arise.
+
+- [x] 6. Implement Kiosk QR Popup component
+  - [x] 6.1 Install `qrcode.react` package in frontend
+    - Run: `npm install qrcode.react@4 --save` in the `frontend/` directory
+    - Pin exact version in package.json (e.g., `"qrcode.react": "^4.0.1"`)
+    - After adding dependency, rebuild the frontend container: `docker compose up -d --build frontend`
+    - Verify import works: `import { QRCodeSVG } from 'qrcode.react'`
+    - _Requirements: 5.1_
+  - [x] 6.2 Create `KioskQrPopup.tsx` in `frontend/src/pages/kiosk/`
+    - Full-screen overlay with QR code (QRCodeSVG at 280×280px minimum)
+    - Display amount formatted as NZD currency ($X.XX)
+    - Display invoice number
+    - Display instructional text "Scan with your phone camera to pay"
+    - Countdown timer from expires_at in MM:SS format
+    - Warning colour (orange/red) when timer < 2 minutes
+    - Poll `GET /payments/qr-session/{session_id}/status` every 3 seconds
+    - On "complete": show green tick + "Thank you" + amount for 4 seconds, then call onPaymentComplete
+    - On timer expiry: call onExpired
+    - AbortController cleanup on unmount
+    - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 6.1, 6.2, 6.3, 7.1, 7.2, 7.5_
+  - [x] 6.3 Write property test for timer display and warning state (Property 7)
+    - **Property 7: Timer Display and Warning State**
+    - Generate random seconds 0–3600, verify MM:SS format and warning threshold at T < 120
+    - **Validates: Requirements 6.1, 6.3**
+  - [x] 6.4 Write property test for currency formatting (Property 10)
+    - **Property 10: Currency Formatting**
+    - Generate random float amounts, verify NZD format with $ prefix and 2 decimal places
+    - **Validates: Requirements 5.3**
+
+- [x] 7. Integrate QR polling into KioskPage
+  - [x] 7.1 Add pending session polling to `KioskPage.tsx`
+    - While on 'welcome' screen, poll `GET /payments/qr-session/pending` every 2-3 seconds
+    - When pending session detected, show KioskQrPopup overlay
+    - When payment completes (onPaymentComplete callback), dismiss popup, return to welcome
+    - When session expires (onExpired callback), dismiss popup, return to welcome
+    - AbortController cleanup on unmount
+    - Silent retry on network errors
+    - _Requirements: 4.1, 4.2, 4.3, 7.2_
+  - [x] 7.2 Write unit tests for KioskPage QR polling integration
+    - Test that polling starts on welcome screen
+    - Test that KioskQrPopup renders when session detected
+    - Test that popup dismisses on payment complete
+    - _Requirements: 4.1, 4.2, 7.2_
+
+- [x] 8. Implement QR Payment Waiting Popup for org user
+  - [x] 8.1 Create `QrPaymentWaitingPopup.tsx` in `frontend/src/pages/invoices/`
+    - Modal with spinner/loading animation
+    - Display "Waiting for payment..." text
+    - Display amount and invoice number for reference
+    - "Close" button to dismiss (does NOT cancel payment session)
+    - Poll `GET /payments/qr-session/{session_id}/status` every 3 seconds
+    - On "complete": show green tick + "Payment received — $X.XX" for 3 seconds, then call onPaymentComplete
+    - AbortController cleanup on unmount
+    - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5_
+  - [x] 8.2 Write unit tests for QrPaymentWaitingPopup
+    - Test spinner renders initially
+    - Test close button dismisses without cancelling
+    - Test payment complete shows green tick
+    - _Requirements: 9.1, 9.3, 9.4_
+
+- [x] 9. Add QR Payment button to InvoiceCreate page
+  - [x] 9.1 Add "QR Payment" button to InvoiceCreate action bar
+    - Place alongside Cancel, Save as Draft, Mark Paid & Email, Save and Send buttons
+    - Only visible when `org.stripe_connect_account_id` is set (from useTenant())
+    - Style as a distinct action button (e.g., purple/indigo to differentiate from other actions)
+    - _Requirements: 1.1, 1.2_
+  - [x] 9.2 Implement QR Payment click handler in InvoiceCreate
+    - Validate form (same validation as Save and Send)
+    - Call `POST /payments/qr-session` with the invoice payload
+    - On success: open QrPaymentWaitingPopup with session details
+    - On error: show error toast
+    - On payment complete (from popup callback): navigate to invoice detail page
+    - _Requirements: 1.3, 1.4, 1.5_
+  - [x] 9.3 Write unit test for QR Payment button visibility (Property 1)
+    - **Property 1: QR Payment Button Visibility**
+    - Test button visible when stripe_connect_account_id is set
+    - Test button hidden when stripe_connect_account_id is empty/null
+    - **Validates: Requirements 1.1, 1.2**
+
+- [x] 10. Checkpoint - Full integration
+  - Run frontend TypeScript check: `npx tsc --noEmit` in frontend/ (only checks type errors, no full build)
+  - Run backend QR tests: `pytest tests/ -k "qr" --no-header -q`
+  - Do NOT run the full test suite or full frontend build at this stage
+  - Ask the user if any questions arise.
+
+- [x] 11. Create QR payment success/cancel pages for customer's phone
+  - [x] 11.1 Create `QrPaymentSuccess.tsx` in `frontend/src/pages/payments/`
+    - Simple page showing green tick + "Payment successful" + "You can close this page"
+    - No authentication required (customer's phone, not logged in)
+    - Read invoice_id and session_id from URL query params for display
+    - _Requirements: 2.5_
+  - [x] 11.2 Create `QrPaymentCancel.tsx` in `frontend/src/pages/payments/`
+    - Simple page showing "Payment cancelled" + "You can close this page or try again"
+    - No authentication required
+    - _Requirements: 2.6_
+  - [x] 11.3 Add routes in `App.tsx` for `/payments/qr-success` and `/payments/qr-cancel`
+    - These must be PUBLIC routes (outside the authenticated OrgLayout)
+    - Lazy-loaded components
+    - _Requirements: 2.5, 2.6_
+
+- [x] 12. Wire everything together and final integration
+  - [x] 12.1 Register new payment router endpoints in `app/main.py` (if not already included via existing payments router)
+    - Verify the new endpoints are accessible
+    - _Requirements: 2.1, 4.1, 11.1_
+  - [x] 12.2 Verify end-to-end flow with mocked Stripe responses
+    - InvoiceCreate → QR Payment click → session created → kiosk detects → QR displayed → status poll → complete → success on both screens
+    - _Requirements: 1.3, 4.2, 7.2, 7.3, 9.4_
+  - [x] 12.3 Write integration test for full QR payment flow
+    - Mock Stripe API responses
+    - Test: create session → pending session stored → kiosk poll returns session → status poll returns complete → pending session cleared
+    - _Requirements: 1.3, 3.1, 4.1, 7.1, 8.5_
+
+- [x] 13. Final checkpoint - Ensure all tests pass
+  - Run only QR payment related tests: `pytest tests/ -k "qr" --no-header -q`
+  - Run frontend TypeScript check: `npx tsc --noEmit` in frontend/
+  - Do NOT run the full test suite — only tests relevant to this feature
+  - Ensure all pass, ask the user if questions arise.
+
+- [ ] 14. Git push and deploy to local DEV only
+  - [x] 14.1 Bump VERSION to next patch (e.g., 1.5.1)
+  - [-] 14.2 Git add all changes, commit with message: "feat: kiosk QR payment via Stripe Checkout (Apple Pay, Google Pay, Afterpay)"
+  - [~] 14.3 Git push to origin main
+  - [~] 14.4 Deploy to LOCAL DEV only:
+    - `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build --force-recreate app frontend`
+    - Verify migration runs (check app logs for "Running upgrade")
+    - Verify frontend builds successfully (check frontend logs)
+    - Do NOT deploy to PROD or Pi — this is DEV-only until manually tested
+  - [~] 14.5 Verify deployment:
+    - Confirm app is running: `curl -s http://localhost/health`
+    - Confirm new endpoints respond: `curl -s http://localhost/api/v1/payments/qr-session/pending` (should return 401 without auth)
+    - Confirm frontend shows new version in sidebar
+
+## Notes
+
+- Tasks marked with `*` are optional and can be skipped for faster MVP
+- Each task references specific requirements for traceability
+- Checkpoints ensure incremental validation
+- Property tests validate universal correctness properties from the design document
+- The backend uses `flush()` not `commit()` in service functions (auto-commit via session.begin() context manager)
+- Frontend follows safe API consumption patterns: `?.` and `?? []` / `?? 0` on all API data
+- Stripe secret key is retrieved from DB via `get_stripe_secret_key()` — never from .env
+- Stripe `expires_at` must be a Unix timestamp (int seconds since epoch) — convert to ISO string for frontend
+- The `create_payment_link()` in stripe_connect.py only supports "card" — do NOT reuse it for QR payments; make a new direct Stripe API call with both "card" and "afterpay_clearpay"
+- The kiosk role (`"kiosk"`) must be explicitly added to `require_role()` on polling endpoints (3.2, 3.3)
+- After adding `qrcode.react` to package.json, the frontend container must be rebuilt (`docker compose up -d --build frontend`)
+- All response schemas must be set as `response_model` on endpoint decorators to prevent silent field dropping (steering Rule 8)
+- The QR session request payload uses `line_items` (not `items`) — same field name as `InvoiceCreateRequest`
+- Success/cancel pages are PUBLIC routes (no auth) — they render on the customer's phone after Stripe redirects

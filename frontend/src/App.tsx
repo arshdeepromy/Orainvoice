@@ -118,6 +118,10 @@ const PortalRecover = lazy(() => import('@/pages/portal/PortalRecover').then(m =
 /* Invoice payment page (public, token-based — lazy to keep Stripe bundles out of main chunk) */
 const InvoicePaymentPage = lazy(() => import('@/pages/public/InvoicePaymentPage'))
 
+/* QR payment result pages (public — rendered on customer's phone after Stripe redirect) */
+const QrPaymentSuccess = lazy(() => import('@/pages/payments/QrPaymentSuccess'))
+const QrPaymentCancel = lazy(() => import('@/pages/payments/QrPaymentCancel'))
+
 /* Public marketing pages (lazy-loaded — only needed for unauthenticated visitors) */
 const LandingPage = lazy(() => import('@/pages/public/LandingPage'))
 const PrivacyPage = lazy(() => import('@/pages/public/PrivacyPage'))
@@ -563,6 +567,10 @@ function AppRoutes() {
 
         {/* Invoice payment page (public, token-based access — Stripe Elements) */}
         <Route path="/pay/:token" element={<SafePage name="invoice-payment"><InvoicePaymentPage /></SafePage>} />
+
+        {/* QR payment result pages (public — customer's phone after Stripe Checkout redirect) */}
+        <Route path="/payments/qr-success" element={<SafePage name="qr-payment-success"><QrPaymentSuccess /></SafePage>} />
+        <Route path="/payments/qr-cancel" element={<SafePage name="qr-payment-cancel"><QrPaymentCancel /></SafePage>} />
       </Route>
 
       {/* Public catch-all — resolves the path against editor_pages /

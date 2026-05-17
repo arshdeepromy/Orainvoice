@@ -3,6 +3,7 @@
 Tables:
 - payments: cash and Stripe payment records per organisation (RLS enabled)
 - payment_tokens: secure, time-limited tokens for public payment page access
+- pending_qr_sessions: active Stripe Checkout Sessions for kiosk QR payment flow
 """
 
 from __future__ import annotations
@@ -120,3 +121,49 @@ class PaymentToken(Base):
     # Relationships
     invoice = relationship("Invoice", backref="payment_tokens")
     organisation = relationship("Organisation", backref="payment_tokens")
+
+
+class PendingQrSession(Base):
+    """Active Stripe Checkout Session for kiosk QR payment flow.
+
+    One active session per org (UNIQUE on org_id). The kiosk polls for
+    pending sessions and displays the QR code encoding the checkout_url.
+    Rows are deleted when payment completes (webhook), session expires,
+    or a new session replaces the old one for the same org.
+    """
+
+    __tablename__ = "pending_qr_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    session_id: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True,
+    )
+    checkout_url: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    invoice_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+    # Relationships
+    organisation = relationship("Organisation", backref="pending_qr_sessions")
+    invoice = relationship("Invoice", backref="pending_qr_sessions")

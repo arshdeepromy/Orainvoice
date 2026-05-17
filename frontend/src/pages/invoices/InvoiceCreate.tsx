@@ -5,6 +5,7 @@ import { Button, Input, Select, Spinner, Modal } from '../../components/ui'
 import { CustomerCreateModal } from '../../components/customers/CustomerCreateModal'
 import { VehicleLiveSearch } from '../../components/vehicles/VehicleLiveSearch'
 import { AddToStockModal } from '../../components/inventory/AddToStockModal'
+import { QrPaymentWaitingPopup } from './QrPaymentWaitingPopup'
 import { useTenant } from '../../contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
 import { useAuth } from '../../contexts/AuthContext'
@@ -880,6 +881,10 @@ export default function InvoiceCreate() {
   // Payment gateway
   const [paymentGateway, setPaymentGateway] = useState('cash')
   const [stripeConnected, setStripeConnected] = useState(false)
+
+  // QR Payment popup state
+  const [showQrPaymentPopup, setShowQrPaymentPopup] = useState(false)
+  const [qrSessionData, setQrSessionData] = useState<{ sessionId: string; amount: number; invoiceNumber: string; invoiceId: string } | null>(null)
   
   // Make recurring
   const [makeRecurring, setMakeRecurring] = useState(false)
@@ -1666,6 +1671,37 @@ export default function InvoiceCreate() {
     }
   }
 
+  const handleQrPayment = async () => {
+    if (!validate()) return
+    setSaving(true)
+    try {
+      const payload = buildPayload('sent')
+      const res = await apiClient.post<{
+        session_id: string
+        invoice_id: string
+        invoice_number: string
+        amount: number
+        amount_cents: number
+        expires_at: string
+        currency: string
+      }>('/payments/qr-session', payload)
+
+      const session = res.data
+      setQrSessionData({
+        sessionId: session?.session_id ?? '',
+        amount: session?.amount ?? 0,
+        invoiceNumber: session?.invoice_number ?? '',
+        invoiceId: session?.invoice_id ?? '',
+      })
+      setShowQrPaymentPopup(true)
+    } catch (err: unknown) {
+      const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to create QR payment session. Please try again.')
+      setErrors({ submit: msg })
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const handleCancel = () => {
     const target = isEditMode && editId ? `/invoices/${editId}` : '/invoices'
     guardedNavigate(target)
@@ -1689,6 +1725,20 @@ export default function InvoiceCreate() {
             <Button variant="secondary" size="sm" onClick={handleCancel}>Cancel</Button>
             <Button variant="secondary" size="sm" onClick={() => handleSaveDraft()} loading={saving}>Save as Draft</Button>
             <Button variant="secondary" size="sm" onClick={() => { if (validate()) setPaidModalOpen(true) }} loading={paidSaving}>Mark Paid &amp; Email</Button>
+            {stripeConnected && (
+              <button
+                type="button"
+                onClick={handleQrPayment}
+                disabled={saving}
+                className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors disabled:opacity-50"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5z" />
+                </svg>
+                QR Payment
+              </button>
+            )}
             <Button size="sm" onClick={handleSaveAndSend} loading={saving}>Save and Send</Button>
           </div>
         </div>
@@ -2342,6 +2392,20 @@ export default function InvoiceCreate() {
             <Button variant="secondary" size="sm" onClick={handleCancel}>Cancel</Button>
             <Button variant="secondary" size="sm" onClick={() => handleSaveDraft()} loading={saving}>Save as Draft</Button>
             <Button variant="secondary" size="sm" onClick={() => { if (validate()) setPaidModalOpen(true) }} loading={paidSaving}>Mark Paid &amp; Email</Button>
+            {stripeConnected && (
+              <button
+                type="button"
+                onClick={handleQrPayment}
+                disabled={saving}
+                className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors disabled:opacity-50"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5z" />
+                </svg>
+                QR Payment
+              </button>
+            )}
             <Button size="sm" onClick={handleSaveAndSend} loading={saving}>Save and Send</Button>
           </div>
         </div>
@@ -2518,6 +2582,24 @@ export default function InvoiceCreate() {
           </Button>
         </div>
       </Modal>
+
+      {/* QR Payment Waiting Popup */}
+      {showQrPaymentPopup && qrSessionData && (
+        <QrPaymentWaitingPopup
+          sessionId={qrSessionData.sessionId}
+          amount={qrSessionData.amount}
+          invoiceNumber={qrSessionData.invoiceNumber}
+          onClose={() => setShowQrPaymentPopup(false)}
+          onPaymentComplete={() => {
+            setShowQrPaymentPopup(false)
+            if (qrSessionData.invoiceId) {
+              navigate(`/invoices/${qrSessionData.invoiceId}`)
+            } else {
+              navigate('/invoices')
+            }
+          }}
+        />
+      )}
     </div>
   )
 }
