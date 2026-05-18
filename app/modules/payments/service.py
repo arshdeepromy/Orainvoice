@@ -396,6 +396,47 @@ async def _send_receipt_email(
     inv_number = invoice.invoice_number or str(invoice.id)
     currency = invoice.currency or "NZD"
 
+    # --- Template resolution for payment_received ---
+    from app.modules.notifications.service import resolve_template
+    from app.modules.invoices.service import get_currency_symbol
+    from app.modules.customers.models import Customer
+
+    # Fetch customer for variable context
+    _cust_result = await db.execute(
+        select(Customer).where(Customer.id == invoice.customer_id)
+    )
+    _customer = _cust_result.scalar_one_or_none()
+    _customer_first_name = _customer.first_name if _customer else ""
+    _customer_last_name = _customer.last_name if _customer else ""
+
+    # Format monetary value using payment currency
+    _currency_symbol = get_currency_symbol(currency)
+    _total_due_formatted = f"{_currency_symbol}{pay_amount:.2f}"
+
+    # Get org contact details from settings
+    _org_settings = org.settings if org else {}
+    _org_email = _org_settings.get("email") or _org_settings.get("business_email") or ""
+    _org_phone = _org_settings.get("phone") or _org_settings.get("business_phone") or ""
+
+    _template_variables = {
+        "customer_first_name": _customer_first_name,
+        "customer_last_name": _customer_last_name,
+        "customer_email": _customer.email if _customer else "",
+        "invoice_number": inv_number,
+        "total_due": _total_due_formatted,
+        "org_name": org_name,
+        "org_email": _org_email,
+        "org_phone": _org_phone,
+    }
+
+    _rendered_template = await resolve_template(
+        db,
+        org_id=invoice.org_id,
+        template_type="payment_received",
+        channel="email",
+        variables=_template_variables,
+    )
+
     # Generate the invoice PDF with updated payment status
     pdf_bytes: bytes | None = None
     try:
@@ -417,31 +458,36 @@ async def _send_receipt_email(
         logger.warning("No active email provider — cannot send receipt for invoice %s", invoice.id)
         return
 
-    subject = f"Payment receipt for invoice {inv_number}"
-
-    if surcharge_amount > 0:
-        method_label = _payment_method_display_name(payment_method_type or "")
-        body = (
-            f"Hi,\n\n"
-            f"Thank you for your payment.\n\n"
-            f"Invoice: {inv_number}\n"
-            f"Invoice amount: {currency} {pay_amount}\n"
-            f"Payment method surcharge ({method_label}): {currency} {surcharge_amount}\n"
-            f"Total paid: {currency} {pay_amount + surcharge_amount}\n"
-            f"Remaining balance: {currency} {invoice.balance_due}\n\n"
-            f"Thank you for your business.\n\n"
-            f"{org_name}\n"
-        )
+    if _rendered_template:
+        subject = _rendered_template.subject
+        body = _rendered_template.body
     else:
-        body = (
-            f"Hi,\n\n"
-            f"Thank you for your payment of {currency} {pay_amount}.\n\n"
-            f"Invoice: {inv_number}\n"
-            f"Amount paid: {currency} {pay_amount}\n"
-            f"Remaining balance: {currency} {invoice.balance_due}\n\n"
-            f"Thank you for your business.\n\n"
-            f"{org_name}\n"
-        )
+        # Existing hardcoded content (unchanged)
+        subject = f"Payment receipt for invoice {inv_number}"
+
+        if surcharge_amount > 0:
+            method_label = _payment_method_display_name(payment_method_type or "")
+            body = (
+                f"Hi,\n\n"
+                f"Thank you for your payment.\n\n"
+                f"Invoice: {inv_number}\n"
+                f"Invoice amount: {currency} {pay_amount}\n"
+                f"Payment method surcharge ({method_label}): {currency} {surcharge_amount}\n"
+                f"Total paid: {currency} {pay_amount + surcharge_amount}\n"
+                f"Remaining balance: {currency} {invoice.balance_due}\n\n"
+                f"Thank you for your business.\n\n"
+                f"{org_name}\n"
+            )
+        else:
+            body = (
+                f"Hi,\n\n"
+                f"Thank you for your payment of {currency} {pay_amount}.\n\n"
+                f"Invoice: {inv_number}\n"
+                f"Amount paid: {currency} {pay_amount}\n"
+                f"Remaining balance: {currency} {invoice.balance_due}\n\n"
+                f"Thank you for your business.\n\n"
+                f"{org_name}\n"
+            )
 
     for provider in providers:
         try:
@@ -1016,13 +1062,14 @@ async def create_qr_payment_session(
     exchange_rate_to_nzd: "Decimal | None" = None,
     payment_gateway: str | None = None,
     ip_address: str | None = None,
+    base_url: str | None = None,
 ) -> dict:
-    """Create a QR payment session: issue invoice + create Stripe Checkout Session.
+    """Create a QR payment session: issue invoice + create PaymentIntent + token.
 
     Issues the invoice (status="sent" which maps to "issued" internally),
-    creates a Stripe Checkout Session with both card and afterpay_clearpay
-    payment methods, stores the pending session in the DB, and returns
-    session details for the frontend.
+    creates a Stripe PaymentIntent on the Connected Account, generates a
+    payment token for the custom payment page, stores the pending session
+    in the DB, and returns session details for the frontend.
 
     Requirements: 1.3, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10,
                   3.1, 3.2, 10.1, 10.2, 10.3
@@ -1030,16 +1077,17 @@ async def create_qr_payment_session(
     import time
     from datetime import datetime as dt, timezone as tz
 
-    import httpx
+    from sqlalchemy.orm.attributes import flag_modified
 
     from app.config import settings
     from app.integrations.stripe_billing import (
         get_application_fee_percent,
-        get_stripe_secret_key,
     )
+    from app.integrations.stripe_connect import create_payment_intent
     from app.modules.admin.models import Organisation
     from app.modules.invoices.service import create_invoice
     from app.modules.payments.models import PendingQrSession
+    from app.modules.payments.token_service import generate_payment_token
 
     # 1. Issue the invoice (status="sent" maps to "issued" internally)
     invoice_result = await create_invoice(
@@ -1091,14 +1139,7 @@ async def create_qr_payment_session(
             "Stripe Connect not configured for this organisation"
         )
 
-    # 3. Retrieve Stripe secret key from DB
-    secret_key = await get_stripe_secret_key()
-    if not secret_key:
-        raise RuntimeError(
-            "Stripe secret key not configured. Set it via Global Admin > Integrations."
-        )
-
-    # 4. Calculate amount in cents and application fee
+    # 3. Calculate amount in cents and application fee
     amount_cents = int(total * 100)
     if amount_cents <= 0:
         raise ValueError("Invoice total must be greater than zero")
@@ -1108,59 +1149,40 @@ async def create_qr_payment_session(
     if fee_percent and fee_percent > 0:
         application_fee_amount = int(amount_cents * fee_percent / 100)
 
-    # 5. Build Stripe Checkout Session payload
-    base_url = (settings.frontend_base_url or "http://localhost:5173").rstrip("/")
+    # 4. Create PaymentIntent on Connected Account
+    pi_result = await create_payment_intent(
+        amount=amount_cents,
+        currency=currency,
+        invoice_id=str(invoice_id),
+        stripe_account_id=org.stripe_connect_account_id,
+        application_fee_amount=application_fee_amount,
+    )
+
+    # 5. Generate payment token + URL for custom payment page
+    _resolved_base_url = (base_url or settings.frontend_base_url or "http://localhost:5173").rstrip("/")
+    token, payment_url = await generate_payment_token(
+        db,
+        org_id=org_id,
+        invoice_id=invoice_id,
+        base_url=_resolved_base_url,
+    )
+
+    # 6. Store PaymentIntent on invoice
+    inv_result = await db.execute(
+        select(Invoice).where(Invoice.id == invoice_id)
+    )
+    invoice_obj = inv_result.scalar_one()
+    invoice_obj.stripe_payment_intent_id = pi_result["payment_intent_id"]
+    invoice_obj.payment_page_url = payment_url
+    data_json = dict(invoice_obj.invoice_data_json or {})
+    data_json["stripe_client_secret"] = pi_result["client_secret"]
+    invoice_obj.invoice_data_json = data_json
+    flag_modified(invoice_obj, "invoice_data_json")
+    await db.flush()
+
+    session_id = pi_result["payment_intent_id"]
+    checkout_url = payment_url
     expires_at = int(time.time() + 1800)  # 30 minutes from now
-
-    payload: list[tuple[str, str]] = [
-        ("mode", "payment"),
-        ("payment_method_types[]", "card"),
-        ("payment_method_types[]", "afterpay_clearpay"),
-        ("line_items[0][price_data][currency]", currency.lower()),
-        ("line_items[0][price_data][unit_amount]", str(amount_cents)),
-        ("line_items[0][price_data][product_data][name]", f"Invoice {invoice_number}"),
-        ("line_items[0][quantity]", "1"),
-        ("expires_at", str(expires_at)),
-        ("metadata[invoice_id]", str(invoice_id)),
-        ("metadata[org_id]", str(org_id)),
-        ("metadata[source]", "kiosk_qr"),
-        ("metadata[platform]", "orainvoice"),
-        ("success_url", f"{base_url}/payments/qr-success?invoice_id={invoice_id}&session_id={{CHECKOUT_SESSION_ID}}"),
-        ("cancel_url", f"{base_url}/payments/qr-cancel?invoice_id={invoice_id}"),
-    ]
-
-    if application_fee_amount and application_fee_amount > 0:
-        payload.append(
-            ("payment_intent_data[application_fee_amount]", str(application_fee_amount))
-        )
-
-    # 6. Create Stripe Checkout Session via direct API call
-    import base64
-    from urllib.parse import urlencode
-    auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
-    encoded_body = urlencode(payload).encode("utf-8")
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://api.stripe.com/v1/checkout/sessions",
-            content=encoded_body,
-            headers={
-                "Stripe-Account": org.stripe_connect_account_id,
-                "Authorization": f"Basic {auth_header}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-        )
-        if response.status_code != 200:
-            error_body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-            error_msg = error_body.get("error", {}).get("message", response.text)
-            logger.error(
-                "Stripe Checkout Session creation failed for org %s: %s",
-                org_id, error_msg,
-            )
-            raise ValueError(f"Failed to create payment session: {error_msg}")
-
-    session_data = response.json()
-    session_id = session_data["id"]
-    checkout_url = session_data["url"]
 
     # 7. Convert expires_at to ISO string for frontend
     expires_at_iso = dt.fromtimestamp(expires_at, tz=tz.utc).isoformat()
@@ -1204,28 +1226,31 @@ async def create_qr_session_for_existing_invoice(
     org_id: uuid.UUID,
     user_id: uuid.UUID,
     invoice_id: uuid.UUID,
+    base_url: str | None = None,
 ) -> dict:
     """Create a QR payment session for an existing invoice.
 
     Unlike create_qr_payment_session() which creates a new invoice,
     this function takes an existing invoice (by ID) and creates a Stripe
-    Checkout Session for its current balance_due. The invoice is NOT
-    modified (no status change, no amount_paid change, no re-issue).
+    PaymentIntent + payment token for its current balance_due. The invoice
+    status is NOT modified (no status change, no amount_paid change, no
+    re-issue).
 
     Requirements: 2.3, 2.4, 3.3
     """
     import time
     from datetime import datetime as dt, timezone as tz
 
-    import httpx
+    from sqlalchemy.orm.attributes import flag_modified
 
     from app.config import settings
     from app.integrations.stripe_billing import (
         get_application_fee_percent,
-        get_stripe_secret_key,
     )
+    from app.integrations.stripe_connect import create_payment_intent
     from app.modules.admin.models import Organisation
     from app.modules.payments.models import PendingQrSession
+    from app.modules.payments.token_service import generate_payment_token
 
     # 1. Fetch invoice by ID scoped to org
     result = await db.execute(
@@ -1250,6 +1275,61 @@ async def create_qr_session_for_existing_invoice(
     if invoice.balance_due <= 0:
         raise ValueError("Invoice has no outstanding balance")
 
+    # 3b. Check if invoice already has a valid payment link — reuse it
+    from app.modules.payments.models import PaymentToken
+    if invoice.payment_page_url and invoice.stripe_payment_intent_id:
+        # Check if there's an active, non-expired token for this invoice
+        from datetime import datetime as _dt_check, timezone as _tz_check
+        existing_token_result = await db.execute(
+            select(PaymentToken).where(
+                PaymentToken.invoice_id == invoice_id,
+                PaymentToken.is_active == True,  # noqa: E712
+                PaymentToken.expires_at > _dt_check.now(_tz_check.utc),
+            )
+        )
+        existing_token = existing_token_result.scalar_one_or_none()
+        if existing_token:
+            # Reuse existing payment link — just update the PendingQrSession
+            import time
+            from datetime import datetime as dt, timezone as tz
+            from app.modules.payments.models import PendingQrSession
+            from sqlalchemy import delete as sa_delete
+
+            currency = invoice.currency or "NZD"
+            invoice_number = invoice.invoice_number or str(invoice.id)
+            amount_cents = int(invoice.balance_due * 100)
+            session_id = invoice.stripe_payment_intent_id
+            checkout_url = invoice.payment_page_url
+            expires_at = int(time.time() + 1800)
+            expires_at_iso = dt.fromtimestamp(expires_at, tz=tz.utc).isoformat()
+
+            await db.execute(
+                sa_delete(PendingQrSession).where(PendingQrSession.org_id == org_id)
+            )
+            await db.flush()
+
+            pending_session = PendingQrSession(
+                org_id=org_id,
+                session_id=session_id,
+                checkout_url=checkout_url,
+                amount=invoice.balance_due,
+                invoice_number=invoice_number,
+                invoice_id=invoice_id,
+                expires_at=dt.fromtimestamp(expires_at, tz=tz.utc),
+            )
+            db.add(pending_session)
+            await db.flush()
+
+            return {
+                "session_id": session_id,
+                "invoice_id": invoice_id,
+                "invoice_number": invoice_number,
+                "amount": invoice.balance_due,
+                "amount_cents": amount_cents,
+                "expires_at": expires_at_iso,
+                "currency": currency,
+            }
+
     # 4. Fetch org's stripe_connect_account_id
     org_result = await db.execute(
         select(Organisation).where(Organisation.id == org_id)
@@ -1262,14 +1342,7 @@ async def create_qr_session_for_existing_invoice(
             "Stripe Connect not configured for this organisation"
         )
 
-    # 5. Retrieve Stripe secret key from encrypted storage
-    secret_key = await get_stripe_secret_key()
-    if not secret_key:
-        raise RuntimeError(
-            "Stripe secret key not configured. Set it via Global Admin > Integrations."
-        )
-
-    # 6. Calculate amount in cents and application fee
+    # 5. Calculate amount in cents and application fee
     amount_cents = int(invoice.balance_due * 100)
     if amount_cents <= 0:
         raise ValueError("Invoice balance must be greater than zero")
@@ -1279,62 +1352,39 @@ async def create_qr_session_for_existing_invoice(
     if fee_percent and fee_percent > 0:
         application_fee_amount = int(amount_cents * fee_percent / 100)
 
-    # 7. Build Stripe Checkout Session payload
+    # 6. Create PaymentIntent on Connected Account
     currency = invoice.currency or "NZD"
     invoice_number = invoice.invoice_number or str(invoice.id)
-    base_url = (settings.frontend_base_url or "http://localhost:5173").rstrip("/")
+
+    pi_result = await create_payment_intent(
+        amount=amount_cents,
+        currency=currency,
+        invoice_id=str(invoice_id),
+        stripe_account_id=org.stripe_connect_account_id,
+        application_fee_amount=application_fee_amount,
+    )
+
+    # 7. Generate payment token + URL for custom payment page
+    _resolved_base_url = (base_url or settings.frontend_base_url or "http://localhost:5173").rstrip("/")
+    token, payment_url = await generate_payment_token(
+        db,
+        org_id=org_id,
+        invoice_id=invoice_id,
+        base_url=_resolved_base_url,
+    )
+
+    # 8. Store PaymentIntent on invoice
+    invoice.stripe_payment_intent_id = pi_result["payment_intent_id"]
+    invoice.payment_page_url = payment_url
+    data_json = dict(invoice.invoice_data_json or {})
+    data_json["stripe_client_secret"] = pi_result["client_secret"]
+    invoice.invoice_data_json = data_json
+    flag_modified(invoice, "invoice_data_json")
+    await db.flush()
+
+    session_id = pi_result["payment_intent_id"]
+    checkout_url = payment_url
     expires_at = int(time.time() + 1800)  # 30 minutes from now
-
-    payload: list[tuple[str, str]] = [
-        ("mode", "payment"),
-        ("payment_method_types[]", "card"),
-        ("payment_method_types[]", "afterpay_clearpay"),
-        ("line_items[0][price_data][currency]", currency.lower()),
-        ("line_items[0][price_data][unit_amount]", str(amount_cents)),
-        ("line_items[0][price_data][product_data][name]", f"Invoice {invoice_number}"),
-        ("line_items[0][quantity]", "1"),
-        ("expires_at", str(expires_at)),
-        ("metadata[invoice_id]", str(invoice_id)),
-        ("metadata[org_id]", str(org_id)),
-        ("metadata[source]", "kiosk_qr"),
-        ("metadata[platform]", "orainvoice"),
-        ("success_url", f"{base_url}/payments/qr-success?invoice_id={invoice_id}&session_id={{CHECKOUT_SESSION_ID}}"),
-        ("cancel_url", f"{base_url}/payments/qr-cancel?invoice_id={invoice_id}"),
-    ]
-
-    if application_fee_amount and application_fee_amount > 0:
-        payload.append(
-            ("payment_intent_data[application_fee_amount]", str(application_fee_amount))
-        )
-
-    # 8. Create Stripe Checkout Session via direct API call
-    import base64
-    from urllib.parse import urlencode
-
-    auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
-    encoded_body = urlencode(payload).encode("utf-8")
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://api.stripe.com/v1/checkout/sessions",
-            content=encoded_body,
-            headers={
-                "Stripe-Account": org.stripe_connect_account_id,
-                "Authorization": f"Basic {auth_header}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-        )
-        if response.status_code != 200:
-            error_body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-            error_msg = error_body.get("error", {}).get("message", response.text)
-            logger.error(
-                "Stripe Checkout Session creation failed for org %s: %s",
-                org_id, error_msg,
-            )
-            raise ValueError(f"Failed to create payment session: {error_msg}")
-
-    session_data = response.json()
-    session_id = session_data["id"]
-    checkout_url = session_data["url"]
 
     # 9. Convert expires_at to ISO string for frontend
     expires_at_iso = dt.fromtimestamp(expires_at, tz=tz.utc).isoformat()

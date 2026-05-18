@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useModules } from '@/contexts/ModuleContext'
+import { useAuth } from '@/contexts/AuthContext'
 import apiClient from '@/api/client'
 import { KioskWelcome } from './KioskWelcome'
 import { KioskRegoEntry } from './KioskRegoEntry'
@@ -190,8 +191,48 @@ export function KioskPage() {
     }
   }, [vehiclesEnabled, resetToWelcome])
 
+  /* ── Long-press logout (hidden admin escape) ── */
+  const { logout } = useAuth()
+  const [showLogoutPopup, setShowLogoutPopup] = useState(false)
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    // Only trigger on empty space (not on buttons/inputs)
+    const target = e.target as HTMLElement
+    if (target.closest('button, input, textarea, a, [role="button"]')) return
+
+    longPressTimerRef.current = setTimeout(() => {
+      setShowLogoutPopup(true)
+    }, 5000) // 5 seconds hold
+  }, [])
+
+  const handlePointerUp = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current)
+      longPressTimerRef.current = null
+    }
+  }, [])
+
+  const handlePointerLeave = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current)
+      longPressTimerRef.current = null
+    }
+  }, [])
+
+  const handleLogout = useCallback(() => {
+    setShowLogoutPopup(false)
+    logout()
+  }, [logout])
+
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-gray-50 px-4">
+    <div
+      className="flex min-h-screen flex-col items-center justify-center bg-gray-50 px-4"
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
+      onPointerLeave={handlePointerLeave}
+      onPointerCancel={handlePointerUp}
+    >
       {screen === 'welcome' && (
         <KioskWelcome onCheckIn={handleCheckIn} />
       )}
@@ -272,6 +313,32 @@ export function KioskPage() {
           onExpired={handleQrDismiss}
           onClose={handleQrDismiss}
         />
+      )}
+
+      {/* Hidden logout popup — triggered by 5-second long press on empty space */}
+      {showLogoutPopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-72 rounded-2xl bg-white p-6 shadow-2xl text-center space-y-4">
+            <p className="text-lg font-semibold text-gray-900">Kiosk Admin</p>
+            <p className="text-sm text-gray-500">Sign out of kiosk mode?</p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowLogoutPopup(false)}
+                className="flex-1 min-h-[44px] rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="flex-1 min-h-[44px] rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+              >
+                Log Out
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

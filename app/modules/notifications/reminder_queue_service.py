@@ -142,6 +142,37 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
         org_cache[org_id] = data
         return data
 
+    # Import resolve_template for queue-time template rendering
+    from app.modules.notifications.service import resolve_template
+
+    # Map reminder_config keys to vehicle fields, labels, and template types
+    REMINDER_TYPE_MAP: dict[str, dict[str, str]] = {
+        "wof_expiry": {
+            "expiry_field": "wof_expiry",
+            "label": "WOF Expiry",
+            "template_type": "wof_expiry_reminder",
+            "date_variable": "expiry_date",
+        },
+        "cof_expiry": {
+            "expiry_field": "cof_expiry",
+            "label": "COF Expiry",
+            "template_type": "cof_expiry_reminder",
+            "date_variable": "expiry_date",
+        },
+        "registration_expiry": {
+            "expiry_field": "registration_expiry",
+            "label": "Registration Expiry",
+            "template_type": "registration_expiry_reminder",
+            "date_variable": "expiry_date",
+        },
+        "service_due": {
+            "expiry_field": "service_due_date",
+            "label": "Service Due",
+            "template_type": "service_due_reminder",
+            "date_variable": "service_due_date",
+        },
+    }
+
     for customer in customers:
         custom_fields = customer.custom_fields or {}
         reminder_config = custom_fields.get("reminder_config", {})
@@ -178,19 +209,19 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
             if not config_entry.get("enabled", False):
                 continue
 
+            # Look up reminder type configuration
+            type_config = REMINDER_TYPE_MAP.get(reminder_type)
+            if type_config is None:
+                continue
+
             days_before = config_entry.get("days_before", 30)
             channel = config_entry.get("channel", "email")
             target_date = today + timedelta(days=days_before)
 
-            # Map reminder type to vehicle field
-            if reminder_type == "service_due":
-                expiry_field = "service_due_date"
-                reminder_label = "Service Due"
-            elif reminder_type == "wof_expiry":
-                expiry_field = "wof_expiry"
-                reminder_label = "WOF Expiry"
-            else:
-                continue
+            expiry_field = type_config["expiry_field"]
+            reminder_label = type_config["label"]
+            template_type = type_config["template_type"]
+            date_variable = type_config["date_variable"]
 
             for cv, gv in vehicle_rows:
                 expiry_date = getattr(gv, expiry_field, None)
@@ -204,6 +235,20 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
 
                 send_email = channel in ("email", "both")
                 send_sms = channel in ("sms", "both")
+
+                # Build template variable context
+                template_variables: dict[str, str] = {
+                    "customer_first_name": customer.first_name or "",
+                    "customer_last_name": customer.last_name or "",
+                    "customer_email": customer.email or "",
+                    "vehicle_rego": rego,
+                    "vehicle_make": gv.make or "",
+                    "vehicle_model": gv.model or "",
+                    date_variable: str(expiry_date) if expiry_date else "",
+                    "org_name": org_data["org_name"] or "",
+                    "org_phone": org_data["org_phone"] or "",
+                    "org_email": org_data["org_email"] or "",
+                }
 
                 # --- Enqueue Email ---
                 if send_email:
@@ -234,16 +279,30 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
                         stats["errors"] += 1
                         continue
 
-                    email_subject = f"{reminder_label} reminder for {rego}"
-                    email_body = (
-                        f"<p>Hi {customer.first_name},</p>"
-                        f"<p>{reminder_label} for your vehicle <strong>{rego}</strong>"
-                        f"{(' (' + vehicle_desc + ')') if vehicle_desc else ''}"
-                        f" is coming up on <strong>{expiry_date}</strong>.</p>"
-                        f"<p>Please contact {org_data['org_name']}"
-                        f"{(' on ' + org_data['org_phone']) if org_data['org_phone'] else ''}"
-                        f" to book your appointment.</p>"
+                    # Try template resolution at queue time
+                    rendered_email = await resolve_template(
+                        db,
+                        org_id=org_id,
+                        template_type=template_type,
+                        channel="email",
+                        variables=template_variables,
                     )
+
+                    if rendered_email:
+                        email_subject = rendered_email.subject
+                        email_body = rendered_email.body
+                    else:
+                        # Existing hardcoded queue body generation
+                        email_subject = f"{reminder_label} reminder for {rego}"
+                        email_body = (
+                            f"<p>Hi {customer.first_name},</p>"
+                            f"<p>{reminder_label} for your vehicle <strong>{rego}</strong>"
+                            f"{(' (' + vehicle_desc + ')') if vehicle_desc else ''}"
+                            f" is coming up on <strong>{expiry_date}</strong>.</p>"
+                            f"<p>Please contact {org_data['org_name']}"
+                            f"{(' on ' + org_data['org_phone']) if org_data['org_phone'] else ''}"
+                            f" to book your appointment.</p>"
+                        )
 
                     await _insert_queue_item(
                         db, org_id=org_id, customer_id=customer.id,
@@ -315,12 +374,25 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
                         stats["errors"] += 1
                         continue
 
-                    sms_body = (
-                        f"Hi {customer.first_name}, "
-                        f"{reminder_label} for {rego} is due on {expiry_date}. "
-                        f"Contact {org_data['org_name']}"
-                        f"{(' on ' + org_data['org_phone']) if org_data['org_phone'] else ''}."
+                    # Try template resolution at queue time
+                    rendered_sms = await resolve_template(
+                        db,
+                        org_id=org_id,
+                        template_type=template_type,
+                        channel="sms",
+                        variables=template_variables,
                     )
+
+                    if rendered_sms:
+                        sms_body = rendered_sms.body
+                    else:
+                        # Existing hardcoded SMS body generation
+                        sms_body = (
+                            f"Hi {customer.first_name}, "
+                            f"{reminder_label} for {rego} is due on {expiry_date}. "
+                            f"Contact {org_data['org_name']}"
+                            f"{(' on ' + org_data['org_phone']) if org_data['org_phone'] else ''}."
+                        )
 
                     await _insert_queue_item(
                         db, org_id=org_id, customer_id=customer.id,

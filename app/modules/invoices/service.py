@@ -4028,26 +4028,80 @@ async def email_invoice(
     _email_signature_enabled = _org_settings_sig.get("email_signature_enabled", False)
     _email_signature = _org_settings_sig.get("email_signature", "") or ""
 
-    # Build the email message (reusable across provider attempts)
-    def _build_message(from_name: str, from_email: str) -> MIMEMultipart:
-        msg = MIMEMultipart("mixed")
-        msg["From"] = f"{from_name} <{from_email}>"
-        msg["To"] = recipient_email
-        msg["Subject"] = f"Invoice {inv_number} from {org_name}"
+    # --- Template resolution for invoice_issued ---
+    from app.modules.notifications.service import resolve_template
 
-        body = (
+    # Get customer details for variable context
+    _cust_for_tpl = invoice_dict.get("customer") or {}
+    _customer_first_name = _cust_for_tpl.get("first_name") or ""
+    _customer_last_name = _cust_for_tpl.get("last_name") or ""
+
+    # Format monetary value using invoice currency
+    _currency_symbol = get_currency_symbol(currency)
+    _total_due_formatted = f"{_currency_symbol}{balance_due:.2f}" if isinstance(balance_due, (int, float, Decimal)) else f"{_currency_symbol}{balance_due}"
+
+    # Build due_date string
+    _due_date_raw = invoice_dict.get("due_date")
+    _due_date_str = str(_due_date_raw) if _due_date_raw else ""
+
+    _org_email = invoice_dict.get("org_email") or ""
+    _org_phone = invoice_dict.get("org_phone") or ""
+
+    _template_variables = {
+        "customer_first_name": _customer_first_name,
+        "customer_last_name": _customer_last_name,
+        "customer_email": _cust_for_tpl.get("email") or recipient_email or "",
+        "invoice_number": inv_number,
+        "total_due": _total_due_formatted,
+        "due_date": _due_date_str,
+        "payment_link": payment_page_url or "",
+        "org_name": org_name,
+        "org_email": _org_email,
+        "org_phone": _org_phone,
+    }
+
+    _rendered_template = await resolve_template(
+        db,
+        org_id=org_id,
+        template_type="invoice_issued",
+        channel="email",
+        variables=_template_variables,
+    )
+
+    if _rendered_template:
+        _email_subject = _rendered_template.subject
+        _email_body = _rendered_template.body
+    else:
+        # Existing hardcoded content (unchanged)
+        _email_subject = f"Invoice {inv_number} from {org_name}"
+        _email_body = (
             f"Hi,\n\n"
             f"Please find attached invoice {inv_number} from {org_name}.\n\n"
             f"Amount Due: {currency} {balance_due}\n\n"
         )
         if payment_page_url:
-            body += f"Pay online: {payment_page_url}\n\n"
-        body += (
+            _email_body += f"Pay online: {payment_page_url}\n\n"
+        _email_body += (
             f"If you have any questions, please don't hesitate to contact us.\n\n"
             f"Thank you for your business.\n\n"
             f"{org_name}\n"
         )
         if attachments_skipped_size:
+            _email_body += (
+                "\nNote: Some attachments were too large to include in this email.\n"
+            )
+
+    # Build the email message (reusable across provider attempts)
+    def _build_message(from_name: str, from_email: str) -> MIMEMultipart:
+        msg = MIMEMultipart("mixed")
+        msg["From"] = f"{from_name} <{from_email}>"
+        msg["To"] = recipient_email
+        msg["Subject"] = _email_subject
+
+        body = _email_body
+        if _rendered_template is None and attachments_skipped_size:
+            pass  # Already appended above in fallback
+        elif _rendered_template and attachments_skipped_size:
             body += (
                 "\nNote: Some attachments were too large to include in this email.\n"
             )
@@ -4272,14 +4326,54 @@ async def send_payment_reminder(
         if not providers:
             raise ValueError("No active email provider configured.")
 
-        subject = f"Payment Reminder — Invoice {inv_number} from {org_name}"
-        body_text = (
-            f"Hi {customer_name},\n\n"
-            f"This is a friendly reminder that invoice {inv_number} "
-            f"has an outstanding balance of {currency} {balance_due:.2f}.\n\n"
-            f"Please arrange payment at your earliest convenience.\n\n"
-            f"Thank you,\n{org_name}"
+        # --- Template resolution for payment_overdue_reminder (email) ---
+        from app.modules.notifications.service import resolve_template
+
+        # Format monetary value using invoice currency
+        _currency_symbol = get_currency_symbol(currency)
+        _total_due_formatted = f"{_currency_symbol}{balance_due:.2f}" if isinstance(balance_due, (int, float, Decimal)) else f"{_currency_symbol}{balance_due}"
+
+        # Build due_date string
+        _due_date_raw = invoice_dict.get("due_date")
+        _due_date_str = str(_due_date_raw) if _due_date_raw else ""
+
+        # Get payment link from invoice
+        _payment_link = invoice_dict.get("payment_page_url") or ""
+
+        _reminder_template_variables = {
+            "customer_first_name": customer.first_name or "",
+            "customer_last_name": customer.last_name or "",
+            "customer_email": customer.email or "",
+            "invoice_number": inv_number,
+            "total_due": _total_due_formatted,
+            "due_date": _due_date_str,
+            "payment_link": _payment_link,
+            "org_name": org_name,
+            "org_email": invoice_dict.get("org_email") or "",
+            "org_phone": invoice_dict.get("org_phone") or "",
+        }
+
+        _rendered_reminder = await resolve_template(
+            db,
+            org_id=org_id,
+            template_type="payment_overdue_reminder",
+            channel="email",
+            variables=_reminder_template_variables,
         )
+
+        if _rendered_reminder:
+            subject = _rendered_reminder.subject
+            body_text = _rendered_reminder.body
+        else:
+            # Existing hardcoded content (unchanged)
+            subject = f"Payment Reminder — Invoice {inv_number} from {org_name}"
+            body_text = (
+                f"Hi {customer_name},\n\n"
+                f"This is a friendly reminder that invoice {inv_number} "
+                f"has an outstanding balance of {currency} {balance_due:.2f}.\n\n"
+                f"Please arrange payment at your earliest convenience.\n\n"
+                f"Thank you,\n{org_name}"
+            )
 
         used_provider = None
         last_error = None
@@ -4379,11 +4473,46 @@ async def send_payment_reminder(
         if not phone:
             raise ValueError("Customer has no phone number on file.")
 
-        sms_body = (
-            f"Hi {customer_name}, this is a reminder that invoice "
-            f"{inv_number} has a balance of {currency} {balance_due:.2f} outstanding. "
-            f"Please pay at your earliest convenience. — {org_name}"
+        # --- Template resolution for payment_overdue_reminder (SMS) ---
+        from app.modules.notifications.service import resolve_template
+
+        # Format monetary value using invoice currency
+        _currency_symbol = get_currency_symbol(currency)
+        _total_due_formatted = f"{_currency_symbol}{balance_due:.2f}" if isinstance(balance_due, (int, float, Decimal)) else f"{_currency_symbol}{balance_due}"
+
+        # Build due_date string
+        _due_date_raw = invoice_dict.get("due_date")
+        _due_date_str = str(_due_date_raw) if _due_date_raw else ""
+
+        _sms_template_variables = {
+            "customer_first_name": customer.first_name or "",
+            "customer_last_name": customer.last_name or "",
+            "customer_email": customer.email or "",
+            "invoice_number": inv_number,
+            "total_due": _total_due_formatted,
+            "due_date": _due_date_str,
+            "org_name": org_name,
+            "org_email": invoice_dict.get("org_email") or "",
+            "org_phone": invoice_dict.get("org_phone") or "",
+        }
+
+        _rendered_sms = await resolve_template(
+            db,
+            org_id=org_id,
+            template_type="payment_overdue_reminder",
+            channel="sms",
+            variables=_sms_template_variables,
         )
+
+        if _rendered_sms:
+            sms_body = _rendered_sms.body
+        else:
+            # Existing hardcoded SMS content (unchanged)
+            sms_body = (
+                f"Hi {customer_name}, this is a reminder that invoice "
+                f"{inv_number} has a balance of {currency} {balance_due:.2f} outstanding. "
+                f"Please pay at your earliest convenience. — {org_name}"
+            )
 
         sms_log = await log_sms_sent(
             db,

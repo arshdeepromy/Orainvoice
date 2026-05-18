@@ -1687,6 +1687,30 @@ async def stripe_connect_callback(
     org.stripe_connect_account_id = stripe_account_id
     await db.flush()
 
+    # Register payment method domains on the Connected Account
+    # (required for Apple Pay / Google Pay on custom payment pages with direct charges)
+    try:
+        from app.integrations.stripe_connect import register_payment_method_domain
+        from app.config import settings as app_settings
+        frontend_base = (app_settings.frontend_base_url or "").rstrip("/")
+        if frontend_base:
+            # Extract domain from URL (e.g. "https://devin.oraflows.co.nz" → "devin.oraflows.co.nz")
+            from urllib.parse import urlparse
+            parsed = urlparse(frontend_base)
+            domain = parsed.hostname
+            if domain:
+                await register_payment_method_domain(
+                    domain_name=domain,
+                    stripe_account_id=stripe_account_id,
+                )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Non-critical: failed to register payment method domain on connected account %s",
+            stripe_account_id,
+            exc_info=True,
+        )
+
     # Audit the connection
     await write_audit_log(
         session=db,

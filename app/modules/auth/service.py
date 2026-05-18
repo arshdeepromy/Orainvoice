@@ -1870,16 +1870,74 @@ async def request_password_reset(
         token_data,
     )
 
-    # Send reset email (mocked for now)
-    await _send_password_reset_email(user.email, reset_token)
+    # Fetch org name for template variable context
+    _reset_org_name = "OraInvoice"
+    if user.org_id:
+        from app.modules.admin.models import Organisation as _ResetOrg
+        _reset_org_r = await db.execute(
+            select(_ResetOrg.name).where(_ResetOrg.id == user.org_id)
+        )
+        _reset_org_name = _reset_org_r.scalar_one_or_none() or "OraInvoice"
+
+    # Send reset email
+    await _send_password_reset_email(
+        user.email,
+        reset_token,
+        db=db,
+        org_id=user.org_id,
+        org_name=_reset_org_name,
+    )
 
 
-async def _send_password_reset_email(email: str, token: str) -> None:
+async def _send_password_reset_email(
+    email: str,
+    token: str,
+    *,
+    db: AsyncSession | None = None,
+    org_id: uuid.UUID | None = None,
+    org_name: str = "OraInvoice",
+) -> None:
     """Send a password reset email with the reset link.
 
     In production this dispatches via the notification infrastructure.
     For now we log the intent so the flow is wired up.
     """
+    reset_url = f"{getattr(settings, 'frontend_base_url', '') or 'http://localhost'}/reset-password?token={token}"
+
+    # --- Template resolution for password_reset ---
+    rendered = None
+    if db is not None and org_id is not None:
+        from app.modules.notifications.service import resolve_template
+
+        template_variables = {
+            "user_name": email,
+            "reset_link": reset_url,
+            "org_name": org_name,
+        }
+
+        rendered = await resolve_template(
+            db,
+            org_id=org_id,
+            template_type="password_reset",
+            channel="email",
+            variables=template_variables,
+        )
+
+    if rendered:
+        subject = rendered.subject
+        body = rendered.body
+    else:
+        # Existing hardcoded content (fallback)
+        subject = "Password Reset Request"
+        body = (
+            f"Hi,\n\n"
+            f"We received a request to reset your password for your {org_name} account.\n\n"
+            f"Click the link below to reset your password:\n"
+            f"{reset_url}\n\n"
+            f"This link expires in 1 hour.\n\n"
+            f"If you didn't request this, you can safely ignore this email.\n"
+        )
+
     logger.info(
         "Password reset email queued for %s with token %s...",
         email,
@@ -2210,7 +2268,7 @@ async def create_invitation(
     _org_name = _org_r.scalar_one_or_none() or "your organisation"
     _base_url = base_url or getattr(settings, "frontend_base_url", "") or "http://localhost"
     await _send_invitation_email(
-        email, invite_token, db=db, org_name=_org_name, base_url=_base_url,
+        email, invite_token, db=db, org_id=org_id, org_name=_org_name, base_url=_base_url,
     )
 
     # Audit log
@@ -2427,7 +2485,7 @@ async def resend_invitation(
     _org_name2 = _org_r2.scalar_one_or_none() or "your organisation"
     _base_url2 = base_url or getattr(settings, "frontend_base_url", "") or "http://localhost"
     await _send_invitation_email(
-        email, invite_token, db=db, org_name=_org_name2, base_url=_base_url2,
+        email, invite_token, db=db, org_id=org_id, org_name=_org_name2, base_url=_base_url2,
     )
 
     # Audit log
@@ -2467,6 +2525,7 @@ async def _send_invitation_email(
     token: str,
     *,
     db: AsyncSession | None = None,
+    org_id: uuid.UUID | None = None,
     org_name: str = "your organisation",
     base_url: str = "",
 ) -> None:
@@ -2485,9 +2544,34 @@ async def _send_invitation_email(
 
     invite_url = f"{base_url}/verify-email?token={token}"
 
-    subject = f"You've been invited to join {org_name} on OraInvoice"
+    # --- Template resolution for user_invitation ---
+    rendered = None
+    if db is not None and org_id is not None:
+        from app.modules.notifications.service import resolve_template
 
-    html_body = f"""
+        template_variables = {
+            "user_name": email,
+            "org_name": org_name,
+            "signup_link": invite_url,
+        }
+
+        rendered = await resolve_template(
+            db,
+            org_id=org_id,
+            template_type="user_invitation",
+            channel="email",
+            variables=template_variables,
+        )
+
+    if rendered:
+        subject = rendered.subject
+        text_body = rendered.body
+        html_body = rendered.body
+    else:
+        # Existing hardcoded content (fallback)
+        subject = f"You've been invited to join {org_name} on OraInvoice"
+
+        html_body = f"""
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; margin-bottom: 30px;">
         <h1 style="color: #1f2937; font-size: 24px; margin: 0;">You're Invited</h1>
@@ -2529,12 +2613,12 @@ async def _send_invitation_email(
     </div>
     """
 
-    text_body = (
-        f"You've been invited to join {org_name} on OraInvoice.\n\n"
-        f"Click the link below to set your password and get started:\n"
-        f"{invite_url}\n\n"
-        f"This invitation expires in 48 hours.\n"
-    )
+        text_body = (
+            f"You've been invited to join {org_name} on OraInvoice.\n\n"
+            f"Click the link below to set your password and get started:\n"
+            f"{invite_url}\n\n"
+            f"This invitation expires in 48 hours.\n"
+        )
 
     # Find active email provider
     if db is None:

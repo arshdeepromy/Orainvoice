@@ -104,6 +104,8 @@ interface LineItem {
   gst_inclusive?: boolean
   /** Original GST-inclusive unit price (before back-calculation to ex-GST rate). */
   inclusive_price?: number
+  /** Tracks the user-entered inc-GST total for the Amount field (avoids circular re-render). */
+  _incGstTotal?: number
 }
 
 interface FormErrors {
@@ -706,7 +708,7 @@ function ItemTableRow({
           min="0"
           step="0.01"
           value={item.rate}
-          onChange={(e) => update({ rate: Math.max(0, Number(e.target.value) || 0), gst_inclusive: false, inclusive_price: undefined })}
+          onChange={(e) => update({ rate: Math.max(0, Number(e.target.value) || 0), gst_inclusive: false, inclusive_price: undefined, _incGstTotal: undefined })}
           className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </td>
@@ -727,9 +729,28 @@ function ItemTableRow({
           </select>
         </div>
       </td>
-      {/* Amount (line total including GST) */}
-      <td className="py-3 px-2 w-28 text-right text-sm font-medium text-gray-900">
-        {formatNZD(item.amount + (item.tax_rate > 0 ? Math.round(item.amount * item.tax_rate) / 100 : 0))}
+      {/* Amount (line total including GST) — editable, back-calculates rate */}
+      <td className="py-3 px-2 w-28">
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={item._incGstTotal !== undefined ? item._incGstTotal : Math.round((item.amount + (item.tax_rate > 0 ? Math.round(item.amount * item.tax_rate) / 100 : 0)) * 100) / 100}
+          onChange={(e) => {
+            const incGstTotal = Math.max(0, Number(e.target.value) || 0)
+            const qty = item.quantity || 1
+            const incGstPerUnit = incGstTotal / qty
+            const taxMultiplier = 1 + (item.tax_rate > 0 ? item.tax_rate / 100 : 0)
+            const exGstRate = Math.round((incGstPerUnit / taxMultiplier) * 100) / 100
+            update({
+              rate: exGstRate,
+              gst_inclusive: true,
+              inclusive_price: Math.round(incGstPerUnit * 100) / 100,
+              _incGstTotal: incGstTotal,
+            })
+          }}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
       </td>
       {/* Remove */}
       <td className="py-3 px-2 w-12">
@@ -1739,7 +1760,7 @@ export default function InvoiceCreate() {
                 QR Payment
               </button>
             )}
-            <Button size="sm" onClick={handleSaveAndSend} loading={saving}>Save and Send</Button>
+            <Button size="sm" onClick={handleSaveAndSend} loading={saving}>Create Invoice</Button>
           </div>
         </div>
       </div>
@@ -2406,7 +2427,7 @@ export default function InvoiceCreate() {
                 QR Payment
               </button>
             )}
-            <Button size="sm" onClick={handleSaveAndSend} loading={saving}>Save and Send</Button>
+            <Button size="sm" onClick={handleSaveAndSend} loading={saving}>Create Invoice</Button>
           </div>
         </div>
       </div>

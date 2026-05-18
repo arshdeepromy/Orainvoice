@@ -18,6 +18,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.requests import Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
@@ -209,9 +210,26 @@ async def preview_template_endpoint(
             content={"detail": "Template not found"},
         )
 
+    # Fetch real org data for preview (org_name, org_phone, org_email, logo)
+    from app.modules.admin.models import Organisation
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_uuid)
+    )
+    org = org_result.scalar_one_or_none()
+    org_values: dict[str, str] = {}
+    logo_url: str | None = None
+    if org:
+        org_settings = org.settings or {}
+        org_values["org_name"] = org.name or ""
+        org_values["org_phone"] = org_settings.get("phone") or org_settings.get("business_phone") or ""
+        org_values["org_email"] = org_settings.get("email") or org_settings.get("business_email") or ""
+        logo_url = org_settings.get("logo_url") or None
+
     preview = render_template_preview(
         subject=tpl["subject"],
         body_blocks=tpl["body_blocks"],
+        org_values=org_values,
+        logo_url=logo_url,
     )
 
     return TemplatePreviewResponse(

@@ -138,6 +138,19 @@ async def create_invoice_endpoint(
     should_email = payload.status.value == "sent"
     effective_status = "issued" if should_email else payload.status.value
 
+    # Only attempt email if customer has an email address on file
+    if should_email and payload.customer_id:
+        from app.modules.customers.models import Customer as _Cust
+        _cust_check = await db.execute(
+            select(_Cust.email).where(
+                _Cust.id == payload.customer_id,
+                _Cust.org_id == org_uuid,
+            )
+        )
+        _cust_email = _cust_check.scalar_one_or_none()
+        if not _cust_email:
+            should_email = False
+
     # mark_paid implies issuing and emailing (the paid email will be sent instead)
     if payload.mark_paid:
         effective_status = "issued"
@@ -296,6 +309,9 @@ async def create_invoice_endpoint(
         status_label = "Invoice issued, paid, and emailed"
     elif should_email:
         status_label = "Invoice issued and emailed" if email_status != "email_failed" else "Invoice issued (email failed)"
+    elif payload.status.value == "sent" and not should_email:
+        # Status was 'sent' but email skipped (no customer email)
+        status_label = "Invoice issued (no customer email on file)"
     elif payload.status.value == "draft":
         status_label = "Draft saved"
     else:
@@ -662,6 +678,27 @@ async def update_invoice_endpoint(
     updates = payload.model_dump(exclude_unset=True)
     # Don't pass 'sent' status to the service — it only knows draft/issued
     updates.pop("status", None)
+
+    # Only attempt email if customer has an email address on file
+    if should_email:
+        from app.modules.customers.models import Customer as _CustUpd
+        from app.modules.invoices.models import Invoice as _InvUpd
+        _inv_check = await db.execute(
+            select(_InvUpd.customer_id).where(
+                _InvUpd.id == invoice_id,
+                _InvUpd.org_id == org_uuid,
+            )
+        )
+        _inv_cust_id = _inv_check.scalar_one_or_none()
+        if _inv_cust_id:
+            _cust_email_check = await db.execute(
+                select(_CustUpd.email).where(
+                    _CustUpd.id == _inv_cust_id,
+                    _CustUpd.org_id == org_uuid,
+                )
+            )
+            if not _cust_email_check.scalar_one_or_none():
+                should_email = False
 
     try:
         result = await update_invoice(

@@ -26,6 +26,7 @@ interface FieldErrors {
   last_name?: string
   phone?: string
   email?: string
+  confirm_email?: string
 }
 
 /* ── Validation helpers (match backend rules) ── */
@@ -34,7 +35,7 @@ function stripPhoneFormatting(phone: string): string {
   return phone.replace(/[\s\-+()]/g, '')
 }
 
-export function validateKioskForm(data: KioskFormData): FieldErrors {
+export function validateKioskForm(data: KioskFormData, confirmEmail?: string): FieldErrors {
   const errors: FieldErrors = {}
 
   // first_name: 1-100 chars, required
@@ -63,6 +64,8 @@ export function validateKioskForm(data: KioskFormData): FieldErrors {
   if (data.email.trim()) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email.trim())) {
       errors.email = 'Please enter a valid email address'
+    } else if (confirmEmail !== undefined && data.email.trim().toLowerCase() !== confirmEmail.trim().toLowerCase()) {
+      errors.confirm_email = 'Email addresses do not match'
     }
   }
 
@@ -89,6 +92,7 @@ export function KioskCheckInForm({
 }: KioskCheckInFormProps) {
   const [errors, setErrors] = useState<FieldErrors>({})
   const [submitting, setSubmitting] = useState(false)
+  const [confirmEmail, setConfirmEmail] = useState('')
 
   // Auto-fill state
   const [matches, setMatches] = useState<AutoFillMatch[]>([])
@@ -202,6 +206,8 @@ export function KioskCheckInForm({
     setShowAutoFill(false)
     setMatches([])
     setErrors({})
+    // Pre-fill confirm email when auto-filling from existing customer
+    setConfirmEmail(match.email ?? '')
   }
 
   /** Handle form submission. */
@@ -209,7 +215,7 @@ export function KioskCheckInForm({
     e.preventDefault()
 
     // Client-side validation
-    const validationErrors = validateKioskForm(formData)
+    const validationErrors = validateKioskForm(formData, confirmEmail)
     if (Object.keys(validationErrors).length > 0) {
       setErrors(validationErrors)
       return
@@ -390,6 +396,52 @@ export function KioskCheckInForm({
           <p id="err-email" className="mt-1 text-sm text-red-600">{errors.email}</p>
         )}
       </div>
+
+      {/* Confirm Email — only shown when email is entered */}
+      {formData.email.trim() && (
+        <div>
+          <label htmlFor="kiosk-confirm-email" className="mb-1 block text-sm font-medium text-gray-700">
+            Confirm Email <span className="text-red-500">*</span>
+          </label>
+          <input
+            id="kiosk-confirm-email"
+            type="email"
+            autoComplete="email"
+            placeholder="Re-enter your email"
+            value={confirmEmail}
+            onChange={(e) => {
+              setConfirmEmail(e.target.value)
+              if (errors.confirm_email) setErrors((prev) => ({ ...prev, confirm_email: undefined }))
+            }}
+            className={`${INPUT_CLASS} ${
+              confirmEmail.trim() && formData.email.trim().toLowerCase() !== confirmEmail.trim().toLowerCase()
+                ? 'border-red-500'
+                : confirmEmail.trim() && formData.email.trim().toLowerCase() === confirmEmail.trim().toLowerCase()
+                  ? 'border-green-500'
+                  : ''
+            }`}
+            style={INPUT_STYLE}
+            aria-invalid={!!(confirmEmail.trim() && formData.email.trim().toLowerCase() !== confirmEmail.trim().toLowerCase())}
+            aria-describedby="confirm-email-feedback"
+          />
+          {/* Real-time mismatch feedback */}
+          {confirmEmail.trim() && formData.email.trim().toLowerCase() !== confirmEmail.trim().toLowerCase() && (
+            <p id="confirm-email-feedback" className="mt-1 text-sm text-red-600 font-medium">
+              Emails do not match
+            </p>
+          )}
+          {/* Match confirmation */}
+          {confirmEmail.trim() && formData.email.trim().toLowerCase() === confirmEmail.trim().toLowerCase() && (
+            <p id="confirm-email-feedback" className="mt-1 text-sm text-green-600 font-medium">
+              ✓ Emails match
+            </p>
+          )}
+          {/* Submit-time validation error (fallback) */}
+          {errors.confirm_email && !confirmEmail.trim() && (
+            <p className="mt-1 text-sm text-red-600">{errors.confirm_email}</p>
+          )}
+        </div>
+      )}
 
       {/* Buttons */}
       <div className="flex gap-3 pt-2">

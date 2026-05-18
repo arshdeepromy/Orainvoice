@@ -1112,6 +1112,7 @@ async def create_qr_payment_session_endpoint(
             exchange_rate_to_nzd=payload.exchange_rate_to_nzd,
             payment_gateway=payload.payment_gateway,
             ip_address=ip_address,
+            base_url=request.headers.get("origin") or None,
         )
     except ValueError as exc:
         error_msg = str(exc)
@@ -1213,6 +1214,7 @@ async def create_qr_session_existing_invoice_endpoint(
             org_id=org_uuid,
             user_id=user_uuid,
             invoice_id=payload.invoice_id,
+            base_url=request.headers.get("origin") or None,
         )
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})

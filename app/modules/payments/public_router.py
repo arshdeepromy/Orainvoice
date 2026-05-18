@@ -539,10 +539,15 @@ async def update_surcharge(
 
     balance_due = invoice.balance_due or Decimal("0")
 
+    # Map wallet types to their underlying payment method for surcharge lookup
+    # Apple Pay and Google Pay are card payments through a wallet — same fee
+    WALLET_TO_METHOD = {"apple_pay": "card", "google_pay": "card"}
+    surcharge_method = WALLET_TO_METHOD.get(body.payment_method_type, body.payment_method_type)
+
     if surcharge_enabled and raw_rates:
         rates = deserialise_rates(raw_rates, DEFAULT_SURCHARGE_RATES)
         surcharge = get_surcharge_for_method(
-            balance_due, body.payment_method_type, rates,
+            balance_due, surcharge_method, rates,
         )
     else:
         surcharge = Decimal("0.00")

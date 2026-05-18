@@ -9,9 +9,11 @@ Requirements: 34.1, 34.2, 34.3, 35.1, 35.2, 35.3
 
 from __future__ import annotations
 
+import html as html_mod
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,6 +30,152 @@ from app.modules.notifications.schemas import (
 from app.modules.admin.service import increment_sms_usage
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Template resolution helpers (Notification Template Integration)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RenderedTemplate:
+    """Return type for resolve_template() — holds rendered subject and body."""
+
+    subject: str
+    body: str
+
+
+def _render_blocks_to_text(body_blocks: list[dict[str, Any]]) -> str:
+    """Convert a JSONB body_blocks array into a plain-text email body.
+
+    Block type rendering rules:
+      - header:  {content}\\n\\n
+      - text:    {content}\\n\\n
+      - button:  {content}\\n{url}\\n\\n
+      - divider: ---\\n\\n
+      - footer:  {content}\\n
+      - image:   (skipped)
+
+    Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6
+    """
+    parts: list[str] = []
+
+    for block in body_blocks:
+        btype = block.get("type", "")
+        content = block.get("content") or ""
+
+        if btype == "header":
+            parts.append(f"{content}\n\n")
+        elif btype in ("text", "body"):
+            parts.append(f"{content}\n\n")
+        elif btype == "button":
+            url = block.get("url") or ""
+            parts.append(f"{content}\n{url}\n\n")
+        elif btype == "divider":
+            parts.append("---\n\n")
+        elif btype == "footer":
+            parts.append(f"{content}\n")
+        # logo, image, and unknown types are skipped in plain text
+
+    return "".join(parts)
+
+
+def _substitute_variables(text: str, variables: dict[str, str]) -> str:
+    """Replace ``{{variable_name}}`` placeholders with values from *variables*.
+
+    Unlike the existing ``render_sms_body()`` which leaves unmatched
+    placeholders as-is, this function replaces unmatched placeholders with
+    an empty string so no raw ``{{...}}`` appears in customer-facing content.
+
+    Requirements: 1.5, 1.6
+    """
+
+    def _replacer(match: re.Match) -> str:
+        var_name = match.group(1)
+        return variables.get(var_name, "")
+
+    return re.sub(r"\{\{(\w+)\}\}", _replacer, text)
+
+
+async def resolve_template(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    template_type: str,
+    channel: str = "email",
+    variables: dict[str, str],
+) -> RenderedTemplate | None:
+    """Resolve and render an org's configured template for a given type/channel.
+
+    Returns a RenderedTemplate with rendered subject and body, or None if:
+    - No template found for the org/type/channel combination
+    - Template exists but is_enabled is False
+    - Any error occurs during resolution (logged at warning level)
+
+    This function is READ-ONLY — it MUST NOT call db.commit(), db.rollback(),
+    or db.flush(). It runs inside the caller's existing session.begin() context.
+
+    Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 12.1, 12.2, 12.3
+    """
+    try:
+        template = await get_template_for_locale(
+            db, org_id=org_id, template_type=template_type, channel=channel
+        )
+
+        if template is None:
+            return None
+
+        if not template.get("is_enabled", False):
+            return None
+
+        if channel == "sms":
+            # SMS templates store body as a single string in the "body" key
+            body_text = template.get("body", "")
+            rendered_body = _substitute_variables(body_text, variables)
+        else:
+            # Email templates use body_blocks JSONB array.
+            # Substitute variables per-block so we can skip button blocks
+            # whose URL resolves to empty (e.g. {{payment_link}} when Stripe
+            # is not enabled).
+            body_blocks = template.get("body_blocks", [])
+            resolved_blocks: list[dict[str, Any]] = []
+            for block in body_blocks:
+                resolved_block = dict(block)
+                if "content" in resolved_block and resolved_block["content"]:
+                    resolved_block["content"] = _substitute_variables(
+                        resolved_block["content"], variables
+                    )
+                if "url" in resolved_block and resolved_block["url"]:
+                    resolved_block["url"] = _substitute_variables(
+                        resolved_block["url"], variables
+                    )
+                # Skip button blocks with empty URL (no link to show)
+                if resolved_block.get("type") == "button" and not (resolved_block.get("url") or "").strip():
+                    continue
+                resolved_blocks.append(resolved_block)
+            rendered_body = _render_blocks_to_text(resolved_blocks)
+
+        subject_text = template.get("subject", "") or ""
+
+        # Substitute variables in subject
+        rendered_subject = _substitute_variables(subject_text, variables)
+
+        return RenderedTemplate(subject=rendered_subject, body=rendered_body)
+
+    except Exception as exc:
+        logger.warning(
+            "Template resolution failed for org=%s type=%s channel=%s: %s",
+            org_id,
+            template_type,
+            channel,
+            exc,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Template dict helpers
+# ---------------------------------------------------------------------------
 
 
 def _template_to_dict(tpl: NotificationTemplate) -> dict[str, Any]:
@@ -285,8 +433,14 @@ def render_template_preview(
     *,
     subject: str | None,
     body_blocks: list[dict[str, Any]],
+    org_values: dict[str, str] | None = None,
+    logo_url: str | None = None,
 ) -> dict[str, str]:
-    """Render a template preview with sample variable values.
+    """Render a template preview with variable values.
+
+    Uses real org data (org_name, org_phone, org_email) when provided,
+    and sample data for customer-specific fields that aren't known at
+    template editing time.
 
     Requirements: 34.2
     """
@@ -298,17 +452,27 @@ def render_template_preview(
         "total_due": "$150.00",
         "due_date": "15/01/2025",
         "payment_link": "https://pay.example.com/inv-0042",
-        "org_name": "Workshop Pro Demo",
+        "org_name": "Your Organisation",
         "org_phone": "09 555 1234",
-        "org_email": "info@workshoppro.co.nz",
+        "org_email": "info@example.co.nz",
         "vehicle_rego": "ABC123",
         "vehicle_make": "Toyota",
         "vehicle_model": "Corolla",
         "expiry_date": "28/02/2025",
+        "service_due_date": "15/03/2025",
+        "booking_date": "Monday 10 February 2025 at 09:00 AM",
+        "booking_service": "Full Service",
+        "quote_number": "QT-0018",
+        "quote_total": "$420.00",
+        "quote_valid_until": "28/02/2025",
         "user_name": "John Doe",
         "reset_link": "https://app.example.com/reset/abc123",
         "signup_link": "https://app.example.com/signup/abc123",
     }
+
+    # Override with real org data when available
+    if org_values:
+        sample_values.update(org_values)
 
     def _replace_vars(text: str) -> str:
         """Replace {{variable}} placeholders with sample values."""
@@ -322,25 +486,45 @@ def render_template_preview(
     html_parts: list[str] = []
     for block in body_blocks:
         btype = block.get("type", "text")
-        content = _replace_vars(block.get("content", ""))
-        url = _replace_vars(block.get("url", ""))
+        content = _replace_vars(block.get("content") or "")
+        url = _replace_vars(block.get("url") or "")
 
-        if btype == "header":
-            html_parts.append(f"<h2>{content}</h2>")
-        elif btype == "text":
-            html_parts.append(f"<p>{content}</p>")
+        # Escape HTML to prevent injection, then convert newlines to <br>
+        safe_content = html_mod.escape(content).replace("\n", "<br>")
+
+        if btype == "logo":
+            if logo_url:
+                html_parts.append(
+                    f'<div style="margin-bottom:16px">'
+                    f'<img src="{html_mod.escape(logo_url)}" alt="Organisation Logo" '
+                    f'style="max-height:60px;max-width:200px;object-fit:contain" />'
+                    f'</div>'
+                )
+            else:
+                html_parts.append(
+                    '<div style="margin-bottom:16px">'
+                    '<div style="width:120px;height:40px;background:#e5e7eb;border-radius:4px;'
+                    'display:flex;align-items:center;justify-content:center;font-size:11px;color:#6b7280">'
+                    '[No logo configured]</div></div>'
+                )
+        elif btype == "header":
+            html_parts.append(f"<h2>{safe_content}</h2>")
+        elif btype in ("text", "body"):
+            html_parts.append(f"<p>{safe_content}</p>")
         elif btype == "button":
+            safe_url = html_mod.escape(url)
             html_parts.append(
-                f'<a href="{url}" style="display:inline-block;padding:10px 20px;'
+                f'<a href="{safe_url}" style="display:inline-block;padding:10px 20px;'
                 f'background:#007bff;color:#fff;text-decoration:none;border-radius:4px">'
-                f"{content}</a>"
+                f"{safe_content}</a>"
             )
         elif btype == "image":
-            html_parts.append(f'<img src="{url}" alt="{content}" style="max-width:100%" />')
+            safe_url = html_mod.escape(url)
+            html_parts.append(f'<img src="{safe_url}" alt="{safe_content}" style="max-width:100%" />')
         elif btype == "divider":
             html_parts.append("<hr />")
         elif btype == "footer":
-            html_parts.append(f'<footer style="font-size:12px;color:#666">{content}</footer>')
+            html_parts.append(f'<footer style="font-size:12px;color:#666">{safe_content}</footer>')
 
     return {
         "subject": rendered_subject,

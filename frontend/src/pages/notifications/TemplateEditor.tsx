@@ -9,8 +9,9 @@ import { useModules } from '../../contexts/ModuleContext'
 
 interface TemplateBlock {
   id: string
-  type: 'logo' | 'header' | 'body' | 'footer'
+  type: 'logo' | 'header' | 'body' | 'text' | 'footer' | 'button' | 'divider' | 'image'
   content: string
+  url?: string
 }
 
 interface NotificationTemplate {
@@ -20,6 +21,7 @@ interface NotificationTemplate {
   channel: 'email' | 'sms'
   body_blocks: TemplateBlock[]
   body?: string
+  is_enabled: boolean
   updated_at: string
 }
 
@@ -34,7 +36,7 @@ const TEMPLATE_VARIABLES_BASE = [
   { variable: '{{invoice_number}}', description: 'Invoice number' },
   { variable: '{{total_due}}', description: 'Total amount due' },
   { variable: '{{due_date}}', description: 'Invoice due date' },
-  { variable: '{{payment_link}}', description: 'Online payment link (coming soon)' },
+  { variable: '{{payment_link}}', description: 'Online payment link (Stripe)' },
   { variable: '{{org_name}}', description: 'Organisation name' },
   { variable: '{{org_phone}}', description: 'Organisation phone' },
   { variable: '{{org_email}}', description: 'Organisation email' },
@@ -65,7 +67,9 @@ const TEMPLATE_VARIABLES_QUOTE = [
 const BLOCK_TYPES = [
   { value: 'logo', label: 'Logo' },
   { value: 'header', label: 'Header Text' },
-  { value: 'body', label: 'Body Text' },
+  { value: 'text', label: 'Body Text' },
+  { value: 'button', label: 'Button' },
+  { value: 'divider', label: 'Divider' },
   { value: 'footer', label: 'Footer' },
 ]
 
@@ -92,6 +96,7 @@ export default function TemplateEditor() {
   const [editBlocks, setEditBlocks] = useState<TemplateBlock[]>([])
   const [editSubject, setEditSubject] = useState('')
   const [editSmsText, setEditSmsText] = useState('')
+  const [editEnabled, setEditEnabled] = useState(false)
   const [saving, setSaving] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [variablesOpen, setVariablesOpen] = useState(false)
@@ -132,6 +137,7 @@ export default function TemplateEditor() {
     setEditSubject(t.subject)
     setEditBlocks((t.body_blocks || []).map((b) => ({ ...b })))
     setEditSmsText(t.body || '')
+    setEditEnabled(t.is_enabled ?? false)
   }
 
   const handleSave = async () => {
@@ -140,8 +146,8 @@ export default function TemplateEditor() {
     setError('')
     try {
       const payload = selected.channel === 'sms'
-        ? { body: editSmsText }
-        : { subject: editSubject, body_blocks: editBlocks }
+        ? { body: editSmsText, is_enabled: editEnabled }
+        : { subject: editSubject, body_blocks: editBlocks, is_enabled: editEnabled }
       const endpoint = selected.channel === 'sms'
         ? `/notifications/sms-templates/${selected.template_type}`
         : `/notifications/templates/${selected.template_type}`
@@ -191,7 +197,55 @@ export default function TemplateEditor() {
   }
   const handleDragEnd = () => setDragIndex(null)
 
-  /* Preview rendering */
+  /* Preview rendering — calls backend API for real org data substitution */
+  const [previewHtml, setPreviewHtml] = useState<{ subject: string; html_body: string } | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+
+  const loadPreview = async () => {
+    if (!selected || selected.channel === 'sms') return
+    setPreviewLoading(true)
+    try {
+      const res = await apiClient.get<{ subject: string; html_body: string }>(
+        `/notifications/templates/${selected.template_type}/preview`
+      )
+      setPreviewHtml(res.data ?? null)
+    } catch {
+      setPreviewHtml(null)
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  const substituteVars = (text: string): string => {
+    // Fallback for SMS preview (client-side only since no backend preview for SMS)
+    const SAMPLE_VALUES: Record<string, string> = {
+      customer_first_name: 'Jane',
+      customer_last_name: 'Smith',
+      customer_email: 'jane@example.com',
+      invoice_number: 'INV-0042',
+      total_due: '$150.00',
+      due_date: '15/01/2025',
+      payment_link: 'https://pay.example.com/inv-0042',
+      org_name: 'Your Organisation',
+      org_phone: '09 555 1234',
+      org_email: 'info@example.co.nz',
+      vehicle_rego: 'ABC123',
+      vehicle_make: 'Toyota',
+      vehicle_model: 'Corolla',
+      expiry_date: '28/02/2025',
+      service_due_date: '15/03/2025',
+      booking_date: 'Monday 10 February 2025 at 09:00 AM',
+      booking_service: 'Full Service',
+      quote_number: 'QT-0018',
+      quote_total: '$420.00',
+      quote_valid_until: '28/02/2025',
+      user_name: 'John Doe',
+      reset_link: 'https://app.example.com/reset/abc123',
+      signup_link: 'https://app.example.com/signup/abc123',
+    }
+    return text.replace(/\{\{(\w+)\}\}/g, (_, varName) => SAMPLE_VALUES[varName] ?? '')
+  }
+
   const renderPreview = () => {
     if (!selected) return null
     if (selected.channel === 'sms') {
@@ -199,7 +253,7 @@ export default function TemplateEditor() {
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
           <p className="text-sm font-medium text-gray-700 mb-2">SMS Preview</p>
           <div className="rounded-md bg-white p-3 text-sm text-gray-900 whitespace-pre-wrap">
-            {editSmsText || '(empty)'}
+            {substituteVars(editSmsText) || '(empty)'}
           </div>
           <p className={`mt-2 text-xs ${editSmsText.length > 160 ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
             {editSmsText.length}/160 characters{editSmsText.length > 160 && ' - exceeds single SMS limit'}
@@ -207,29 +261,21 @@ export default function TemplateEditor() {
         </div>
       )
     }
-    return (
-      <div className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
-        <p className="text-xs text-gray-500 mb-2">Subject: {editSubject}</p>
-        {editBlocks.map((block) => (
-          <div key={block.id}>
-            {block.type === 'logo' && (
-              <div className="h-12 w-32 bg-gray-200 rounded flex items-center justify-center text-xs text-gray-500">
-                [Organisation Logo]
-              </div>
-            )}
-            {block.type === 'header' && (
-              <h2 className="text-lg font-semibold text-gray-900">{block.content || '(header)'}</h2>
-            )}
-            {block.type === 'body' && (
-              <p className="text-sm text-gray-700 whitespace-pre-wrap">{block.content || '(body text)'}</p>
-            )}
-            {block.type === 'footer' && (
-              <p className="text-xs text-gray-500 border-t border-gray-100 pt-3">{block.content || '(footer)'}</p>
-            )}
-          </div>
-        ))}
-      </div>
-    )
+    if (previewLoading) {
+      return <div className="py-8 flex justify-center"><Spinner label="Loading preview" /></div>
+    }
+    if (previewHtml) {
+      return (
+        <div className="rounded-lg border border-gray-200 bg-white p-6 space-y-4">
+          <p className="text-xs text-gray-500 mb-2">Subject: <strong>{previewHtml.subject}</strong></p>
+          <div
+            className="text-sm text-gray-900 prose prose-sm max-w-none"
+            dangerouslySetInnerHTML={{ __html: previewHtml.html_body }}
+          />
+        </div>
+      )
+    }
+    return <p className="text-sm text-gray-500 py-4">Preview not available.</p>
   }
 
   const VEHICLE_TEMPLATE_TYPES = ['wof_expiry_reminder', 'registration_expiry_reminder']
@@ -299,6 +345,9 @@ export default function TemplateEditor() {
                     <Badge variant={t.channel === 'email' ? 'info' : 'neutral'}>
                       {t.channel.toUpperCase()}
                     </Badge>
+                    {t.is_enabled && (
+                      <Badge variant="success">Active</Badge>
+                    )}
                   </div>
                   <p className="text-xs text-gray-500 mt-0.5">
                     Updated {new Date(t.updated_at).toLocaleDateString('en-NZ')}
@@ -322,6 +371,24 @@ export default function TemplateEditor() {
                 <h3 className="text-lg font-medium text-gray-900">{formatTemplateType(selected.template_type)}</h3>
                 <Badge variant="neutral">SMS</Badge>
               </div>
+
+              {/* Enable/Disable toggle */}
+              <div className="flex items-center justify-between rounded-md border border-gray-200 bg-gray-50 px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium text-gray-900">Use custom template</p>
+                  <p className="text-xs text-gray-500">When enabled, SMS messages use this template instead of the default system content.</p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={editEnabled}
+                  onClick={() => setEditEnabled(!editEnabled)}
+                  className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${editEnabled ? 'bg-blue-600' : 'bg-gray-200'}`}
+                >
+                  <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${editEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                </button>
+              </div>
+
               <Input
                 label="Subject / Label"
                 value={editSubject}
@@ -358,6 +425,24 @@ export default function TemplateEditor() {
                 <h3 className="text-lg font-medium text-gray-900">{formatTemplateType(selected.template_type)}</h3>
                 <Badge variant="info">EMAIL</Badge>
               </div>
+
+              {/* Enable/Disable toggle */}
+              <div className="flex items-center justify-between rounded-md border border-gray-200 bg-gray-50 px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium text-gray-900">Use custom template</p>
+                  <p className="text-xs text-gray-500">When enabled, emails use this template instead of the default system content.</p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={editEnabled}
+                  onClick={() => setEditEnabled(!editEnabled)}
+                  className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${editEnabled ? 'bg-blue-600' : 'bg-gray-200'}`}
+                >
+                  <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${editEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                </button>
+              </div>
+
               <Input
                 label="Email subject"
                 value={editSubject}
@@ -393,14 +478,31 @@ export default function TemplateEditor() {
                       </div>
                       {block.type === 'logo' ? (
                         <p className="text-xs text-gray-500 italic">Organisation logo will be inserted automatically.</p>
+                      ) : block.type === 'divider' ? (
+                        <p className="text-xs text-gray-500 italic">Horizontal divider line.</p>
                       ) : (
-                        <textarea
-                          rows={block.type === 'body' ? 4 : 2}
-                          value={block.content}
-                          onChange={(e) => updateBlock(idx, e.target.value)}
-                          placeholder={`Enter ${block.type} text… Use {{variables}} for dynamic content.`}
-                          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        />
+                        <>
+                          <textarea
+                            rows={block.type === 'body' || block.type === 'text' ? 4 : 2}
+                            value={block.content}
+                            onChange={(e) => updateBlock(idx, e.target.value)}
+                            placeholder={`Enter ${block.type === 'button' ? 'button label' : block.type + ' text'}… Use {{variables}} for dynamic content.`}
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          />
+                          {block.type === 'button' && (
+                            <input
+                              type="text"
+                              value={block.url || ''}
+                              onChange={(e) => {
+                                const updated = [...editBlocks]
+                                updated[idx] = { ...updated[idx], url: e.target.value }
+                                setEditBlocks(updated)
+                              }}
+                              placeholder="Button URL… e.g. {{payment_link}}"
+                              className="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            />
+                          )}
+                        </>
                       )}
                     </div>
                   ))}
@@ -422,7 +524,7 @@ export default function TemplateEditor() {
               </div>
 
               <div className="flex justify-end gap-2">
-                <Button size="sm" variant="secondary" onClick={() => setPreviewOpen(true)}>Preview</Button>
+                <Button size="sm" variant="secondary" onClick={() => { setPreviewOpen(true); loadPreview() }}>Preview</Button>
                 <Button size="sm" onClick={handleSave} loading={saving}>Save Template</Button>
               </div>
             </div>
@@ -431,7 +533,7 @@ export default function TemplateEditor() {
       </div>
 
       {/* Preview Modal */}
-      <Modal open={previewOpen} onClose={() => setPreviewOpen(false)} title="Template Preview">
+      <Modal open={previewOpen} onClose={() => { setPreviewOpen(false); setPreviewHtml(null) }} title="Template Preview">
         {renderPreview()}
         <div className="mt-4 flex justify-end">
           <Button size="sm" variant="secondary" onClick={() => setPreviewOpen(false)}>Close</Button>

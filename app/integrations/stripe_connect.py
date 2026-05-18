@@ -219,6 +219,85 @@ async def create_payment_link(
         "payment_url": session_data["url"],
     }
 
+
+async def register_payment_method_domain(
+    *,
+    domain_name: str,
+    stripe_account_id: str,
+) -> dict:
+    """Register a payment method domain on a Connected Account.
+
+    Required for Apple Pay and Google Pay to work on custom payment pages
+    using direct charges. The domain must be registered on the Connected
+    Account (not just the platform) per Stripe docs:
+    https://docs.stripe.com/payments/payment-methods/pmd-registration
+
+    Parameters
+    ----------
+    domain_name:
+        The domain to register (e.g. "devin.oraflows.co.nz").
+    stripe_account_id:
+        The connected Stripe account ID (``acct_...``).
+
+    Returns
+    -------
+    dict
+        ``{"id": "pmd_...", "domain_name": "...", "enabled": True}``
+        or ``{"error": "..."}`` on failure.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    from app.integrations.stripe_billing import get_stripe_secret_key
+
+    secret_key = await get_stripe_secret_key()
+    if not secret_key:
+        return {"error": "Stripe secret key not configured"}
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.stripe.com/v1/payment_method_domains",
+                data={"domain_name": domain_name},
+                auth=(secret_key, ""),
+                headers={"Stripe-Account": stripe_account_id},
+            )
+            # 200 = created, 409 = already exists (both are fine)
+            if response.status_code in (200, 409):
+                data = response.json()
+                logger.info(
+                    "Payment method domain '%s' registered on account %s (id=%s)",
+                    domain_name,
+                    stripe_account_id,
+                    data.get("id", "unknown"),
+                )
+                return {
+                    "id": data.get("id", ""),
+                    "domain_name": domain_name,
+                    "enabled": data.get("enabled", True),
+                }
+            else:
+                error_data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+                error_msg = error_data.get("error", {}).get("message", response.text[:200])
+                logger.warning(
+                    "Failed to register domain '%s' on account %s: %s (status %d)",
+                    domain_name,
+                    stripe_account_id,
+                    error_msg,
+                    response.status_code,
+                )
+                return {"error": error_msg}
+    except Exception as exc:
+        logger.exception(
+            "Exception registering domain '%s' on account %s: %s",
+            domain_name,
+            stripe_account_id,
+            exc,
+        )
+        return {"error": str(exc)}
+
+
 async def create_payment_intent(
     *,
     amount: int,

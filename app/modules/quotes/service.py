@@ -1016,6 +1016,68 @@ async def send_quote(
             f"{frontend_base}/api/v1/public/quotes/view/{acceptance_token}\n"
         )
 
+    # --- Template resolution for quote_sent ---
+    from app.modules.notifications.service import resolve_template
+    from app.modules.invoices.service import get_currency_symbol
+
+    # Fetch customer details for template variable context
+    _cust_for_tpl_result = await db.execute(
+        select(Customer).where(
+            Customer.id == quote_dict["customer_id"],
+            Customer.org_id == org_id,
+        )
+    )
+    _cust_for_tpl = _cust_for_tpl_result.scalar_one_or_none()
+    _customer_first_name = _cust_for_tpl.first_name if _cust_for_tpl else ""
+    _customer_last_name = _cust_for_tpl.last_name if _cust_for_tpl else ""
+
+    # Format monetary value using quote currency (org's base_currency or NZD default)
+    _quote_currency = getattr(org, "base_currency", None) or "NZD"
+    _currency_symbol = get_currency_symbol(_quote_currency)
+    _quote_total_raw = quote_dict.get("total", 0)
+    _quote_total_formatted = f"{_currency_symbol}{_quote_total_raw:.2f}" if isinstance(_quote_total_raw, (int, float, Decimal)) else f"{_currency_symbol}{_quote_total_raw}"
+
+    _valid_until_raw = quote_dict.get("valid_until")
+    _valid_until_str = str(_valid_until_raw) if _valid_until_raw else ""
+
+    _org_email = org_settings.get("email") or org_settings.get("business_email") or ""
+    _org_phone = org_settings.get("phone") or org_settings.get("business_phone") or ""
+
+    _template_variables = {
+        "customer_first_name": _customer_first_name or "",
+        "customer_last_name": _customer_last_name or "",
+        "quote_number": quote_dict.get("quote_number", ""),
+        "quote_total": _quote_total_formatted,
+        "quote_valid_until": _valid_until_str,
+        "org_name": org_name,
+        "org_email": _org_email,
+        "org_phone": _org_phone,
+    }
+
+    _rendered_quote_template = await resolve_template(
+        db,
+        org_id=org_id,
+        template_type="quote_sent",
+        channel="email",
+        variables=_template_variables,
+    )
+
+    if _rendered_quote_template:
+        _email_subject = _rendered_quote_template.subject
+        _email_body = _rendered_quote_template.body
+    else:
+        # Existing hardcoded content (unchanged fallback)
+        _email_subject = f"Quote {quote_dict['quote_number']} from {org_name}"
+        _email_body = (
+            f"Hi,\n\n"
+            f"Please find attached quote {quote_dict['quote_number']} from {org_name}.\n\n"
+            f"Total: ${quote_dict['total']:.2f} (incl. GST)\n"
+            f"This quote is valid until {quote_dict.get('valid_until', 'N/A')}.\n"
+            f"{view_link_text}\n"
+            f"If you have any questions, please don't hesitate to contact us.\n\n"
+            f"Kind regards,\n{org_name}\n"
+        )
+
     # Find all active email providers ordered by priority (failover)
     provider_result = await db.execute(
         select(EmailProvider)
@@ -1033,20 +1095,12 @@ async def send_quote(
         msg = MIMEMultipart("mixed")
         msg["From"] = f"{from_name} <{from_email}>"
         msg["To"] = recipient_email
-        msg["Subject"] = f"Quote {quote_dict['quote_number']} from {org_name}"
+        msg["Subject"] = _email_subject
         reply_to = org_settings.get("email")
         if reply_to:
             msg["Reply-To"] = reply_to
 
-        body = (
-            f"Hi,\n\n"
-            f"Please find attached quote {quote_dict['quote_number']} from {org_name}.\n\n"
-            f"Total: ${quote_dict['total']:.2f} (incl. GST)\n"
-            f"This quote is valid until {quote_dict.get('valid_until', 'N/A')}.\n"
-            f"{view_link_text}\n"
-            f"If you have any questions, please don't hesitate to contact us.\n\n"
-            f"Kind regards,\n{org_name}\n"
-        )
+        body = _email_body
 
         # Build HTML body with conditional email signature
         html_body = body.replace("\n", "<br>")

@@ -76,85 +76,53 @@ interface InvoicePreviewProps {
 }
 
 function InvoicePreview({ data }: InvoicePreviewProps) {
-  const primaryColour = data?.org_primary_colour ?? '#2563eb'
   const currency = data?.currency ?? 'NZD'
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
-      {/* Org branding header */}
-      <div
-        className="rounded-t-lg px-6 py-4"
-        style={{ backgroundColor: primaryColour, opacity: 0.95 }}
-      >
-        <div className="flex items-center gap-3">
-          {data?.org_logo_url && (
-            <img
-              src={data.org_logo_url}
-              alt={`${data?.org_name ?? 'Organisation'} logo`}
-              className="h-10 w-10 rounded-md bg-white object-contain p-0.5"
-            />
-          )}
-          <h2 className="text-lg font-semibold text-white">
-            {data?.org_name ?? 'Invoice'}
-          </h2>
-        </div>
-      </div>
-
-      <div className="p-6 space-y-5">
+      <div className="p-4 sm:p-6 space-y-4">
         {/* Invoice meta */}
-        <div className="grid grid-cols-2 gap-4 text-sm">
+        <div className="grid grid-cols-2 gap-3 text-sm">
           <div>
-            <span className="text-gray-500">Invoice</span>
+            <span className="text-gray-500 text-xs">Invoice</span>
             <p className="font-medium text-gray-900">{data?.invoice_number ?? '—'}</p>
           </div>
           <div>
-            <span className="text-gray-500">Status</span>
+            <span className="text-gray-500 text-xs">Status</span>
             <p className="font-medium text-gray-900 capitalize">{data?.status ?? '—'}</p>
           </div>
           <div>
-            <span className="text-gray-500">Issue Date</span>
+            <span className="text-gray-500 text-xs">Issue Date</span>
             <p className="font-medium text-gray-900">{formatDate(data?.issue_date)}</p>
           </div>
           <div>
-            <span className="text-gray-500">Due Date</span>
+            <span className="text-gray-500 text-xs">Due Date</span>
             <p className="font-medium text-gray-900">{formatDate(data?.due_date)}</p>
           </div>
         </div>
 
-        {/* Line items table */}
+        {/* Line items — mobile-friendly card layout */}
         {(data?.line_items ?? []).length > 0 && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 text-left text-gray-500">
-                  <th className="pb-2 font-medium">Description</th>
-                  <th className="pb-2 font-medium text-right">Qty</th>
-                  <th className="pb-2 font-medium text-right">Unit Price</th>
-                  <th className="pb-2 font-medium text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(data?.line_items ?? []).map((item, idx) => (
-                  <tr key={idx} className="border-b border-gray-100">
-                    <td className="py-2 text-gray-900">{item?.description ?? ''}</td>
-                    <td className="py-2 text-right text-gray-700 tabular-nums">
-                      {(item?.quantity ?? 0)}
-                    </td>
-                    <td className="py-2 text-right text-gray-700 tabular-nums">
-                      {formatCurrency(item?.unit_price ?? 0, currency)}
-                    </td>
-                    <td className="py-2 text-right text-gray-900 font-medium tabular-nums">
-                      {formatCurrency(item?.line_total ?? 0, currency)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Items</p>
+            {(data?.line_items ?? []).map((item, idx) => (
+              <div key={idx} className="flex items-start justify-between gap-2 rounded-md border border-gray-100 bg-gray-50 px-3 py-2">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-gray-900 truncate">{item?.description ?? ''}</p>
+                  <p className="text-xs text-gray-500">
+                    {Number(item?.quantity ?? 0) % 1 === 0 ? Math.round(Number(item?.quantity ?? 0)) : Number(item?.quantity ?? 0).toFixed(2)} × {formatCurrency(item?.unit_price ?? 0, currency)}
+                  </p>
+                </div>
+                <span className="text-sm font-medium text-gray-900 tabular-nums whitespace-nowrap">
+                  {formatCurrency(item?.line_total ?? 0, currency)}
+                </span>
+              </div>
+            ))}
           </div>
         )}
 
         {/* Totals */}
-        <div className="space-y-2 border-t border-gray-200 pt-4 text-sm">
+        <div className="space-y-1.5 border-t border-gray-200 pt-3 text-sm">
           <div className="flex justify-between text-gray-600">
             <span>Subtotal</span>
             <span className="tabular-nums">{formatCurrency(data?.subtotal ?? 0, currency)}</span>
@@ -175,10 +143,7 @@ function InvoicePreview({ data }: InvoicePreviewProps) {
               </span>
             </div>
           )}
-          <div
-            className="flex justify-between text-base font-bold pt-1"
-            style={{ color: primaryColour }}
-          >
+          <div className="flex justify-between text-base font-bold pt-1 text-blue-700">
             <span>Balance Due</span>
             <span className="tabular-nums">{formatCurrency(data?.balance_due ?? 0, currency)}</span>
           </div>
@@ -192,6 +157,8 @@ function InvoicePreview({ data }: InvoicePreviewProps) {
 
 const METHOD_DISPLAY_NAMES: Record<string, string> = {
   card: 'Credit/Debit Card',
+  apple_pay: 'Apple Pay',
+  google_pay: 'Google Pay',
   afterpay_clearpay: 'Afterpay',
   klarna: 'Klarna',
   bank_transfer: 'Bank Transfer',
@@ -229,7 +196,13 @@ function PaymentForm({ balanceDue: rawBalanceDue, currency, invoiceNumber, clien
       return
     }
 
-    const rate = surchargeRates?.[selectedMethod]
+    // Map wallet types to their underlying payment method for surcharge lookup
+    // Apple Pay and Google Pay are card payments through a wallet — same processing fee
+    const methodForSurcharge = (selectedMethod === 'apple_pay' || selectedMethod === 'google_pay')
+      ? 'card'
+      : selectedMethod
+
+    const rate = surchargeRates?.[methodForSurcharge]
     if (!rate?.enabled) {
       setSurchargeAmount(0)
       return
@@ -392,10 +365,10 @@ function PaymentForm({ balanceDue: rawBalanceDue, currency, invoiceNumber, clien
           )}
         </div>
 
-        {/* Payment Element — shows all enabled payment methods (card, Afterpay, Klarna, etc.) */}
+        {/* Payment Element — shows all enabled payment methods in accordion layout */}
         <PaymentElement
           options={{
-            layout: 'tabs',
+            layout: 'accordion',
           }}
           onChange={(event) => {
             const methodType = event.value?.type ?? null

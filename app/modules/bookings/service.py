@@ -1121,6 +1121,7 @@ async def _send_booking_confirmation_email(
 
     from app.core.encryption import envelope_decrypt_str
     from app.modules.admin.models import EmailProvider, Organisation
+    from app.modules.notifications.service import resolve_template
 
     # Resolve org name for the From header
     org_result = await db.execute(
@@ -1141,24 +1142,50 @@ async def _send_booking_confirmation_email(
         logger.warning("No active email provider configured — skipping booking confirmation email")
         return False
 
+    # --- Template resolution ---
     formatted_date = start_time.strftime("%A %d %B %Y at %I:%M %p")
-    subject = f"Booking Confirmation — {service_type or 'Appointment'} on {formatted_date}"
+    org_settings = (org.settings if org else {}) or {}
+    org_phone = org_settings.get("phone") or org_settings.get("business_phone") or ""
 
-    body = (
-        f"Hi {customer_first_name},\n\n"
-        f"Your booking has been confirmed:\n\n"
-        f"Service: {service_type or 'Appointment'}\n"
-        f"Date & Time: {formatted_date}\n"
-        f"Duration: {duration_minutes} minutes\n"
+    template_variables = {
+        "customer_first_name": customer_first_name or "",
+        "booking_service": service_type or "Appointment",
+        "booking_date": formatted_date,
+        "org_name": org_name,
+        "org_phone": org_phone,
+        "vehicle_rego": vehicle_rego or "",
+    }
+
+    rendered = await resolve_template(
+        db,
+        org_id=org_id,
+        template_type="booking_confirmation",
+        channel="email",
+        variables=template_variables,
     )
-    if vehicle_rego:
-        body += f"Vehicle: {vehicle_rego}\n"
-    if notes:
-        body += f"Notes: {notes}\n"
-    body += (
-        f"\nIf you need to reschedule or cancel, please contact us.\n\n"
-        f"Kind regards,\n{org_name}\n"
-    )
+
+    if rendered:
+        subject = rendered.subject
+        body = rendered.body
+    else:
+        # Existing hardcoded content (fallback)
+        subject = f"Booking Confirmation — {service_type or 'Appointment'} on {formatted_date}"
+
+        body = (
+            f"Hi {customer_first_name},\n\n"
+            f"Your booking has been confirmed:\n\n"
+            f"Service: {service_type or 'Appointment'}\n"
+            f"Date & Time: {formatted_date}\n"
+            f"Duration: {duration_minutes} minutes\n"
+        )
+        if vehicle_rego:
+            body += f"Vehicle: {vehicle_rego}\n"
+        if notes:
+            body += f"Notes: {notes}\n"
+        body += (
+            f"\nIf you need to reschedule or cancel, please contact us.\n\n"
+            f"Kind regards,\n{org_name}\n"
+        )
 
     recipient = customer_email
 

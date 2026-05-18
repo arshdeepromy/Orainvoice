@@ -297,7 +297,7 @@ def get_default_body_blocks(template_type: str) -> list[dict[str, Any]]:
 class TemplateBlock(BaseModel):
     """A single block in the visual block editor (Req 34.1)."""
 
-    type: Literal["header", "text", "button", "image", "divider", "footer"] = Field(
+    type: Literal["logo", "header", "text", "body", "button", "image", "divider", "footer"] = Field(
         ..., description="Block type"
     )
     content: Optional[str] = Field(
