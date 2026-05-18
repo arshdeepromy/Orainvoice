@@ -189,33 +189,18 @@ def _calculate_invoice_totals(
                 taxable_subtotal += line_totals[i]
 
     if subtotal > 0 and taxable_subtotal > 0:
-        # Proportion of discount applied to taxable items
-        taxable_ratio = taxable_subtotal / subtotal
-        discount_on_taxable = discount_amount * taxable_ratio
+        # GST is calculated on the full taxable subtotal BEFORE discount.
+        # The discount reduces the total but does NOT reduce the GST base.
 
-        # GST on non-inclusive taxable items (standard calculation)
+        # GST on non-inclusive taxable items (standard calculation on full amount)
         if non_inclusive_taxable > 0:
-            non_incl_ratio = non_inclusive_taxable / taxable_subtotal if taxable_subtotal > 0 else Decimal("0")
-            non_incl_after_discount = non_inclusive_taxable - (discount_on_taxable * non_incl_ratio)
-            non_incl_after_discount = max(non_incl_after_discount, Decimal("0"))
-            gst_amount += (non_incl_after_discount * gst_rate / Decimal("100")).quantize(
+            gst_amount += (non_inclusive_taxable * gst_rate / Decimal("100")).quantize(
                 TWO_PLACES, rounding=ROUND_HALF_UP
             )
 
-        # GST on inclusive items (already calculated from inclusive price)
+        # GST on inclusive items (already calculated from inclusive price — no discount adjustment)
         if inclusive_gst_total > 0:
-            if discount_amount > 0 and taxable_subtotal > 0:
-                incl_ratio = (taxable_subtotal - non_inclusive_taxable) / taxable_subtotal
-                discount_on_inclusive = discount_on_taxable * incl_ratio
-                # Scale down the inclusive GST proportionally
-                incl_subtotal = taxable_subtotal - non_inclusive_taxable
-                if incl_subtotal > 0:
-                    scale = max(Decimal("0"), (incl_subtotal - discount_on_inclusive) / incl_subtotal)
-                    gst_amount += (inclusive_gst_total * scale).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-                else:
-                    gst_amount += inclusive_gst_total.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-            else:
-                gst_amount += inclusive_gst_total.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+            gst_amount += inclusive_gst_total.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     total = (discounted_subtotal + gst_amount).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
