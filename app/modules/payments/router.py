@@ -5,6 +5,7 @@ Requirements: 24.1, 24.2, 24.3
 
 from __future__ import annotations
 
+import base64
 import uuid
 
 import logging
@@ -30,6 +31,7 @@ from app.modules.payments.schemas import (
     PendingQrSessionResponse,
     QrPaymentSessionRequest,
     QrPaymentSessionResponse,
+    QrSessionExistingInvoiceRequest,
     QrSessionStatusResponse,
     RefundRequest,
     RefundResponse,
@@ -54,6 +56,7 @@ from app.modules.payments.service import (
     handle_stripe_webhook,
     process_refund,
     create_qr_payment_session,
+    create_qr_session_for_existing_invoice,
     get_pending_qr_session,
     get_qr_session_status,
     expire_qr_session,
@@ -310,10 +313,11 @@ async def _fetch_stripe_account_name(stripe_account_id: str) -> str:
         if not secret_key:
             return ""
 
+        auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 f"https://api.stripe.com/v1/accounts/{stripe_account_id}",
-                auth=(secret_key, ""),
+                headers={"Authorization": f"Basic {auth_header}"},
             )
             resp.raise_for_status()
             data = resp.json()
@@ -355,10 +359,11 @@ async def _fetch_available_payment_methods(
         return [{"type": "card", **PAYMENT_METHOD_DISPLAY["card"]}]
 
     try:
+        auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 f"https://api.stripe.com/v1/accounts/{stripe_account_id}",
-                auth=(secret_key, ""),
+                headers={"Authorization": f"Basic {auth_header}"},
             )
             resp.raise_for_status()
             account_data = resp.json()
@@ -646,10 +651,11 @@ async def get_payout_info(
         )
 
     try:
+        auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 f"https://api.stripe.com/v1/accounts/{org.stripe_connect_account_id}",
-                auth=(secret_key, ""),
+                headers={"Authorization": f"Basic {auth_header}"},
             )
             resp.raise_for_status()
             account_data = resp.json()
@@ -782,10 +788,11 @@ async def manage_payouts(
     link_url = ""
     for link_type in ("account_update", "account_onboarding"):
         try:
+            auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
                     "https://api.stripe.com/v1/account_links",
-                    auth=(secret_key, ""),
+                    headers={"Authorization": f"Basic {auth_header}"},
                     data={
                         "account": org.stripe_connect_account_id,
                         "type": link_type,
@@ -1165,6 +1172,54 @@ async def get_pending_qr_session_endpoint(
             created_at=datetime.fromisoformat(session["created_at"]),
         )
     )
+
+
+@router.post(
+    "/qr-session/existing",
+    response_model=QrPaymentSessionResponse,
+    status_code=201,
+    responses={
+        400: {"description": "Invalid invoice, status, or Stripe not configured"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        502: {"description": "Stripe API error"},
+    },
+    summary="Create a QR payment session for an existing unpaid invoice",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def create_qr_session_existing_invoice_endpoint(
+    payload: QrSessionExistingInvoiceRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a QR payment session for an existing invoice's balance_due.
+
+    Unlike POST /qr-session which creates a new invoice, this endpoint
+    accepts an existing invoice_id and creates a Stripe Checkout Session
+    for the invoice's current balance_due without modifying the invoice.
+
+    Requirements: 2.4, 3.3
+    """
+    org_uuid, user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid or not user_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        result = await create_qr_session_for_existing_invoice(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            invoice_id=payload.invoice_id,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+    return result
 
 
 @router.get(

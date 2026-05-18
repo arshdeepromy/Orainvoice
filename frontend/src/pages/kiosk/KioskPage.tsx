@@ -53,6 +53,7 @@ export function KioskPage() {
   const [qrSession, setQrSession] = useState<QrSession | null>(null)
 
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const dismissedSessionRef = useRef<string | null>(null)
 
   /** Poll for pending QR sessions while on the welcome screen. */
   useEffect(() => {
@@ -67,7 +68,7 @@ export function KioskPage() {
           { signal: controller.signal },
         )
         const session = res.data?.session ?? null
-        if (session) {
+        if (session && session.session_id !== dismissedSessionRef.current) {
           setQrSession(session)
         }
       } catch {
@@ -101,8 +102,11 @@ export function KioskPage() {
 
   /** Dismiss QR popup — payment completed or session expired. */
   const handleQrDismiss = useCallback(() => {
+    if (qrSession) {
+      dismissedSessionRef.current = qrSession.session_id
+    }
     setQrSession(null)
-  }, [])
+  }, [qrSession])
 
   /** Welcome → Check In: module-gated transition. */
   const handleCheckIn = useCallback(() => {
@@ -266,6 +270,7 @@ export function KioskPage() {
           session={qrSession}
           onPaymentComplete={handleQrDismiss}
           onExpired={handleQrDismiss}
+          onClose={handleQrDismiss}
         />
       )}
     </div>

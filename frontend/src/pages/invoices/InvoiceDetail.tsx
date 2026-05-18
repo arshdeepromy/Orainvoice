@@ -22,6 +22,7 @@ import { invoiceToReceiptData } from '../../utils/invoiceReceiptMapper'
 import POSReceiptPreview from '../../components/pos/POSReceiptPreview'
 import PrinterErrorModal from '../../components/pos/PrinterErrorModal'
 import LinkedComplianceDocs from '../compliance/LinkedComplianceDocs'
+import { QrPaymentWaitingPopup } from './QrPaymentWaitingPopup'
 import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
 
 /* ------------------------------------------------------------------ */
@@ -310,6 +311,11 @@ export default function InvoiceDetail() {
   const [sendingReminder, setSendingReminder] = useState(false)
   const reminderRef = useRef<HTMLDivElement>(null)
 
+  /* QR Payment */
+  const [qrPaymentLoading, setQrPaymentLoading] = useState(false)
+  const [qrWaitingPopupOpen, setQrWaitingPopupOpen] = useState(false)
+  const [qrSessionData, setQrSessionData] = useState<{ session_id: string; amount: number; invoice_number: string } | null>(null)
+
   /* ---- Inject print styles ---- */
   useEffect(() => {
     const style = document.createElement('style')
@@ -481,6 +487,12 @@ export default function InvoiceDetail() {
     stripeStatus?.is_connected === true &&
     ['issued', 'partially_paid', 'overdue'].includes(invoice?.status ?? '')
 
+  /* ---- QR Payment visibility ---- */
+  const canShowQrPayment =
+    stripeStatus?.is_connected === true &&
+    ['issued', 'partially_paid', 'overdue'].includes(invoice?.status ?? '') &&
+    (invoice?.balance_due ?? 0) > 0
+
   const handleGeneratePaymentLink = async () => {
     if (!invoice) return
     setGeneratingLink(true)
@@ -558,6 +570,30 @@ export default function InvoiceDetail() {
       setActionMessage(detail || 'Failed to regenerate payment link.')
     } finally {
       setRegeneratingLink(false)
+    }
+  }
+
+  /* ---- QR Payment ---- */
+  const handleQrPayment = async () => {
+    if (!invoice) return
+    setQrPaymentLoading(true)
+    setActionMessage('')
+    try {
+      const res = await apiClient.post<{ session_id: string; amount: number; invoice_number: string; amount_cents: number; expires_at: string }>(
+        '/payments/qr-session/existing',
+        { invoice_id: invoice.id },
+      )
+      setQrSessionData({
+        session_id: res.data?.session_id ?? '',
+        amount: Number(res.data?.amount ?? 0),
+        invoice_number: res.data?.invoice_number ?? '',
+      })
+      setQrWaitingPopupOpen(true)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setActionMessage(detail || 'Failed to create QR payment session.')
+    } finally {
+      setQrPaymentLoading(false)
     }
   }
 
@@ -687,6 +723,11 @@ export default function InvoiceDetail() {
           {canShowPaymentLink && (
             <Button size="sm" variant="secondary" onClick={handleRegeneratePaymentLink} loading={regeneratingLink}>
               Regenerate Payment Link
+            </Button>
+          )}
+          {canShowQrPayment && (
+            <Button size="sm" variant="primary" onClick={handleQrPayment} loading={qrPaymentLoading}>
+              QR Payment
             </Button>
           )}
           <Button size="sm" variant="secondary" onClick={handleDuplicate} loading={duplicating}>
@@ -1417,6 +1458,24 @@ export default function InvoiceDetail() {
           )}
         </div>
       </Modal>
+
+      {/* ---- QR Payment Waiting Popup ---- */}
+      {qrWaitingPopupOpen && qrSessionData && (
+        <QrPaymentWaitingPopup
+          sessionId={qrSessionData.session_id}
+          amount={qrSessionData.amount}
+          invoiceNumber={qrSessionData.invoice_number}
+          onClose={() => {
+            setQrWaitingPopupOpen(false)
+            setQrSessionData(null)
+          }}
+          onPaymentComplete={() => {
+            setQrWaitingPopupOpen(false)
+            setQrSessionData(null)
+            fetchInvoice()
+          }}
+        />
+      )}
     </div>
   )
 }

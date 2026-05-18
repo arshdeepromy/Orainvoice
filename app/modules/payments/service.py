@@ -1135,12 +1135,19 @@ async def create_qr_payment_session(
         )
 
     # 6. Create Stripe Checkout Session via direct API call
+    import base64
+    from urllib.parse import urlencode
+    auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
+    encoded_body = urlencode(payload).encode("utf-8")
     async with httpx.AsyncClient() as client:
         response = await client.post(
             "https://api.stripe.com/v1/checkout/sessions",
-            data=payload,
-            auth=(secret_key, ""),
-            headers={"Stripe-Account": org.stripe_connect_account_id},
+            content=encoded_body,
+            headers={
+                "Stripe-Account": org.stripe_connect_account_id,
+                "Authorization": f"Basic {auth_header}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
         )
         if response.status_code != 200:
             error_body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
@@ -1185,6 +1192,180 @@ async def create_qr_payment_session(
         "invoice_id": invoice_id,
         "invoice_number": invoice_number,
         "amount": total,
+        "amount_cents": amount_cents,
+        "expires_at": expires_at_iso,
+        "currency": currency,
+    }
+
+
+async def create_qr_session_for_existing_invoice(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+) -> dict:
+    """Create a QR payment session for an existing invoice.
+
+    Unlike create_qr_payment_session() which creates a new invoice,
+    this function takes an existing invoice (by ID) and creates a Stripe
+    Checkout Session for its current balance_due. The invoice is NOT
+    modified (no status change, no amount_paid change, no re-issue).
+
+    Requirements: 2.3, 2.4, 3.3
+    """
+    import time
+    from datetime import datetime as dt, timezone as tz
+
+    import httpx
+
+    from app.config import settings
+    from app.integrations.stripe_billing import (
+        get_application_fee_percent,
+        get_stripe_secret_key,
+    )
+    from app.modules.admin.models import Organisation
+    from app.modules.payments.models import PendingQrSession
+
+    # 1. Fetch invoice by ID scoped to org
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.org_id == org_id,
+        )
+    )
+    invoice = result.scalar_one_or_none()
+    if invoice is None:
+        raise ValueError("Invoice not found in this organisation")
+
+    # 2. Validate invoice status
+    if invoice.status not in ("issued", "partially_paid", "overdue"):
+        raise ValueError(
+            f"Cannot create QR payment session for invoice with status "
+            f"'{invoice.status}'. Invoice must be issued, partially paid, "
+            f"or overdue."
+        )
+
+    # 3. Validate balance_due > 0
+    if invoice.balance_due <= 0:
+        raise ValueError("Invoice has no outstanding balance")
+
+    # 4. Fetch org's stripe_connect_account_id
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org is None:
+        raise ValueError("Organisation not found")
+    if not org.stripe_connect_account_id:
+        raise ValueError(
+            "Stripe Connect not configured for this organisation"
+        )
+
+    # 5. Retrieve Stripe secret key from encrypted storage
+    secret_key = await get_stripe_secret_key()
+    if not secret_key:
+        raise RuntimeError(
+            "Stripe secret key not configured. Set it via Global Admin > Integrations."
+        )
+
+    # 6. Calculate amount in cents and application fee
+    amount_cents = int(invoice.balance_due * 100)
+    if amount_cents <= 0:
+        raise ValueError("Invoice balance must be greater than zero")
+
+    fee_percent = await get_application_fee_percent()
+    application_fee_amount: int | None = None
+    if fee_percent and fee_percent > 0:
+        application_fee_amount = int(amount_cents * fee_percent / 100)
+
+    # 7. Build Stripe Checkout Session payload
+    currency = invoice.currency or "NZD"
+    invoice_number = invoice.invoice_number or str(invoice.id)
+    base_url = (settings.frontend_base_url or "http://localhost:5173").rstrip("/")
+    expires_at = int(time.time() + 1800)  # 30 minutes from now
+
+    payload: list[tuple[str, str]] = [
+        ("mode", "payment"),
+        ("payment_method_types[]", "card"),
+        ("payment_method_types[]", "afterpay_clearpay"),
+        ("line_items[0][price_data][currency]", currency.lower()),
+        ("line_items[0][price_data][unit_amount]", str(amount_cents)),
+        ("line_items[0][price_data][product_data][name]", f"Invoice {invoice_number}"),
+        ("line_items[0][quantity]", "1"),
+        ("expires_at", str(expires_at)),
+        ("metadata[invoice_id]", str(invoice_id)),
+        ("metadata[org_id]", str(org_id)),
+        ("metadata[source]", "kiosk_qr"),
+        ("metadata[platform]", "orainvoice"),
+        ("success_url", f"{base_url}/payments/qr-success?invoice_id={invoice_id}&session_id={{CHECKOUT_SESSION_ID}}"),
+        ("cancel_url", f"{base_url}/payments/qr-cancel?invoice_id={invoice_id}"),
+    ]
+
+    if application_fee_amount and application_fee_amount > 0:
+        payload.append(
+            ("payment_intent_data[application_fee_amount]", str(application_fee_amount))
+        )
+
+    # 8. Create Stripe Checkout Session via direct API call
+    import base64
+    from urllib.parse import urlencode
+
+    auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
+    encoded_body = urlencode(payload).encode("utf-8")
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://api.stripe.com/v1/checkout/sessions",
+            content=encoded_body,
+            headers={
+                "Stripe-Account": org.stripe_connect_account_id,
+                "Authorization": f"Basic {auth_header}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        if response.status_code != 200:
+            error_body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            error_msg = error_body.get("error", {}).get("message", response.text)
+            logger.error(
+                "Stripe Checkout Session creation failed for org %s: %s",
+                org_id, error_msg,
+            )
+            raise ValueError(f"Failed to create payment session: {error_msg}")
+
+    session_data = response.json()
+    session_id = session_data["id"]
+    checkout_url = session_data["url"]
+
+    # 9. Convert expires_at to ISO string for frontend
+    expires_at_iso = dt.fromtimestamp(expires_at, tz=tz.utc).isoformat()
+
+    # 10. Upsert into pending_qr_sessions (DELETE existing for same org, then INSERT)
+    from sqlalchemy import delete as sa_delete
+
+    await db.execute(
+        sa_delete(PendingQrSession).where(PendingQrSession.org_id == org_id)
+    )
+    await db.flush()
+
+    pending_session = PendingQrSession(
+        org_id=org_id,
+        session_id=session_id,
+        checkout_url=checkout_url,
+        amount=invoice.balance_due,
+        invoice_number=invoice_number,
+        invoice_id=invoice_id,
+        expires_at=dt.fromtimestamp(expires_at, tz=tz.utc),
+    )
+    db.add(pending_session)
+    await db.flush()
+    await db.refresh(pending_session)
+
+    # 11. Return session details (invoice is NOT modified)
+    return {
+        "session_id": session_id,
+        "invoice_id": invoice_id,
+        "invoice_number": invoice_number,
+        "amount": invoice.balance_due,
         "amount_cents": amount_cents,
         "expires_at": expires_at_iso,
         "currency": currency,
@@ -1279,11 +1460,16 @@ async def get_qr_session_status(
             "Stripe secret key not configured. Set it via Global Admin > Integrations."
         )
 
+    import base64
+    auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
+
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"https://api.stripe.com/v1/checkout/sessions/{session_id}",
-            auth=(secret_key, ""),
-            headers={"Stripe-Account": stripe_connect_account_id},
+            headers={
+                "Stripe-Account": stripe_connect_account_id,
+                "Authorization": f"Basic {auth_header}",
+            },
         )
 
     if response.status_code == 404:
@@ -1369,11 +1555,16 @@ async def expire_qr_session(
         )
 
     # Call Stripe API to expire the session
+    import base64
+    auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"https://api.stripe.com/v1/checkout/sessions/{session_id}/expire",
-            auth=(secret_key, ""),
-            headers={"Stripe-Account": stripe_connect_account_id},
+            headers={
+                "Stripe-Account": stripe_connect_account_id,
+                "Authorization": f"Basic {auth_header}",
+            },
         )
 
     # Handle response — if session is already expired or complete,

@@ -29,7 +29,7 @@ export function QrPaymentWaitingPopup({
   const abortControllerRef = useRef<AbortController | null>(null)
 
   /** Format amount as NZD: $X.XX */
-  const formattedAmount = `$${(amount ?? 0).toFixed(2)}`
+  const formattedAmount = `$${Number(amount ?? 0).toFixed(2)}`
 
   /** Clean up all timers and abort in-flight requests. */
   const cleanup = useCallback(() => {

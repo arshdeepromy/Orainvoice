@@ -23,6 +23,7 @@ import { invoiceToReceiptData } from '../../utils/invoiceReceiptMapper'
 import { resolveTemplateStyles } from '@/utils/invoiceTemplateStyles'
 import AttachmentList from '@/components/invoices/AttachmentList'
 import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
+import { QrPaymentWaitingPopup } from './QrPaymentWaitingPopup'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -438,6 +439,12 @@ export default function InvoiceList() {
   const [selectedPreview, setSelectedPreview] = useState<'invoice' | 'receipt'>('invoice')
   const [shareModalOpen, setShareModalOpen] = useState(false)
   const [shareUrl, setShareUrl] = useState('')
+
+  /* --- Stripe / QR Payment state --- */
+  const [stripeStatus, setStripeStatus] = useState<{ is_connected: boolean } | null>(null)
+  const [qrPaymentLoading, setQrPaymentLoading] = useState(false)
+  const [qrWaitingPopupOpen, setQrWaitingPopupOpen] = useState(false)
+  const [qrSessionData, setQrSessionData] = useState<{ session_id: string; amount: number; invoice_number: string } | null>(null)
   const [shareCopied, setShareCopied] = useState(false)
 
   /* Credit Note & Refund modals */
@@ -461,6 +468,24 @@ export default function InvoiceList() {
     style.textContent = PRINT_STYLES
     document.head.appendChild(style)
     return () => { style.remove() }
+  }, [])
+
+  /* --- Fetch Stripe Connect status for QR Payment button visibility --- */
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchStripeStatus = async () => {
+      try {
+        const res = await apiClient.get<{ is_connected: boolean; account_id_last4: string }>(
+          '/payments/online-payments/status',
+          { signal: controller.signal },
+        )
+        setStripeStatus({ is_connected: res.data?.is_connected ?? false })
+      } catch {
+        // Silently ignore — button just won't show
+      }
+    }
+    fetchStripeStatus()
+    return () => controller.abort()
   }, [])
 
   /* --- Close menus on outside click --- */
@@ -765,6 +790,28 @@ export default function InvoiceList() {
     finally { setActionLoading('') }
   }
 
+  const handleQrPayment = async () => {
+    if (!invoice) return
+    setQrPaymentLoading(true)
+    try {
+      const res = await apiClient.post<{ session_id: string; amount: number; invoice_number: string; amount_cents: number; expires_at: string }>(
+        '/payments/qr-session/existing',
+        { invoice_id: invoice.id },
+      )
+      setQrSessionData({
+        session_id: res.data?.session_id ?? '',
+        amount: Number(res.data?.amount ?? 0),
+        invoice_number: res.data?.invoice_number ?? '',
+      })
+      setQrWaitingPopupOpen(true)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      showMsg(detail || 'Failed to create QR payment session.', 'error')
+    } finally {
+      setQrPaymentLoading(false)
+    }
+  }
+
   const handleShareLink = async () => {
     if (!invoice) return
     setActionLoading('share')
@@ -831,6 +878,12 @@ export default function InvoiceList() {
   const isVoided = invoice?.status === 'voided'
   const canVoid = invoice && !isVoided && !isDraft
   const canRecordPayment = invoice && !isVoided && invoice.status !== 'draft' && invoice.status !== 'refunded' && invoice.status !== 'partially_refunded' && (invoice.balance_due ?? 0) > 0
+
+  /* QR Payment visibility */
+  const canShowQrPayment =
+    stripeStatus?.is_connected === true &&
+    ['issued', 'partially_paid', 'overdue'].includes(invoice?.status ?? '') &&
+    (invoice?.balance_due ?? 0) > 0
 
   /* Computed values for credit notes and refunds */
   const creditableAmount = invoice ? computeCreditableAmount(
@@ -1205,6 +1258,21 @@ export default function InvoiceList() {
                     </div>
                   )}
                 </div>
+
+                {/* QR Payment */}
+                {canShowQrPayment && (
+                  <button
+                    onClick={handleQrPayment}
+                    disabled={qrPaymentLoading}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 14.625v2.625m3.375-2.625H13.5m6.75 0v2.625m0-2.625h-3.375m3.375 0v3.375m-3.375 0h3.375m-3.375 0V20.25m0-2.625h-3.375" />
+                    </svg>
+                    {qrPaymentLoading ? 'Creating…' : 'QR Payment'}
+                  </button>
+                )}
 
                 {/* Record Payment */}
                 {canRecordPayment && (
@@ -2082,6 +2150,27 @@ export default function InvoiceList() {
           </Button>
         </div>
       </Modal>
+
+      {/* QR Payment Waiting Popup */}
+      {qrWaitingPopupOpen && qrSessionData && (
+        <QrPaymentWaitingPopup
+          sessionId={qrSessionData.session_id}
+          amount={qrSessionData.amount}
+          invoiceNumber={qrSessionData.invoice_number}
+          onClose={() => {
+            setQrWaitingPopupOpen(false)
+            setQrSessionData(null)
+          }}
+          onPaymentComplete={() => {
+            setQrWaitingPopupOpen(false)
+            setQrSessionData(null)
+            if (invoice) {
+              fetchDetail(invoice.id)
+              fetchInvoices(searchQuery, statusFilter, page)
+            }
+          }}
+        />
+      )}
     </div>
   )
 }

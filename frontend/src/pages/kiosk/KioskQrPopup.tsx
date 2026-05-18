@@ -14,6 +14,7 @@ interface KioskQrPopupProps {
   }
   onPaymentComplete: () => void
   onExpired: () => void
+  onClose?: () => void
 }
 
 type PopupState = 'scanning' | 'success'
@@ -30,12 +31,12 @@ export function formatCountdown(totalSeconds: number): string {
 
 /** Format amount as NZD currency ($X.XX). */
 export function formatNZD(amount: number): string {
-  return `$${(amount ?? 0).toFixed(2)}`
+  return `$${Number(amount ?? 0).toFixed(2)}`
 }
 
 /* ── Component ── */
 
-export function KioskQrPopup({ session, onPaymentComplete, onExpired }: KioskQrPopupProps) {
+export function KioskQrPopup({ session, onPaymentComplete, onExpired, onClose }: KioskQrPopupProps) {
   const [popupState, setPopupState] = useState<PopupState>('scanning')
   const [secondsRemaining, setSecondsRemaining] = useState<number>(() => {
     const expiresAt = new Date(session.expires_at).getTime()
@@ -244,6 +245,17 @@ export function KioskQrPopup({ session, onPaymentComplete, onExpired }: KioskQrP
         <div className={`text-2xl font-mono font-semibold ${timerColorClass}`}>
           {formatCountdown(secondsRemaining)} remaining
         </div>
+
+        {/* Close button */}
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="mt-2 rounded-lg border border-gray-300 px-6 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors"
+          >
+            Close
+          </button>
+        )}
       </div>
     </div>
   )

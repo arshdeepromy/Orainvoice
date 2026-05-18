@@ -215,6 +215,7 @@ KIOSK_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/api/v1/auth/me",       # session validation for AuthContext
     "/api/v1/auth/refresh",  # token refresh to keep kiosk session alive
     "/api/v2/modules",       # module list for vehicle-step gating on kiosk
+    "/api/v1/payments/qr-session",  # QR payment session polling (GET only)
 )
 
 
@@ -384,6 +385,9 @@ def check_role_path_access(role: str, path: str, method: str = "GET") -> str | N
         # Kiosk can only POST to /customers (create), not GET/PUT/DELETE
         if _matches_any_prefix(path, ("/api/v1/customers",)) and method.upper() != "POST":
             return "Kiosk role can only create customers"
+        # Kiosk can only GET qr-session endpoints (poll pending/status), not POST (expire)
+        if _matches_any_prefix(path, ("/api/v1/payments/qr-session",)) and method.upper() != "GET":
+            return "Kiosk role has read-only access to QR payment sessions"
 
     # Unknown roles are denied everything except public paths
     elif role not in ALL_ROLES:

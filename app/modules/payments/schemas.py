@@ -478,6 +478,16 @@ class UpdateSurchargeResponse(BaseModel):
 QrPaymentSessionRequest = InvoiceCreateRequest
 
 
+class QrSessionExistingInvoiceRequest(BaseModel):
+    """Request body for POST /api/v1/payments/qr-session/existing.
+
+    Creates a QR payment session for an existing unpaid invoice.
+    Requirements: 2.4
+    """
+
+    invoice_id: uuid.UUID = Field(..., description="ID of the existing invoice to collect QR payment for")
+
+
 class QrPaymentSessionResponse(BaseModel):
     """Response from POST /api/v1/payments/qr-session.
 

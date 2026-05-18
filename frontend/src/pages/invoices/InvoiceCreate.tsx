@@ -1689,7 +1689,7 @@ export default function InvoiceCreate() {
       const session = res.data
       setQrSessionData({
         sessionId: session?.session_id ?? '',
-        amount: session?.amount ?? 0,
+        amount: Number(session?.amount ?? 0),
         invoiceNumber: session?.invoice_number ?? '',
         invoiceId: session?.invoice_id ?? '',
       })
@@ -2589,7 +2589,14 @@ export default function InvoiceCreate() {
           sessionId={qrSessionData.sessionId}
           amount={qrSessionData.amount}
           invoiceNumber={qrSessionData.invoiceNumber}
-          onClose={() => setShowQrPaymentPopup(false)}
+          onClose={() => {
+            setShowQrPaymentPopup(false)
+            if (qrSessionData.invoiceId) {
+              navigate(`/invoices/${qrSessionData.invoiceId}`)
+            } else {
+              navigate('/invoices')
+            }
+          }}
           onPaymentComplete={() => {
             setShowQrPaymentPopup(false)
             if (qrSessionData.invoiceId) {
