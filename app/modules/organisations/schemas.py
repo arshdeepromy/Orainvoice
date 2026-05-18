@@ -896,3 +896,28 @@ class ReminderDismissRequest(BaseModel):
 class ReminderConfigUpdate(BaseModel):
     wof_days: int = Field(ge=1, le=365)
     service_days: int = Field(ge=1, le=365)
+
+
+# ---------------------------------------------------------------------------
+# Kiosk Password Reset schemas (kiosk-password-reset spec)
+# Requirements: 4.3, 4.4, 4.5
+# ---------------------------------------------------------------------------
+
+
+class KioskPasswordResetRequest(BaseModel):
+    """POST /api/v1/org/users/{id}/reset-password request body."""
+
+    new_password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+        description="New password for the kiosk user (min 8 characters)",
+    )
+
+
+class KioskPasswordResetResponse(BaseModel):
+    """POST /api/v1/org/users/{id}/reset-password response."""
+
+    message: str = Field(..., description="Success message")
+    user_id: str = Field(..., description="UUID of the user whose password was reset")
+    sessions_invalidated: int = Field(0, description="Number of sessions terminated")

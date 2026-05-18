@@ -29,6 +29,8 @@ from app.modules.organisations.schemas import (
     BranchUpdateResponse,
     BusinessTypeUpdateRequest,
     BusinessTypeResponse,
+    KioskPasswordResetRequest,
+    KioskPasswordResetResponse,
     MFAPolicyUpdateRequest,
     MFAPolicyUpdateResponse,
     OrgCarjamUsageResponse,
@@ -61,6 +63,7 @@ from app.modules.organisations.service import (
     list_org_users,
     list_salespeople,
     reactivate_branch,
+    reset_kiosk_user_password,
     revoke_user_sessions,
     save_onboarding_step,
     set_business_type,
@@ -1149,6 +1152,67 @@ async def revoke_sessions(
 
     return UserDeactivateResponse(
         message="Sessions revoked",
+        user_id=result["user_id"],
+        sessions_invalidated=result["sessions_invalidated"],
+    )
+
+
+@router.post(
+    "/users/{target_user_id}/reset-password",
+    response_model=KioskPasswordResetResponse,
+    responses={
+        400: {"description": "Validation error or target is not a kiosk user"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "User not found in this organisation"},
+    },
+    summary="Reset password for a kiosk user",
+    dependencies=[require_role("org_admin")],
+)
+async def reset_kiosk_password(
+    target_user_id: str,
+    payload: KioskPasswordResetRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Reset the password for a kiosk user and invalidate their sessions.
+
+    Only org_admin users can reset passwords, and only for kiosk-role users
+    within the same organisation.
+
+    Requirements: 4.1, 4.2, 4.4, 4.5
+    """
+    acting_user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        acting_uuid = uuid.UUID(acting_user_id) if acting_user_id else uuid.uuid4()
+        target_uuid = uuid.UUID(target_user_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid UUID format"})
+
+    try:
+        result = await reset_kiosk_user_password(
+            db,
+            org_id=org_uuid,
+            acting_user_id=acting_uuid,
+            target_user_id=target_uuid,
+            new_password=payload.new_password,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        error_msg = str(exc)
+        if "not found" in error_msg.lower():
+            return JSONResponse(status_code=404, content={"detail": error_msg})
+        return JSONResponse(status_code=400, content={"detail": error_msg})
+
+    return KioskPasswordResetResponse(
+        message="Password reset successfully",
         user_id=result["user_id"],
         sessions_invalidated=result["sessions_invalidated"],
     )

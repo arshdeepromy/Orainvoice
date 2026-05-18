@@ -29,6 +29,12 @@ interface RoleOption {
 interface PlanInfo { user_seats: number }
 interface InviteForm { email: string; role: string; password: string }
 
+interface KioskPasswordResetResponse {
+  message: string
+  user_id: string
+  sessions_invalidated: number
+}
+
 // Roles that should not appear in the invite dropdown
 const HIDDEN_ROLE_SLUGS = new Set(['global_admin'])
 
@@ -41,6 +47,12 @@ export function UserManagement() {
   const [inviteOpen, setInviteOpen] = useState(false)
   const [inviteForm, setInviteForm] = useState<InviteForm>({ email: '', role: 'salesperson', password: '' })
   const [saving, setSaving] = useState(false)
+  const [resetPasswordOpen, setResetPasswordOpen] = useState(false)
+  const [resetPasswordUser, setResetPasswordUser] = useState<{ id: string; email: string } | null>(null)
+  const [resetNewPassword, setResetNewPassword] = useState('')
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('')
+  const [resetSubmitting, setResetSubmitting] = useState(false)
+  const [resetTouched, setResetTouched] = useState({ newPassword: false, confirmPassword: false })
   const { toasts, addToast, dismissToast } = useToast()
 
   const fetchData = async (signal?: AbortSignal) => {
@@ -131,6 +143,35 @@ export function UserManagement() {
       fetchData()
     } catch {
       addToast('error', 'Failed to revoke sessions')
+    }
+  }
+
+  const resetPasswordFormValid = resetNewPassword.length >= 8 && resetNewPassword === resetConfirmPassword
+
+  const closeResetPasswordModal = () => {
+    setResetPasswordOpen(false)
+    setResetPasswordUser(null)
+    setResetNewPassword('')
+    setResetConfirmPassword('')
+    setResetTouched({ newPassword: false, confirmPassword: false })
+  }
+
+  const submitResetPassword = async () => {
+    if (!resetPasswordUser || !resetPasswordFormValid) return
+    setResetSubmitting(true)
+    try {
+      await apiClient.post<KioskPasswordResetResponse>(
+        `/org/users/${resetPasswordUser.id}/reset-password`,
+        { new_password: resetNewPassword }
+      )
+      closeResetPasswordModal()
+      addToast('success', 'Password reset. Kiosk will need to re-login.')
+      fetchData()
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail ?? 'Failed to reset password'
+      addToast('error', detail)
+    } finally {
+      setResetSubmitting(false)
     }
   }
 
@@ -247,6 +288,9 @@ export function UserManagement() {
             {row.role === 'kiosk' && row.is_active && (
               <Button size="sm" variant="secondary" onClick={() => revokeUserSessions(row.id)}>Revoke Sessions</Button>
             )}
+            {row.role === 'kiosk' && row.is_active && (
+              <Button size="sm" variant="secondary" onClick={() => { setResetPasswordUser({ id: row.id, email: row.email }); setResetPasswordOpen(true) }}>Reset Password</Button>
+            )}
             <Button size="sm" variant="danger" onClick={() => deactivateUser(row.id)}>Deactivate</Button>
             <Button size="sm" variant="danger" onClick={() => deleteUserPermanently(row.id, row.email)}>Delete</Button>
           </div>
@@ -317,6 +361,50 @@ export function UserManagement() {
             <Button variant="secondary" onClick={() => setInviteOpen(false)}>Cancel</Button>
             <Button onClick={inviteUser} loading={saving}>
               {inviteForm.role === 'kiosk' ? 'Create Account' : 'Send Invitation'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={resetPasswordOpen} onClose={closeResetPasswordModal} title="Reset Kiosk Password">
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Resetting password for <span className="font-medium">{resetPasswordUser?.email}</span>
+          </p>
+          <div>
+            <Input
+              label="New Password"
+              type="password"
+              value={resetNewPassword}
+              onChange={(e) => {
+                setResetNewPassword(e.target.value)
+                setResetTouched((t) => ({ ...t, newPassword: true }))
+              }}
+              placeholder="Min 8 characters"
+            />
+            {resetTouched.newPassword && resetNewPassword.length > 0 && resetNewPassword.length < 8 && (
+              <p className="text-sm text-red-600 mt-1">Password must be at least 8 characters</p>
+            )}
+          </div>
+          <div>
+            <Input
+              label="Confirm Password"
+              type="password"
+              value={resetConfirmPassword}
+              onChange={(e) => {
+                setResetConfirmPassword(e.target.value)
+                setResetTouched((t) => ({ ...t, confirmPassword: true }))
+              }}
+              placeholder="Re-enter new password"
+            />
+            {resetTouched.confirmPassword && resetConfirmPassword.length > 0 && resetNewPassword !== resetConfirmPassword && (
+              <p className="text-sm text-red-600 mt-1">Passwords do not match</p>
+            )}
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={closeResetPasswordModal}>Cancel</Button>
+            <Button onClick={submitResetPassword} loading={resetSubmitting} disabled={!resetPasswordFormValid}>
+              Reset Password
             </Button>
           </div>
         </div>

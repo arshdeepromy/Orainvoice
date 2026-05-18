@@ -1387,6 +1387,69 @@ async def revoke_user_sessions(
     }
 
 
+async def reset_kiosk_user_password(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    acting_user_id: uuid.UUID,
+    target_user_id: uuid.UUID,
+    new_password: str,
+    ip_address: str | None = None,
+) -> dict:
+    """Reset the password for a kiosk user and invalidate their sessions.
+
+    Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 6.1, 6.2, 6.3, 7.1, 7.2, 8.1, 8.2, 8.3, 8.4
+
+    Returns: {"user_id": str, "sessions_invalidated": int}
+    Raises: ValueError if target not found, not in org, not a kiosk user, or inactive.
+    """
+    from app.modules.auth.password import hash_password
+
+    # Query target user: verify exists and belongs to org
+    result = await db.execute(
+        select(User).where(User.id == target_user_id, User.org_id == org_id)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise ValueError("User not found")
+
+    # Verify target user has role "kiosk"
+    if user.role != "kiosk":
+        raise ValueError("Password reset is only allowed for kiosk users")
+
+    # Verify target user is active
+    if not user.is_active:
+        raise ValueError("Cannot reset password for inactive user")
+
+    # Hash new password and update
+    user.password_hash = hash_password(new_password)
+    await db.flush()
+
+    # Invalidate all sessions for target user
+    sessions_invalidated = await _invalidate_user_sessions(db, user_id=target_user_id)
+    await db.flush()
+
+    # Write audit log
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=acting_user_id,
+        action="auth.kiosk_password_reset",
+        entity_type="user",
+        entity_id=target_user_id,
+        after_value={
+            "target_email": user.email,
+            "sessions_invalidated": sessions_invalidated,
+        },
+        ip_address=ip_address,
+    )
+
+    return {
+        "user_id": str(target_user_id),
+        "sessions_invalidated": sessions_invalidated,
+    }
+
+
 async def update_mfa_policy(
     db: AsyncSession,
     *,
