@@ -1623,7 +1623,14 @@ export default function InvoiceCreate() {
         const newId = inv?.id
         if (newId) await uploadAttachments(newId)
         if (!options?.skipNavigation) {
-          navigate(newId ? `/invoices/${newId}` : '/invoices', newId ? { state: { invoice: inv } } : undefined)
+          if (newId) {
+            // Fetch full detail for instant preview
+            const detailRes = await apiClient.get(`/invoices/${newId}`)
+            const fullInvoice = (detailRes.data as any)?.invoice || detailRes.data
+            navigate(`/invoices/${newId}`, { state: { invoice: fullInvoice } })
+          } else {
+            navigate('/invoices')
+          }
         }
       }
     } catch (err: unknown) {
@@ -1645,15 +1652,24 @@ export default function InvoiceCreate() {
         const res = await apiClient.put(`/invoices/${editId}`, buildPayload('sent'))
         await maybeSaveTermsAsDefault()
         await uploadAttachments(editId)
-        const inv = (res.data as any)?.invoice || res.data
-        navigate(`/invoices/${editId}`, { state: { invoice: inv } })
+        // Fetch full detail for instant preview
+        const detailRes = await apiClient.get(`/invoices/${editId}`)
+        const fullInvoice = (detailRes.data as any)?.invoice || detailRes.data
+        navigate(`/invoices/${editId}`, { state: { invoice: fullInvoice } })
       } else {
         const res = await apiClient.post('/invoices', buildPayload('sent'))
         await maybeSaveTermsAsDefault()
         const inv = (res.data as any)?.invoice || res.data
         const newId = inv?.id
         if (newId) await uploadAttachments(newId)
-        navigate(newId ? `/invoices/${newId}` : '/invoices', newId ? { state: { invoice: inv } } : undefined)
+        if (newId) {
+          // Fetch full detail for instant preview (includes org info, customer, line items)
+          const detailRes = await apiClient.get(`/invoices/${newId}`)
+          const fullInvoice = (detailRes.data as any)?.invoice || detailRes.data
+          navigate(`/invoices/${newId}`, { state: { invoice: fullInvoice } })
+        } else {
+          navigate('/invoices')
+        }
       }
     } catch (err: unknown) {
       const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to send invoice. Please try again.')

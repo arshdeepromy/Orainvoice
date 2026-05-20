@@ -420,6 +420,7 @@ export default function InvoiceList() {
 
   /* --- Detail state --- */
   const [selectedId, setSelectedId] = useState<string | null>(routeId || null)
+  const selectedIdRef = useRef<string | null>(routeId || null)
   const [invoice, setInvoice] = useState<InvoiceDetailData | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
@@ -433,8 +434,14 @@ export default function InvoiceList() {
   useEffect(() => {
     if (routeId && routeId !== selectedId) {
       setSelectedId(routeId)
+      selectedIdRef.current = routeId
     }
-  }, [routeId])
+  }, [routeId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    selectedIdRef.current = selectedId
+  }, [selectedId])
 
   /* --- Action states --- */
   const [actionLoading, setActionLoading] = useState('')
@@ -536,7 +543,7 @@ export default function InvoiceList() {
         total_pages: res.data?.total_pages ?? Math.ceil((res.data?.total ?? 0) / PAGE_SIZE),
       })
       // Auto-select first invoice if none selected
-      if (!selectedId && invoices.length > 0) {
+      if (!selectedIdRef.current && invoices.length > 0) {
         setSelectedId(invoices[0].id)
       }
     } catch (err: unknown) {
@@ -546,7 +553,7 @@ export default function InvoiceList() {
     } finally {
       setListLoading(false)
     }
-  }, [selectedId, selectedBranchId])
+  }, [selectedBranchId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* --- Fetch invoice detail --- */
   const fetchDetail = useCallback(async (invoiceId: string, showSpinner = true) => {
