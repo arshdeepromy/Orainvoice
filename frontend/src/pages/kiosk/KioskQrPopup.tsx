@@ -162,8 +162,9 @@ export function KioskQrPopup({ session, onPaymentComplete, onExpired, onClose }:
       countdownIntervalRef.current = null
     }
 
+    const handler = onPaymentComplete
     successTimeoutRef.current = setTimeout(() => {
-      onPaymentComplete()
+      handler()
     }, 4000)
 
     return () => {
@@ -172,7 +173,7 @@ export function KioskQrPopup({ session, onPaymentComplete, onExpired, onClose }:
         successTimeoutRef.current = null
       }
     }
-  }, [popupState, onPaymentComplete])
+  }, [popupState]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Cleanup on unmount. */
   useEffect(() => {
@@ -185,7 +186,13 @@ export function KioskQrPopup({ session, onPaymentComplete, onExpired, onClose }:
   /* ── Success State ── */
   if (popupState === 'success') {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Payment received"
+        onClick={onPaymentComplete}
+      >
         <div className="flex flex-col items-center gap-6 rounded-2xl bg-white p-12 text-center shadow-2xl">
           {/* Green tick */}
           <div className="flex h-24 w-24 items-center justify-center rounded-full bg-green-100">
@@ -207,6 +214,7 @@ export function KioskQrPopup({ session, onPaymentComplete, onExpired, onClose }:
             {formatNZD(session.amount ?? 0)}
           </p>
           <p className="text-lg text-gray-500">Payment received</p>
+          <p className="text-sm text-gray-400 mt-2">Tap anywhere to dismiss</p>
         </div>
       </div>
     )
