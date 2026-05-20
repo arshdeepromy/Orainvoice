@@ -223,7 +223,6 @@ export function CustomerEditModal({ open, customerId, onClose, onSaved }: Custom
     if (!lastName.trim()) errs.last_name = 'Last name is required'
     if (!email.trim()) errs.email = 'Email is required'
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errs.email = 'Invalid email format'
-    if (!mobilePhone.trim() && !phone.trim()) errs.mobile_phone = 'Mobile phone is required'
     setErrors(errs)
     return Object.keys(errs).length === 0
   }
@@ -329,8 +328,8 @@ export function CustomerEditModal({ open, customerId, onClose, onSaved }: Custom
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <PhoneInput label="Work Phone" value={workPhone} onChange={setWorkPhone} countryCode="NZ" placeholder="Work phone" />
-          <PhoneInput label="Mobile *" value={mobilePhone || phone} onChange={(v) => { setMobilePhone(v); setPhone(v) }}
-            countryCode="NZ" placeholder="Mobile" required error={errors.mobile_phone} />
+          <PhoneInput label="Mobile" value={mobilePhone || phone} onChange={(v) => { setMobilePhone(v); setPhone(v) }}
+            countryCode="NZ" placeholder="Mobile" error={errors.mobile_phone} />
         </div>
 
         <Select label="Customer Language" options={LANGUAGE_OPTIONS} value={language} onChange={(e) => setLanguage(e.target.value)} />
