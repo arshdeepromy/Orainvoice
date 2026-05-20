@@ -41,6 +41,22 @@ interface VehicleListResponse {
   page_size: number
 }
 
+interface BulkRefreshResult {
+  vehicle_id: string
+  rego: string | null
+  status: 'success' | 'not_found' | 'rate_limited' | 'error'
+  wof_expiry: string | null
+  cof_expiry: string | null
+  error: string | null
+}
+
+interface BulkRefreshResponse {
+  results: BulkRefreshResult[]
+  total: number
+  succeeded: number
+  failed: number
+}
+
 interface ManualEntryForm {
   rego: string
   make: string
@@ -111,7 +127,13 @@ export default function VehicleList() {
   const [onboardLoading, setOnboardLoading] = useState(false)
   const [onboardError, setOnboardError] = useState('')
 
+  /* Bulk refresh state */
+  const [bulkRefreshing, setBulkRefreshing] = useState(false)
+  const [bulkRefreshProgress, setBulkRefreshProgress] = useState('')
+  const [bulkRefreshBanner, setBulkRefreshBanner] = useState<{ message: string; type: 'success' | 'warning' | 'error' } | null>(null)
+
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const bulkRefreshAbortRef = useRef<AbortController | null>(null)
 
   /* --- Fetch vehicle list --- */
   const fetchVehicles = useCallback(async (p: number, q: string) => {
@@ -193,6 +215,70 @@ export default function VehicleList() {
     setManualForm((prev) => ({ ...prev, [field]: value }))
   }
 
+  /* --- Bulk refresh expired vehicles --- */
+  const expiredVehicles = vehicles.filter((v) => v.wof_indicator === 'red')
+  const expiredCount = expiredVehicles.length
+
+  const handleBulkRefresh = async () => {
+    if (expiredCount === 0) return
+    const confirmed = window.confirm(
+      `Refresh ${expiredCount} expired vehicle${expiredCount !== 1 ? 's' : ''} via CarJam? This will use ${expiredCount} CarJam lookup${expiredCount !== 1 ? 's' : ''}.`
+    )
+    if (!confirmed) return
+
+    setBulkRefreshing(true)
+    setBulkRefreshBanner(null)
+    setBulkRefreshProgress(`Refreshing... 0/${expiredCount} complete`)
+
+    const controller = new AbortController()
+    bulkRefreshAbortRef.current = controller
+
+    try {
+      const vehicleIds = expiredVehicles.map((v) => v.id)
+      const res = await apiClient.post<BulkRefreshResponse>(
+        '/vehicles/bulk-refresh',
+        { vehicle_ids: vehicleIds },
+        { signal: controller.signal }
+      )
+
+      const data = res.data
+      const succeeded = data?.succeeded ?? 0
+      const total = data?.total ?? 0
+      const failed = data?.failed ?? 0
+
+      if (failed === 0) {
+        setBulkRefreshBanner({
+          message: `Refreshed ${succeeded}/${total} vehicles successfully.`,
+          type: 'success',
+        })
+      } else {
+        const rateLimited = (data?.results ?? []).some((r) => r.status === 'rate_limited')
+        setBulkRefreshBanner({
+          message: `Refreshed ${succeeded}/${total} vehicles. ${failed} failed.${rateLimited ? ' Rate limited — try again later.' : ''}`,
+          type: failed === total ? 'error' : 'warning',
+        })
+      }
+
+      // Reload the vehicle list
+      await fetchVehicles(page, search)
+    } catch (err: unknown) {
+      if (controller.signal.aborted) return
+      setBulkRefreshBanner({
+        message: 'Bulk refresh failed. Please try again.',
+        type: 'error',
+      })
+    } finally {
+      setBulkRefreshing(false)
+      setBulkRefreshProgress('')
+      bulkRefreshAbortRef.current = null
+    }
+  }
+
+  // Cleanup abort controller on unmount
+  useEffect(() => {
+    return () => { bulkRefreshAbortRef.current?.abort() }
+  }, [])
+
   const totalPages = Math.ceil(total / pageSize)
 
   return (
@@ -203,8 +289,46 @@ export default function VehicleList() {
           <h1 className="text-2xl font-semibold text-gray-900">Vehicles</h1>
           <p className="text-sm text-gray-500 mt-1">{total} vehicle{total !== 1 ? 's' : ''} linked to your organisation</p>
         </div>
-        <Button onClick={openManualEntry}>+ Manual Entry</Button>
+        <div className="flex items-center gap-2">
+          {expiredCount > 0 && (
+            <Button
+              variant="secondary"
+              onClick={handleBulkRefresh}
+              loading={bulkRefreshing}
+              disabled={bulkRefreshing}
+            >
+              {bulkRefreshing
+                ? (bulkRefreshProgress || 'Refreshing...')
+                : `🔄 Refresh Expired (${expiredCount})`
+              }
+            </Button>
+          )}
+          <Button onClick={openManualEntry}>+ Manual Entry</Button>
+        </div>
       </div>
+
+      {/* Bulk refresh result banner */}
+      {bulkRefreshBanner && (
+        <div
+          className={`mb-4 flex items-center justify-between rounded-lg border px-4 py-3 text-sm ${
+            bulkRefreshBanner.type === 'success'
+              ? 'border-green-200 bg-green-50 text-green-800'
+              : bulkRefreshBanner.type === 'warning'
+              ? 'border-yellow-200 bg-yellow-50 text-yellow-800'
+              : 'border-red-200 bg-red-50 text-red-800'
+          }`}
+          role="status"
+        >
+          <span>{bulkRefreshBanner.message}</span>
+          <button
+            onClick={() => setBulkRefreshBanner(null)}
+            className="ml-3 text-lg leading-none opacity-60 hover:opacity-100"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Search */}
       <div className="mb-6">

@@ -23,6 +23,7 @@ import { invoiceToReceiptData } from '../../utils/invoiceReceiptMapper'
 import { resolveTemplateStyles } from '@/utils/invoiceTemplateStyles'
 import AttachmentList from '@/components/invoices/AttachmentList'
 import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
+import { buildVehicleDisplayFields } from '../../utils/buildVehicleDisplayFields'
 import { QrPaymentWaitingPopup } from './QrPaymentWaitingPopup'
 
 /* ------------------------------------------------------------------ */
@@ -181,6 +182,20 @@ interface InvoiceDetailData {
   terms_and_conditions_enabled?: boolean
   terms_and_conditions?: string | null
   org_invoice_footer_text?: string | null
+  vehicle_display?: {
+    rego: string | null
+    make: string | null
+    model: string | null
+    year: number | null
+    odometer: number | null
+    inspection_type: 'wof' | 'cof' | null
+    wof_expiry: string | null
+    cof_expiry: string | null
+    service_due_date: string | null
+    wof_updated: boolean
+    cof_updated: boolean
+    service_due_updated: boolean
+  } | null
 }
 
 /* ------------------------------------------------------------------ */
@@ -1522,30 +1537,34 @@ export default function InvoiceList() {
                   {/* Vehicle info (inside invoice card) */}
                   {isAutomotive && (
                   <>
-                  {(invoice.vehicle || invoice.vehicle_rego) && (
+                  {(invoice.vehicle || invoice.vehicle_rego || invoice.vehicle_display) && (
                     <div className="relative z-10 px-8 pb-4">
                       <div className="bg-slate-50 rounded-lg border border-slate-200 px-5 py-3">
-                        <div className="flex items-center gap-6 text-sm">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs text-gray-400 uppercase tracking-wider">Rego</span>
-                            <span className="font-mono font-bold text-gray-900 bg-yellow-100 px-2 py-0.5 rounded text-xs">{invoice.vehicle?.rego || invoice.vehicle_rego}</span>
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs text-gray-400 uppercase tracking-wider">Vehicle</span>
-                            <span className="text-gray-900">{[invoice.vehicle?.year || invoice.vehicle_year, invoice.vehicle?.make || invoice.vehicle_make, invoice.vehicle?.model || invoice.vehicle_model].filter(Boolean).join(' ') || '—'}</span>
-                          </div>
-                          {(invoice.vehicle?.odometer || invoice.vehicle_odometer) ? (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-xs text-gray-400 uppercase tracking-wider">Odometer</span>
-                              <span className="text-gray-900">{Number(invoice.vehicle?.odometer || invoice.vehicle_odometer).toLocaleString()} km</span>
+                        <div className="flex items-center gap-6 text-sm flex-wrap">
+                          {(buildVehicleDisplayFields(
+                            invoice.vehicle_display ?? null,
+                            invoice.issue_date ?? new Date().toISOString().slice(0, 10),
+                            {
+                              vehicle_rego: invoice.vehicle_rego,
+                              vehicle_make: invoice.vehicle_make,
+                              vehicle_model: invoice.vehicle_model,
+                              vehicle_year: invoice.vehicle_year,
+                              vehicle_odometer: invoice.vehicle_odometer,
+                              vehicle: invoice.vehicle ?? null,
+                            }
+                          ) ?? []).map((field) => (
+                            <div key={field.label} className="flex items-center gap-1.5">
+                              <span className="text-xs text-gray-400 uppercase tracking-wider">{field.label}</span>
+                              {field.label === 'Registration' ? (
+                                <span className="font-mono font-bold text-gray-900 bg-yellow-100 px-2 py-0.5 rounded text-xs">{field.value}</span>
+                              ) : (
+                                <span className="text-gray-900">{field.value}</span>
+                              )}
+                              {field.hint && (
+                                <span className="text-xs text-gray-400 ml-1">{field.hint}</span>
+                              )}
                             </div>
-                          ) : null}
-                          {getInspectionExpiry(invoice.vehicle ?? {}) && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-xs text-gray-400 uppercase tracking-wider">{getInspectionLabel(invoice.vehicle ?? {})}</span>
-                              <span className="text-gray-900">{formatDate(getInspectionExpiry(invoice.vehicle ?? {}))}</span>
-                            </div>
-                          )}
+                          ))}
                         </div>
                       </div>
                     </div>
@@ -1932,6 +1951,42 @@ export default function InvoiceList() {
                 className={`w-[280px] shrink-0 sticky top-0 cursor-pointer rounded-xl p-3 transition-all ${selectedPreview === 'receipt' ? 'ring-2 ring-blue-500 bg-blue-50/30' : 'hover:bg-gray-50'}`}
               >
                 <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">POS Receipt</h3>
+                {/* Vehicle info for receipt */}
+                {(() => {
+                  const vehicleFields = buildVehicleDisplayFields(
+                    invoice.vehicle_display ?? null,
+                    invoice.issue_date ?? new Date().toISOString().slice(0, 10),
+                    {
+                      vehicle_rego: invoice.vehicle_rego,
+                      vehicle_make: invoice.vehicle_make,
+                      vehicle_model: invoice.vehicle_model,
+                      vehicle_year: invoice.vehicle_year,
+                      vehicle_odometer: invoice.vehicle_odometer,
+                      vehicle: invoice.vehicle ?? null,
+                    }
+                  ) ?? [];
+                  return vehicleFields.length > 0 ? (
+                    <div className="mb-2 border border-dashed border-gray-300 rounded p-2 bg-white" style={{ fontFamily: "'Courier New', monospace" }}>
+                      {vehicleFields.map((field) => (
+                        <div key={field.label} className="flex justify-between text-[10px] leading-tight">
+                          <span className="text-gray-500">{field.label}:</span>
+                          {field.label === 'Registration' ? (
+                            <span className="font-bold text-gray-900 bg-yellow-100 px-1 rounded">{field.value}</span>
+                          ) : (
+                            <span className="font-medium text-gray-900">{field.value}</span>
+                          )}
+                        </div>
+                      ))}
+                      {vehicleFields.some((f) => f.hint) && (
+                        <div className="mt-0.5">
+                          {vehicleFields.filter((f) => f.hint).map((f) => (
+                            <div key={f.label + '-hint'} className="text-[8px] text-gray-400 text-right leading-tight">{f.hint}</div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : null;
+                })()}
                 <POSReceiptPreview receiptData={invoiceToReceiptData(invoice)} paperWidth={80} />
               </div>
               </div>{/* end flex row */}

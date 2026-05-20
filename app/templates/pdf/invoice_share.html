@@ -208,30 +208,46 @@
       </div>
 
       <!-- Vehicle -->
-      {% set v = invoice.vehicle %}
-      {% if v or invoice.vehicle_rego %}
+      {% if vehicle_display_fields %}
+      <div class="vehicle-bar">
+        {% for field in vehicle_display_fields %}
+        <div class="v-item">
+          <span class="v-label">{{ field.label }}</span>
+          {% if field.label == 'Registration' %}
+          <span class="rego-tag">{{ field.value }}</span>
+          {% else %}
+          <span class="v-value">{{ field.value }}</span>
+          {% endif %}
+          {% if field.hint %}
+          <span style="font-size: 11px; color: #6b7280; margin-left: 4px;">{{ field.hint }}</span>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% elif invoice.vehicle or invoice.vehicle_rego %}
+      {# Fallback for when vehicle_display_fields is not available #}
       <div class="vehicle-bar">
         <div class="v-item">
           <span class="v-label">Rego</span>
-          <span class="rego-tag">{{ v.rego if v else invoice.vehicle_rego }}</span>
+          <span class="rego-tag">{{ invoice.vehicle.rego if invoice.vehicle else invoice.vehicle_rego }}</span>
         </div>
-        {% if (v and (v.make or v.model)) or invoice.vehicle_make %}
+        {% if (invoice.vehicle and (invoice.vehicle.make or invoice.vehicle.model)) or invoice.vehicle_make %}
         <div class="v-item">
           <span class="v-label">Vehicle</span>
-          <span class="v-value">{% if v %}{{ v.year or '' }} {{ v.make or '' }} {{ v.model or '' }}{% else %}{{ invoice.vehicle_year or '' }} {{ invoice.vehicle_make or '' }} {{ invoice.vehicle_model or '' }}{% endif %}</span>
+          <span class="v-value">{% if invoice.vehicle %}{{ invoice.vehicle.year or '' }} {{ invoice.vehicle.make or '' }} {{ invoice.vehicle.model or '' }}{% else %}{{ invoice.vehicle_year or '' }} {{ invoice.vehicle_make or '' }} {{ invoice.vehicle_model or '' }}{% endif %}</span>
         </div>
         {% endif %}
-        {% set odo = (v.odometer if v and v.odometer else invoice.vehicle_odometer) %}
+        {% set odo = (invoice.vehicle.odometer if invoice.vehicle and invoice.vehicle.odometer else invoice.vehicle_odometer) %}
         {% if odo %}
         <div class="v-item">
           <span class="v-label">Odometer</span>
           <span class="v-value">{{ "{:,}".format(odo | int) }} km</span>
         </div>
         {% endif %}
-        {% if v and v.wof_expiry %}
+        {% if invoice.vehicle and invoice.vehicle.wof_expiry %}
         <div class="v-item">
           <span class="v-label">WOF Expiry</span>
-          <span class="v-value">{{ v.wof_expiry }}</span>
+          <span class="v-value">{{ invoice.vehicle.wof_expiry }}</span>
         </div>
         {% endif %}
       </div>

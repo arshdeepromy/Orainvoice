@@ -445,6 +445,9 @@ async def create_invoice(
     vehicle_service_due_date: date | None = None,
     vehicle_wof_expiry_date: date | None = None,
     vehicle_cof_expiry_date: date | None = None,
+    vehicle_wof_updated: bool = False,
+    vehicle_cof_updated: bool = False,
+    vehicle_service_due_updated: bool = False,
     vehicles: list[dict] | None = None,
     branch_id: uuid.UUID | None = None,
     status: str = "draft",
@@ -787,6 +790,49 @@ async def create_invoice(
             _fm_fluid(invoice, "invoice_data_json")
             await db.flush()
 
+    # Store vehicle_display snapshot in invoice_data_json (Req 6.1, 6.2, 6.4)
+    # Determine inspection_type from the vehicle record if available
+    inspection_type: str | None = None
+    if global_vehicle_id:
+        resolution = await _resolve_vehicle_type(db, global_vehicle_id, org_id)
+        if resolution is not None:
+            _vtype, _vrec = resolution
+            inspection_type = getattr(_vrec, "inspection_type", None)
+            # Fallback: infer from expiry fields if inspection_type not set
+            if not inspection_type:
+                if getattr(_vrec, "cof_expiry", None):
+                    inspection_type = "cof"
+                elif getattr(_vrec, "wof_expiry", None):
+                    inspection_type = "wof"
+    else:
+        # No vehicle record — infer from the expiry dates provided
+        if vehicle_cof_expiry_date:
+            inspection_type = "cof"
+        elif vehicle_wof_expiry_date:
+            inspection_type = "wof"
+
+    vehicle_display_data = {
+        "rego": vehicle_rego,
+        "make": vehicle_make,
+        "model": vehicle_model,
+        "year": vehicle_year,
+        "odometer": vehicle_odometer,
+        "inspection_type": inspection_type,
+        "wof_expiry": str(vehicle_wof_expiry_date) if vehicle_wof_expiry_date else None,
+        "cof_expiry": str(vehicle_cof_expiry_date) if vehicle_cof_expiry_date else None,
+        "service_due_date": str(vehicle_service_due_date) if vehicle_service_due_date else None,
+        "wof_updated": vehicle_wof_updated,
+        "cof_updated": vehicle_cof_updated,
+        "service_due_updated": vehicle_service_due_updated,
+    }
+
+    data_json = dict(invoice.invoice_data_json or {})
+    data_json["vehicle_display"] = vehicle_display_data
+    invoice.invoice_data_json = data_json
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(invoice, "invoice_data_json")
+    await db.flush()
+
     await write_audit_log(
         session=db,
         org_id=org_id,
@@ -972,6 +1018,7 @@ def _invoice_to_dict(invoice: Invoice, line_items: list[LineItem]) -> dict:
         "vehicle_model": invoice.vehicle_model,
         "vehicle_year": invoice.vehicle_year,
         "vehicle_odometer": invoice.vehicle_odometer,
+        "vehicle_display": (invoice.invoice_data_json or {}).get("vehicle_display"),
         "branch_id": invoice.branch_id,
         "status": invoice.status,
         "issue_date": invoice.issue_date,
@@ -3669,6 +3716,16 @@ async def generate_invoice_pdf(
     # Fetch invoice --------------------------------------------------------
     invoice_dict = await get_invoice(db, org_id=org_id, invoice_id=invoice_id)
 
+    # Capture issue_date as ISO string before formatting (needed for vehicle display logic)
+    _issue_date_raw = invoice_dict.get("issue_date")
+    if hasattr(_issue_date_raw, "isoformat"):
+        _issue_date_iso = _issue_date_raw.isoformat()
+    elif isinstance(_issue_date_raw, str) and len(_issue_date_raw) == 10 and _issue_date_raw[4:5] == "-":
+        _issue_date_iso = _issue_date_raw
+    else:
+        from datetime import date as _date_cls
+        _issue_date_iso = _date_cls.today().isoformat()
+
     # Fetch organisation (current branding) --------------------------------
     org_result = await db.execute(
         select(Organisation).where(Organisation.id == org_id)
@@ -3842,6 +3899,26 @@ async def generate_invoice_pdf(
 
     template = env.get_template(template_file)
 
+    # Build vehicle display fields using the shared utility ----------------
+    from app.modules.invoices.vehicle_display import build_vehicle_display_fields
+
+    # Build fallback dict for backward compatibility (old invoices without vehicle_display)
+    _vehicle_obj = invoice_dict.get("vehicle")
+    _vehicle_fallback = {
+        "vehicle_rego": invoice_dict.get("vehicle_rego"),
+        "vehicle_make": invoice_dict.get("vehicle_make"),
+        "vehicle_model": invoice_dict.get("vehicle_model"),
+        "vehicle_year": invoice_dict.get("vehicle_year"),
+        "vehicle_odometer": invoice_dict.get("vehicle_odometer"),
+        "vehicle": _vehicle_obj,
+    }
+
+    vehicle_display_fields = build_vehicle_display_fields(
+        vehicle_display=invoice_dict.get("vehicle_display"),
+        issue_date=_issue_date_iso,
+        fallback=_vehicle_fallback,
+    )
+
     html_content = template.render(
         invoice=invoice_dict,
         org=org_context,
@@ -3852,6 +3929,7 @@ async def generate_invoice_pdf(
         terms_and_conditions=terms_and_conditions,
         colours=colour_context,
         job_card_appendix_html=invoice_dict.get("job_card_appendix_html"),
+        vehicle_display_fields=vehicle_display_fields,
         **i18n_ctx,
     )
 

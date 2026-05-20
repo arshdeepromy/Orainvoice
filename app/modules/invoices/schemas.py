@@ -129,6 +129,9 @@ class InvoiceCreateRequest(BaseModel):
         default=None,
         description="COF expiry date — saved to the vehicle record"
     )
+    vehicle_wof_updated: bool = False
+    vehicle_cof_updated: bool = False
+    vehicle_service_due_updated: bool = False
     vehicles: list[VehicleItem] | None = Field(
         default=None,
         description="List of vehicles associated with this invoice"
@@ -287,6 +290,7 @@ class InvoiceResponse(BaseModel):
     invoice_template_id: str | None = None
     invoice_template_colours: dict | None = None
     vehicle: dict | None = None
+    vehicle_display: dict | None = None
     additional_vehicles: list[dict] = Field(default_factory=list)
     fluid_usage: list[dict] = Field(default_factory=list)
     fluid_cost_total: float = 0

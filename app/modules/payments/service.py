@@ -639,10 +639,10 @@ async def handle_stripe_webhook(
     else:
         amount = Decimal(amount_cents) / Decimal("100") - surcharge
 
-    # Fetch invoice (no org filter — webhook has no auth context, but we
-    # trust the payload because signature was already verified)
+    # Fetch invoice with FOR UPDATE lock to serialize concurrent webhook handlers
+    # for the same invoice (prevents duplicate payment race condition)
     result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_id)
+        select(Invoice).where(Invoice.id == invoice_id).with_for_update()
     )
     invoice = result.scalar_one_or_none()
     if invoice is None:
@@ -656,6 +656,8 @@ async def handle_stripe_webhook(
         }
 
     # Idempotency check — prevent duplicate payments (Req 6.6)
+    # The FOR UPDATE lock on the invoice row above ensures only one concurrent
+    # handler proceeds past this point for the same invoice.
     if stripe_payment_intent:
         existing = await db.execute(
             select(Payment).where(
@@ -1470,19 +1472,24 @@ async def get_qr_session_status(
     session_id: str,
     stripe_connect_account_id: str,
 ) -> dict:
-    """Check the status of a Stripe Checkout Session.
+    """Check the status of a Stripe Checkout Session or Payment Intent.
 
-    Calls the Stripe API to retrieve the session and returns a simplified
+    Calls the Stripe API to retrieve the session/PI and returns a simplified
     status (open/complete/expired) along with the payment_intent ID if
     the session is complete.
+
+    If session_id starts with "pi_" (payment intent ID), checks the local
+    payments table first — if a payment exists for that PI, returns "complete"
+    immediately without calling Stripe. This handles the race condition where
+    the webhook records the payment before the frontend polls.
 
     Parameters
     ----------
     db:
-        Active async database session (unused currently, but kept for
-        consistency with other service functions and future use).
+        Active async database session.
     session_id:
-        The Stripe Checkout Session ID (e.g. "cs_...").
+        The Stripe Checkout Session ID (e.g. "cs_...") or Payment Intent
+        ID (e.g. "pi_...").
     stripe_connect_account_id:
         The organisation's Stripe Connect account ID for the
         Stripe-Account header.
@@ -1504,6 +1511,62 @@ async def get_qr_session_status(
 
     from app.integrations.stripe_billing import get_stripe_secret_key
 
+    # If session_id is a payment intent ID, check local DB first
+    if session_id.startswith("pi_"):
+        existing_payment = await db.execute(
+            select(Payment).where(
+                Payment.stripe_payment_intent_id == session_id,
+                Payment.is_refund == False,  # noqa: E712
+            )
+        )
+        if existing_payment.scalar_one_or_none() is not None:
+            return {
+                "status": "complete",
+                "payment_intent_id": session_id,
+            }
+
+        # Not in DB yet — check Stripe PaymentIntent API directly
+        secret_key = await get_stripe_secret_key()
+        if not secret_key:
+            raise RuntimeError(
+                "Stripe secret key not configured. Set it via Global Admin > Integrations."
+            )
+
+        import base64
+        auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"https://api.stripe.com/v1/payment_intents/{session_id}",
+                headers={
+                    "Stripe-Account": stripe_connect_account_id,
+                    "Authorization": f"Basic {auth_header}",
+                },
+            )
+
+        if response.status_code == 404:
+            raise ValueError("Payment intent not found")
+
+        if response.status_code != 200:
+            error_body = (
+                response.json()
+                if response.headers.get("content-type", "").startswith("application/json")
+                else {}
+            )
+            error_msg = error_body.get("error", {}).get("message", response.text)
+            raise ValueError(f"Failed to retrieve payment intent status: {error_msg}")
+
+        pi_data = response.json()
+        pi_status = pi_data.get("status", "")
+
+        if pi_status == "succeeded":
+            return {"status": "complete", "payment_intent_id": session_id}
+        elif pi_status in ("canceled", "requires_payment_method"):
+            return {"status": "expired", "payment_intent_id": None}
+        else:
+            return {"status": "open", "payment_intent_id": None}
+
+    # Standard path: session_id is a Checkout Session ID (cs_...)
     secret_key = await get_stripe_secret_key()
     if not secret_key:
         raise RuntimeError(

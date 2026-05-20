@@ -5,6 +5,7 @@ Requirements: 14.1, 14.2, 14.3, 14.4, 14.5, 14.6, 14.7, 15.1, 15.2, 15.3, 15.4
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import date
 
@@ -23,6 +24,9 @@ from app.integrations.carjam import (
 )
 from app.modules.auth.rbac import require_role
 from app.modules.vehicles.schemas import (
+    BulkRefreshRequest,
+    BulkRefreshResponse,
+    BulkRefreshResult,
     ManualVehicleCreate,
     ManualVehicleResponse,
     OdometerHistoryEntry,
@@ -474,6 +478,107 @@ async def vehicle_lookup_with_fallback(
         )
     
     return VehicleLookupWithFallbackResponse(**result)
+
+
+# ---------------------------------------------------------------------------
+# Bulk Refresh (sequential, rate-limit aware)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/bulk-refresh",
+    response_model=BulkRefreshResponse,
+    responses={
+        403: {"description": "Module not enabled or insufficient role"},
+        429: {"description": "Rate limit exceeded"},
+    },
+    summary="Bulk refresh vehicles via CarJam (sequential)",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def bulk_refresh_vehicles(
+    body: BulkRefreshRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis),
+):
+    """Bulk refresh multiple vehicles via CarJam sequentially.
+
+    Processes each vehicle one-by-one with a 500ms delay between requests.
+    If rate limited mid-batch, stops processing and returns partial results.
+    Max 50 vehicles per request.
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    results: list[dict] = []
+    succeeded = 0
+    failed = 0
+
+    for i, vehicle_id in enumerate(body.vehicle_ids):
+        # Add 500ms delay between requests (skip first)
+        if i > 0:
+            await asyncio.sleep(0.5)
+
+        try:
+            result = await refresh_vehicle(
+                db,
+                redis,
+                vehicle_id=vehicle_id,
+                org_id=org_uuid,
+                user_id=user_uuid or uuid.uuid4(),
+                ip_address=ip_address,
+            )
+            results.append(BulkRefreshResult(
+                vehicle_id=str(vehicle_id),
+                rego=result.get("rego"),
+                status="success",
+                wof_expiry=result.get("wof_expiry"),
+                cof_expiry=result.get("cof_expiry"),
+                error=None,
+            ).model_dump())
+            succeeded += 1
+        except CarjamNotFoundError:
+            results.append(BulkRefreshResult(
+                vehicle_id=str(vehicle_id),
+                rego=None,
+                status="not_found",
+                wof_expiry=None,
+                cof_expiry=None,
+                error="Vehicle not found in CarJam",
+            ).model_dump())
+            failed += 1
+        except CarjamRateLimitError:
+            # Stop processing remaining vehicles on rate limit
+            results.append(BulkRefreshResult(
+                vehicle_id=str(vehicle_id),
+                rego=None,
+                status="rate_limited",
+                wof_expiry=None,
+                cof_expiry=None,
+                error="Rate limit exceeded — stopped processing",
+            ).model_dump())
+            failed += 1
+            break
+        except (CarjamError, ValueError) as exc:
+            results.append(BulkRefreshResult(
+                vehicle_id=str(vehicle_id),
+                rego=None,
+                status="error",
+                wof_expiry=None,
+                cof_expiry=None,
+                error=str(exc),
+            ).model_dump())
+            failed += 1
+
+    return BulkRefreshResponse(
+        results=results,
+        total=len(results),
+        succeeded=succeeded,
+        failed=failed,
+    )
 
 
 # ---------------------------------------------------------------------------

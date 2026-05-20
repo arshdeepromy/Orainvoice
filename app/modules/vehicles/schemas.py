@@ -5,6 +5,7 @@ Requirements: 14.1, 14.2, 14.3, 14.4, 15.1, 15.2, 15.3, 15.4
 
 from __future__ import annotations
 
+import uuid
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -371,3 +372,36 @@ class ServiceHistoryEmailRequest(BaseModel):
         ...,
         description="Email address to send the report to",
     )
+
+
+# ---------------------------------------------------------------------------
+# Bulk Refresh Schemas
+# ---------------------------------------------------------------------------
+
+
+class BulkRefreshRequest(BaseModel):
+    """POST /api/v1/vehicles/bulk-refresh request body."""
+
+    vehicle_ids: list[uuid.UUID] = Field(
+        ..., max_length=50, description="Vehicle IDs to refresh (max 50)"
+    )
+
+
+class BulkRefreshResult(BaseModel):
+    """Result for a single vehicle in a bulk refresh operation."""
+
+    vehicle_id: str
+    rego: str | None = None
+    status: str = Field(..., description="'success', 'not_found', 'rate_limited', 'error'")
+    wof_expiry: str | None = None
+    cof_expiry: str | None = None
+    error: str | None = None
+
+
+class BulkRefreshResponse(BaseModel):
+    """POST /api/v1/vehicles/bulk-refresh response."""
+
+    results: list[BulkRefreshResult] = Field(default_factory=list)
+    total: int
+    succeeded: int
+    failed: int

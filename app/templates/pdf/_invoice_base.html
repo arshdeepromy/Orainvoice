@@ -259,8 +259,29 @@
 <!--  VEHICLE INFO                                                 -->
 <!-- ============================================================ -->
 {% block vehicle_info %}
+{% if vehicle_display_fields %}
+<div class="vehicle-bar">
+  <table>
+    <tr>
+      {% for field in vehicle_display_fields %}
+      <td>
+        <div class="vlbl">{{ field.label }}</div>
+        {% if field.label == 'Registration' %}
+        <span class="rego-tag">{{ field.value }}</span>
+        {% else %}
+        <div class="vval">{{ field.value }}</div>
+        {% endif %}
+        {% if field.hint %}
+        <div style="font-size: 7pt; color: #6b7280; margin-top: 1px;">{{ field.hint }}</div>
+        {% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+  </table>
+</div>
+{% elif invoice.vehicle or invoice.vehicle_rego %}
+{# Fallback for old invoices that don't have vehicle_display_fields #}
 {% set v = invoice.vehicle %}
-{% if v or invoice.vehicle_rego %}
 <div class="vehicle-bar">
   <table>
     <tr>

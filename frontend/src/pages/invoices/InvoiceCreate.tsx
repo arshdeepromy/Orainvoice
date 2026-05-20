@@ -1474,7 +1474,31 @@ export default function InvoiceCreate() {
   }
 
   // Build payload
-  const buildPayload = (status: 'draft' | 'sent') => ({
+  const buildPayload = (status: 'draft' | 'sent') => {
+    // Compute vehicle field update flags by comparing user-entered values against originals
+    const primaryVehicle = vehicles[0] ?? null
+    const computeVehicleUpdateFlags = () => {
+      if (!primaryVehicle || !isAutomotive || !vehiclesEnabled) {
+        return { vehicle_wof_updated: false, vehicle_cof_updated: false, vehicle_service_due_updated: false }
+      }
+      // A field is "updated" if the user-entered value is non-empty AND differs from the vehicle record value
+      const wofUserValue = primaryVehicle.newWofExpiry
+      const wofOriginal = primaryVehicle.wof_expiry ?? ''
+      const vehicle_wof_updated = wofUserValue != null && wofUserValue !== '' && wofUserValue !== wofOriginal
+
+      const cofUserValue = primaryVehicle.newCofExpiry
+      const cofOriginal = primaryVehicle.cof_expiry ?? ''
+      const vehicle_cof_updated = cofUserValue != null && cofUserValue !== '' && cofUserValue !== cofOriginal
+
+      const svcUserValue = primaryVehicle.newServiceDueDate
+      const svcOriginal = primaryVehicle.service_due_date ?? ''
+      const vehicle_service_due_updated = svcUserValue != null && svcUserValue !== '' && svcUserValue !== svcOriginal
+
+      return { vehicle_wof_updated, vehicle_cof_updated, vehicle_service_due_updated }
+    }
+    const updateFlags = computeVehicleUpdateFlags()
+
+    return {
     customer_id: customer?.id,
     branch_id: selectedBranchId || undefined,
     // Only include vehicle fields when vehicles module is enabled and trade is automotive
@@ -1492,6 +1516,8 @@ export default function InvoiceCreate() {
       vehicle_cof_expiry_date: vehicles[0]?.inspection_type === 'cof'
         ? (vehicles[0]?.newCofExpiry ?? vehicles[0]?.cof_expiry ?? undefined)
         : undefined,
+      // Vehicle field update flags for vehicle_display storage
+      ...updateFlags,
       vehicles: vehicles.map(v => ({
         id: v.id || undefined,
         rego: v.rego,
@@ -1539,7 +1565,8 @@ export default function InvoiceCreate() {
       gst_inclusive: item.gst_inclusive || false,
       inclusive_price: item.inclusive_price || undefined,
     })),
-  })
+  }
+  }
 
   // Save handlers
   // Save terms as default if checkbox is checked
@@ -1879,6 +1906,18 @@ export default function InvoiceCreate() {
                             }}
                             className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                           />
+                          {(() => {
+                            const isServiceDueDateChanged = (
+                              v.newServiceDueDate != null &&
+                              v.newServiceDueDate !== '' &&
+                              v.newServiceDueDate !== (v.service_due_date ?? '')
+                            )
+                            return isServiceDueDateChanged ? (
+                              <p className="mt-1 text-xs text-amber-600">
+                                Ensure you have updated the odometer reading too
+                              </p>
+                            ) : null
+                          })()}
                         </div>
 
                         {/* WOF / COF */}

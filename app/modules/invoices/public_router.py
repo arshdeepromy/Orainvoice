@@ -18,6 +18,7 @@ from app.modules.invoices.service import (
     _invoice_to_dict,
     get_currency_symbol,
 )
+from app.modules.invoices.vehicle_display import build_vehicle_display_fields
 
 router = APIRouter()
 
@@ -126,6 +127,23 @@ async def view_shared_invoice(
     terms_and_conditions = invoice_dict.get("terms_and_conditions") or settings.get("terms_and_conditions", "")
     currency_symbol = get_currency_symbol(invoice_dict.get("currency", "NZD"))
 
+    # Build vehicle display fields using the shared utility
+    _issue_date_iso = invoice_dict.get("issue_date") or ""
+    vehicle_display_data = invoice_dict.get("vehicle_display")
+    fallback_fields = {
+        "vehicle_rego": invoice_dict.get("vehicle_rego"),
+        "vehicle_make": invoice_dict.get("vehicle_make"),
+        "vehicle_model": invoice_dict.get("vehicle_model"),
+        "vehicle_year": invoice_dict.get("vehicle_year"),
+        "vehicle_odometer": invoice_dict.get("vehicle_odometer"),
+        "vehicle": invoice_dict.get("vehicle"),
+    }
+    vehicle_display_fields = build_vehicle_display_fields(
+        vehicle_display=vehicle_display_data,
+        issue_date=_issue_date_iso,
+        fallback=fallback_fields,
+    )
+
     # Render the shared invoice HTML template
     template_dir = pathlib.Path(__file__).resolve().parent.parent.parent / "templates" / "pdf"
     env = Environment(loader=FileSystemLoader(str(template_dir)), autoescape=True)
@@ -139,6 +157,7 @@ async def view_shared_invoice(
         gst_percentage=gst_percentage,
         payment_terms=payment_terms,
         terms_and_conditions=terms_and_conditions,
+        vehicle_display_fields=vehicle_display_fields,
     )
 
     return HTMLResponse(

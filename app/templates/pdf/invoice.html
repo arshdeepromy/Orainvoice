@@ -213,34 +213,54 @@
 <!-- ============================================================ -->
 <!--  VEHICLE INFO BAR                                             -->
 <!-- ============================================================ -->
-{% set v = invoice.vehicle %}
-{% if v or invoice.vehicle_rego %}
+{% if vehicle_display_fields %}
+<div class="vehicle-bar">
+  <table>
+    <tr>
+      {% for field in vehicle_display_fields %}
+      <td>
+        <div class="vlbl">{{ field.label }}</div>
+        {% if field.label == 'Registration' %}
+        <span class="rego-tag">{{ field.value }}</span>
+        {% else %}
+        <div class="vval">{{ field.value }}</div>
+        {% endif %}
+        {% if field.hint %}
+        <div style="font-size: 7pt; color: #6b7280; margin-top: 1px;">{{ field.hint }}</div>
+        {% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+  </table>
+</div>
+{% elif invoice.vehicle or invoice.vehicle_rego %}
+{# Fallback for templates that don't receive vehicle_display_fields #}
 <div class="vehicle-bar">
   <table>
     <tr>
       <td>
         <div class="vlbl">Rego</div>
-        <span class="rego-tag">{{ v.rego if v else invoice.vehicle_rego }}</span>
+        <span class="rego-tag">{{ invoice.vehicle.rego if invoice.vehicle else invoice.vehicle_rego }}</span>
       </td>
-      {% if (v and (v.make or v.model)) or invoice.vehicle_make %}
+      {% if (invoice.vehicle and (invoice.vehicle.make or invoice.vehicle.model)) or invoice.vehicle_make %}
       <td>
         <div class="vlbl">Vehicle</div>
         <div class="vval">
-          {% if v %}{{ v.year or '' }} {{ v.make or '' }} {{ v.model or '' }}{% else %}{{ invoice.vehicle_year or '' }} {{ invoice.vehicle_make or '' }} {{ invoice.vehicle_model or '' }}{% endif %}
+          {% if invoice.vehicle %}{{ invoice.vehicle.year or '' }} {{ invoice.vehicle.make or '' }} {{ invoice.vehicle.model or '' }}{% else %}{{ invoice.vehicle_year or '' }} {{ invoice.vehicle_make or '' }} {{ invoice.vehicle_model or '' }}{% endif %}
         </div>
       </td>
       {% endif %}
-      {% set odo = (v.odometer if v and v.odometer else invoice.vehicle_odometer) %}
+      {% set odo = (invoice.vehicle.odometer if invoice.vehicle and invoice.vehicle.odometer else invoice.vehicle_odometer) %}
       {% if odo %}
       <td>
         <div class="vlbl">Odometer</div>
         <div class="vval">{{ "{:,}".format(odo | int) }} km</div>
       </td>
       {% endif %}
-      {% if v and v.wof_expiry %}
+      {% if invoice.vehicle and invoice.vehicle.wof_expiry %}
       <td>
         <div class="vlbl">WOF Expiry</div>
-        <div class="vval">{{ v.wof_expiry }}</div>
+        <div class="vval">{{ invoice.vehicle.wof_expiry }}</div>
       </td>
       {% endif %}
     </tr>
