@@ -445,6 +445,9 @@ async def refresh_vehicle(
     existing.engine_size = carjam_data.engine_size
     existing.num_seats = carjam_data.seats
     existing.wof_expiry = _parse_date(carjam_data.wof_expiry)
+    # Treat epoch date (1970-01-01) as null — CarJam returns this for vehicles without WOF
+    if existing.wof_expiry and existing.wof_expiry.year <= 1970:
+        existing.wof_expiry = None
     existing.registration_expiry = _parse_date(carjam_data.rego_expiry)
     existing.odometer_last_recorded = max(
         carjam_data.odometer or 0,
@@ -481,7 +484,16 @@ async def refresh_vehicle(
     existing.submodel = carjam_data.submodel
     existing.second_colour = carjam_data.second_colour
     existing.cof_expiry = _parse_date(carjam_data.cof_expiry)
+    # Treat epoch date (1970-01-01) as null for COF too
+    if existing.cof_expiry and existing.cof_expiry.year <= 1970:
+        existing.cof_expiry = None
     existing.inspection_type = carjam_data.inspection_type
+    # Infer inspection_type if CarJam didn't provide it
+    if not existing.inspection_type:
+        if existing.cof_expiry:
+            existing.inspection_type = "cof"
+        elif existing.wof_expiry:
+            existing.inspection_type = "wof"
     await db.flush()
 
     # Increment org's Carjam usage counter (charge the org)
@@ -889,6 +901,7 @@ async def get_vehicle_profile(
 
     # WOF and rego expiry indicators (Req 15.4)
     wof_indicator = _compute_expiry_indicator(vehicle.wof_expiry)
+    cof_indicator = _compute_expiry_indicator(vehicle.cof_expiry)
     rego_indicator = _compute_expiry_indicator(vehicle.registration_expiry)
 
     # Build response — handle attribute differences between GlobalVehicle and OrgVehicle
@@ -921,7 +934,7 @@ async def get_vehicle_profile(
         "vehicle_type": vehicle.vehicle_type,
         "submodel": vehicle.submodel,
         "second_colour": vehicle.second_colour,
-        "cof_expiry": vehicle.cof_expiry.isoformat() if vehicle.cof_expiry else None,
+        "cof_expiry": cof_indicator,
         "inspection_type": vehicle.inspection_type,
         "lookup_type": lookup_type,
         "linked_customers": linked_customers,
@@ -1114,6 +1127,8 @@ async def list_org_vehicles(
             GlobalVehicle.body_type,
             GlobalVehicle.fuel_type,
             GlobalVehicle.wof_expiry,
+            GlobalVehicle.cof_expiry,
+            GlobalVehicle.inspection_type,
             GlobalVehicle.registration_expiry,
             GlobalVehicle.service_due_date,
             GlobalVehicle.created_at,
@@ -1136,6 +1151,8 @@ async def list_org_vehicles(
             OrgVehicle.body_type,
             OrgVehicle.fuel_type,
             OrgVehicle.wof_expiry,
+            OrgVehicle.cof_expiry,
+            OrgVehicle.inspection_type,
             OrgVehicle.registration_expiry,
             OrgVehicle.service_due_date,
             OrgVehicle.created_at,
@@ -1224,6 +1241,13 @@ async def list_org_vehicles(
         wof = _compute_expiry_indicator(row.wof_expiry)
         rego_exp = _compute_expiry_indicator(row.registration_expiry)
 
+        # Use COF expiry for COF vehicles, WOF expiry for WOF vehicles
+        inspection_type = getattr(row, 'inspection_type', None)
+        if inspection_type == 'cof':
+            inspection_indicator = _compute_expiry_indicator(row.cof_expiry)
+        else:
+            inspection_indicator = wof
+
         items.append({
             "id": str(vid),
             "rego": row.rego,
@@ -1233,8 +1257,10 @@ async def list_org_vehicles(
             "colour": row.colour,
             "body_type": row.body_type,
             "fuel_type": row.fuel_type,
-            "wof_indicator": wof["indicator"],
-            "wof_expiry_date": wof["date"],
+            "wof_indicator": inspection_indicator["indicator"],
+            "wof_expiry_date": inspection_indicator["date"],
+            "cof_expiry": row.cof_expiry.isoformat() if row.cof_expiry else None,
+            "inspection_type": inspection_type,
             "rego_indicator": rego_exp["indicator"],
             "rego_expiry_date": rego_exp["date"],
             "service_due_date": row.service_due_date.isoformat() if row.service_due_date else None,

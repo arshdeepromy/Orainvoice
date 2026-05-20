@@ -50,7 +50,7 @@ interface VehicleProfileData {
   last_pulled_at: string | null
   wof_expiry: ExpiryIndicator
   rego_expiry: ExpiryIndicator
-  cof_expiry: string | null
+  cof_expiry: ExpiryIndicator
   inspection_type: string | null
   linked_customers: LinkedCustomer[]
   service_history: ServiceHistoryEntry[]
@@ -78,7 +78,7 @@ function formatNZD(amount: string | number): string {
 
 function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '—'
-  return new Intl.DateTimeFormat('en-NZ', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(dateStr))
+  return new Intl.DateTimeFormat('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(dateStr))
 }
 
 const INDICATOR_BADGE: Record<string, { label: string; variant: BadgeVariant }> = {
@@ -98,6 +98,10 @@ const INVOICE_STATUS_CONFIG: Record<string, { label: string; variant: BadgeVaria
 
 function ExpiryBadge({ expiry, label }: { expiry: ExpiryIndicator; label: string }) {
   const cfg = INDICATOR_BADGE[expiry.indicator] ?? INDICATOR_BADGE.red
+  // For red indicator, distinguish between expired (past) and expiring soon (future)
+  const badgeLabel = expiry.indicator === 'red' && expiry.days_remaining != null && expiry.days_remaining >= 0
+    ? 'Expiring Soon'
+    : cfg.label
   const dateStr = expiry.date ? formatDate(expiry.date) : 'Unknown'
   const daysText = expiry.days_remaining != null
     ? expiry.days_remaining >= 0
@@ -109,7 +113,7 @@ function ExpiryBadge({ expiry, label }: { expiry: ExpiryIndicator; label: string
     <div className="rounded-lg border border-gray-200 p-4">
       <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">{label}</p>
       <div className="mt-1 flex items-center gap-2">
-        <Badge variant={cfg.variant}>{cfg.label}</Badge>
+        <Badge variant={cfg.variant}>{badgeLabel}</Badge>
         <span className="text-sm text-gray-900">{dateStr}</span>
       </div>
       {daysText && <p className="mt-0.5 text-xs text-gray-500">{daysText}</p>}
@@ -481,7 +485,7 @@ export default function VehicleProfilePage() {
 
       {/* WOF/COF & Rego expiry indicators */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 mb-6">
-        <ExpiryBadge expiry={vehicle.wof_expiry} label={getInspectionLabel(vehicle)} />
+        <ExpiryBadge expiry={vehicle.inspection_type === 'cof' ? vehicle.cof_expiry : vehicle.wof_expiry} label={getInspectionLabel(vehicle)} />
         <ExpiryBadge expiry={vehicle.rego_expiry} label="Registration Expiry" />
       </div>
 

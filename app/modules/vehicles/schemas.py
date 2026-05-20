@@ -246,7 +246,7 @@ class VehicleProfileResponse(BaseModel):
     odometer: Optional[int] = None
     last_pulled_at: Optional[str] = None
     wof_expiry: ExpiryIndicator
-    cof_expiry: Optional[str] = Field(None, description="COF expiry date (ISO)")
+    cof_expiry: ExpiryIndicator = Field(description="COF expiry indicator (same format as wof_expiry)")
     inspection_type: Optional[str] = Field(None, description="'wof', 'cof', or null")
     rego_expiry: ExpiryIndicator
     # Extended fields

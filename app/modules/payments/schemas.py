@@ -535,3 +535,6 @@ class QrSessionStatusResponse(BaseModel):
     payment_intent_id: Optional[str] = Field(
         None, description="Payment intent ID when status is complete"
     )
+    amount_charged: Optional[float] = Field(
+        None, description="Total amount charged in dollars (including surcharge) when status is complete"
+    )

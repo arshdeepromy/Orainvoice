@@ -4935,3 +4935,43 @@ All six sites used `db.add(NotificationLog(... channel="in_app" ...))` which wou
 **Related Issues**: None
 
 **Spec**: `.kiro/specs/in-app-notifications/` (Tasks 2.1–2.3)
+
+
+---
+
+### ISSUE-149: COF vehicles show "WOF Expiry: Unknown" on vehicle list and incorrect indicator on profile
+
+- **Date**: 2026-05-20
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: COF vehicles (e.g. MBH215 Toyota Prius) show "WOF Expiry: Unknown" on the vehicles list page instead of "COF Expiry: 01 Jun 2026". On the vehicle profile page, the expiry badge showed "WOF Expiry" with date "1970-01-01" (epoch date from CarJam). The "Expired / Due" label was shown even when the date was in the future (within 30 days).
+
+**Root Cause**: Multiple issues:
+1. CarJam returns `1970-01-01` as WOF expiry for COF vehicles (meaning "no WOF"). The `_parse_date` function treated this as a valid date.
+2. CarJam sometimes returns `null` for `inspection_type`. The code didn't infer it from the expiry dates.
+3. The `list_org_vehicles` backend function didn't include `cof_expiry` or `inspection_type` in the query or response.
+4. The `get_vehicle_profile` backend function returned `cof_expiry` as a plain string instead of an `ExpiryIndicator` object (same format as `wof_expiry`).
+5. The frontend `VehicleProfile` page always passed `vehicle.wof_expiry` to the `ExpiryBadge` regardless of inspection type.
+6. The "Expired / Due" badge label didn't distinguish between actually expired (past) and expiring soon (future within 30 days).
+
+**Fix Applied**:
+1. `app/modules/vehicles/service.py` — `refresh_vehicle()`: Treat `1970-01-01` (epoch) as null for both WOF and COF. Infer `inspection_type` from expiry dates when CarJam returns null.
+2. `app/modules/vehicles/service.py` — `list_org_vehicles()`: Added `cof_expiry` and `inspection_type` to the union query. Use correct expiry (COF or WOF) based on `inspection_type` for the indicator.
+3. `app/modules/vehicles/service.py` — `get_vehicle_profile()`: Return `cof_expiry` as an `ExpiryIndicator` object (same format as `wof_expiry`).
+4. `app/modules/vehicles/schemas.py` — `VehicleProfileResponse`: Changed `cof_expiry` type from `Optional[str]` to `ExpiryIndicator`.
+5. `frontend/src/pages/vehicles/VehicleProfile.tsx`: Use `vehicle.cof_expiry` for COF vehicles in `ExpiryBadge`. Show "Expiring Soon" instead of "Expired / Due" when date is in the future.
+6. `frontend/src/pages/vehicles/VehicleProfile.tsx`: Changed date format from `DD/MM/YYYY` to `DD Mon YYYY` (e.g. "01 Jun 2026").
+
+**Files Changed**:
+- `app/modules/vehicles/service.py`
+- `app/modules/vehicles/schemas.py`
+- `frontend/src/pages/vehicles/VehicleProfile.tsx`
+- `frontend/src/pages/vehicles/VehicleList.tsx` (already had correct frontend logic, just needed backend data)
+
+**Affected Surfaces**: Vehicle list page, vehicle profile page, vehicle list on mobile (uses same API).
+
+**Related Issues**: None
+

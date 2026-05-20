@@ -1519,10 +1519,14 @@ async def get_qr_session_status(
                 Payment.is_refund == False,  # noqa: E712
             )
         )
-        if existing_payment.scalar_one_or_none() is not None:
+        payment_row = existing_payment.scalar_one_or_none()
+        if payment_row is not None:
+            # Return the actual amount charged (payment amount + surcharge)
+            amount_charged = float(payment_row.amount) + float(payment_row.surcharge_amount or 0)
             return {
                 "status": "complete",
                 "payment_intent_id": session_id,
+                "amount_charged": amount_charged,
             }
 
         # Not in DB yet — check Stripe PaymentIntent API directly
@@ -1560,11 +1564,13 @@ async def get_qr_session_status(
         pi_status = pi_data.get("status", "")
 
         if pi_status == "succeeded":
-            return {"status": "complete", "payment_intent_id": session_id}
+            # amount_received is in cents
+            amount_cents = pi_data.get("amount_received", 0)
+            return {"status": "complete", "payment_intent_id": session_id, "amount_charged": amount_cents / 100}
         elif pi_status in ("canceled", "requires_payment_method"):
-            return {"status": "expired", "payment_intent_id": None}
+            return {"status": "expired", "payment_intent_id": None, "amount_charged": None}
         else:
-            return {"status": "open", "payment_intent_id": None}
+            return {"status": "open", "payment_intent_id": None, "amount_charged": None}
 
     # Standard path: session_id is a Checkout Session ID (cs_...)
     secret_key = await get_stripe_secret_key()

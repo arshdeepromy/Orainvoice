@@ -97,28 +97,25 @@ export function buildVehicleDisplayFields(
     fields.push({ label: 'Vehicle', value: vehicleStr })
   }
 
-  // 3. Odometer OR Service Due Date (mutually exclusive)
-  if (vehicleDisplay.service_due_updated) {
-    // Service Due replaces Odometer when updated
-    if (vehicleDisplay.service_due_date) {
-      const field: VehicleDisplayField = {
-        label: 'Service Due',
-        value: vehicleDisplay.service_due_date,
-      }
-      // Add hint when odometer is a positive value
-      if (vehicleDisplay.odometer != null && vehicleDisplay.odometer > 0) {
-        field.hint = `or due at ${formatNumber(vehicleDisplay.odometer + 10000)} km`
-      }
-      fields.push(field)
+  // 3. Odometer (always shown when available)
+  if (vehicleDisplay.odometer != null && vehicleDisplay.odometer > 0) {
+    fields.push({
+      label: 'Odometer',
+      value: `${formatNumber(vehicleDisplay.odometer)} km`,
+    })
+  }
+
+  // 3b. Service Due Date (shown additionally when service_due_updated is true)
+  if (vehicleDisplay.service_due_updated && vehicleDisplay.service_due_date) {
+    const field: VehicleDisplayField = {
+      label: 'Service Due',
+      value: vehicleDisplay.service_due_date,
     }
-  } else {
-    // Show odometer when service_due_updated is false and odometer has a value
+    // Add hint when odometer is a positive value
     if (vehicleDisplay.odometer != null && vehicleDisplay.odometer > 0) {
-      fields.push({
-        label: 'Odometer',
-        value: `${formatNumber(vehicleDisplay.odometer)} km`,
-      })
+      field.hint = `or due at ${formatNumber(vehicleDisplay.odometer + 10000)} km`
     }
+    fields.push(field)
   }
 
   // 4. WOF/COF Expiry (conditional on flags + date comparison)

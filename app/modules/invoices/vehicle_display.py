@@ -154,12 +154,19 @@ def build_vehicle_display_fields(
     if vehicle_str:
         fields.append({"label": "Vehicle", "value": vehicle_str, "hint": None})
 
-    # 3. Odometer OR Service Due Date (mutually exclusive)
+    # 3. Odometer (always shown when available)
     service_due_updated = vehicle_display.get("service_due_updated", False)
     odometer = vehicle_display.get("odometer")
 
+    if odometer is not None and odometer > 0:
+        fields.append({
+            "label": "Odometer",
+            "value": f"{_format_number(odometer)} km",
+            "hint": None,
+        })
+
+    # 3b. Service Due Date (shown additionally when service_due_updated is true)
     if service_due_updated:
-        # Service Due replaces Odometer when updated
         service_due_date = vehicle_display.get("service_due_date")
         if service_due_date:
             hint: str | None = None
@@ -170,14 +177,6 @@ def build_vehicle_display_fields(
                 "label": "Service Due",
                 "value": service_due_date,
                 "hint": hint,
-            })
-    else:
-        # Show odometer when service_due_updated is false and odometer has a value
-        if odometer is not None and odometer > 0:
-            fields.append({
-                "label": "Odometer",
-                "value": f"{_format_number(odometer)} km",
-                "hint": None,
             })
 
     # 4. WOF/COF Expiry (conditional on flags + date comparison)

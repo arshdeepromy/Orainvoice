@@ -38,6 +38,7 @@ export function formatNZD(amount: number): string {
 
 export function KioskQrPopup({ session, onPaymentComplete, onExpired, onClose }: KioskQrPopupProps) {
   const [popupState, setPopupState] = useState<PopupState>('scanning')
+  const [amountCharged, setAmountCharged] = useState<number | null>(null)
   const [secondsRemaining, setSecondsRemaining] = useState<number>(() => {
     const expiresAt = new Date(session.expires_at).getTime()
     const now = Date.now()
@@ -80,7 +81,7 @@ export function KioskQrPopup({ session, onPaymentComplete, onExpired, onClose }:
         const controller = new AbortController()
         abortControllerRef.current = controller
 
-        const res = await apiClient.get<{ status: string; payment_intent_id: string | null }>(
+        const res = await apiClient.get<{ status: string; payment_intent_id: string | null; amount_charged: number | null }>(
           `/payments/qr-session/${session.session_id}/status`,
           { signal: controller.signal },
         )
@@ -92,6 +93,9 @@ export function KioskQrPopup({ session, onPaymentComplete, onExpired, onClose }:
           if (pollIntervalRef.current) {
             clearInterval(pollIntervalRef.current)
             pollIntervalRef.current = null
+          }
+          if (res.data?.amount_charged) {
+            setAmountCharged(res.data.amount_charged)
           }
           setPopupState('success')
         }
@@ -211,7 +215,7 @@ export function KioskQrPopup({ session, onPaymentComplete, onExpired, onClose }:
           {/* Thank you message */}
           <h2 className="text-3xl font-bold text-gray-900">Thank you</h2>
           <p className="text-2xl font-semibold text-green-700">
-            {formatNZD(session.amount ?? 0)}
+            {formatNZD(amountCharged ?? session.amount ?? 0)}
           </p>
           <p className="text-lg text-gray-500">Payment received</p>
           <p className="text-sm text-gray-400 mt-2">Tap anywhere to dismiss</p>

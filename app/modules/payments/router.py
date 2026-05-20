@@ -1290,6 +1290,7 @@ async def get_qr_session_status_endpoint(
     return QrSessionStatusResponse(
         status=status_result["status"],
         payment_intent_id=status_result.get("payment_intent_id"),
+        amount_charged=status_result.get("amount_charged"),
     )
 
 
