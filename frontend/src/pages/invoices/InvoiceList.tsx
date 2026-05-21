@@ -443,6 +443,11 @@ export default function InvoiceList() {
     selectedIdRef.current = selectedId
   }, [selectedId])
 
+  // Initialize selectedIdRef immediately from routeId (before any effects run)
+  if (routeId && selectedIdRef.current !== routeId) {
+    selectedIdRef.current = routeId
+  }
+
   /* --- Action states --- */
   const [actionLoading, setActionLoading] = useState('')
   const [actionMessage, setActionMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null)

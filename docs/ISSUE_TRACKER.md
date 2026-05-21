@@ -4975,3 +4975,39 @@ All six sites used `db.add(NotificationLog(... channel="in_app" ...))` which wou
 
 **Related Issues**: None
 
+
+
+---
+
+### ISSUE-150: Invoice list preview switches back to previous invoice after creating a new invoice
+
+- **Date**: 2026-05-22
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A (latent bug exposed by split-panel redesign)
+
+**Symptoms**: After creating a new invoice (clicking "Create Invoice"), the split-panel preview briefly shows the new invoice then switches back to the previous invoice. The user has to manually click the new invoice in the sidebar to see it. Particularly noticeable when the new invoice has cost_price/profit summary data (which makes the detail fetch take slightly longer).
+
+**Root Cause**: Two separate issues in `InvoiceList.tsx`:
+
+1. **`selectedId` in `fetchInvoices` dependency array**: The `fetchInvoices` useCallback had `selectedId` in its dependency array. When `selectedId` changed (from route navigation after create), `fetchInvoices` got a new reference, which triggered the debounced search `useEffect` (because `fetchInvoices` was in its deps). This caused a list re-fetch that could override the selection via the auto-select logic.
+
+2. **Race condition with `selectedIdRef`**: The auto-select logic `if (!selectedIdRef.current && invoices.length > 0)` used a ref to avoid the dependency issue, but the ref was only updated in effects (which fire after render). When `location.key` changed (triggering a list re-fetch), the ref hadn't been updated yet with the new `routeId`, so the auto-select fired and picked the first item in the list (the previous invoice).
+
+3. **Incomplete invoice data passed via `location.state`**: The `handleSaveAndSend` function passed the raw create response (minimal fields) via `location.state`, but the preview needed full detail data (org info, customer, line items with cost_price). This caused a flash of incomplete data before the background refresh completed.
+
+**Fix Applied**:
+
+1. Removed `selectedId` from `fetchInvoices` dependency array — selection changes no longer trigger list re-fetches.
+2. Added `selectedIdRef` that syncs synchronously during render (not in an effect): `if (routeId && selectedIdRef.current !== routeId) { selectedIdRef.current = routeId }`. This ensures the ref is always current before any effects fire.
+3. Updated `handleSaveAndSend` and `handleSaveDraft` to fetch the full invoice detail (`GET /invoices/{id}`) after creation and pass the complete data via `location.state`. This gives instant preview without a loading flash.
+
+**Files Changed**:
+- `frontend/src/pages/invoices/InvoiceList.tsx` — selectedId ref management, fetchInvoices deps
+- `frontend/src/pages/invoices/InvoiceCreate.tsx` — fetch full detail before navigating
+
+**Similar Bugs Found & Fixed**: Same pattern could exist in QuoteList if it has a split-panel — not checked yet.
+
+**Related Issues**: ISSUE-037 (InvoiceList split-panel redesign introduced this pattern)
+
