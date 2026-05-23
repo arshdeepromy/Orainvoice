@@ -28,12 +28,17 @@ export function useVersionCheck(): VersionCheckState {
     try {
       const info = await getVersion()
       setLatestVersion(info.version)
-      if (
-        info.version !== 'unknown' &&
-        BUILD_VERSION !== 'unknown' &&
-        info.version !== BUILD_VERSION &&
-        !dismissed.current
-      ) {
+      if (info.version === 'unknown' || BUILD_VERSION === 'unknown') {
+        return
+      }
+      if (info.version === BUILD_VERSION) {
+        // Versions match — clear any stale update flag and the dismissed
+        // sticky bit so we'll prompt again if the server moves on later.
+        setUpdateAvailable(false)
+        dismissed.current = false
+        return
+      }
+      if (!dismissed.current) {
         setUpdateAvailable(true)
       }
     } catch {
