@@ -13,6 +13,11 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ModuleRoute } from '@/components/common/ModuleRoute'
 import { Login, MfaVerify, PasswordResetRequest, PasswordResetComplete, VerifyEmail } from '@/pages/auth'
 
+/* Fleet Portal — separate SPA mounted at /fleet/* (or fleet.<domain>).
+   Renders its own provider tree and route table; never shares chrome
+   with the staff app. See .kiro/specs/b2b-fleet-portal/. */
+import { FleetPortalRouter, isFleetPortalRoute } from '@/fleet-portal/FleetPortalRouter'
+
 /* Signup is lazy-loaded because it imports @stripe/stripe-js and
    @stripe/react-stripe-js at the top level.  Eager loading would pull
    those heavy Stripe bundles into the initial chunk and — critically —
@@ -192,6 +197,13 @@ const ClaimsList = lazy(() => import('@/pages/claims/ClaimsList'))
 const ClaimDetail = lazy(() => import('@/pages/claims/ClaimDetail'))
 const ClaimCreateForm = lazy(() => import('@/pages/claims/ClaimCreateForm'))
 const ClaimsReports = lazy(() => import('@/pages/claims/ClaimsReports'))
+
+/* Fleet Portal Admin (workshop-staff view — module-gated) */
+const FleetPortalAdmin = lazy(() => import('@/fleet-portal-admin/pages/FleetPortalAdminDashboard'))
+const FleetPortalAdminBookings = lazy(() => import('@/fleet-portal-admin/pages/BookingQueue'))
+const FleetPortalAdminQuotes = lazy(() => import('@/fleet-portal-admin/pages/QuoteQueue'))
+const FleetPortalAdminAccountDetail = lazy(() => import('@/fleet-portal-admin/pages/AccountDetail'))
+const FleetPortalAdminSecuritySettings = lazy(() => import('@/fleet-portal-admin/pages/SecuritySettings'))
 
 function LazyFallback() {
   return (
@@ -501,6 +513,15 @@ function AppRoutes() {
           <Route path="/claims/reports" element={<SafePage name="claims-reports"><ModuleRoute moduleSlug="customer_claims"><ClaimsReports /></ModuleRoute></SafePage>} />
           <Route path="/claims/:id" element={<SafePage name="claim-detail"><ModuleRoute moduleSlug="customer_claims"><ClaimDetail /></ModuleRoute></SafePage>} />
 
+          {/* Fleet Portal Admin (workshop-staff view of fleet portal activity) */}
+          <Route element={<RequireOrgAdmin />}>
+            <Route path="/fleet-portal-admin" element={<SafePage name="fleet-portal-admin"><ModuleRoute moduleSlug="b2b-fleet-management"><FleetPortalAdmin /></ModuleRoute></SafePage>} />
+            <Route path="/fleet-portal-admin/bookings" element={<SafePage name="fleet-portal-admin-bookings"><ModuleRoute moduleSlug="b2b-fleet-management"><FleetPortalAdminBookings /></ModuleRoute></SafePage>} />
+            <Route path="/fleet-portal-admin/quotes" element={<SafePage name="fleet-portal-admin-quotes"><ModuleRoute moduleSlug="b2b-fleet-management"><FleetPortalAdminQuotes /></ModuleRoute></SafePage>} />
+            <Route path="/fleet-portal-admin/accounts/:accountId" element={<SafePage name="fleet-portal-admin-account"><ModuleRoute moduleSlug="b2b-fleet-management"><FleetPortalAdminAccountDetail /></ModuleRoute></SafePage>} />
+            <Route path="/fleet-portal-admin/settings" element={<SafePage name="fleet-portal-admin-settings"><ModuleRoute moduleSlug="b2b-fleet-management"><FleetPortalAdminSecuritySettings /></ModuleRoute></SafePage>} />
+          </Route>
+
           {/* Staff Schedule (branch-scoped) */}
           <Route path="/staff-schedule" element={<SafePage name="staff-schedule"><ModuleRoute moduleSlug="branch_management"><StaffSchedule /></ModuleRoute></SafePage>} />
 
@@ -587,6 +608,22 @@ function AppRoutes() {
 }
 
 function App() {
+  // Fleet Portal — short-circuit to its own provider tree when the
+  // request is for /fleet/* or a fleet.<domain> host. The staff
+  // AuthProvider / OrgLayout are never instantiated for these requests
+  // (Req 2.2, 2.7).
+  if (isFleetPortalRoute()) {
+    return (
+      <ErrorBoundary level="app" name="fleet-portal-root">
+        <BrowserRouter>
+          <ThemeProvider>
+            <FleetPortalRouter />
+          </ThemeProvider>
+        </BrowserRouter>
+      </ErrorBoundary>
+    )
+  }
+
   return (
     <ErrorBoundary level="app" name="root">
       <BrowserRouter>

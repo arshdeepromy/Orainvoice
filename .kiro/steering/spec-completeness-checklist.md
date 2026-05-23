@@ -156,3 +156,10 @@ Before considering a design document complete, ask:
 - During design review (before approving for implementation)
 - During task generation (verify every component has a corresponding task)
 - During implementation review (verify nothing was skipped)
+
+## Related Steering Docs
+
+- **`implementation-completeness-checklist.md`** — Rules for verifying implementation is actually working (browser testing, middleware tracing, email delivery, RLS bypass). Apply DURING implementation, not just during spec creation.
+- **`integration-credentials-architecture.md`** — Never use env vars for runtime config. All credentials and feature toggles live in the database.
+- **`safe-api-consumption.md`** — Frontend patterns for consuming API responses safely.
+- **`frontend-backend-contract-alignment.md`** — Pydantic schema ↔ frontend type alignment rules.

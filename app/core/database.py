@@ -26,6 +26,16 @@ from app.core.security import get_database_ssl_config
 # Set by TenantMiddleware; read by the session factory.
 _current_org_id: ContextVar[str | None] = ContextVar("_current_org_id", default=None)
 
+# Context variable holding the current fleet_account_id for fleet portal
+# requests. Set by the require_fleet_portal_session FastAPI dependency
+# (in app/modules/fleet_portal/dependencies.py); read by callers that need
+# to set the matching Postgres GUC for RLS defence-in-depth on
+# fleet-scoped tables. The standard get_db_session dependency does NOT
+# read this — it stays org-only so staff request paths are unchanged.
+_current_fleet_account_id: ContextVar[str | None] = ContextVar(
+    "_current_fleet_account_id", default=None
+)
+
 # ---------------------------------------------------------------------------
 # Engine & session factory
 # ---------------------------------------------------------------------------
@@ -98,6 +108,50 @@ async def _set_rls_org_id(session: AsyncSession, org_id: str | None) -> None:
         await session.execute(text("RESET app.current_org_id"))
 
 
+async def _set_rls_fleet_account_id(
+    session: AsyncSession, fleet_account_id: str | None
+) -> None:
+    """Execute ``SET app.current_fleet_account_id`` so fleet-scoped RLS
+    policies on B2B Fleet Portal tables can match the second predicate.
+
+    Mirrors :func:`_set_rls_org_id` exactly: uses ``set_config(name, value,
+    is_local=true)`` so the value is bound parametrically (no SQL
+    injection risk) and is automatically reset at transaction end.
+
+    This helper is called by ``require_fleet_portal_session`` (the fleet
+    portal FastAPI dependency) AFTER it has validated the session and
+    looked up the portal account's ``fleet_account_id``. It is NOT called
+    by ``get_db_session`` — staff request paths don't use this GUC.
+    """
+    if fleet_account_id is not None:
+        # Validate that fleet_account_id is a real UUID before binding it
+        # into set_config — keeps a defence-in-depth check even though
+        # set_config() already binds parameters safely.
+        import uuid as _uuid
+        try:
+            validated = str(_uuid.UUID(str(fleet_account_id)))
+        except (ValueError, AttributeError):
+            validated = ""
+        if validated:
+            await session.execute(
+                text(
+                    "SELECT set_config('app.current_fleet_account_id', "
+                    ":fid, true)"
+                ),
+                {"fid": validated},
+            )
+        else:
+            await session.execute(
+                text("RESET app.current_fleet_account_id")
+            )
+    else:
+        # Reset so the OR predicate evaluates to NULL → false on every
+        # row. Combined with the org_id predicate this means a request
+        # with no fleet_account context still cannot read fleet-scoped
+        # rows from a different org.
+        await session.execute(text("RESET app.current_fleet_account_id"))
+
+
 # ---------------------------------------------------------------------------
 # FastAPI dependency
 # ---------------------------------------------------------------------------
@@ -128,3 +182,16 @@ def set_current_org_id(org_id: str | None) -> None:
     Called by TenantMiddleware so that ``get_db_session`` can read it.
     """
     _current_org_id.set(org_id)
+
+
+def set_current_fleet_account_id(fleet_account_id: str | None) -> None:
+    """Store the fleet_account_id in the request-scoped context variable.
+
+    Called by the ``require_fleet_portal_session`` fleet portal
+    dependency so subsequent calls within the same request can read it
+    (e.g. for re-applying the GUC if the session is rebuilt mid-request).
+    The standard ``get_db_session`` dependency does NOT read this —
+    fleet portal handlers explicitly set the GUC via
+    :func:`_set_rls_fleet_account_id` after acquiring the session.
+    """
+    _current_fleet_account_id.set(fleet_account_id)

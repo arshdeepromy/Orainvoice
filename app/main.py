@@ -210,6 +210,7 @@ def create_app() -> FastAPI:
     from app.modules.tax_wallets import models as _tax_wallet_models  # noqa: F401
     from app.modules.ird import models as _ird_models  # noqa: F401
     from app.modules.in_app_notifications import models as _in_app_notif_models  # noqa: F401
+    from app.modules.fleet_portal import models as _fleet_portal_models  # noqa: F401
 
     # Force SQLAlchemy to resolve all relationship references now,
     # while all models are loaded. This prevents lazy mapper configuration
@@ -613,6 +614,18 @@ def create_app() -> FastAPI:
     app.include_router(page_editor_router, prefix="/api/v2/admin/page-editor", tags=["v2-admin-page-editor"])
     # Public routes already include full paths (/api/v2/public/pages/*, /sitemap.xml, /robots.txt)
     app.include_router(page_editor_public_router, tags=["v2-public-page-editor"])
+
+    # --- B2B Fleet Portal ---
+    # Portal-user surface (HttpOnly cookie auth, separate origin/sub-path).
+    from app.modules.fleet_portal.router import router as fleet_portal_router
+    # Workshop-staff surface (existing JWT auth, mounted inside OrgLayout).
+    from app.modules.fleet_portal.admin_router import router as fleet_portal_admin_router
+    app.include_router(fleet_portal_router, prefix="/fleet/api", tags=["fleet-portal"])
+    app.include_router(
+        fleet_portal_admin_router,
+        prefix="/api/v2/fleet-portal/admin",
+        tags=["fleet-portal-admin"],
+    )
 
     @app.get("/health")
     async def health_check():

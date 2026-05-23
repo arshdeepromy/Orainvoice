@@ -221,6 +221,15 @@ export const MORE_MENU_ITEMS: MoreMenuItem[] = [
     roles: ['kiosk'] as UserRole[],
     category: 'tools',
   },
+  {
+    id: 'fleet-portal',
+    label: 'Fleet Portal',
+    iconPath: 'M9 17a2 2 0 11-4 0 2 2 0 014 0zM19 17a2 2 0 11-4 0 2 2 0 014 0zM13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10M13 16H3m10 0h2l3-6h-5',
+    route: '/fleet',
+    moduleSlug: 'b2b-fleet-management',
+    tradeFamily: 'automotive-transport',
+    category: 'industry',
+  },
 ]
 
 function isItemVisible(

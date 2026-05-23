@@ -41,6 +41,18 @@ class PortalSession(Base):
         ForeignKey("customers.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # Discriminator for fleet portal sessions vs. legacy token-link sessions.
+    # NULL → token-link session (existing customer portal).
+    # NOT NULL → fleet portal session (password login, see B2B Fleet Portal
+    # spec). When set, the row is keyed off ``portal_accounts.id`` and the
+    # session inherits the fleet account's RLS scoping. ``customer_id``
+    # stays NOT NULL in both cases — fleet sessions write BOTH columns
+    # (see migration 0191).
+    portal_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("portal_accounts.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     session_token: Mapped[str] = mapped_column(
         String(255), unique=True, nullable=False
     )

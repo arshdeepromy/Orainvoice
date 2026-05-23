@@ -435,6 +435,28 @@ const PortalScreen = lazy(() =>
   })),
 )
 
+// Fleet Portal
+const FleetDashboardScreen = lazy(() =>
+  import('@/screens/fleet/FleetDashboardScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Fleet Dashboard" />,
+  })),
+)
+const FleetVehiclesScreen = lazy(() =>
+  import('@/screens/fleet/FleetVehiclesScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Fleet Vehicles" />,
+  })),
+)
+const FleetChecklistScreen = lazy(() =>
+  import('@/screens/fleet/FleetChecklistScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Fleet Checklists" />,
+  })),
+)
+const FleetBookingsScreen = lazy(() =>
+  import('@/screens/fleet/FleetBookingsScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Fleet Bookings" />,
+  })),
+)
+
 // Kiosk
 const KioskScreen = lazy(() =>
   import('@/screens/kiosk/KioskScreen').catch(() => ({
@@ -663,6 +685,11 @@ export function StackRoutes() {
         <Route path="/sms" element={<AuthGuard><SMSComposeScreen /></AuthGuard>} />
         <Route path="/settings" element={<AuthGuard><SettingsScreen /></AuthGuard>} />
         <Route path="/portal" element={<AuthGuard><PortalScreen /></AuthGuard>} />
+        <Route path="/fleet" element={<AuthGuard><FleetDashboardScreen /></AuthGuard>} />
+        <Route path="/fleet/vehicles" element={<AuthGuard><FleetVehiclesScreen /></AuthGuard>} />
+        <Route path="/fleet/vehicles/:id" element={<AuthGuard><FleetVehiclesScreen /></AuthGuard>} />
+        <Route path="/fleet/checklists" element={<AuthGuard><FleetChecklistScreen /></AuthGuard>} />
+        <Route path="/fleet/bookings" element={<AuthGuard><FleetBookingsScreen /></AuthGuard>} />
         <Route path="/kiosk" element={<AuthGuard><KioskScreen /></AuthGuard>} />
 
         {/* Fallback */}

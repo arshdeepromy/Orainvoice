@@ -111,6 +111,7 @@ PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/v2/portal/",
     "/api/v2/public/",
     "/api/v2/setup-wizard/org-logo/",
+    "/fleet/api/",  # Fleet portal uses cookie auth, not JWT
 )
 
 # Portal prefixes that require token expiry validation (REM-15).
