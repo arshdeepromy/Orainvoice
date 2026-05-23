@@ -329,7 +329,7 @@ async def complete_submission(
         except Exception:
             pass  # Non-critical
 
-        # In-app notification to workshop admins (Req 9.7)
+        # In-app notification to workshop admins + fleet admin (Req 9.7)
         try:
             from app.modules.in_app_notifications.service import create_in_app_notification
             await create_in_app_notification(
@@ -342,7 +342,7 @@ async def complete_submission(
                 link_url="/fleet-portal-admin/bookings",
                 entity_type="fleet_checklist_submission",
                 entity_id=s.id,
-                audience_roles=["org_admin", "admin"],
+                audience_roles=["org_admin", "admin", "fleet_admin"],
             )
         except Exception:
             pass  # Non-critical — notification failure must not break submission

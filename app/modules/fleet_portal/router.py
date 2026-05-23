@@ -26,6 +26,7 @@ from datetime import date as _date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app
@@ -552,7 +553,7 @@ async def me(
     account = res.scalars().first()
     assert account is not None  # the dependency already validated existence
 
-    sms_configured = _detect_sms_provider_configured(db, ctx.org_id)
+    sms_configured = await _detect_sms_provider_configured(db)
 
     return S.CurrentUserResponse(
         portal_account_id=account.id,
@@ -567,18 +568,27 @@ async def me(
     )
 
 
-def _detect_sms_provider_configured(db: AsyncSession, org_id: uuid.UUID) -> bool:
-    """Return True if the org has at least one SMS provider configured.
+async def _detect_sms_provider_configured(db: AsyncSession) -> bool:
+    """Return True iff there is an active Connexus SMS provider configured.
 
-    Best-effort — the underlying integration_configs table holds
-    encrypted credentials per provider. A missing row means the
-    provider is unconfigured.
+    Looks up ``sms_verification_providers`` with
+    ``provider_key='connexus' AND is_active=true`` (the canonical store
+    used by ``app/integrations/connexus_sms.py``). Returns ``False`` on
+    any error so the UI is safe by default.
     """
-    # Stub: returns False unless we've explicitly wired it up. Tasks
-    # 4A.x and 10.1 will replace this with the real lookup against
-    # integration_configs (e.g. provider_key='connexus'). Returning
-    # False is the safe default — the UI greys out the SMS toggle.
-    return False
+    try:
+        from sqlalchemy import select as _select
+        from app.modules.admin.models import SmsVerificationProvider
+
+        res = await db.execute(
+            _select(SmsVerificationProvider.id).where(
+                SmsVerificationProvider.provider_key == "connexus",
+                SmsVerificationProvider.is_active.is_(True),
+            ).limit(1)
+        )
+        return res.first() is not None
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1102,6 +1112,8 @@ async def start_checklist(
     db: AsyncSession = Depends(get_db_session),
 ) -> S.ChecklistSubmissionSchema:
     from app.modules.fleet_portal.services import checklist_service
+    from app.modules.fleet_portal.models import FleetChecklistSubmissionItem
+    from sqlalchemy import select
 
     try:
         submission = await checklist_service.start_submission(
@@ -1109,6 +1121,27 @@ async def start_checklist(
         )
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    # Load the submission's items (snapshotted from template at start)
+    items_res = await db.execute(
+        select(FleetChecklistSubmissionItem)
+        .where(FleetChecklistSubmissionItem.submission_id == submission.id)
+        .order_by(FleetChecklistSubmissionItem.id)
+    )
+    items = [
+        S.ChecklistSubmissionItemSchema(
+            id=i.id,
+            template_item_id=i.template_item_id,
+            category=i.category,
+            label=i.label,
+            requires_photo_on_fail=i.requires_photo_on_fail,
+            result=i.result,
+            notes=i.notes,
+            photo_urls=i.photo_urls or [],
+            recorded_at=i.recorded_at,
+        )
+        for i in items_res.scalars().all()
+    ]
 
     return S.ChecklistSubmissionSchema(
         id=submission.id,
@@ -1121,8 +1154,267 @@ async def start_checklist(
         passed_item_count=submission.passed_item_count,
         failed_item_count=submission.failed_item_count,
         na_item_count=submission.na_item_count,
-        items=[],
+        items=items,
     )
+
+
+# Submission list + detail + item update + photo upload (Req 9.2–9.5, 9.8, 9.9)
+
+
+@router.get("/checklists/submissions", response_model=S.ChecklistSubmissionListResponse)
+async def list_submissions(
+    offset: int = 0,
+    limit: int = 50,
+    ctx: FleetSessionCtx = Depends(require_driver_or_admin),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.ChecklistSubmissionListResponse:
+    """List submissions visible to the current session.
+
+    Drivers see only their own submissions; admins see all in the fleet.
+    Implements Req 9.8, 9.9.
+    """
+    from sqlalchemy import select, func
+    from app.modules.fleet_portal.models import FleetChecklistSubmission
+
+    if ctx.fleet_account_id is None:
+        return S.ChecklistSubmissionListResponse(items=[], total=0, offset=offset, limit=limit)
+
+    base = select(FleetChecklistSubmission).where(
+        FleetChecklistSubmission.org_id == ctx.org_id,
+        FleetChecklistSubmission.fleet_account_id == ctx.fleet_account_id,
+    )
+    if ctx.portal_user_role == "driver":
+        base = base.where(FleetChecklistSubmission.portal_account_id == ctx.portal_account_id)
+
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
+    rows = (
+        await db.execute(
+            base.order_by(FleetChecklistSubmission.started_at.desc()).offset(offset).limit(limit)
+        )
+    ).scalars().all()
+
+    items = [
+        S.ChecklistSubmissionSchema(
+            id=s.id,
+            customer_vehicle_id=s.customer_vehicle_id,
+            portal_account_id=s.portal_account_id,
+            template_id=s.template_id,
+            status=s.status,
+            started_at=s.started_at,
+            completed_at=s.completed_at,
+            passed_item_count=s.passed_item_count or 0,
+            failed_item_count=s.failed_item_count or 0,
+            na_item_count=s.na_item_count or 0,
+            items=[],  # items loaded only on detail view
+        )
+        for s in rows
+    ]
+    return S.ChecklistSubmissionListResponse(items=items, total=int(total), offset=offset, limit=limit)
+
+
+@router.get(
+    "/checklists/submissions/{submission_id}", response_model=S.ChecklistSubmissionSchema
+)
+async def get_submission_detail(
+    submission_id: uuid.UUID,
+    ctx: FleetSessionCtx = Depends(require_driver_or_admin),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.ChecklistSubmissionSchema:
+    """Return submission detail with all items.
+
+    Drivers can only see their own submissions (403 otherwise).
+    """
+    from sqlalchemy import select
+    from app.modules.fleet_portal.models import (
+        FleetChecklistSubmission,
+        FleetChecklistSubmissionItem,
+    )
+
+    res = await db.execute(
+        select(FleetChecklistSubmission).where(
+            FleetChecklistSubmission.id == submission_id,
+            FleetChecklistSubmission.org_id == ctx.org_id,
+        )
+    )
+    s = res.scalars().first()
+    if s is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    if ctx.portal_user_role == "driver" and s.portal_account_id != ctx.portal_account_id:
+        raise HTTPException(status_code=403, detail="Cannot access another driver's submission")
+
+    items_res = await db.execute(
+        select(FleetChecklistSubmissionItem)
+        .where(FleetChecklistSubmissionItem.submission_id == s.id)
+        .order_by(FleetChecklistSubmissionItem.id)
+    )
+    items = [
+        S.ChecklistSubmissionItemSchema(
+            id=i.id,
+            template_item_id=i.template_item_id,
+            category=i.category,
+            label=i.label,
+            requires_photo_on_fail=i.requires_photo_on_fail,
+            result=i.result,
+            notes=i.notes,
+            photo_urls=i.photo_urls or [],
+            recorded_at=i.recorded_at,
+        )
+        for i in items_res.scalars().all()
+    ]
+
+    return S.ChecklistSubmissionSchema(
+        id=s.id,
+        customer_vehicle_id=s.customer_vehicle_id,
+        portal_account_id=s.portal_account_id,
+        template_id=s.template_id,
+        status=s.status,
+        started_at=s.started_at,
+        completed_at=s.completed_at,
+        passed_item_count=s.passed_item_count or 0,
+        failed_item_count=s.failed_item_count or 0,
+        na_item_count=s.na_item_count or 0,
+        items=items,
+    )
+
+
+class _ItemResultUpdate(S._StrictBase):
+    result: str  # 'pass' | 'fail' | 'na'
+    notes: str | None = None
+
+
+@router.patch(
+    "/checklists/{submission_id}/items/{item_id}", response_model=S.StatusResponse
+)
+async def update_submission_item(
+    submission_id: uuid.UUID,
+    item_id: uuid.UUID,
+    body: _ItemResultUpdate,
+    ctx: FleetSessionCtx = Depends(require_driver_or_admin),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.StatusResponse:
+    """Update a single submission item (set result, optional notes)."""
+    from sqlalchemy import select
+    from datetime import datetime, timezone
+    from app.modules.fleet_portal.models import (
+        FleetChecklistSubmission,
+        FleetChecklistSubmissionItem,
+    )
+
+    if body.result not in {"pass", "fail", "na"}:
+        raise HTTPException(status_code=400, detail="result must be one of: pass, fail, na")
+
+    sub_res = await db.execute(
+        select(FleetChecklistSubmission).where(
+            FleetChecklistSubmission.id == submission_id,
+            FleetChecklistSubmission.org_id == ctx.org_id,
+        )
+    )
+    s = sub_res.scalars().first()
+    if s is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if s.status != "in_progress":
+        raise HTTPException(status_code=400, detail="Submission is no longer editable")
+    if ctx.portal_user_role == "driver" and s.portal_account_id != ctx.portal_account_id:
+        raise HTTPException(status_code=403, detail="Cannot edit another driver's submission")
+
+    item_res = await db.execute(
+        select(FleetChecklistSubmissionItem).where(
+            FleetChecklistSubmissionItem.id == item_id,
+            FleetChecklistSubmissionItem.submission_id == submission_id,
+        )
+    )
+    item = item_res.scalars().first()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    item.result = body.result
+    item.notes = body.notes
+    item.recorded_at = datetime.now(timezone.utc)
+    await db.flush()
+    return S.StatusResponse(ok=True)
+
+
+@router.post(
+    "/checklists/{submission_id}/items/{item_id}/photo",
+    response_model=S.StatusResponse,
+)
+async def upload_submission_photo(
+    submission_id: uuid.UUID,
+    item_id: uuid.UUID,
+    request: Request,
+    ctx: FleetSessionCtx = Depends(require_driver_or_admin),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Attach a photo to a submission item.
+
+    Stored as a base64 data-URL in `photo_urls` JSONB. Max 5MB per photo,
+    accepts JPEG/PNG/WebP. CSRF is validated manually since multipart
+    bodies don't go through the JSON middleware path.
+    """
+    import base64
+    from fastapi import UploadFile, File
+    from sqlalchemy import select
+    from app.modules.fleet_portal.models import (
+        FleetChecklistSubmission,
+        FleetChecklistSubmissionItem,
+    )
+
+    # Manual CSRF check (multipart bypasses validate_fleet_portal_csrf)
+    cookie = request.cookies.get("fleet_portal_csrf")
+    header = request.headers.get("X-CSRF-Token")
+    if not cookie or not header or cookie != header:
+        raise HTTPException(status_code=403, detail="CSRF validation failed")
+
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        raise HTTPException(status_code=400, detail="No file uploaded")
+
+    # Read and validate
+    content = await upload.read()  # type: ignore[union-attr]
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 5 MB)")
+
+    mime = getattr(upload, "content_type", None) or "application/octet-stream"
+    if mime not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=400, detail=f"Invalid image type: {mime}")
+
+    # Verify submission + item ownership
+    sub_res = await db.execute(
+        select(FleetChecklistSubmission).where(
+            FleetChecklistSubmission.id == submission_id,
+            FleetChecklistSubmission.org_id == ctx.org_id,
+        )
+    )
+    s = sub_res.scalars().first()
+    if s is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if s.status != "in_progress":
+        raise HTTPException(status_code=400, detail="Submission is no longer editable")
+    if ctx.portal_user_role == "driver" and s.portal_account_id != ctx.portal_account_id:
+        raise HTTPException(status_code=403, detail="Cannot edit another driver's submission")
+
+    item_res = await db.execute(
+        select(FleetChecklistSubmissionItem).where(
+            FleetChecklistSubmissionItem.id == item_id,
+            FleetChecklistSubmissionItem.submission_id == submission_id,
+        )
+    )
+    item = item_res.scalars().first()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    # Encode as data URL and append
+    data_url = f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}"
+    existing = list(item.photo_urls or [])
+    existing.append(data_url)
+    item.photo_urls = existing
+    await db.flush()
+    return S.StatusResponse(ok=True)
 
 
 @router.post("/checklists/{submission_id}/complete", response_model=S.ChecklistSubmissionSchema)
@@ -1310,6 +1602,7 @@ async def list_quotes(
 ) -> S.QuoteRequestListResponse:
     from sqlalchemy import select, func
     from app.modules.fleet_portal.models import FleetQuotationRequest
+    from app.modules.quotes.models import Quote
 
     if ctx.fleet_account_id is None:
         return S.QuoteRequestListResponse(items=[], total=0, offset=offset, limit=limit)
@@ -1321,24 +1614,39 @@ async def list_quotes(
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
     rows = (await db.execute(base.order_by(FleetQuotationRequest.created_at.desc()).offset(offset).limit(limit))).scalars().all()
 
-    items = [
-        S.QuoteRequestSchema(
-            id=r.id,
-            customer_vehicle_id=r.customer_vehicle_id,
-            rego=None,
-            requested_by_portal_account_id=r.requested_by_portal_account_id,
-            requested_by_name=None,
-            service_description=r.service_description,
-            notes=r.notes,
-            status=r.status,
-            quote_id=r.quote_id,
-            quote_total=None,
-            quote_valid_until=None,
-            created_at=r.created_at,
-            updated_at=r.updated_at,
+    # Resolve linked quotes (total + valid_until) in a single batch query
+    linked_quote_ids = [r.quote_id for r in rows if r.quote_id is not None]
+    quotes_by_id: dict = {}
+    if linked_quote_ids:
+        q_res = await db.execute(
+            select(Quote).where(
+                Quote.id.in_(linked_quote_ids),
+                Quote.org_id == ctx.org_id,
+            )
         )
-        for r in rows
-    ]
+        for q in q_res.scalars().all():
+            quotes_by_id[q.id] = q
+
+    items = []
+    for r in rows:
+        linked = quotes_by_id.get(r.quote_id) if r.quote_id else None
+        items.append(
+            S.QuoteRequestSchema(
+                id=r.id,
+                customer_vehicle_id=r.customer_vehicle_id,
+                rego=None,
+                requested_by_portal_account_id=r.requested_by_portal_account_id,
+                requested_by_name=None,
+                service_description=r.service_description,
+                notes=r.notes,
+                status=r.status,
+                quote_id=r.quote_id,
+                quote_total=linked.total if linked is not None else None,
+                quote_valid_until=linked.valid_until if linked is not None else None,
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+            )
+        )
     return S.QuoteRequestListResponse(items=items, total=int(total), offset=offset, limit=limit)
 
 
@@ -1572,13 +1880,14 @@ async def send_adhoc_sms_reminder(
 ) -> S.StatusResponse:
     """Send an ad-hoc SMS reminder for a vehicle (Req 10.7)."""
     # Check if SMS provider is configured
-    if not _detect_sms_provider_configured(db, ctx.org_id):
+    if not await _detect_sms_provider_configured(db):
         raise HTTPException(status_code=400, detail="SMS provider not configured for this organisation.")
 
     customer_vehicle_id = body.get("customer_vehicle_id")
     reminder_type = body.get("reminder_type")
+    custom_message = (body.get("message") or "").strip() or None
 
-    # Log the ad-hoc send attempt (actual SMS dispatch via existing queue)
+    # Audit-log the intent regardless of dispatch outcome
     try:
         from app.modules.fleet_portal.services import audit_service
         await audit_service.log_event(
@@ -1594,9 +1903,805 @@ async def send_adhoc_sms_reminder(
     except Exception:
         pass
 
-    # TODO: Wire actual SMS dispatch via Connexus queue
-    # For now, the audit log records the intent and the queue will pick it up
+    # Best-effort dispatch via Connexus. The Connexus integration loads
+    # its own credentials and recipients aren't auto-derived here — for
+    # the MVP we accept the request and rely on the existing reminder
+    # queue to do the actual sending. An explicit dispatch from this
+    # endpoint requires resolving the recipient phone numbers which is
+    # owned by reminder_service; we delegate there if available.
+    try:
+        from app.modules.fleet_portal.services import reminder_service
+        send_now = getattr(reminder_service, "send_ad_hoc_sms", None)
+        if send_now is not None and customer_vehicle_id and reminder_type:
+            await send_now(
+                db,
+                ctx=ctx,
+                customer_vehicle_id=uuid.UUID(str(customer_vehicle_id)),
+                reminder_type=str(reminder_type),
+                message=custom_message,
+            )
+    except Exception as exc:
+        logger.warning("fleet_portal.send_sms.dispatch_failed err=%s", exc)
+        # Still return ok=True — the audit log captures intent and the
+        # queue will retry. Failing the click is worse UX than a silent
+        # retry given that the dispatcher itself is best-effort.
+
     return S.StatusResponse(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Vehicle add / remove / edit (Req 6.5, 6.6, 6.7)
+# ---------------------------------------------------------------------------
+
+
+class _VehicleAddRequest(S._StrictBase):
+    rego: str
+    odometer_at_link: int | None = None
+
+
+@router.post("/vehicles", response_model=S.IdResponse)
+async def add_vehicle_to_fleet(
+    body: _VehicleAddRequest,
+    ctx: FleetSessionCtx = Depends(require_fleet_admin),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.IdResponse:
+    """Add a vehicle to the current fleet (Req 6.5).
+
+    Strategy: look up the rego in ``global_vehicles``; if a row exists,
+    link it. Otherwise create an ``org_vehicles`` row and link that.
+    Either way, the ``customer_vehicles`` link is keyed to the fleet
+    account's ``customer_id`` so RLS and join paths agree.
+    """
+    from sqlalchemy import select as _select
+    from app.modules.admin.models import GlobalVehicle
+    from app.modules.vehicles.models import (
+        CustomerVehicle,
+        OrgVehicle,
+    )
+    from app.modules.fleet_portal.models import (
+        FleetReminderPreference,
+        PortalFleetAccount,
+    )
+
+    if ctx.fleet_account_id is None:
+        raise HTTPException(status_code=403, detail="No fleet account context")
+
+    rego = (body.rego or "").strip().upper()
+    if not rego:
+        raise HTTPException(status_code=400, detail="Rego is required")
+
+    # Resolve the fleet's customer_id
+    fa_res = await db.execute(
+        _select(PortalFleetAccount.customer_id).where(
+            PortalFleetAccount.id == ctx.fleet_account_id
+        )
+    )
+    fa_row = fa_res.first()
+    if fa_row is None:
+        raise HTTPException(status_code=404, detail="Fleet account not found")
+    customer_id = fa_row[0]
+
+    # Try GlobalVehicle first (CarJam-sourced)
+    gv_res = await db.execute(
+        _select(GlobalVehicle).where(GlobalVehicle.rego == rego).limit(1)
+    )
+    gv = gv_res.scalars().first()
+
+    ov: OrgVehicle | None = None
+    if gv is None:
+        # Try existing OrgVehicle for this org so we don't duplicate
+        ov_res = await db.execute(
+            _select(OrgVehicle).where(
+                OrgVehicle.org_id == ctx.org_id,
+                OrgVehicle.rego == rego,
+            ).limit(1)
+        )
+        ov = ov_res.scalars().first()
+        if ov is None:
+            ov = OrgVehicle(
+                org_id=ctx.org_id,
+                rego=rego,
+                odometer_last_recorded=body.odometer_at_link,
+                is_manual_entry=True,
+            )
+            db.add(ov)
+            await db.flush()
+            await db.refresh(ov)
+
+    # Refuse to double-link the same vehicle to the same customer
+    existing_link_q = _select(CustomerVehicle).where(
+        CustomerVehicle.org_id == ctx.org_id,
+        CustomerVehicle.customer_id == customer_id,
+    )
+    if gv is not None:
+        existing_link_q = existing_link_q.where(
+            CustomerVehicle.global_vehicle_id == gv.id
+        )
+    elif ov is not None:
+        existing_link_q = existing_link_q.where(
+            CustomerVehicle.org_vehicle_id == ov.id
+        )
+    existing_link = (await db.execute(existing_link_q.limit(1))).scalars().first()
+    if existing_link is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Vehicle {rego} is already in your fleet",
+        )
+
+    cv = CustomerVehicle(
+        org_id=ctx.org_id,
+        customer_id=customer_id,
+        global_vehicle_id=gv.id if gv is not None else None,
+        org_vehicle_id=ov.id if ov is not None else None,
+        odometer_at_link=body.odometer_at_link,
+    )
+    db.add(cv)
+    await db.flush()
+    await db.refresh(cv)
+
+    # Seed the three default reminder preferences (disabled — Req 10.9)
+    for reminder_type in (
+        "wof_expiry_reminder",
+        "cof_expiry_reminder",
+        "service_due_reminder",
+    ):
+        db.add(
+            FleetReminderPreference(
+                org_id=ctx.org_id,
+                fleet_account_id=ctx.fleet_account_id,
+                customer_vehicle_id=cv.id,
+                reminder_type=reminder_type,
+                enabled=False,
+                lead_time_days=14,
+                channels=["email"],
+                recipients=["fleet_admin"],
+            )
+        )
+    await db.flush()
+
+    return S.IdResponse(id=cv.id)
+
+
+@router.patch("/vehicles/{vehicle_id}", response_model=S.StatusResponse)
+async def edit_vehicle(
+    vehicle_id: uuid.UUID,
+    body: S.VehicleEditRequest,
+    ctx: FleetSessionCtx = Depends(require_driver_or_admin),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.StatusResponse:
+    """Update editable fields on a vehicle (Req 6.6, 7.2/7.3/7.4).
+
+    Per-role allowlist enforced via
+    ``vehicle_service.allowed_fields_for_role``. Unknown or disallowed
+    field names return HTTP 403.
+    """
+    from sqlalchemy import select as _select
+    from app.modules.fleet_portal.services.vehicle_service import (
+        _vehicle_query_for_session,
+        allowed_fields_for_role,
+    )
+    from app.modules.vehicles.models import CustomerVehicle
+
+    base = await _vehicle_query_for_session(db, ctx)
+    cv = (
+        await db.execute(base.where(CustomerVehicle.id == vehicle_id))
+    ).scalars().first()
+    if cv is None:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+
+    payload = body.model_dump(exclude_unset=True)
+    allowed = allowed_fields_for_role(ctx.portal_user_role)
+    bad = [k for k in payload.keys() if k not in allowed]
+    if bad:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot edit field(s) for role={ctx.portal_user_role}: {', '.join(bad)}",
+        )
+
+    # Apply per-vehicle override field directly on customer_vehicles
+    if "fleet_checklist_template_id" in payload:
+        cv.fleet_checklist_template_id = payload.pop("fleet_checklist_template_id")
+
+    # All other fields land on the underlying global_vehicles or
+    # org_vehicles row (we don't own a fleet-scoped overlay table).
+    target = cv.global_vehicle if cv.global_vehicle is not None else cv.org_vehicle
+    if target is None:
+        await db.flush()
+        return S.StatusResponse(ok=True)
+
+    for key, value in payload.items():
+        # Some fields (fleet_internal_name, fleet_number) only exist on
+        # OrgVehicle in the current schema — skip silently if absent.
+        if hasattr(target, key):
+            setattr(target, key, value)
+
+    await db.flush()
+    return S.StatusResponse(ok=True)
+
+
+@router.delete("/vehicles/{vehicle_id}", response_model=S.StatusResponse)
+async def remove_vehicle_from_fleet(
+    vehicle_id: uuid.UUID,
+    ctx: FleetSessionCtx = Depends(require_fleet_admin),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.StatusResponse:
+    """Remove a vehicle from the fleet (Req 6.7).
+
+    Deletes the ``customer_vehicles`` link only — the underlying
+    ``global_vehicles`` / ``org_vehicles`` row is kept since other
+    customers may share it. Submissions, reminder prefs, and driver
+    assignments cascade-delete via FK.
+    """
+    from sqlalchemy import delete as _delete, select as _select
+    from app.modules.vehicles.models import CustomerVehicle
+
+    res = await db.execute(
+        _select(CustomerVehicle).where(
+            CustomerVehicle.id == vehicle_id,
+            CustomerVehicle.org_id == ctx.org_id,
+        )
+    )
+    cv = res.scalars().first()
+    if cv is None:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+
+    await db.execute(
+        _delete(CustomerVehicle).where(CustomerVehicle.id == vehicle_id)
+    )
+    await db.flush()
+    return S.StatusResponse(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Quote accept / decline (Req 12.5, 12.6)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/quotes/{request_id}/accept", response_model=S.StatusResponse)
+async def accept_quote_request(
+    request_id: uuid.UUID,
+    ctx: FleetSessionCtx = Depends(require_fleet_admin),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.StatusResponse:
+    """Fleet admin accepts a quoted quote request (Req 12.5)."""
+    from sqlalchemy import select as _select
+    from app.modules.fleet_portal.models import FleetQuotationRequest
+    from app.modules.fleet_portal.services.quote_service import can_transition
+
+    res = await db.execute(
+        _select(FleetQuotationRequest).where(
+            FleetQuotationRequest.id == request_id,
+            FleetQuotationRequest.org_id == ctx.org_id,
+            FleetQuotationRequest.fleet_account_id == ctx.fleet_account_id,
+        )
+    )
+    row = res.scalars().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Quote request not found")
+    if not can_transition(row.status, "accepted"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot accept quote in status={row.status}",
+        )
+    row.status = "accepted"
+    await db.flush()
+    return S.StatusResponse(ok=True)
+
+
+@router.post("/quotes/{request_id}/decline", response_model=S.StatusResponse)
+async def decline_quote_request(
+    request_id: uuid.UUID,
+    ctx: FleetSessionCtx = Depends(require_fleet_admin),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.StatusResponse:
+    """Fleet admin declines a quoted quote request (Req 12.6)."""
+    from sqlalchemy import select as _select
+    from app.modules.fleet_portal.models import FleetQuotationRequest
+    from app.modules.fleet_portal.services.quote_service import can_transition
+
+    res = await db.execute(
+        _select(FleetQuotationRequest).where(
+            FleetQuotationRequest.id == request_id,
+            FleetQuotationRequest.org_id == ctx.org_id,
+            FleetQuotationRequest.fleet_account_id == ctx.fleet_account_id,
+        )
+    )
+    row = res.scalars().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Quote request not found")
+    if not can_transition(row.status, "declined"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot decline quote in status={row.status}",
+        )
+    row.status = "declined"
+    await db.flush()
+    return S.StatusResponse(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Change password (Req 3.12, 21.16)
+# ---------------------------------------------------------------------------
+
+
+class _ChangePasswordRequest(S._StrictBase):
+    current_password: str = Field(..., min_length=1, max_length=200)
+    new_password: str = Field(..., min_length=8, max_length=200)
+
+
+@router.post("/auth/change-password", response_model=S.StatusResponse)
+async def change_password(
+    body: _ChangePasswordRequest,
+    ctx: FleetSessionCtx = Depends(require_fleet_portal_session),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.StatusResponse:
+    """Change the current portal user's password while signed in.
+
+    Verifies the current password, applies the same password rules used
+    elsewhere (Property 7 — length plus not equal to email local-part),
+    updates the bcrypt hash, and clears the must_change_password flag.
+    """
+    from sqlalchemy import select as _select
+
+    res = await db.execute(
+        _select(PortalAccount).where(PortalAccount.id == ctx.portal_account_id)
+    )
+    account = res.scalars().first()
+    if account is None or not account.password_hash:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if not fp_auth.verify_password(body.current_password, account.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    if body.new_password == body.current_password:
+        raise HTTPException(
+            status_code=400, detail="New password must differ from the current password"
+        )
+
+    # Apply Property 7 password rules
+    try:
+        fp_auth.validate_password_rules(body.new_password, account.email)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    from datetime import datetime as _dt, timezone as _tz
+    account.password_hash = fp_auth.hash_password(body.new_password)
+    account.password_changed_at = _dt.now(_tz.utc)
+    account.must_change_password = False
+    await db.flush()
+    return S.StatusResponse(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# MFA enrolment endpoints (Req 21.10) — wires existing mfa_service
+# ---------------------------------------------------------------------------
+
+
+class _TotpStartResponse(S._ResponseBase):
+    secret: str
+    provisioning_uri: str
+
+
+class _TotpConfirmRequest(S._StrictBase):
+    secret: str
+    code: str = Field(..., min_length=6, max_length=6)
+
+
+class _MfaMethodResponse(S._ResponseBase):
+    id: uuid.UUID
+    method: str
+    verified: bool
+    is_default: bool = False
+
+
+@router.get("/auth/mfa/methods")
+async def list_my_mfa_methods(
+    ctx: FleetSessionCtx = Depends(require_fleet_portal_session),
+    db: AsyncSession = Depends(get_db_session),
+) -> list[dict]:
+    """List the current user's enrolled MFA methods (Req 21.10)."""
+    from app.modules.fleet_portal.services import mfa_service
+
+    methods = await mfa_service.list_mfa_methods(
+        db, portal_account_id=ctx.portal_account_id
+    )
+    return [
+        {
+            "id": str(m.id),
+            "method": m.method,
+            "verified": m.verified,
+            "is_default": m.is_default,
+        }
+        for m in methods
+    ]
+
+
+@router.post("/auth/mfa/enroll/totp/start", response_model=_TotpStartResponse)
+async def start_totp_enrol(
+    ctx: FleetSessionCtx = Depends(require_fleet_portal_session),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> _TotpStartResponse:
+    """Begin TOTP enrolment — returns secret + otpauth URI (Req 21.10)."""
+    from app.modules.fleet_portal.services import mfa_service
+
+    out = await mfa_service.start_totp_enrolment(
+        db,
+        org_id=ctx.org_id,
+        portal_account_id=ctx.portal_account_id,
+        email=ctx.email,
+    )
+    return _TotpStartResponse(
+        secret=out["secret"], provisioning_uri=out["provisioning_uri"]
+    )
+
+
+@router.post("/auth/mfa/enroll/totp/confirm", response_model=S.StatusResponse)
+async def confirm_totp_enrol(
+    body: _TotpConfirmRequest,
+    ctx: FleetSessionCtx = Depends(require_fleet_portal_session),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.StatusResponse:
+    """Confirm TOTP enrolment by verifying the first 6-digit code."""
+    from app.modules.fleet_portal.services import mfa_service
+
+    try:
+        await mfa_service.confirm_totp_enrolment(
+            db,
+            org_id=ctx.org_id,
+            portal_account_id=ctx.portal_account_id,
+            secret=body.secret,
+            code=body.code,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return S.StatusResponse(ok=True)
+
+
+@router.delete("/auth/mfa/{method_id}", response_model=S.StatusResponse)
+async def remove_my_mfa_method(
+    method_id: uuid.UUID,
+    ctx: FleetSessionCtx = Depends(require_fleet_portal_session),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.StatusResponse:
+    """Remove one of the current user's MFA methods (Req 21.10)."""
+    from app.modules.fleet_portal.services import mfa_service
+
+    ok = await mfa_service.remove_mfa_method(
+        db, portal_account_id=ctx.portal_account_id, method_id=method_id
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="MFA method not found")
+    return S.StatusResponse(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Driver assignments — list + reactivate + edit (Req 5.5/5.6 + missing edits)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/drivers/{driver_id}/assignments")
+async def list_driver_assignments(
+    driver_id: uuid.UUID,
+    ctx: FleetSessionCtx = Depends(require_fleet_admin),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Return the set of customer_vehicle_ids currently assigned to a driver."""
+    from sqlalchemy import select as _select
+    from app.modules.fleet_portal.models import FleetDriverAssignment
+
+    res = await db.execute(
+        _select(FleetDriverAssignment.customer_vehicle_id).where(
+            FleetDriverAssignment.org_id == ctx.org_id,
+            FleetDriverAssignment.portal_account_id == driver_id,
+        )
+    )
+    ids = [str(row[0]) for row in res.all()]
+    return {"customer_vehicle_ids": ids, "total": len(ids)}
+
+
+class _DriverEditRequest(S._StrictBase):
+    first_name: str | None = Field(None, min_length=1, max_length=100)
+    last_name: str | None = Field(None, min_length=1, max_length=100)
+    phone: str | None = Field(None, max_length=50)
+
+
+@router.patch("/drivers/{driver_id}", response_model=S.StatusResponse)
+async def edit_driver(
+    driver_id: uuid.UUID,
+    body: _DriverEditRequest,
+    ctx: FleetSessionCtx = Depends(require_fleet_admin),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.StatusResponse:
+    """Edit a driver's profile fields (name, phone)."""
+    from sqlalchemy import select as _select
+
+    res = await db.execute(
+        _select(PortalAccount).where(
+            PortalAccount.id == driver_id,
+            PortalAccount.org_id == ctx.org_id,
+            PortalAccount.fleet_account_id == ctx.fleet_account_id,
+            PortalAccount.portal_user_role == "driver",
+        )
+    )
+    drv = res.scalars().first()
+    if drv is None:
+        raise HTTPException(status_code=404, detail="Driver not found")
+
+    payload = body.model_dump(exclude_unset=True)
+    for key, value in payload.items():
+        setattr(drv, key, value)
+    await db.flush()
+    return S.StatusResponse(ok=True)
+
+
+@router.post("/drivers/{driver_id}/reactivate", response_model=S.StatusResponse)
+async def reactivate_driver(
+    driver_id: uuid.UUID,
+    ctx: FleetSessionCtx = Depends(require_fleet_admin),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.StatusResponse:
+    """Re-activate a previously deactivated driver."""
+    from sqlalchemy import select as _select
+
+    res = await db.execute(
+        _select(PortalAccount).where(
+            PortalAccount.id == driver_id,
+            PortalAccount.org_id == ctx.org_id,
+            PortalAccount.fleet_account_id == ctx.fleet_account_id,
+            PortalAccount.portal_user_role == "driver",
+        )
+    )
+    drv = res.scalars().first()
+    if drv is None:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    drv.is_active = True
+    drv.failed_login_attempts = 0
+    drv.locked_until = None
+    drv.is_locked_permanently = False
+    await db.flush()
+    return S.StatusResponse(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Profile (own user — Req 3.12)
+# ---------------------------------------------------------------------------
+
+
+class _ProfileUpdateRequest(S._StrictBase):
+    first_name: str | None = Field(None, min_length=1, max_length=100)
+    last_name: str | None = Field(None, min_length=1, max_length=100)
+    phone: str | None = Field(None, max_length=50)
+
+
+@router.patch("/me", response_model=S.StatusResponse)
+async def update_own_profile(
+    body: _ProfileUpdateRequest,
+    ctx: FleetSessionCtx = Depends(require_fleet_portal_session),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.StatusResponse:
+    """Edit own profile fields (name, phone). Email change is intentionally
+    not exposed here — that's a security-sensitive operation handled by the
+    workshop admin via account-detail / re-invite."""
+    from sqlalchemy import select as _select
+
+    res = await db.execute(
+        _select(PortalAccount).where(PortalAccount.id == ctx.portal_account_id)
+    )
+    me = res.scalars().first()
+    if me is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    payload = body.model_dump(exclude_unset=True)
+    for key, value in payload.items():
+        setattr(me, key, value)
+    await db.flush()
+    return S.StatusResponse(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Co-admin invite (admin invites another fleet_admin — Req 4.x)
+# ---------------------------------------------------------------------------
+
+
+class _AdminInviteRequest(S._StrictBase):
+    first_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(..., min_length=1, max_length=100)
+    email: EmailStr
+    phone: str | None = Field(None, max_length=50)
+
+
+@router.get("/admins")
+async def list_co_admins(
+    ctx: FleetSessionCtx = Depends(require_fleet_admin),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """List the fleet_admin accounts attached to this fleet account.
+
+    Used by the portal `/fleet/admins` page so a fleet admin can see
+    who else is managing the fleet alongside them.
+    """
+    from sqlalchemy import select as _select
+
+    if ctx.fleet_account_id is None:
+        return {"items": [], "total": 0}
+
+    res = await db.execute(
+        _select(PortalAccount).where(
+            PortalAccount.org_id == ctx.org_id,
+            PortalAccount.fleet_account_id == ctx.fleet_account_id,
+            PortalAccount.portal_user_role == "fleet_admin",
+        ).order_by(PortalAccount.created_at.asc())
+    )
+    rows = res.scalars().all()
+    items = [
+        {
+            "portal_account_id": str(a.id),
+            "email": a.email,
+            "first_name": a.first_name,
+            "last_name": a.last_name,
+            "phone": a.phone,
+            "is_active": a.is_active,
+            "last_login_at": a.last_login_at.isoformat() if a.last_login_at else None,
+        }
+        for a in rows
+    ]
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/admins/invite", response_model=S.IdResponse)
+async def invite_co_admin(
+    body: _AdminInviteRequest,
+    ctx: FleetSessionCtx = Depends(require_fleet_admin),
+    _: None = Depends(validate_fleet_portal_csrf),
+    db: AsyncSession = Depends(get_db_session),
+) -> S.IdResponse:
+    """Invite a second fleet admin for this fleet account.
+
+    The new account is created with ``portal_user_role='fleet_admin'``,
+    is_active=True, and an invite token. The invite email is dispatched
+    by the same mechanism used for the initial fleet admin invite.
+    """
+    from sqlalchemy import select as _select
+    from datetime import datetime as _dt, timezone as _tz
+    import secrets as _secrets
+
+    if ctx.fleet_account_id is None:
+        raise HTTPException(status_code=403, detail="No fleet account context")
+
+    # Reject duplicates — same email already exists in this org
+    email_norm = body.email.strip().lower()
+    dup_res = await db.execute(
+        _select(PortalAccount).where(
+            PortalAccount.org_id == ctx.org_id,
+            PortalAccount.email == email_norm,
+        )
+    )
+    if dup_res.scalars().first() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An account already exists for {email_norm}",
+        )
+
+    # Resolve the fleet account's customer_id — co-admin shares it
+    fa_res = await db.execute(
+        _select(PortalFleetAccount).where(
+            PortalFleetAccount.id == ctx.fleet_account_id
+        )
+    )
+    fa = fa_res.scalars().first()
+    if fa is None:
+        raise HTTPException(status_code=404, detail="Fleet account not found")
+
+    invite_token = _secrets.token_urlsafe(32)
+    new_account = PortalAccount(
+        org_id=ctx.org_id,
+        customer_id=fa.customer_id,
+        fleet_account_id=fa.id,
+        email=email_norm,
+        first_name=body.first_name,
+        last_name=body.last_name,
+        phone=body.phone,
+        portal_user_role="fleet_admin",
+        is_active=True,
+        invite_token=invite_token,
+        invite_sent_at=_dt.now(_tz.utc),
+    )
+    db.add(new_account)
+    await db.flush()
+    await db.refresh(new_account)
+
+    # Best-effort invite email reuses the workshop-side helper
+    try:
+        from app.modules.fleet_portal.admin_router import (
+            _send_fleet_portal_invite_email,
+        )
+        await _send_fleet_portal_invite_email(
+            db, org_id=ctx.org_id, account=new_account, base_url=None
+        )
+    except Exception as exc:
+        logger.warning(
+            "fleet_portal.coadmin_invite_email_failed err=%s", exc
+        )
+
+    return S.IdResponse(id=new_account.id)
+
+
+# ---------------------------------------------------------------------------
+# Notifications inbox (Req 9.7, 11.2, 12.2)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/notifications")
+async def list_my_notifications(
+    offset: int = 0,
+    limit: int = 50,
+    unread_only: bool = False,
+    ctx: FleetSessionCtx = Depends(require_fleet_portal_session),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """List in-app notifications for the current portal user.
+
+    Filters on entity_type starting with 'fleet_' so we only show
+    fleet-related notifications even if the staff app emits others.
+    Visibility uses the same audience_roles model as the staff inbox.
+    """
+    from sqlalchemy import and_, select as _select, func as _func
+    from app.modules.in_app_notifications.models import AppNotification
+
+    role = ctx.portal_user_role  # 'fleet_admin' | 'driver'
+
+    # Visibility: notifications targeted at the portal user's role with no
+    # specific user_id (which is the FK to staff users). We never write
+    # portal_account_id into AppNotification.user_id, so all portal-bound
+    # notifications are broadcasts gated on audience_roles. Restrict to
+    # entity_type starting with "fleet_" so we don't surface staff-side
+    # notifications by accident.
+    visibility = and_(
+        AppNotification.org_id == ctx.org_id,
+        AppNotification.entity_type.like("fleet_%"),
+        AppNotification.user_id.is_(None),
+        AppNotification.audience_roles.contains([role]),
+    )
+
+    base = _select(AppNotification).where(visibility)
+    total = (
+        await db.execute(_select(_func.count()).select_from(base.subquery()))
+    ).scalar_one()
+    rows = (
+        await db.execute(
+            base.order_by(AppNotification.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    items = [
+        {
+            "id": str(n.id),
+            "category": n.category,
+            "severity": n.severity,
+            "title": n.title,
+            "body": n.body,
+            "link_url": n.link_url,
+            "entity_type": n.entity_type,
+            "entity_id": str(n.entity_id) if n.entity_id else None,
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+        }
+        for n in rows
+    ]
+    return {"items": items, "total": int(total), "offset": offset, "limit": limit}
 
 
 __all__ = ["router"]

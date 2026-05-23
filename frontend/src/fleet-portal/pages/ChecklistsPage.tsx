@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import { fleetClient } from '../api/client'
 import { listVehicles } from '../api/endpoints'
@@ -14,6 +14,7 @@ import { useFleetSession } from '../contexts/FleetSessionContext'
 
 export default function ChecklistsPage() {
   const { user } = useFleetSession()
+  const navigate = useNavigate()
   const isAdmin = user?.portal_user_role === 'fleet_admin'
   const [tab, setTab] = useState<'submissions' | 'templates'>('submissions')
   const [templates, setTemplates] = useState<ChecklistTemplate[]>([])
@@ -44,9 +45,15 @@ export default function ChecklistsPage() {
     setStartingFor(vehicleId)
     setMsg(null)
     try {
-      await fleetClient.post('/checklists/start', { customer_vehicle_id: vehicleId })
-      setMsg({ type: 'ok', text: 'Checklist started! Complete it from the submission list.' })
-      await fetchData()
+      const res = await fleetClient.post<{ id: string }>('/checklists/start', { customer_vehicle_id: vehicleId })
+      const newId = res.data?.id
+      if (newId) {
+        // Navigate straight to the submission so the user can fill it in
+        navigate(`/fleet/checklists/${newId}`)
+      } else {
+        setMsg({ type: 'ok', text: 'Checklist started.' })
+        await fetchData()
+      }
     } catch (err: unknown) {
       setMsg({ type: 'err', text: (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to start checklist.' })
     } finally { setStartingFor(null) }

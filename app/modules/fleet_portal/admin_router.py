@@ -337,6 +337,83 @@ async def accept_booking(
     row.status = "accepted"
     await db.flush()
     await db.refresh(row)
+
+    # Create a draft Booking row linked to the request (Req 11.4)
+    try:
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        from app.modules.bookings.models import Booking
+        from app.modules.fleet_portal.models import PortalAccount
+
+        # Resolve refined date_time — fall back to preferred_date noon if missing/invalid
+        refined: _dt | None = None
+        raw = body.refined_date_time
+        if raw:
+            try:
+                refined = _dt.fromisoformat(raw.replace("Z", "+00:00"))
+                if refined.tzinfo is None:
+                    refined = refined.replace(tzinfo=_tz.utc)
+            except (ValueError, AttributeError):
+                refined = None
+        if refined is None:
+            refined = _dt.combine(
+                row.preferred_date, _dt.min.time().replace(hour=12)
+            ).replace(tzinfo=_tz.utc)
+        end = refined + _td(hours=1)
+
+        # Resolve requester for customer_name
+        name_res = await db.execute(
+            select(PortalAccount).where(
+                PortalAccount.id == row.requested_by_portal_account_id,
+            )
+        )
+        req_account = name_res.scalars().first()
+        customer_name = (
+            f"{req_account.first_name or ''} {req_account.last_name or ''}".strip()
+            if req_account is not None else ""
+        ) or (req_account.email if req_account is not None else "Fleet customer")
+
+        rego = await _resolve_vehicle_rego(db, row.customer_vehicle_id)
+        booking = Booking(
+            org_id=org_id,
+            customer_name=customer_name,
+            customer_email=req_account.email if req_account is not None else None,
+            customer_phone=req_account.phone if req_account is not None else None,
+            vehicle_rego=rego,
+            service_type=(row.service_description or "")[:255],
+            start_time=refined,
+            end_time=end,
+            status="pending",
+            notes=row.notes,
+        )
+        db.add(booking)
+        await db.flush()
+        await db.refresh(booking)
+        row.booking_id = booking.id
+        await db.flush()
+    except Exception as exc:
+        logger.warning(
+            "fleet_portal.accept_booking.draft_create_failed err=%s", exc
+        )
+        # Don't fail the click; status is already 'accepted' and the
+        # admin can create a booking manually if needed.
+
+    # Notify the fleet portal users about the acceptance
+    try:
+        from app.modules.in_app_notifications.service import create_in_app_notification
+        await create_in_app_notification(
+            db,
+            org_id=org_id,
+            category="fleet_booking_accepted",
+            severity="success",
+            title="Service booking accepted",
+            body=f"Your booking for {row.preferred_date.isoformat()} has been accepted.",
+            link_url="/fleet/bookings",
+            entity_type="fleet_service_booking_request",
+            entity_id=row.id,
+            audience_roles=["fleet_admin", "driver"],
+        )
+    except Exception:
+        pass
     return S.StatusResponse(ok=True)
 
 
@@ -372,6 +449,24 @@ async def decline_booking(
     row.decline_reason = body.decline_reason
     await db.flush()
     await db.refresh(row)
+
+    # Notify the fleet portal users about the decline
+    try:
+        from app.modules.in_app_notifications.service import create_in_app_notification
+        await create_in_app_notification(
+            db,
+            org_id=org_id,
+            category="fleet_booking_declined",
+            severity="warning",
+            title="Service booking declined",
+            body=f"Your booking for {row.preferred_date.isoformat()} was declined: {body.decline_reason[:200]}",
+            link_url="/fleet/bookings",
+            entity_type="fleet_service_booking_request",
+            entity_id=row.id,
+            audience_roles=["fleet_admin", "driver"],
+        )
+    except Exception:
+        pass
     return S.StatusResponse(ok=True)
 
 
@@ -472,6 +567,24 @@ async def link_quote(
     row.status = "quoted"
     await db.flush()
     await db.refresh(row)
+
+    # Notify the fleet portal users that a quote is ready
+    try:
+        from app.modules.in_app_notifications.service import create_in_app_notification
+        await create_in_app_notification(
+            db,
+            org_id=org_id,
+            category="fleet_quote_ready",
+            severity="info",
+            title="Quote ready",
+            body=f"Your quote request '{(row.service_description or '')[:80]}' is ready.",
+            link_url="/fleet/quotes",
+            entity_type="fleet_quotation_request",
+            entity_id=row.id,
+            audience_roles=["fleet_admin"],
+        )
+    except Exception:
+        pass
     return S.StatusResponse(ok=True)
 
 
@@ -550,6 +663,82 @@ async def admin_summary(
         recent_failures=int(recent_failures),
         fleet_accounts=int(fleet_accounts),
     )
+
+
+# ---------------------------------------------------------------------------
+# Admin Checklist Failures Feed (Req 16.7)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/checklist-failures",
+    dependencies=[require_org_admin()],
+)
+async def list_checklist_failures(
+    offset: int = 0,
+    limit: int = 50,
+    days: int = 30,
+    request: Request = None,  # type: ignore[assignment]
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """List recent checklist submissions with failed items (Req 16.7)."""
+    from sqlalchemy import func as _func
+    from datetime import datetime, timedelta, timezone
+    from app.modules.fleet_portal.models import (
+        FleetChecklistSubmission,
+        PortalFleetAccount as _PFA,
+    )
+
+    org_id = _org_id_from_request(request)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, min(365, days)))
+
+    base = select(FleetChecklistSubmission).where(
+        FleetChecklistSubmission.org_id == org_id,
+        FleetChecklistSubmission.status == "completed",
+        FleetChecklistSubmission.failed_item_count > 0,
+        FleetChecklistSubmission.completed_at >= cutoff,
+    )
+    total = (
+        await db.execute(select(_func.count()).select_from(base.subquery()))
+    ).scalar_one()
+    rows = (
+        await db.execute(
+            base.order_by(FleetChecklistSubmission.completed_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    items: list[dict] = []
+    for s in rows:
+        rego = await _resolve_vehicle_rego(db, s.customer_vehicle_id)
+        driver_name = await _resolve_portal_account_name(db, s.portal_account_id)
+        fa_res = await db.execute(
+            select(_PFA.display_name).where(_PFA.id == s.fleet_account_id)
+        )
+        fa_row = fa_res.first()
+        items.append(
+            {
+                "submission_id": str(s.id),
+                "fleet_account_id": str(s.fleet_account_id),
+                "fleet_account_name": fa_row[0] if fa_row else None,
+                "rego": rego,
+                "driver_name": driver_name,
+                "failed_item_count": s.failed_item_count or 0,
+                "passed_item_count": s.passed_item_count or 0,
+                "na_item_count": s.na_item_count or 0,
+                "completed_at": (
+                    s.completed_at.isoformat() if s.completed_at else None
+                ),
+            }
+        )
+
+    return {
+        "items": items,
+        "total": int(total),
+        "offset": offset,
+        "limit": limit,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -930,17 +1119,33 @@ async def _resolve_portal_account_name(
 async def _resolve_vehicle_rego(
     db: AsyncSession, customer_vehicle_id: uuid.UUID | None
 ) -> str | None:
-    """Resolve a customer vehicle ID to its rego."""
+    """Resolve a customer vehicle ID to its rego.
+
+    Reads from the global_vehicles or org_vehicles row that the link
+    points at — CustomerVehicle itself doesn't carry a rego column.
+    """
     if customer_vehicle_id is None:
         return None
-    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
+    from app.modules.admin.models import GlobalVehicle
+
     res = await db.execute(
-        select(CustomerVehicle.registration).where(
-            CustomerVehicle.id == customer_vehicle_id
-        )
+        select(CustomerVehicle).where(CustomerVehicle.id == customer_vehicle_id)
     )
-    row = res.first()
-    return row[0] if row else None
+    cv = res.scalars().first()
+    if cv is None:
+        return None
+    if cv.global_vehicle_id is not None:
+        gv = (await db.execute(
+            select(GlobalVehicle.rego).where(GlobalVehicle.id == cv.global_vehicle_id)
+        )).first()
+        return gv[0] if gv else None
+    if cv.org_vehicle_id is not None:
+        ov = (await db.execute(
+            select(OrgVehicle.rego).where(OrgVehicle.id == cv.org_vehicle_id)
+        )).first()
+        return ov[0] if ov else None
+    return None
 
 
 async def _send_fleet_portal_invite_email(

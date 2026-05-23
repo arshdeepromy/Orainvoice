@@ -204,6 +204,8 @@ const FleetPortalAdminBookings = lazy(() => import('@/fleet-portal-admin/pages/B
 const FleetPortalAdminQuotes = lazy(() => import('@/fleet-portal-admin/pages/QuoteQueue'))
 const FleetPortalAdminAccountDetail = lazy(() => import('@/fleet-portal-admin/pages/AccountDetail'))
 const FleetPortalAdminSecuritySettings = lazy(() => import('@/fleet-portal-admin/pages/SecuritySettings'))
+const FleetPortalAdminAccountsList = lazy(() => import('@/fleet-portal-admin/pages/AccountsList'))
+const FleetPortalAdminFailures = lazy(() => import('@/fleet-portal-admin/pages/ChecklistFailures'))
 
 function LazyFallback() {
   return (
@@ -518,7 +520,9 @@ function AppRoutes() {
             <Route path="/fleet-portal-admin" element={<SafePage name="fleet-portal-admin"><ModuleRoute moduleSlug="b2b-fleet-management"><FleetPortalAdmin /></ModuleRoute></SafePage>} />
             <Route path="/fleet-portal-admin/bookings" element={<SafePage name="fleet-portal-admin-bookings"><ModuleRoute moduleSlug="b2b-fleet-management"><FleetPortalAdminBookings /></ModuleRoute></SafePage>} />
             <Route path="/fleet-portal-admin/quotes" element={<SafePage name="fleet-portal-admin-quotes"><ModuleRoute moduleSlug="b2b-fleet-management"><FleetPortalAdminQuotes /></ModuleRoute></SafePage>} />
+            <Route path="/fleet-portal-admin/accounts" element={<SafePage name="fleet-portal-admin-accounts"><ModuleRoute moduleSlug="b2b-fleet-management"><FleetPortalAdminAccountsList /></ModuleRoute></SafePage>} />
             <Route path="/fleet-portal-admin/accounts/:accountId" element={<SafePage name="fleet-portal-admin-account"><ModuleRoute moduleSlug="b2b-fleet-management"><FleetPortalAdminAccountDetail /></ModuleRoute></SafePage>} />
+            <Route path="/fleet-portal-admin/checklist-failures" element={<SafePage name="fleet-portal-admin-failures"><ModuleRoute moduleSlug="b2b-fleet-management"><FleetPortalAdminFailures /></ModuleRoute></SafePage>} />
             <Route path="/fleet-portal-admin/settings" element={<SafePage name="fleet-portal-admin-settings"><ModuleRoute moduleSlug="b2b-fleet-management"><FleetPortalAdminSecuritySettings /></ModuleRoute></SafePage>} />
           </Route>
 

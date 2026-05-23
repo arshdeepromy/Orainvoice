@@ -73,7 +73,15 @@ export default function VehicleDetail() {
         {isAdmin && (
           <button onClick={async () => {
             if (!confirm(`Remove ${vehicle.rego} from your fleet? This does not delete the vehicle record.`)) return
-            try { await fleetClient.delete(`/vehicles/${vehicleId}`); window.location.href = '/fleet/vehicles' } catch {}
+            try {
+              await fleetClient.delete(`/vehicles/${vehicleId}`)
+              window.location.href = '/fleet/vehicles'
+            } catch (err: unknown) {
+              const detail =
+                (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+                'Failed to remove vehicle.'
+              alert(detail)
+            }
           }} className="rounded-md border border-red-300 px-3 py-2 text-xs font-medium text-red-700 min-h-[44px] hover:bg-red-50 dark:border-red-800 dark:text-red-400">
             Remove from fleet
           </button>
@@ -112,6 +120,11 @@ export default function VehicleDetail() {
         <OdometerForm vehicleId={vehicleId!} currentMax={vehicle.odometer_last_recorded ?? 0} onSuccess={fetchVehicle} />
         <HoursForm vehicleId={vehicleId!} onSuccess={() => {}} />
       </div>
+
+      {/* Editable fields (admin only) */}
+      {isAdmin && (
+        <EditVehicleForm vehicleId={vehicleId!} vehicle={vehicle} onSaved={fetchVehicle} />
+      )}
     </div>
   )
 }
@@ -234,6 +247,123 @@ function HoursForm({ vehicleId, onSuccess }: { vehicleId: string; onSuccess: () 
         </button>
       </form>
       {msg && <p className={`mt-2 text-xs ${msg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</p>}
+    </div>
+  )
+}
+
+
+function EditVehicleForm({
+  vehicleId,
+  vehicle,
+  onSaved,
+}: {
+  vehicleId: string
+  vehicle: VehicleDetailType
+  onSaved: () => void
+}) {
+  const [colour, setColour] = useState(vehicle.colour ?? '')
+  const [notes, setNotes] = useState(vehicle.notes ?? '')
+  const [wofExpiry, setWofExpiry] = useState(vehicle.wof_expiry ?? '')
+  const [cofExpiry, setCofExpiry] = useState(vehicle.cof_expiry ?? '')
+  const [serviceDue, setServiceDue] = useState(vehicle.service_due_date ?? '')
+  const [submitting, setSubmitting] = useState(false)
+  const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    setSubmitting(true)
+    setMsg(null)
+    try {
+      const body: Record<string, unknown> = {}
+      if (colour !== (vehicle.colour ?? '')) body.colour = colour || null
+      if (notes !== (vehicle.notes ?? '')) body.notes = notes || null
+      if (wofExpiry !== (vehicle.wof_expiry ?? '')) body.wof_expiry = wofExpiry || null
+      if (cofExpiry !== (vehicle.cof_expiry ?? '')) body.cof_expiry = cofExpiry || null
+      if (serviceDue !== (vehicle.service_due_date ?? '')) body.service_due_date = serviceDue || null
+
+      if (Object.keys(body).length === 0) {
+        setMsg({ type: 'ok', text: 'No changes to save.' })
+        setSubmitting(false)
+        return
+      }
+
+      await fleetClient.patch(`/vehicles/${vehicleId}`, body)
+      setMsg({ type: 'ok', text: 'Vehicle updated.' })
+      onSaved()
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+        'Failed to update vehicle.'
+      setMsg({ type: 'err', text: detail })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-950">
+      <h3 className="text-sm font-medium mb-3">Edit Vehicle</h3>
+      {msg && (
+        <p className={`mb-2 text-xs ${msg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>
+          {msg.text}
+        </p>
+      )}
+      <form onSubmit={handleSubmit} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Colour</label>
+          <input
+            type="text"
+            value={colour}
+            onChange={(e) => setColour(e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm min-h-[44px] dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Service due</label>
+          <input
+            type="date"
+            value={serviceDue}
+            onChange={(e) => setServiceDue(e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm min-h-[44px] dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">WOF expiry</label>
+          <input
+            type="date"
+            value={wofExpiry}
+            onChange={(e) => setWofExpiry(e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm min-h-[44px] dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">COF expiry</label>
+          <input
+            type="date"
+            value={cofExpiry}
+            onChange={(e) => setCofExpiry(e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm min-h-[44px] dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <label className="block text-xs text-gray-500 mb-1">Notes</label>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={2}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <button
+            type="submit"
+            disabled={submitting}
+            className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white min-h-[44px] hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {submitting ? 'Saving…' : 'Save changes'}
+          </button>
+        </div>
+      </form>
     </div>
   )
 }

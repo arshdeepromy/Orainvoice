@@ -279,7 +279,7 @@ export function InvoicesPage() {
 }
 
 export function SecurityPage() {
-  const { user, logout } = useFleetSession()
+  const { user, logout, refresh } = useFleetSession()
   const [currentPw, setCurrentPw] = useState('')
   const [newPw, setNewPw] = useState('')
   const [confirmPw, setConfirmPw] = useState('')
@@ -290,13 +290,21 @@ export function SecurityPage() {
     e.preventDefault()
     if (newPw.length < 8) { setPwMsg({ type: 'err', text: 'Password must be at least 8 characters.' }); return }
     if (newPw !== confirmPw) { setPwMsg({ type: 'err', text: 'Passwords do not match.' }); return }
+    if (newPw === currentPw) { setPwMsg({ type: 'err', text: 'New password must differ from the current password.' }); return }
     setSubmitting(true); setPwMsg(null)
     try {
-      // The change-password endpoint would be POST /fleet/api/auth/change-password
-      // For now, we use the reset flow as a workaround
-      setPwMsg({ type: 'ok', text: 'Password change functionality will be available in the next update. Use "Forgot password" from the login page to reset.' })
+      await fleetClient.post('/auth/change-password', {
+        current_password: currentPw,
+        new_password: newPw,
+      })
+      setPwMsg({ type: 'ok', text: 'Password updated.' })
+      setCurrentPw(''); setNewPw(''); setConfirmPw('')
+      await refresh()
     } catch (err: unknown) {
-      setPwMsg({ type: 'err', text: 'Failed to change password.' })
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+        'Failed to change password.'
+      setPwMsg({ type: 'err', text: detail })
     } finally { setSubmitting(false) }
   }
 
@@ -339,24 +347,20 @@ export function SecurityPage() {
         <MfaSection />
       </div>
 
-      {/* Active sessions */}
+      {/* Active session */}
       <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-950">
-        <h2 className="text-sm font-medium text-gray-900 dark:text-white mb-2">Active Sessions</h2>
-        <p className="text-xs text-gray-500 mb-3">You are currently signed in. Sign out of all sessions to secure your account.</p>
+        <h2 className="text-sm font-medium text-gray-900 dark:text-white mb-2">Active Session</h2>
+        <p className="text-xs text-gray-500 mb-3">You are currently signed in. Sign out to end this session.</p>
         <button onClick={() => { void logout() }}
           className="rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 min-h-[44px] hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/20">
-          Sign out everywhere
+          Sign out
         </button>
       </div>
 
       {/* Check for updates (Req 22.4) */}
       <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-950">
         <h2 className="text-sm font-medium text-gray-900 dark:text-white mb-2">App Version</h2>
-        <p className="text-xs text-gray-500 mb-3">Check if a newer version of the portal is available.</p>
-        <button onClick={() => window.location.reload()}
-          className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 min-h-[44px] hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">
-          Check for updates
-        </button>
+        <CheckForUpdatesPanel />
       </div>
     </div>
   )
@@ -488,6 +492,66 @@ function MfaSection() {
       {(methods ?? []).length === 0 && !enrolling && (
         <p className="text-xs text-gray-400">No MFA methods enrolled. We recommend setting up an authenticator app for added security.</p>
       )}
+    </div>
+  )
+}
+
+
+/* --- App version check panel --- */
+
+import { useVersionCheck } from '../hooks/useVersionCheck'
+
+function CheckForUpdatesPanel() {
+  const { currentVersion, latestVersion, updateAvailable, checkNow } = useVersionCheck()
+  const [checking, setChecking] = useState(false)
+  const [lastChecked, setLastChecked] = useState<string | null>(null)
+
+  const handleCheck = async () => {
+    setChecking(true)
+    try {
+      await checkNow()
+      setLastChecked(new Date().toLocaleTimeString())
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-gray-500">
+        Current build:&nbsp;
+        <code className="rounded bg-gray-100 px-1 py-0.5 text-xs dark:bg-gray-800">
+          {currentVersion}
+        </code>
+        {latestVersion && latestVersion !== currentVersion ? (
+          <>
+            {' '}· Server:&nbsp;
+            <code className="rounded bg-gray-100 px-1 py-0.5 text-xs dark:bg-gray-800">
+              {latestVersion}
+            </code>
+          </>
+        ) : null}
+      </p>
+      <div className="flex gap-2">
+        <button
+          onClick={handleCheck}
+          disabled={checking}
+          className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 min-h-[44px] hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+        >
+          {checking ? 'Checking…' : 'Check for updates'}
+        </button>
+        {updateAvailable ? (
+          <button
+            onClick={() => window.location.reload()}
+            className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white min-h-[44px] hover:bg-blue-700"
+          >
+            Reload to update
+          </button>
+        ) : null}
+      </div>
+      {lastChecked ? (
+        <p className="text-xs text-gray-400">Last checked at {lastChecked}</p>
+      ) : null}
     </div>
   )
 }

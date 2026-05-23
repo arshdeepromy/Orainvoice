@@ -30,6 +30,9 @@ import ChecklistsPage from './pages/ChecklistsPage'
 import ChecklistSubmit from './pages/ChecklistSubmit'
 import DriverDetail from './pages/DriverDetail'
 import KioskChecklist from './pages/KioskChecklist'
+import NotificationsPage from './pages/NotificationsPage'
+import ProfilePage from './pages/ProfilePage'
+import AdminsPage from './pages/AdminsPage'
 import {
   InvoicesPage,
   SecurityPage,
@@ -71,11 +74,14 @@ export function FleetPortalRouter() {
               <Route path="/fleet/checklists/:submissionId" element={<ChecklistSubmit />} />
               <Route path="/fleet/bookings" element={<BookingsPage />} />
               <Route path="/fleet/security" element={<SecurityPage />} />
+              <Route path="/fleet/profile" element={<ProfilePage />} />
+              <Route path="/fleet/notifications" element={<NotificationsPage />} />
             </Route>
             {/* Admin-only screens render placeholders for now; the
                 backend role gate enforces 403 on the API side either way. */}
             <Route path="/fleet/drivers" element={<DriversPage />} />
             <Route path="/fleet/drivers/:driverId" element={<DriverDetail />} />
+            <Route path="/fleet/admins" element={<AdminsPage />} />
             <Route path="/fleet/quotes" element={<QuotesPage />} />
             <Route path="/fleet/invoices" element={<InvoicesPage />} />
             <Route path="/fleet/reminders" element={<RemindersPage />} />

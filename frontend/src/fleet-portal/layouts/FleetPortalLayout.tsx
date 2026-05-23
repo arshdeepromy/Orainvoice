@@ -7,9 +7,10 @@
  *
  * Implements: B2B Fleet Portal task 14.1 — Requirements 2.2, 19.8.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 
+import { fleetClient } from '../api/client'
 import { useFleetSession } from '../contexts/FleetSessionContext'
 import { useVersionCheck } from '../hooks/useVersionCheck'
 
@@ -25,10 +26,13 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/fleet/vehicles', label: 'Vehicles' },
   { to: '/fleet/checklists', label: 'Checklists' },
   { to: '/fleet/drivers', label: 'Drivers', adminOnly: true },
+  { to: '/fleet/admins', label: 'Admins', adminOnly: true },
   { to: '/fleet/bookings', label: 'Bookings' },
   { to: '/fleet/quotes', label: 'Quotes', adminOnly: true },
   { to: '/fleet/invoices', label: 'Invoices', adminOnly: true },
   { to: '/fleet/reminders', label: 'Reminders', adminOnly: true },
+  { to: '/fleet/notifications', label: 'Notifications' },
+  { to: '/fleet/profile', label: 'My Profile' },
   { to: '/fleet/security', label: 'Security' },
 ]
 
@@ -42,7 +46,15 @@ export function FleetPortalLayout() {
   )
 
   return (
-    <div className="flex min-h-screen bg-gray-50 dark:bg-gray-900" style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)', paddingLeft: 'env(safe-area-inset-left)', paddingRight: 'env(safe-area-inset-right)' }}>
+    <div
+      className="flex min-h-screen bg-gray-50 dark:bg-gray-900"
+      style={{
+        paddingTop: 'env(safe-area-inset-top)',
+        paddingBottom: 'env(safe-area-inset-bottom)',
+        paddingLeft: 'env(safe-area-inset-left)',
+        paddingRight: 'env(safe-area-inset-right)',
+      }}
+    >
       {/* Sidebar */}
       <aside className="hidden w-64 flex-shrink-0 border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950 md:flex md:flex-col">
         <div className="px-4 py-6">
@@ -55,30 +67,31 @@ export function FleetPortalLayout() {
             </div>
           ) : null}
         </div>
-        <nav className="flex-1 space-y-1 px-2">
+        <nav className="flex-1 space-y-1 px-2 overflow-y-auto">
           {visibleItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               className={({ isActive }) =>
-                'block rounded-md px-3 py-2 text-sm font-medium min-h-[44px] flex items-center ' +
+                'block rounded-md px-3 py-2 text-sm font-medium min-h-[44px] flex items-center justify-between ' +
                 (isActive
                   ? 'bg-brand-100 text-brand-900 dark:bg-brand-900/40 dark:text-brand-200'
                   : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800')
               }
             >
-              {item.label}
+              <span>{item.label}</span>
+              {item.to === '/fleet/notifications' ? <UnreadBadge /> : null}
             </NavLink>
           ))}
         </nav>
         <div className="px-4 py-4 border-t border-gray-200 dark:border-gray-800">
-          <div className="text-xs text-gray-600 dark:text-gray-400 mb-1">{user?.email}</div>
+          <div className="text-xs text-gray-600 dark:text-gray-400 mb-1 truncate" title={user?.email ?? ''}>
+            {user?.email}
+          </div>
           <button
             type="button"
             className="w-full text-left text-sm text-red-600 hover:text-red-800 dark:text-red-400 min-h-[44px]"
-            onClick={() => {
-              void logout()
-            }}
+            onClick={() => { void logout() }}
           >
             Sign out
           </button>
@@ -104,7 +117,6 @@ export function FleetPortalLayout() {
             )}
           </button>
         </header>
-        {/* Mobile slide-out menu */}
         {mobileMenuOpen && (
           <nav className="border-b border-gray-200 bg-white px-4 py-2 md:hidden dark:border-gray-800 dark:bg-gray-950">
             {visibleItems.map((item) => (
@@ -144,9 +156,7 @@ function VersionToast() {
   if (!updateAvailable) return null
   return (
     <div className="mb-4 flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm dark:border-blue-900 dark:bg-blue-950/30">
-      <span className="text-blue-800 dark:text-blue-200">
-        A new version is available.
-      </span>
+      <span className="text-blue-800 dark:text-blue-200">A new version is available.</span>
       <div className="flex items-center gap-2">
         <button
           onClick={() => window.location.reload()}
@@ -162,5 +172,37 @@ function VersionToast() {
         </button>
       </div>
     </div>
+  )
+}
+
+/** Small unread-count chip rendered next to the Notifications nav item. */
+function UnreadBadge() {
+  const [count, setCount] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const res = await fleetClient.get<{ total: number }>('/notifications', {
+          params: { limit: 1 },
+        })
+        if (!cancelled) setCount(res.data?.total ?? 0)
+      } catch {
+        // Silent — badge is best-effort
+      }
+    }
+    void refresh()
+    const handle = window.setInterval(refresh, 60_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(handle)
+    }
+  }, [])
+
+  if (!count) return null
+  return (
+    <span className="ml-2 inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white">
+      {count > 99 ? '99+' : count}
+    </span>
   )
 }

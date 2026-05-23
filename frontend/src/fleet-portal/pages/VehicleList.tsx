@@ -63,11 +63,19 @@ export default function VehicleList() {
 
   if ((items ?? []).length === 0) {
     return (
-      <div className="rounded-lg border border-dashed border-gray-300 p-8 text-center dark:border-gray-700">
-        <h2 className="text-lg font-semibold mb-2">No vehicles</h2>
-        <p className="text-sm text-gray-500">
-          Vehicles linked to your fleet will appear here.
-        </p>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-semibold">Vehicles</h1>
+          {isAdmin && <AddVehicleButton onAdded={fetchVehicles} />}
+        </div>
+        <div className="rounded-lg border border-dashed border-gray-300 p-8 text-center dark:border-gray-700">
+          <h2 className="text-lg font-semibold mb-2">No vehicles</h2>
+          <p className="text-sm text-gray-500">
+            {isAdmin
+              ? 'Add your first vehicle to get started.'
+              : 'Vehicles linked to your fleet will appear here.'}
+          </p>
+        </div>
       </div>
     )
   }

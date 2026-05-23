@@ -4,6 +4,7 @@
  * Implements: B2B Fleet Portal — Requirements 5.5, 5.6, 14.1–14.5.
  */
 import { useEffect, useState } from 'react'
+import type { FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { fleetClient } from '../api/client'
@@ -33,16 +34,17 @@ export default function DriverDetail() {
   const fetchData = async () => {
     if (!driverId) return
     try {
-      const [driversRes, vehiclesRes, activityRes] = await Promise.all([
+      const [driversRes, vehiclesRes, activityRes, assignmentsRes] = await Promise.all([
         fleetClient.get<{ items: DriverListItem[] }>('/drivers', { params: { limit: 100 } }),
         listVehicles(0, 100),
         fleetClient.get<DriverActivityResponse>(`/drivers/${driverId}/activity`, { params: { date_from: getDateFrom(dateRange) } }),
+        fleetClient.get<{ customer_vehicle_ids: string[] }>(`/drivers/${driverId}/assignments`),
       ])
       const d = (driversRes.data?.items ?? []).find(x => x.portal_account_id === driverId)
       setDriver(d ?? null)
       setVehicles(vehiclesRes.items ?? [])
       setActivity(activityRes.data ?? null)
-      // TODO: fetch actual assignments — for now derive from activity
+      setAssignedIds(new Set(assignmentsRes.data?.customer_vehicle_ids ?? []))
     } catch {} finally { setLoading(false) }
   }
 
@@ -99,7 +101,7 @@ export default function DriverDetail() {
         <p className="text-xs text-gray-500 mb-3">Toggle vehicles this driver can access.</p>
         <div className="space-y-2">
           {(vehicles ?? []).map(v => {
-            const isAssigned = assignedIds.has(v.customer_vehicle_id) || (driver.assigned_vehicle_count ?? 0) > 0
+            const isAssigned = assignedIds.has(v.customer_vehicle_id)
             return (
               <div key={v.customer_vehicle_id} className="flex items-center justify-between rounded border border-gray-100 px-3 py-2 dark:border-gray-800">
                 <span className="text-sm">{v.rego} — {v.make} {v.model}</span>
@@ -167,6 +169,98 @@ export default function DriverDetail() {
           <p className="text-xs text-gray-400">No activity in this period.</p>
         )}
       </div>
+
+      {/* Edit driver profile (admin can update name + phone) */}
+      <EditDriverForm driverId={driverId!} driver={driver} onSaved={fetchData} />
+    </div>
+  )
+}
+
+function EditDriverForm({
+  driverId,
+  driver,
+  onSaved,
+}: {
+  driverId: string
+  driver: DriverListItem
+  onSaved: () => void
+}) {
+  const [firstName, setFirstName] = useState(driver.first_name ?? '')
+  const [lastName, setLastName] = useState(driver.last_name ?? '')
+  const [phone, setPhone] = useState(driver.phone ?? '')
+  const [submitting, setSubmitting] = useState(false)
+  const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    setSubmitting(true)
+    setMsg(null)
+    try {
+      await fleetClient.patch(`/drivers/${driverId}`, {
+        first_name: firstName.trim() || null,
+        last_name: lastName.trim() || null,
+        phone: phone.trim() || null,
+      })
+      setMsg({ type: 'ok', text: 'Driver updated.' })
+      onSaved()
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+        'Failed to update driver.'
+      setMsg({ type: 'err', text: detail })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-950">
+      <h2 className="text-sm font-medium mb-3">Edit Driver</h2>
+      {msg ? (
+        <p
+          className={`mb-2 text-xs ${msg.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}
+        >
+          {msg.text}
+        </p>
+      ) : null}
+      <form onSubmit={handleSubmit} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">First name</label>
+          <input
+            type="text"
+            value={firstName}
+            onChange={(e) => setFirstName(e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm min-h-[44px] dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Last name</label>
+          <input
+            type="text"
+            value={lastName}
+            onChange={(e) => setLastName(e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm min-h-[44px] dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <label className="block text-xs text-gray-500 mb-1">Phone</label>
+          <input
+            type="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm min-h-[44px] dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <button
+            type="submit"
+            disabled={submitting}
+            className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white min-h-[44px] hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {submitting ? 'Saving…' : 'Save changes'}
+          </button>
+        </div>
+      </form>
     </div>
   )
 }

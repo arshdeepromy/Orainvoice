@@ -72,9 +72,13 @@ export default function DriversPage() {
                   <td className="px-3 py-2 tabular-nums">{(d.assigned_vehicle_count ?? 0)}</td>
                   <td className="px-3 py-2 text-gray-500 text-xs">{d.last_login_at ? new Date(d.last_login_at).toLocaleDateString() : '—'}</td>
                   <td className="px-3 py-2">
-                    {d.is_active && (
+                    {d.is_active ? (
                       <button onClick={() => deactivateDriver(d.portal_account_id, fetchDrivers)} className="text-xs text-red-600 hover:underline min-h-[44px]">
                         Deactivate
+                      </button>
+                    ) : (
+                      <button onClick={() => reactivateDriver(d.portal_account_id, fetchDrivers)} className="text-xs text-green-700 hover:underline min-h-[44px]">
+                        Reactivate
                       </button>
                     )}
                   </td>
@@ -91,6 +95,11 @@ export default function DriversPage() {
 async function deactivateDriver(id: string, refresh: () => void) {
   if (!confirm('Deactivate this driver? They will lose portal access.')) return
   try { await fleetClient.post(`/drivers/${id}/deactivate`); refresh() } catch {}
+}
+
+async function reactivateDriver(id: string, refresh: () => void) {
+  if (!confirm('Reactivate this driver and let them sign in again?')) return
+  try { await fleetClient.post(`/drivers/${id}/reactivate`); refresh() } catch {}
 }
 
 function InviteDriverForm({ onClose, onInvited }: { onClose: () => void; onInvited: () => void }) {
