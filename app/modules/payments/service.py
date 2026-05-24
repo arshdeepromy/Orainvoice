@@ -346,6 +346,141 @@ async def generate_stripe_payment_link(
     }
 
 
+async def send_invoice_payment_link_email(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    base_url: str | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Email the customer the existing on-domain payment page URL for an invoice.
+
+    Unlike ``generate_stripe_payment_link`` (which creates a Stripe Checkout
+    Session and redirects to the Stripe-hosted page), this function uses the
+    invoice's ``payment_page_url`` — the token-based public payment page on
+    the org's own domain (served by ``invoices/public_router.py`` and backed
+    by a Stripe PaymentIntent created via ``_maybe_create_stripe_payment_intent``).
+
+    Flow:
+    1. Validate invoice is in a payable state (issued / partially_paid / overdue).
+    2. Ensure ``payment_page_url`` exists; regenerate via the same path used
+       on issue if it's missing or stale.
+    3. Email the link using the org's active ``invoice_issued`` template
+       (or the default template with a Pay Now button).
+
+    Reuses the same notification template, email provider, and PaymentIntent
+    plumbing as ``email_invoice`` and ``_maybe_create_stripe_payment_intent``.
+    No Stripe Checkout Session is created.
+
+    Requirements: 25.3, 25.5
+    """
+    from app.modules.admin.models import Organisation
+    from app.modules.customers.models import Customer
+    from app.modules.invoices.service import _maybe_create_stripe_payment_intent
+
+    # Fetch invoice scoped to org
+    inv_result = await db.execute(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.org_id == org_id,
+        )
+    )
+    invoice = inv_result.scalar_one_or_none()
+    if invoice is None:
+        raise ValueError("Invoice not found in this organisation")
+
+    if invoice.status not in ("issued", "partially_paid", "overdue"):
+        raise ValueError(
+            f"Cannot send payment link for invoice with status "
+            f"'{invoice.status}'. Invoice must be issued, partially paid, "
+            f"or overdue."
+        )
+
+    if invoice.balance_due is None or invoice.balance_due <= 0:
+        raise ValueError("Invoice has no outstanding balance.")
+
+    # Customer must have an email on file
+    cust_result = await db.execute(
+        select(Customer).where(Customer.id == invoice.customer_id)
+    )
+    customer = cust_result.scalar_one_or_none()
+    if customer is None or not customer.email:
+        raise ValueError(
+            "Customer has no email address on file. Cannot send payment link."
+        )
+
+    # Org must be Stripe-connected so the payment page can take payments
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org is None or not getattr(org, "stripe_connect_account_id", None):
+        raise ValueError(
+            "Organisation has not connected a Stripe account. "
+            "Please complete Stripe Connect setup first."
+        )
+
+    # Ensure payment_page_url exists / is current. The same helper used on
+    # issue regenerates it when missing or stale (e.g. if FRONTEND_BASE_URL
+    # changed).  We tag the invoice so the helper proceeds even if it
+    # wasn't set up with payment_gateway=stripe at creation time.
+    inv_data = dict(invoice.invoice_data_json or {})
+    if inv_data.get("payment_gateway") != "stripe":
+        inv_data["payment_gateway"] = "stripe"
+        invoice.invoice_data_json = inv_data
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(invoice, "invoice_data_json")
+        await db.flush()
+
+    if not invoice.payment_page_url:
+        await _maybe_create_stripe_payment_intent(
+            db, invoice, org, base_url=base_url,
+        )
+        await db.refresh(invoice)
+
+    if not invoice.payment_page_url:
+        raise ValueError(
+            "Failed to generate payment link. Please try again or check "
+            "Stripe Connect configuration."
+        )
+
+    # Send the email using the invoice_issued template (default has a
+    # Pay Now button; custom templates configured in Settings → Templates
+    # are honoured automatically).
+    await _send_receipt_email(
+        db,
+        to_email=customer.email,
+        invoice=invoice,
+        pay_amount=invoice.balance_due,
+        template_type="invoice_issued",
+        payment_url=invoice.payment_page_url,
+    )
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="payment.payment_link_emailed",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        after_value={
+            "invoice_id": str(invoice.id),
+            "recipient_email": customer.email,
+            "payment_page_url": invoice.payment_page_url,
+        },
+        ip_address=ip_address,
+    )
+
+    return {
+        "invoice_id": invoice.id,
+        "recipient_email": customer.email,
+        "payment_page_url": invoice.payment_page_url,
+    }
+
+
 _METHOD_DISPLAY_NAMES: dict[str, str] = {
     "card": "Credit/Debit Card",
     "afterpay_clearpay": "Afterpay",
@@ -367,15 +502,25 @@ async def _send_receipt_email(
     pay_amount: Decimal,
     surcharge_amount: Decimal = Decimal("0"),
     payment_method_type: str | None = None,
+    template_type: str = "payment_received",
+    payment_url: str | None = None,
 ) -> None:
-    """Send a payment receipt email using the configured SMTP provider.
+    """Send a payment-related email using the configured SMTP provider.
 
-    Uses the same email provider infrastructure as email_invoice() — reads
-    from the email_providers table, not from brevo.py.  Best-effort: logs
-    warnings on failure but does not raise.
+    Reuses the org's email provider infrastructure (same as ``email_invoice``)
+    and resolves the customer's active notification template (or default).
 
-    Attaches the invoice PDF (with updated payment status) so the customer
-    has a complete record.
+    Two call modes:
+
+    - ``template_type="payment_received"`` (default): post-payment receipt.
+      Body summarises payment details. ``payment_url`` is ignored.
+    - ``template_type="invoice_issued"``: payment-link request. The Stripe
+      payment URL is exposed to the template as the ``{{payment_link}}``
+      variable, so the user's active ``invoice_issued`` template (or the
+      default one with a Pay Now button) renders correctly.
+
+    The invoice PDF is attached so the customer always has a copy.
+    Best-effort: logs warnings on failure but does not raise.
     """
     import json as _json
     import smtplib
@@ -424,6 +569,8 @@ async def _send_receipt_email(
         "customer_email": _customer.email if _customer else "",
         "invoice_number": inv_number,
         "total_due": _total_due_formatted,
+        "payment_link": payment_url or invoice.payment_page_url or "",
+        "due_date": str(invoice.due_date) if invoice.due_date else "",
         "org_name": org_name,
         "org_email": _org_email,
         "org_phone": _org_phone,
@@ -432,7 +579,7 @@ async def _send_receipt_email(
     _rendered_template = await resolve_template(
         db,
         org_id=invoice.org_id,
-        template_type="payment_received",
+        template_type=template_type,
         channel="email",
         variables=_template_variables,
     )
@@ -461,8 +608,25 @@ async def _send_receipt_email(
     if _rendered_template:
         subject = _rendered_template.subject
         body = _rendered_template.body
+    elif template_type == "invoice_issued":
+        # Fallback when the invoice_issued template can't be resolved —
+        # used for the "Send Payment Link" flow.
+        subject = f"Payment link for invoice {inv_number} from {org_name}"
+        _link_for_body = payment_url or invoice.payment_page_url or ""
+        body = (
+            f"Hi,\n\n"
+            f"Here is the secure online payment link for invoice {inv_number}.\n\n"
+            f"Amount due: {currency} {pay_amount}\n"
+        )
+        if _link_for_body:
+            body += f"\nPay online: {_link_for_body}\n"
+        body += (
+            f"\nIf you have any questions, please don't hesitate to contact us.\n\n"
+            f"Thank you for your business.\n\n"
+            f"{org_name}\n"
+        )
     else:
-        # Existing hardcoded content (unchanged)
+        # Existing hardcoded content for payment_received (unchanged)
         subject = f"Payment receipt for invoice {inv_number}"
 
         if surcharge_amount > 0:

@@ -86,7 +86,7 @@ class PaginatedResponse(_ResponseBase, Generic[T]):
 
     items: list[T]
     total: int = Field(0, ge=0)
-    limit: int = Field(50, ge=1, le=100)
+    limit: int = Field(50, ge=1, le=200)
     offset: int = Field(0, ge=0)
 
 
@@ -102,11 +102,12 @@ class PaginationParams(_StrictBase):
     Use ``Depends(PaginationParams)`` in routes, or inline the fields.
     Defining it here makes the ``offset``/``limit`` contract explicit
     and lets us reject ``skip`` consistently. ``limit`` is capped at
-    100 so a hostile client cannot demand huge pages.
+    200 so a hostile client cannot demand huge pages while still
+    accommodating admin views that legitimately page in larger chunks.
     """
 
     offset: int = Field(0, ge=0, description="Number of rows to skip")
-    limit: int = Field(50, ge=1, le=100, description="Page size (max 100)")
+    limit: int = Field(50, ge=1, le=200, description="Page size (max 200)")
 
 
 class IdResponse(_ResponseBase):

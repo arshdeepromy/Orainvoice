@@ -90,6 +90,22 @@ class Settings(BaseSettings):
     # --- Connexus Webhooks ---
     connexus_webhook_secret: str = ""
 
+    # --- Fleet Portal (B2B Fleet Portal — see .kiro/specs/b2b-fleet-portal/) ---
+    # Host or path used to resolve the Workshop_Org for fleet portal requests.
+    # Examples:
+    #   "fleet.example.com"      → subdomain mode; <slug>.fleet.example.com
+    #   ""                       → path mode (default); /fleet/<slug>/...
+    # When fleet_portal_default_org_slug is set, single-tenant deployments
+    # can route /fleet/* to that org without a subdomain or path slug.
+    fleet_portal_host: str = ""
+    fleet_portal_default_org_slug: str = ""
+
+    # --- Build metadata (used by /fleet/api/version + /api/v2/version) ---
+    # Populated at image build time via Dockerfile ARG GIT_SHA → ENV BUILD_SHA.
+    # Frontend bundles read this through the version refresh mechanism
+    # (B2B Fleet Portal task 19A.2 — Req 22.1).
+    build_sha: str = "dev"
+
     # --- Portal Token TTL (REM-15) ---
     portal_token_ttl_days: int = 90
 

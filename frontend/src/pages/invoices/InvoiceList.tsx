@@ -649,6 +649,23 @@ export default function InvoiceList() {
     finally { setActionLoading(''); setSendMenuOpen(false) }
   }
 
+  const handleSendPaymentLink = async () => {
+    if (!invoice) return
+    setActionLoading('sendPaymentLink')
+    try {
+      // Reuses the org's on-domain payment page URL (same one used by QR
+      // Payment) and emails it via the org's active invoice_issued template
+      // (or the default Pay Now template). No new Stripe Checkout Session
+      // is created — the same PaymentIntent-backed page is reused.
+      await apiClient.post(`/payments/invoice/${invoice.id}/send-payment-link`)
+      showMsg('Payment link emailed to customer.')
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      showMsg(detail || 'Failed to send payment link.', 'error')
+    }
+    finally { setActionLoading(''); setSendMenuOpen(false) }
+  }
+
   const handleMarkAsSent = async () => {
     if (!invoice || invoice.status !== 'draft') return
     setActionLoading('markSent')
@@ -902,6 +919,9 @@ export default function InvoiceList() {
   /* ---------------------------------------------------------------- */
 
   const isDraft = invoice?.status === 'draft'
+  // Limited "correction edit" allowed on issued/partially_paid/overdue
+  // (notes, due date, vehicle metadata, payment terms, T&Cs only).
+  const canEdit = !!invoice && (isDraft || ['issued', 'partially_paid', 'overdue'].includes(invoice.status))
   const isVoided = invoice?.status === 'voided'
   const canVoid = invoice && !isVoided && !isDraft
   const canRecordPayment = invoice && !isVoided && invoice.status !== 'draft' && invoice.status !== 'refunded' && invoice.status !== 'partially_refunded' && (invoice.balance_due ?? 0) > 0
@@ -911,6 +931,12 @@ export default function InvoiceList() {
     stripeStatus?.is_connected === true &&
     ['issued', 'partially_paid', 'overdue'].includes(invoice?.status ?? '') &&
     (invoice?.balance_due ?? 0) > 0
+
+  /* Send Payment Link visibility — same gating as QR. Reuses the existing
+     /payments/stripe/create-link endpoint with send_via='email' which
+     emails the customer the payment link via the invoice_issued template
+     (or the org's customised version). */
+  const canShowSendPaymentLink = canShowQrPayment
 
   /* Computed values for credit notes and refunds */
   const creditableAmount = invoice ? computeCreditableAmount(
@@ -1152,7 +1178,7 @@ export default function InvoiceList() {
 
               <div className="flex items-center gap-2">
                 {/* Edit button */}
-                {isDraft && (
+                {canEdit && (
                   <button
                     onClick={() => navigate(`/invoices/${invoice.id}/edit`)}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
@@ -1187,6 +1213,15 @@ export default function InvoiceList() {
                       >
                         {actionLoading === 'send' ? 'Sending…' : 'Send Invoice'}
                       </button>
+                      {canShowSendPaymentLink && (
+                        <button
+                          onClick={handleSendPaymentLink}
+                          disabled={actionLoading === 'sendPaymentLink'}
+                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 border-t border-gray-100"
+                        >
+                          {actionLoading === 'sendPaymentLink' ? 'Sending…' : 'Send Payment Link'}
+                        </button>
+                      )}
                       {isDraft && (
                         <button
                           onClick={handleMarkAsSent}
@@ -1849,10 +1884,10 @@ export default function InvoiceList() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-gray-100">
-                        <th className="text-left py-2 text-xs text-gray-500 font-medium">Date</th>
-                        <th className="text-left py-2 text-xs text-gray-500 font-medium">Type</th>
-                        <th className="text-right py-2 text-xs text-gray-500 font-medium">Amount</th>
-                        <th className="text-left py-2 text-xs text-gray-500 font-medium">Method</th>
+                        <th className="text-left py-2 pr-6 text-xs text-gray-500 font-medium">Date</th>
+                        <th className="text-left py-2 pr-6 text-xs text-gray-500 font-medium">Type</th>
+                        <th className="text-left py-2 pr-6 text-xs text-gray-500 font-medium">Amount</th>
+                        <th className="text-left py-2 pr-6 text-xs text-gray-500 font-medium">Method</th>
                         <th className="text-left py-2 text-xs text-gray-500 font-medium">Recorded By</th>
                       </tr>
                     </thead>
@@ -1862,12 +1897,12 @@ export default function InvoiceList() {
                         return (
                           <Fragment key={p.id}>
                           <tr className="border-b border-gray-50">
-                            <td className="py-2 text-gray-900">{formatDateTime(p.date)}</td>
-                            <td className="py-2">
+                            <td className="py-2 pr-6 text-gray-900">{formatDateTime(p.date)}</td>
+                            <td className="py-2 pr-6">
                               <Badge variant={badgeType.color === 'green' ? 'success' : 'error'}>{badgeType.label}</Badge>
                             </td>
-                            <td className={`py-2 text-right tabular-nums font-medium ${p.is_refund ? 'text-red-600' : 'text-emerald-600'}`}>{formatNZD(p.amount)}</td>
-                            <td className="py-2 text-gray-700 capitalize">{p.method}</td>
+                            <td className={`py-2 pr-6 tabular-nums font-medium ${p.is_refund ? 'text-red-600' : 'text-emerald-600'}`}>{formatNZD(p.amount)}</td>
+                            <td className="py-2 pr-6 text-gray-700 capitalize">{p.method}</td>
                             <td className="py-2 text-gray-700">{p.recorded_by}</td>
                           </tr>
                           {shouldShowRefundNote(!!p.is_refund, p.refund_note) && (

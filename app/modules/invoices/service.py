@@ -517,6 +517,57 @@ async def create_invoice(
         vehicle_odometer = None
         global_vehicle_id = None
 
+    # Backfill vehicle details from existing vehicle records when only rego
+    # was supplied (e.g. job card → invoice conversion, mobile minimal create,
+    # or kiosk-registered vehicle picked in the new-invoice form without full
+    # details flowing through). We look up the org's OrgVehicle first, then
+    # GlobalVehicle as a fallback. This ensures the invoice display shows
+    # make/model/year/odometer and lets _resolve_vehicle_type / vehicle_display
+    # include WOF/COF/service-due via the same code path as a manual New Invoice.
+    def _is_blank(value: object) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str) and value.strip() == "":
+            return True
+        return False
+
+    if (
+        vehicle_rego
+        and global_vehicle_id is None
+        and _is_blank(vehicle_make)
+        and _is_blank(vehicle_model)
+        and (vehicle_year is None or vehicle_year == 0)
+    ):
+        from app.modules.vehicles.models import OrgVehicle as _OrgVehicleLookup
+        from app.modules.admin.models import GlobalVehicle as _GlobalVehicleLookup
+
+        _rego_upper = vehicle_rego.strip().upper()
+        ov_res = await db.execute(
+            select(_OrgVehicleLookup).where(
+                _OrgVehicleLookup.org_id == org_id,
+                func.upper(_OrgVehicleLookup.rego) == _rego_upper,
+            )
+        )
+        _vrec_lookup = ov_res.scalar_one_or_none()
+        if _vrec_lookup is None:
+            gv_res = await db.execute(
+                select(_GlobalVehicleLookup).where(
+                    func.upper(_GlobalVehicleLookup.rego) == _rego_upper,
+                )
+            )
+            _vrec_lookup = gv_res.scalar_one_or_none()
+
+        if _vrec_lookup is not None:
+            if _is_blank(vehicle_make):
+                vehicle_make = getattr(_vrec_lookup, "make", None)
+            if _is_blank(vehicle_model):
+                vehicle_model = getattr(_vrec_lookup, "model", None)
+            if vehicle_year is None or vehicle_year == 0:
+                vehicle_year = getattr(_vrec_lookup, "year", None)
+            if vehicle_odometer is None:
+                vehicle_odometer = getattr(_vrec_lookup, "odometer_last_recorded", None)
+            global_vehicle_id = global_vehicle_id or getattr(_vrec_lookup, "id", None)
+
     # Validate currency against org settings (Req 79.1, 79.2)
     validate_invoice_currency(currency, org_settings)
 
@@ -2107,11 +2158,17 @@ async def update_invoice(
     updates: dict,
     ip_address: str | None = None,
 ) -> dict:
-    """Update a draft invoice's editable fields.
+    """Update an invoice's editable fields.
 
-    Prevents modification of assigned invoice numbers (Req 23.2).
-    Only draft invoices allow structural edits; issued invoices only
-    allow notes updates via ``update_invoice_notes``.
+    Editing rules:
+    - Draft: structural edits allowed (line items, totals, customer, etc.).
+    - Issued / partially_paid / overdue: limited "correction edit" — only
+      notes, due date, branch, vehicle metadata, payment terms, and T&Cs.
+      Totals, line items, customer, currency, and discount stay locked.
+    - Voided / paid / refunded / partially_refunded: no edits — use a
+      credit note for corrections.
+
+    Invoice numbers are immutable once assigned (Req 23.2).
 
     Requirements: 23.2, 23.3
     """
@@ -2145,11 +2202,59 @@ async def update_invoice(
             "Invoice numbers are system-assigned and cannot be set manually"
         )
 
-    # Only drafts allow structural edits
-    if invoice.status != "draft":
+    # Editing rules by status:
+    # - draft: full edit (handled below)
+    # - issued / partially_paid / overdue: limited "correction edit" — only
+    #   non-financial metadata. Totals, line items, customer, currency,
+    #   discount stay locked to keep GST, Xero, payments consistent.
+    # - voided / paid / refunded / partially_refunded: no edits.
+    _LIMITED_EDIT_STATUSES = {"issued", "partially_paid", "overdue"}
+    _LIMITED_EDIT_FIELDS = {
+        "notes_internal",
+        "notes_customer",
+        "due_date",
+        "branch_id",
+        # Vehicle metadata — these only annotate the invoice and may update
+        # the underlying vehicle record; they don't touch financials.
+        "vehicle_rego",
+        "vehicle_make",
+        "vehicle_model",
+        "vehicle_year",
+        "vehicle_odometer",
+        "global_vehicle_id",
+        "vehicle_service_due_date",
+        "vehicle_wof_expiry_date",
+        "vehicle_cof_expiry_date",
+        "vehicle_wof_updated",
+        "vehicle_cof_updated",
+        "vehicle_service_due_updated",
+        "vehicles",
+        # JSON-backed fields that are presentational/contractual only.
+        "payment_terms",
+        "terms_and_conditions",
+    }
+
+    is_limited_edit = invoice.status in _LIMITED_EDIT_STATUSES
+    if invoice.status != "draft" and not is_limited_edit:
         raise ValueError(
-            "Only draft invoices can be updated. Use notes endpoint for issued invoices."
+            f"Invoices with status '{invoice.status}' cannot be edited. "
+            "Use a credit note to make corrections."
         )
+
+    if is_limited_edit:
+        # Drop any field that isn't in the allow-list. We ignore silently
+        # rather than raising so the frontend can keep sending the full
+        # payload; only the safe fields will land.
+        rejected = [
+            k for k in updates.keys()
+            if k not in _LIMITED_EDIT_FIELDS and k != "invoice_number"
+        ]
+        if rejected:
+            logger.info(
+                "Invoice %s is %s — ignoring non-editable fields on update: %s",
+                invoice_id, invoice.status, rejected,
+            )
+        updates = {k: v for k, v in updates.items() if k in _LIMITED_EDIT_FIELDS}
 
     # Capture before state for audit log
     before_value = {

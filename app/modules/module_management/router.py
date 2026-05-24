@@ -14,7 +14,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
-from app.core.modules import ModuleService, CORE_MODULES
+from app.core.modules import (
+    CORE_MODULES,
+    TRADE_FAMILY_REJECTION_MESSAGES,
+    TRADE_FAMILY_REQUIRED_MODULES,
+    ModuleService,
+    fetch_org_trade_family,
+    is_trade_family_satisfied,
+)
 from app.modules.auth.rbac import require_role
 from app.modules.module_management.schemas import (
     DisableModuleResponse,
@@ -60,6 +67,18 @@ async def list_modules(
         # Hide modules not included in the org's subscription plan
         modules = [m for m in modules if m.get("in_plan", True)]
 
+    # Filter out trade-family-restricted modules whose required family does
+    # not match the org's tradeFamily (Requirement 1.2 of b2b-fleet-portal).
+    # Only resolve the trade family if at least one restricted module is in
+    # the result set — saves a DB roundtrip for the common case.
+    if any(m.get("slug") in TRADE_FAMILY_REQUIRED_MODULES for m in modules):
+        org_trade_family = await fetch_org_trade_family(db, org_id)
+        modules = [
+            m
+            for m in modules
+            if is_trade_family_satisfied(m.get("slug", ""), org_trade_family)
+        ]
+
     items = [ModuleResponse(**m) for m in modules]
     return ModuleListResponse(modules=items, total=len(items))
 
@@ -100,6 +119,21 @@ async def enable_module(
             status_code=403,
             content={"detail": f"Module '{slug}' is a platform admin module and cannot be managed by org users."},
         )
+
+    # Trade-family gating (Requirement 1.3 of b2b-fleet-portal): reject the
+    # request with HTTP 403 when the module is restricted to a trade family
+    # the org does not belong to.
+    if slug in TRADE_FAMILY_REQUIRED_MODULES:
+        org_trade_family = await fetch_org_trade_family(db, org_id)
+        if not is_trade_family_satisfied(slug, org_trade_family):
+            detail = TRADE_FAMILY_REJECTION_MESSAGES.get(
+                slug,
+                f"Module '{slug}' is not available for your trade family.",
+            )
+            return JSONResponse(
+                status_code=403,
+                content={"detail": detail},
+            )
 
     # Validate module is available in the org's plan
     from app.modules.admin.models import Organisation, SubscriptionPlan

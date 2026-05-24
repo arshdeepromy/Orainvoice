@@ -52,6 +52,7 @@ from app.modules.payments.surcharge import (
 from app.modules.payments.service import (
     record_cash_payment,
     generate_stripe_payment_link,
+    send_invoice_payment_link_email,
     get_payment_history,
     handle_stripe_webhook,
     process_refund,
@@ -1864,3 +1865,60 @@ async def regenerate_payment_link_endpoint(
         payment_page_url=payment_url,
         invoice_id=invoice.id,
     )
+
+
+@router.post(
+    "/invoice/{invoice_id}/send-payment-link",
+    status_code=200,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        404: {"description": "Invoice not found"},
+    },
+    summary="Email the on-domain payment link to the customer",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def send_payment_link_email_endpoint(
+    invoice_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Email the customer the existing on-domain payment page URL.
+
+    Reuses the same payment_page_url shown by the QR Payment flow (token-based
+    page on the org's domain backed by a Stripe PaymentIntent). The link is
+    delivered via the org's active ``invoice_issued`` template (or the
+    default Pay Now template) using the configured email provider chain.
+
+    No new Stripe Checkout Session is created.
+
+    Requirements: 25.3, 25.5
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid or not user_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        result = await send_invoice_payment_link_email(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            invoice_id=invoice_id,
+            base_url=request.headers.get("origin") or None,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    await db.commit()
+
+    return {
+        "invoice_id": str(result["invoice_id"]),
+        "recipient_email": result["recipient_email"],
+        "payment_page_url": result["payment_page_url"],
+        "status": "sent",
+    }
