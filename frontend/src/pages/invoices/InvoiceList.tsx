@@ -535,17 +535,21 @@ export default function InvoiceList() {
     setListLoading(true)
     setListError('')
     try {
-      const params: Record<string, string | number> = { page: pg, page_size: PAGE_SIZE }
+      // Backend uses offset/limit, not page/page_size. Convert here.
+      const offset = Math.max(0, (pg - 1) * PAGE_SIZE)
+      const params: Record<string, string | number> = { offset, limit: PAGE_SIZE }
       if (search.trim()) params.search = search.trim()
       if (status) params.status = status
       const res = await apiClient.get<InvoiceListResponse>('/invoices', { params, signal: controller.signal })
       const invoices = res.data?.items ?? (res.data as any)?.invoices ?? []
+      const total = res.data?.total ?? 0
+      const computedTotalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
       setData({
         items: invoices,
-        total: res.data?.total ?? 0,
-        page: res.data?.page ?? pg,
-        page_size: res.data?.page_size ?? PAGE_SIZE,
-        total_pages: res.data?.total_pages ?? Math.ceil((res.data?.total ?? 0) / PAGE_SIZE),
+        total,
+        page: pg,
+        page_size: PAGE_SIZE,
+        total_pages: computedTotalPages,
       })
       // Auto-select first invoice if none selected
       if (!selectedIdRef.current && invoices.length > 0) {
