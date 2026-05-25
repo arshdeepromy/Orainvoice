@@ -102,24 +102,47 @@ async def view_shared_invoice(
         "address": customer.address if customer else None,
     }
 
-    # Vehicle info
+    # Vehicle info — prefer OrgVehicle over GlobalVehicle for the calling org so the
+    # public (portal-token) view serves the org's own Customer_Driven_Field writes,
+    # never cross-tenant GlobalVehicle data. Per vehicle-data-isolation Task 11.5.
     if invoice.vehicle_rego:
         from app.modules.admin.models import GlobalVehicle
-        gv_result = await db.execute(
-            select(GlobalVehicle).where(
-                func.upper(GlobalVehicle.rego) == invoice.vehicle_rego.upper()
+        from app.modules.vehicles.models import OrgVehicle
+
+        ov_result = await db.execute(
+            select(OrgVehicle).where(
+                OrgVehicle.org_id == invoice.org_id,
+                func.upper(OrgVehicle.rego) == invoice.vehicle_rego.upper(),
             )
         )
-        gv = gv_result.scalar_one_or_none()
-        if gv:
+        ov = ov_result.scalar_one_or_none()
+        if ov:
             invoice_dict["vehicle"] = {
-                "rego": gv.rego,
-                "make": gv.make,
-                "model": gv.model,
-                "year": gv.year,
-                "wof_expiry": gv.wof_expiry.isoformat() if getattr(gv, "wof_expiry", None) else None,
-                "odometer": getattr(gv, "odometer_last_recorded", None),
+                "rego": ov.rego,
+                "make": ov.make,
+                "model": ov.model,
+                "year": ov.year,
+                "wof_expiry": ov.wof_expiry.isoformat() if getattr(ov, "wof_expiry", None) else None,
+                "cof_expiry": ov.cof_expiry.isoformat() if getattr(ov, "cof_expiry", None) else None,
+                "odometer": getattr(ov, "odometer_last_recorded", None),
             }
+        else:
+            gv_result = await db.execute(
+                select(GlobalVehicle).where(
+                    func.upper(GlobalVehicle.rego) == invoice.vehicle_rego.upper()
+                )
+            )
+            gv = gv_result.scalar_one_or_none()
+            if gv:
+                invoice_dict["vehicle"] = {
+                    "rego": gv.rego,
+                    "make": gv.make,
+                    "model": gv.model,
+                    "year": gv.year,
+                    "wof_expiry": gv.wof_expiry.isoformat() if getattr(gv, "wof_expiry", None) else None,
+                    "cof_expiry": gv.cof_expiry.isoformat() if getattr(gv, "cof_expiry", None) else None,
+                    "odometer": getattr(gv, "odometer_last_recorded", None),
+                }
 
     gst_percentage = settings.get("gst_percentage", 15)
     payment_terms = settings.get("payment_terms_text", "")

@@ -471,6 +471,11 @@ class TestCheckInV2OdometerRecording:
         db.flush = AsyncMock()
         db.add = MagicMock()
 
+        # Mock promote_vehicle so the kiosk path's per-org odometer bump
+        # has a target without hitting ModuleService / advisory locks.
+        mock_org_vehicle = MagicMock()
+        mock_org_vehicle.odometer_last_recorded = None
+
         with patch(
             "app.modules.customers.service.create_customer",
             new_callable=AsyncMock,
@@ -478,6 +483,10 @@ class TestCheckInV2OdometerRecording:
         ), patch(
             "app.modules.kiosk.service._ensure_vehicle_linked",
             new_callable=AsyncMock,
+        ), patch(
+            "app.modules.vehicles.service.promote_vehicle",
+            new_callable=AsyncMock,
+            return_value=mock_org_vehicle,
         ):
             await kiosk_check_in_v2(
                 db,
@@ -495,6 +504,8 @@ class TestCheckInV2OdometerRecording:
         assert odometer_obj.source == "kiosk"
         assert odometer_obj.recorded_by == user_id
         assert odometer_obj.org_id == org_id
+        # The per-org cache should have been bumped via promote_vehicle.
+        assert mock_org_vehicle.odometer_last_recorded == 85000
 
     @pytest.mark.asyncio
     async def test_no_odometer_reading_when_km_is_none(self):
@@ -568,6 +579,9 @@ class TestCheckInV2OdometerRecording:
         db.flush = AsyncMock()
         db.add = MagicMock()
 
+        mock_org_vehicle = MagicMock()
+        mock_org_vehicle.odometer_last_recorded = None
+
         with patch(
             "app.modules.customers.service.create_customer",
             new_callable=AsyncMock,
@@ -575,6 +589,10 @@ class TestCheckInV2OdometerRecording:
         ), patch(
             "app.modules.kiosk.service._ensure_vehicle_linked",
             new_callable=AsyncMock,
+        ), patch(
+            "app.modules.vehicles.service.promote_vehicle",
+            new_callable=AsyncMock,
+            return_value=mock_org_vehicle,
         ):
             await kiosk_check_in_v2(
                 db,

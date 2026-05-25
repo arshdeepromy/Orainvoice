@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select, func as sa_func
+from sqlalchemy import select, func as sa_func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import logging
@@ -22,6 +22,18 @@ from app.modules.customers.models import Customer
 from app.modules.in_app_notifications.service import create_in_app_notification
 
 logger = logging.getLogger(__name__)
+
+
+class _BookingAutoLinkSkipped(Exception):
+    """Internal sentinel: the booking auto-link block found a pre-existing
+    rego-keyed link and has decided to skip the promote-and-link work.
+
+    Raised inside the ``try`` block in ``create_booking`` so we can break
+    out of the auto-link flow without falling through to the broad
+    ``except Exception`` handler that would log the early-exit as a
+    warning. Caught by a dedicated ``except _BookingAutoLinkSkipped``
+    above the broad handler so the early-exit is silent and structured.
+    """
 
 _CONVERTIBLE_STATUSES = {"scheduled", "confirmed", "pending"}
 
@@ -371,6 +383,49 @@ async def create_booking(
             from app.modules.admin.models import GlobalVehicle
             from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
 
+            # vehicle-data-isolation Task 11.7: widened, rego-keyed
+            # link-existence check that catches a link pointing at
+            # either the pre-promotion ``GlobalVehicle.id`` OR the
+            # post-promotion ``OrgVehicle.id`` for the same rego.
+            # Without this, a legacy global-id-keyed link plus a
+            # promoted org-id-keyed link can both end up on the same
+            # ``(org_id, customer_id, rego)`` because the previous
+            # ov-only check missed unmigrated global-id rows
+            # (Req 3.4, 9.6, 13.3).
+            existing_widened = await db.execute(
+                select(CustomerVehicle)
+                .outerjoin(
+                    GlobalVehicle,
+                    CustomerVehicle.global_vehicle_id == GlobalVehicle.id,
+                )
+                .outerjoin(
+                    OrgVehicle,
+                    CustomerVehicle.org_vehicle_id == OrgVehicle.id,
+                )
+                .where(
+                    CustomerVehicle.org_id == org_id,
+                    CustomerVehicle.customer_id == customer_id,
+                    or_(
+                        sa_func.upper(GlobalVehicle.rego)
+                        == vehicle_rego.upper(),
+                        sa_func.upper(OrgVehicle.rego)
+                        == vehicle_rego.upper(),
+                    ),
+                )
+                .limit(1)
+            )
+            if existing_widened.scalar_one_or_none() is not None:
+                # The customer is already linked to this rego via either
+                # link type — skip the entire promote-and-link block to
+                # avoid creating a duplicate ``customer_vehicles`` row.
+                logger.info(
+                    "Booking auto-link: customer %s already linked to "
+                    "vehicle rego=%s (rego-keyed match) — skipping",
+                    customer_id,
+                    vehicle_rego,
+                )
+                raise _BookingAutoLinkSkipped()
+
             # Try global_vehicles first
             gv_result = await db.execute(
                 select(GlobalVehicle).where(
@@ -380,21 +435,33 @@ async def create_booking(
             gv = gv_result.scalar_one_or_none()
 
             if gv:
-                existing = await db.execute(
-                    select(CustomerVehicle).where(
-                        CustomerVehicle.org_id == org_id,
-                        CustomerVehicle.customer_id == customer_id,
-                        CustomerVehicle.global_vehicle_id == gv.id,
-                    )
+                # vehicle-data-isolation Task 8.1: promote the vehicle for
+                # this org before creating the link so the resulting
+                # ``customer_vehicles`` row points at the per-org snapshot,
+                # not the cross-tenant cache. ``promote_vehicle`` is
+                # idempotent — a second call within the same transaction
+                # returns the existing row. Rebind so the existence check
+                # and the ``CustomerVehicle`` constructor both see the
+                # post-promotion identity (Req 2.3, 3.6).
+                from app.modules.vehicles.service import promote_vehicle
+
+                ov = await promote_vehicle(
+                    db,
+                    org_id=org_id,
+                    global_vehicle_id=gv.id,
+                    source_record=gv,
+                    user_id=user_id,
+                    trigger_site="bookings.link",
+                    ip_address=ip_address,
                 )
-                if existing.scalar_one_or_none() is None:
-                    cv = CustomerVehicle(
-                        org_id=org_id,
-                        customer_id=customer_id,
-                        global_vehicle_id=gv.id,
-                    )
-                    db.add(cv)
-                    await db.flush()
+                cv = CustomerVehicle(
+                    org_id=org_id,
+                    customer_id=customer_id,
+                    org_vehicle_id=ov.id,
+                    global_vehicle_id=None,
+                )
+                db.add(cv)
+                await db.flush()
             else:
                 # Fallback: try org_vehicles
                 ov_result = await db.execute(
@@ -405,21 +472,17 @@ async def create_booking(
                 )
                 ov = ov_result.scalar_one_or_none()
                 if ov:
-                    existing = await db.execute(
-                        select(CustomerVehicle).where(
-                            CustomerVehicle.org_id == org_id,
-                            CustomerVehicle.customer_id == customer_id,
-                            CustomerVehicle.org_vehicle_id == ov.id,
-                        )
+                    cv = CustomerVehicle(
+                        org_id=org_id,
+                        customer_id=customer_id,
+                        org_vehicle_id=ov.id,
                     )
-                    if existing.scalar_one_or_none() is None:
-                        cv = CustomerVehicle(
-                            org_id=org_id,
-                            customer_id=customer_id,
-                            org_vehicle_id=ov.id,
-                        )
-                        db.add(cv)
-                        await db.flush()
+                    db.add(cv)
+                    await db.flush()
+        except _BookingAutoLinkSkipped:
+            # Existing link satisfied the rego-keyed check — nothing
+            # to do, and no exception to log.
+            pass
         except Exception:
             logger.warning(
                 "Failed to auto-link customer %s to vehicle %s on booking %s",

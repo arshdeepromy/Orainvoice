@@ -4,6 +4,92 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
+## [1.10.3] — 2026-05-25
+
+### Fixed
+
+- **Vehicle data isolation** — customer-driven vehicle fields (odometer,
+  service-due date, WOF expiry, COF expiry, inspection type) are now
+  strictly per-organisation. Previously every org's writes landed on the
+  shared `global_vehicles` cache, so workshop A's odometer reading was
+  immediately visible to workshop B as soon as B looked up the same rego.
+  Customer-driven flows (invoice create/update, kiosk check-in, fleet portal
+  odometer/service-due updates, customer-vehicle link creation) now lazily
+  promote the rego for the calling org on first touch — copying the row
+  into `org_vehicles` and migrating any existing `customer_vehicles` link
+  to `org_vehicle_id`. Subsequent customer-driven writes target the per-org
+  snapshot. CarJam refresh continues to write the spec cache on
+  `global_vehicles`. Read paths fall back to `global_vehicles` until the
+  org is promoted, so existing data and existing workflows continue to
+  function unchanged.
+- **Fleet portal odometer log raised AttributeError on every call** — the
+  helper at `app/modules/fleet_portal/services/vehicle_service.py::log_odometer_reading`
+  referenced a non-existent `OdometerReading.odometer_km` column. The
+  actual column on the model is `reading_km`. Both the `select(func.max(...))`
+  aggregation and the `OdometerReading(...)` constructor are now corrected.
+  The helper also writes `source="manual"` so the inserted row satisfies
+  the `ck_odometer_readings_source` CHECK constraint.
+- **Invoice update silently dropped `vehicle_cof_expiry_date`** — the field
+  was missing from `UpdateInvoiceRequest` in `app/modules/invoices/schemas.py`,
+  and `update_invoice` had no COF write branch. The schema now accepts the
+  field, the resolution gate includes it, and the COF write branch mirrors
+  the existing WOF branch.
+- **`PUT /api/v1/customers/{id}/vehicle-dates` silently dropped `cof_expiry`** —
+  the endpoint only handled `service_due_date` and `wof_expiry`. Now also
+  handles `cof_expiry`. Writes target `org_vehicles` (after lazy promotion)
+  rather than `global_vehicles`.
+- **Dashboard expiry-reminders widget queried a non-existent column** — the
+  widget joined `org_vehicles ov ON ov.global_vehicle_id = gv.id`, but
+  `org_vehicles.global_vehicle_id` is not a column on the model. The widget
+  now reads from `org_vehicles` directly for promoted vehicles and from
+  `global_vehicles` via `customer_vehicles` for un-promoted links. The
+  customer-name lookup now accepts either link type.
+- **Invoice display leaked cross-tenant `global_vehicles` Customer_Driven_Fields** —
+  `get_invoice` and `view_shared_invoice` (the public portal-token endpoint)
+  looked up `GlobalVehicle` by rego first. Inverted to prefer `OrgVehicle`
+  scoped to the invoice's `org_id`, falling back to `GlobalVehicle` only
+  when the org has no row for that rego.
+- **Notification/reminder services dropped reminders for promoted vehicles** —
+  three call sites in `notifications/service.py` and
+  `reminder_queue_service.py` did inner joins against `global_vehicles`,
+  silently excluding every link migrated to `org_vehicle_id`. Replaced with
+  two-pass queries covering both link types. Dedup keys standardised on
+  `customer_vehicles.id` so they survive the link migration.
+- **Data export CSV mislabelled promoted vehicles as `manual`** —
+  `data_io/service.py::export_vehicles_csv` hardcoded `"manual"` for every
+  `org_vehicles` row, but promoted rows have `is_manual_entry=False` and
+  were originally CarJam-sourced. The label is now
+  `("manual" if v.is_manual_entry else "carjam")`.
+
+### Security
+
+- **Closed multi-tenant data-leakage defect** — customer-driven vehicle
+  fields are now strictly isolated per organisation. One workshop's
+  odometer / WOF / COF / service-due / inspection-type writes are no
+  longer visible to other workshops via the shared `global_vehicles`
+  CarJam cache. RLS policies on `org_vehicles` and `customer_vehicles`
+  remain unchanged; the fix is a behavioural redirect that targets the
+  org-scoped table on every customer-driven write.
+- New audit-log actions: `vehicle.promote` (emitted on first promotion
+  of a rego per org, with `trigger_site` carried in `after_value`) and
+  `vehicle.manual_refresh` (emitted by the explicit "Refresh from CarJam"
+  action). Concurrent promotions for the same `(org_id, rego)` converge
+  on a single row via PostgreSQL advisory transaction lock
+  (`pg_advisory_xact_lock(hashtext(org_id), hashtext(rego))`); no schema
+  change required.
+
+### Notes
+
+- **One-time reminder duplication** — reminder dedup keys were migrated
+  from a vehicle-id-based scheme to a link-id-based scheme so dedup
+  survives the new vehicle isolation. As a one-time consequence,
+  reminders that fall within the lookahead window (≤ 30 days for
+  service-due, ≤ 14 days for WOF/COF) and were already sent before this
+  release may be sent a second time on the next scheduler run.
+  Subsequent runs dedup correctly.
+
+---
+
 ## [1.10.2] — 2026-05-25
 
 ### Added

@@ -1,6 +1,6 @@
 [project]
 name = "workshoppro-nz"
-version = "1.10.2"
+version = "1.10.3"
 description = "WorkshopPro NZ — Multi-tenant SaaS platform for NZ workshops"
 requires-python = ">=3.11"
 dependencies = [

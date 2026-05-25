@@ -239,25 +239,39 @@ async def log_odometer_reading(
     customer_vehicle_id: uuid.UUID,
     value_km: int,
 ) -> S.OdometerLogResponse:
-    """Strict-greater odometer log (Property 15 / Req 7.6, 7.7)."""
+    """Strict-greater odometer log (Property 15 / Req 7.6, 7.7).
+
+    Per the vehicle-data-isolation spec (Task 6.1), customer-driven
+    odometer cache updates land on ``org_vehicles.odometer_last_recorded``
+    — not on the shared ``global_vehicles.odometer_last_recorded`` column.
+    The first fleet-portal odometer log against a ``global_vehicles``-
+    backed rego promotes the vehicle for the calling org via
+    :func:`promote_vehicle` and bumps the per-org snapshot. The history
+    row in ``odometer_readings`` continues to key on ``global_vehicle_id``
+    (Req 11.1, 11.2).
+    """
+    from app.modules.admin.models import GlobalVehicle
     from app.modules.vehicles.models import CustomerVehicle, OdometerReading
+    from app.modules.vehicles.service import promote_vehicle
 
     base = await _vehicle_query_for_session(db, ctx)
     cv_row = (await db.execute(base.where(CustomerVehicle.id == customer_vehicle_id))).scalars().first()
     if cv_row is None:
         raise ValueError("Vehicle not found")
 
-    # Find the previous max from the existing odometer_readings table
-    # plus the global vehicle's last-recorded value.
-    from app.modules.admin.models import GlobalVehicle
-
     gv = cv_row.global_vehicle
     ov = cv_row.org_vehicle
 
+    # Find the previous max from the existing odometer_readings history
+    # plus the cache columns on whichever vehicle row(s) back this link.
+    # NOTE: the model's column is ``reading_km`` — the legacy
+    # ``OdometerReading.odometer_km`` reference here was a runtime
+    # AttributeError waiting to happen (the actual column on
+    # ``app/modules/vehicles/models.py:171`` is ``reading_km``).
     previous_max = 0
     if gv is not None:
         previous_max = max(previous_max, gv.odometer_last_recorded or 0)
-        last_reading_q = select(func.max(OdometerReading.odometer_km)).where(
+        last_reading_q = select(func.max(OdometerReading.reading_km)).where(
             OdometerReading.global_vehicle_id == gv.id
         )
         prev = (await db.execute(last_reading_q)).scalar()
@@ -271,14 +285,40 @@ async def log_odometer_reading(
             f"Odometer reading must be greater than the most recent recorded value of {previous_max} km"
         )
 
-    # Persist on the global_vehicles last-recorded column when available;
-    # also append an odometer_readings row for history.
     now = datetime.now(timezone.utc)
     if gv is not None:
-        gv.odometer_last_recorded = value_km
-        reading = OdometerReading(global_vehicle_id=gv.id, odometer_km=value_km, recorded_at=now)
+        # First customer-driven write against a ``global_vehicles``-backed
+        # rego: promote for the calling org, then bump the per-org cache
+        # column. The shared ``global_vehicles.odometer_last_recorded``
+        # is intentionally NOT touched (Req 1.4, 3.5).
+        promoted_ov = await promote_vehicle(
+            db,
+            org_id=ctx.org_id,
+            global_vehicle_id=gv.id,
+            source_record=gv,
+            user_id=ctx.portal_account_id,
+            trigger_site="fleet_portal.record_odometer",
+        )
+        promoted_ov.odometer_last_recorded = value_km
+
+        # History row keys on global_vehicle_id (Req 11.1, 11.2). The
+        # ``ck_odometer_readings_source`` CHECK constraint allows only
+        # ``carjam/manual/invoice/kiosk``; ``manual`` is the right label
+        # for a fleet user logging a reading by hand.
+        reading = OdometerReading(
+            global_vehicle_id=gv.id,
+            reading_km=value_km,
+            source="manual",
+            recorded_by=ctx.portal_account_id,
+            org_id=ctx.org_id,
+            recorded_at=now,
+        )
         db.add(reading)
     elif ov is not None:
+        # Already promoted (or manually entered) for this org — just bump
+        # the per-org snapshot. No ``global_vehicle_id`` is available so
+        # no history row is inserted (the existing-org path mirrors the
+        # pre-existing behaviour).
         ov.odometer_last_recorded = value_km
 
     await db.flush()

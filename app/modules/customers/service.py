@@ -120,7 +120,7 @@ async def search_customers(
 
     Requirements: 11.1, 11.2, 11.3, 11.6
     """
-    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
     from app.modules.admin.models import GlobalVehicle
 
     # Gate linked_vehicles behind vehicles module (Req 6.1, 6.2)
@@ -243,10 +243,24 @@ async def search_customers(
         cust_dict["unused_credits"] = credits_map.get(c.id, 0.0)
         
         if include_vehicles:
-            # Fetch linked vehicles for this customer
+            # Fetch linked vehicles for this customer.
+            #
+            # Use a double outerjoin so we capture both link types:
+            #  - Pre-promotion / unmigrated links (``global_vehicle_id`` set,
+            #    ``org_vehicle_id`` NULL) — read from ``GlobalVehicle``.
+            #  - Post-promotion / migrated links (``org_vehicle_id`` set,
+            #    ``global_vehicle_id`` NULL) — read from ``OrgVehicle``.
+            # The ``vehicle_link_check`` CHECK constraint guarantees exactly
+            # one of the two columns is non-NULL, so ``v = gv if gv else ov``
+            # always picks the correct source. Migrations 0105 and 0181
+            # established schema parity, so every consumed attribute (rego,
+            # make, model, year, colour, odometer_last_recorded,
+            # service_due_date, wof_expiry, cof_expiry, inspection_type)
+            # exists identically on both records.
             cv_stmt = (
-                select(CustomerVehicle, GlobalVehicle)
+                select(CustomerVehicle, GlobalVehicle, OrgVehicle)
                 .outerjoin(GlobalVehicle, CustomerVehicle.global_vehicle_id == GlobalVehicle.id)
+                .outerjoin(OrgVehicle, CustomerVehicle.org_vehicle_id == OrgVehicle.id)
                 .where(
                     CustomerVehicle.customer_id == c.id,
                     CustomerVehicle.org_id == org_id,
@@ -255,20 +269,26 @@ async def search_customers(
             )
             cv_result = await db.execute(cv_stmt)
             linked_vehicles = []
-            for cv, gv in cv_result.all():
-                if gv:
+            for cv, gv, ov in cv_result.all():
+                v = gv if gv is not None else ov
+                if v is not None:
                     linked_vehicles.append({
-                        "id": str(gv.id),
-                        "rego": gv.rego,
-                        "make": gv.make,
-                        "model": gv.model,
-                        "year": gv.year,
-                        "colour": gv.colour,
-                        "odometer": gv.odometer_last_recorded,
-                        "service_due_date": gv.service_due_date.isoformat() if gv.service_due_date else None,
-                        "wof_expiry": gv.wof_expiry.isoformat() if gv.wof_expiry else None,
-                        "cof_expiry": gv.cof_expiry.isoformat() if gv.cof_expiry else None,
-                        "inspection_type": gv.inspection_type,
+                        "id": str(v.id),
+                        "rego": v.rego,
+                        "make": v.make,
+                        "model": v.model,
+                        "year": v.year,
+                        "colour": v.colour,
+                        "odometer": v.odometer_last_recorded,
+                        "service_due_date": v.service_due_date.isoformat() if v.service_due_date else None,
+                        "wof_expiry": v.wof_expiry.isoformat() if v.wof_expiry else None,
+                        "cof_expiry": v.cof_expiry.isoformat() if v.cof_expiry else None,
+                        "inspection_type": v.inspection_type,
+                        # Optional source tag — frontend ignores unknown keys
+                        # per safe-api-consumption.md. Useful for downstream
+                        # consumers (e.g. tests, future features) that need
+                        # to know which record-type the row came from.
+                        "source": "org" if gv is None else "global",
                     })
             cust_dict["linked_vehicles"] = linked_vehicles
         
@@ -932,7 +952,23 @@ async def tag_vehicle_to_customer(
 
     Exactly one of ``global_vehicle_id`` or ``org_vehicle_id`` must be provided.
 
-    Requirements: 12.3
+    vehicle-data-isolation Task 9.1: when ``global_vehicle_id`` is supplied,
+    promote the vehicle for the calling org first via ``promote_vehicle`` and
+    create the link with ``org_vehicle_id`` set / ``global_vehicle_id`` cleared
+    so the resulting ``customer_vehicles`` row points at the per-org snapshot,
+    not the cross-tenant cache (Req 2.3, 3.6).
+
+    Pre-flight controller-guard check: ``app/modules/customers/router.py``
+    exposes this via ``POST /api/v1/customers/{customer_id}/vehicles`` and
+    performs no duplicate-link check before invoking us — silently allowing
+    duplicate ``customer_vehicles`` rows for the same ``(org_id, customer_id,
+    rego)`` is the same defect Task 11.7 fixes elsewhere. We add the guard
+    here at the service layer using the post-promotion identity (rego-keyed
+    via the matching ``OrgVehicle``/``GlobalVehicle.rego``), and raise
+    ``ConflictError`` so the router can return HTTP 409.
+
+    Requirements: 12.3, 2.3, 3.6
+    Design: Code Changes per File → ``app/modules/customers/service.py``.
     """
     from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
     from app.modules.admin.models import GlobalVehicle
@@ -954,8 +990,14 @@ async def tag_vehicle_to_customer(
     if customer is None:
         raise ValueError("Customer not found")
 
-    # Verify vehicle exists
-    vehicle_info = {}
+    # Verify vehicle exists. For a global_vehicle_id, promote the rego for
+    # this org so the link points at the per-org snapshot; rebind every
+    # variable that referenced the pre-promotion identity (gv) to the new
+    # OrgVehicle (ov) BEFORE the link-existence check and the
+    # ``CustomerVehicle`` constructor (Implementation Note — Local Variable
+    # Rebinding After Promotion).
+    vehicle_info: dict = {}
+    target_rego: str | None = None
     if global_vehicle_id:
         gv_result = await db.execute(
             select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
@@ -963,13 +1005,35 @@ async def tag_vehicle_to_customer(
         gv = gv_result.scalar_one_or_none()
         if gv is None:
             raise ValueError("Global vehicle not found")
+
+        # Promote first — returns the existing org_vehicles row idempotently
+        # if the org has already been promoted for this rego.
+        from app.modules.vehicles.service import promote_vehicle
+
+        ov = await promote_vehicle(
+            db,
+            org_id=org_id,
+            global_vehicle_id=gv.id,
+            source_record=gv,
+            user_id=user_id,
+            trigger_site="customers.link",
+            ip_address=ip_address,
+        )
+
+        # Rebind so the existence check and CustomerVehicle constructor
+        # below see the post-promotion identity. global_vehicle_id is set
+        # to None on the link to satisfy the either-or vehicle_link_check
+        # constraint and Req 2.3.
+        global_vehicle_id = None
+        org_vehicle_id = ov.id
+        target_rego = ov.rego
         vehicle_info = {
-            "rego": gv.rego,
-            "make": gv.make,
-            "model": gv.model,
-            "year": gv.year,
-            "colour": gv.colour,
-            "source": "global",
+            "rego": ov.rego,
+            "make": ov.make,
+            "model": ov.model,
+            "year": ov.year,
+            "colour": ov.colour,
+            "source": "org",
         }
     else:
         ov_result = await db.execute(
@@ -981,6 +1045,7 @@ async def tag_vehicle_to_customer(
         ov = ov_result.scalar_one_or_none()
         if ov is None:
             raise ValueError("Organisation vehicle not found")
+        target_rego = ov.rego
         vehicle_info = {
             "rego": ov.rego,
             "make": ov.make,
@@ -989,6 +1054,45 @@ async def tag_vehicle_to_customer(
             "colour": ov.colour,
             "source": "org",
         }
+
+    # Pre-flight duplicate-link guard — same defect Task 11.7 fixes at the
+    # invoice/booking/kiosk/fleet-portal sites. Use the post-promotion
+    # identity (org_vehicle_id) — at this point all paths have set
+    # global_vehicle_id=None and org_vehicle_id=<the resolved OrgVehicle.id>.
+    # Also include the rego-keyed match against any unmigrated link still
+    # pointing at a global_vehicles row for the same rego (covers the case
+    # where promotion was a no-op because the OrgVehicle already existed
+    # but a stale global-id-keyed link is still on file).
+    duplicate_q = select(CustomerVehicle).where(
+        CustomerVehicle.org_id == org_id,
+        CustomerVehicle.customer_id == customer_id,
+        CustomerVehicle.org_vehicle_id == org_vehicle_id,
+    ).limit(1)
+    existing = await db.execute(duplicate_q)
+    if existing.scalar_one_or_none() is not None:
+        raise LookupError(
+            "Vehicle is already linked to this customer"
+        )
+    if target_rego:
+        # Catch unmigrated legacy links keyed on global_vehicle_id for the
+        # same rego (Task 11.7 fallout — duplicate-prevention must use the
+        # post-promotion identity AND any pre-existing global-id-keyed link
+        # for the same rego).
+        legacy_q = (
+            select(CustomerVehicle)
+            .join(GlobalVehicle, CustomerVehicle.global_vehicle_id == GlobalVehicle.id)
+            .where(
+                CustomerVehicle.org_id == org_id,
+                CustomerVehicle.customer_id == customer_id,
+                func.upper(GlobalVehicle.rego) == target_rego.upper(),
+            )
+            .limit(1)
+        )
+        legacy_existing = await db.execute(legacy_q)
+        if legacy_existing.scalar_one_or_none() is not None:
+            raise LookupError(
+                "Vehicle is already linked to this customer"
+            )
 
     # Create the link
     cv = CustomerVehicle(
@@ -1817,7 +1921,7 @@ async def get_customer_reminder_config(
     customer_id: uuid.UUID,
 ) -> dict:
     """Return per-customer reminder configuration with vehicle expiry data."""
-    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
     from app.modules.admin.models import GlobalVehicle
 
     result = await db.execute(
@@ -1833,10 +1937,18 @@ async def get_customer_reminder_config(
     custom_fields = customer.custom_fields or {}
     config = custom_fields.get(REMINDER_CONFIG_KEY, {})
 
-    # Fetch linked vehicles with expiry dates (global vehicles only)
+    # Fetch linked vehicles with expiry dates.
+    #
+    # vehicle-data-isolation Task 11.2: use a double outerjoin so we
+    # capture both link types — pre-promotion links pointing at
+    # GlobalVehicle and post-promotion links pointing at OrgVehicle.
+    # The previous inner-join on global_vehicle_id silently dropped any
+    # link migrated to org_vehicle_id, hiding promoted vehicles from
+    # the reminder configuration UI (Req 6.1, 6.2, 6.5, 15.5).
     cv_stmt = (
-        select(CustomerVehicle, GlobalVehicle)
-        .join(GlobalVehicle, CustomerVehicle.global_vehicle_id == GlobalVehicle.id)
+        select(CustomerVehicle, GlobalVehicle, OrgVehicle)
+        .outerjoin(GlobalVehicle, CustomerVehicle.global_vehicle_id == GlobalVehicle.id)
+        .outerjoin(OrgVehicle, CustomerVehicle.org_vehicle_id == OrgVehicle.id)
         .where(
             CustomerVehicle.customer_id == customer_id,
             CustomerVehicle.org_id == org_id,
@@ -1846,15 +1958,27 @@ async def get_customer_reminder_config(
     vehicle_rows = cv_result.all()
 
     vehicles = []
-    for cv, gv in vehicle_rows:
+    for cv, gv, ov in vehicle_rows:
+        # Prefer the per-org snapshot when available (post-promotion);
+        # fall back to the cross-tenant cache for unmigrated links
+        # (Read_Fallback per Req 6.5). The vehicle_link_check CHECK
+        # constraint guarantees exactly one of (gv, ov) is non-NULL.
+        v = gv if gv is not None else ov
+        if v is None:
+            continue
         vehicles.append({
-            "global_vehicle_id": str(gv.id),
-            "rego": gv.rego,
-            "make": gv.make,
-            "model": gv.model,
-            "year": gv.year,
-            "service_due_date": gv.service_due_date.isoformat() if gv.service_due_date else None,
-            "wof_expiry": gv.wof_expiry.isoformat() if gv.wof_expiry else None,
+            # Preserve the existing payload key for backwards compatibility
+            # (frontend keys `vehicleDateEdits` by this id). For promoted
+            # links we report the org_vehicle id; for legacy links we
+            # report the global_vehicle id. Either is valid input to
+            # update_vehicle_expiry_dates which resolves both forms.
+            "global_vehicle_id": str(v.id),
+            "rego": v.rego,
+            "make": v.make,
+            "model": v.model,
+            "year": v.year,
+            "service_due_date": v.service_due_date.isoformat() if v.service_due_date else None,
+            "wof_expiry": v.wof_expiry.isoformat() if v.wof_expiry else None,
         })
 
     return {
@@ -1916,17 +2040,62 @@ async def update_vehicle_expiry_dates(
     org_id: uuid.UUID,
     customer_id: uuid.UUID,
     vehicle_updates: list[dict],
+    user_id: uuid.UUID | None = None,
+    ip_address: str | None = None,
 ) -> list[dict]:
-    """Update service_due_date and wof_expiry on global vehicles linked to a customer.
+    """Update service_due_date, wof_expiry, and cof_expiry on the calling
+    org's per-org snapshot of vehicles linked to a customer.
 
-    vehicle_updates is a list of dicts like:
-    [
-        {"global_vehicle_id": "...", "service_due_date": "2026-06-01", "wof_expiry": "2026-05-15"},
-    ]
+    vehicle_updates is a list of dicts like::
 
-    Only updates fields that are provided (non-None). Returns updated vehicle data.
+        [
+            {
+                "global_vehicle_id": "...",
+                "service_due_date": "2026-06-01",
+                "wof_expiry": "2026-05-15",
+                "cof_expiry": "2026-05-15",
+            },
+        ]
+
+    Only updates fields that are provided (non-None). Returns updated
+    vehicle data.
+
+    vehicle-data-isolation Task 10.1: previously this function wrote
+    ``service_due_date`` and ``wof_expiry`` directly to ``global_vehicles``,
+    leaking customer-driven state across organisations (Req 1.2). It now:
+
+    1. If the linked vehicle resolves to a ``GlobalVehicle`` and the org
+       has not yet been promoted for this rego, calls ``promote_vehicle``
+       to copy the row into ``org_vehicles`` for the calling org, then
+       writes the new dates to that ``OrgVehicle`` (Req 2.2, 3.6, 14.1).
+    2. Migrates the ``customer_vehicles`` link from ``global_vehicle_id``
+       to ``org_vehicle_id`` via ``migrate_link_to_org_vehicle`` so
+       subsequent reads resolve to the per-org snapshot (Req 2.4).
+    3. If the linked vehicle already resolves to an ``OrgVehicle`` for
+       this org (the link was migrated by an earlier promotion, but the
+       client still keys ``vehicleDateEdits`` by the original
+       ``global_vehicles`` id), writes directly without re-promoting.
+    4. Adds the previously-missing ``cof_expiry`` branch — the endpoint
+       was silently dropping ``cof_expiry`` from the request payload
+       (frontend already sends it; backend was discarding it).
+
+    The payload key remains ``global_vehicle_id`` for backwards
+    compatibility — the frontend keys ``vehicleDateEdits`` by the id it
+    receives from search/profile endpoints, which today is the
+    ``global_vehicles`` row id. We accept that id and resolve the
+    matching link via either ``cv.global_vehicle_id == :id`` (legacy
+    unmigrated link) or by rego-matching when the link has already
+    been migrated to ``org_vehicle_id`` for this org.
+
+    Requirements: 1.2, 1.5, 2.2, 2.4, 3.6, 9.4, 9.5, 14.1
+    Design: Code Changes per File → ``app/modules/customers/service.py``
+            (extend ``update_vehicle_expiry_dates``).
     """
-    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
+    from app.modules.vehicles.service import (
+        migrate_link_to_org_vehicle,
+        promote_vehicle,
+    )
     from app.modules.admin.models import GlobalVehicle
     from datetime import date
 
@@ -1948,50 +2117,133 @@ async def update_vehicle_expiry_dates(
             continue
 
         try:
-            gv_id = uuid.UUID(gv_id_str)
+            payload_id = uuid.UUID(gv_id_str)
         except (ValueError, TypeError):
             continue
 
-        # Verify this vehicle is linked to this customer
-        cv_check = await db.execute(
+        # Resolve the link for this customer. Two cases:
+        #   (a) Legacy / pre-promotion link — cv.global_vehicle_id ==
+        #       payload_id (the row in customer_vehicles still points
+        #       at global_vehicles).
+        #   (b) Already-promoted link — the frontend sent the original
+        #       global_vehicle_id but the link was migrated to
+        #       org_vehicle_id by a previous promotion; locate it by
+        #       rego-matching the OrgVehicle row for this org.
+        cv_result = await db.execute(
             select(CustomerVehicle).where(
                 CustomerVehicle.customer_id == customer_id,
                 CustomerVehicle.org_id == org_id,
-                CustomerVehicle.global_vehicle_id == gv_id,
+                CustomerVehicle.global_vehicle_id == payload_id,
             )
         )
-        if cv_check.scalar_one_or_none() is None:
+        cv = cv_result.scalar_one_or_none()
+
+        target_ov: OrgVehicle | None = None
+        target_gv: GlobalVehicle | None = None
+
+        if cv is not None:
+            # Legacy link path. Need to promote (or look up an existing
+            # promoted org_vehicles row by rego) before writing.
+            gv_result = await db.execute(
+                select(GlobalVehicle).where(GlobalVehicle.id == payload_id)
+            )
+            target_gv = gv_result.scalar_one_or_none()
+            if target_gv is None:
+                continue
+        else:
+            # No legacy link found. Try the already-promoted path: look
+            # up the GlobalVehicle by id (still cached cross-tenant), find
+            # this org's OrgVehicle for that rego, then locate the
+            # customer_vehicles row pointing at that OrgVehicle.
+            gv_result = await db.execute(
+                select(GlobalVehicle).where(GlobalVehicle.id == payload_id)
+            )
+            gv_for_lookup = gv_result.scalar_one_or_none()
+            if gv_for_lookup is not None:
+                ov_result = await db.execute(
+                    select(OrgVehicle).where(
+                        OrgVehicle.org_id == org_id,
+                        func.upper(OrgVehicle.rego) == func.upper(gv_for_lookup.rego),
+                    )
+                )
+                ov_lookup = ov_result.scalar_one_or_none()
+                if ov_lookup is not None:
+                    cv2_result = await db.execute(
+                        select(CustomerVehicle).where(
+                            CustomerVehicle.customer_id == customer_id,
+                            CustomerVehicle.org_id == org_id,
+                            CustomerVehicle.org_vehicle_id == ov_lookup.id,
+                        )
+                    )
+                    cv = cv2_result.scalar_one_or_none()
+                    if cv is not None:
+                        target_ov = ov_lookup
+            if cv is None:
+                # No matching link for this customer — skip silently as
+                # the legacy code did.
+                continue
+
+        # If we still have a GlobalVehicle to promote, do it now and
+        # migrate the link so subsequent reads resolve to the per-org
+        # snapshot. promote_vehicle is idempotent — if another path
+        # already promoted this rego in the current transaction it
+        # returns the existing OrgVehicle.
+        if target_ov is None and target_gv is not None:
+            target_ov = await promote_vehicle(
+                db,
+                org_id=org_id,
+                global_vehicle_id=target_gv.id,
+                source_record=target_gv,
+                user_id=user_id,
+                trigger_site="customers.update_vehicle_dates",
+                ip_address=ip_address,
+            )
+            # Migrate only when the link still points at the global row
+            # (covers the case where target_ov pre-existed via a manual
+            # entry but cv was created against global_vehicle_id).
+            if cv.global_vehicle_id is not None and cv.org_vehicle_id is None:
+                await migrate_link_to_org_vehicle(
+                    db,
+                    customer_vehicle_id=cv.id,
+                    org_vehicle_id=target_ov.id,
+                )
+
+        if target_ov is None:
             continue
 
-        # Fetch and update the global vehicle
-        gv_result = await db.execute(
-            select(GlobalVehicle).where(GlobalVehicle.id == gv_id)
-        )
-        gv = gv_result.scalar_one_or_none()
-        if gv is None:
-            continue
-
+        # Apply the writes to the per-org snapshot. global_vehicles is
+        # never touched (Req 1.2).
         sdd = vu.get("service_due_date")
         if sdd is not None:
             try:
-                gv.service_due_date = date.fromisoformat(sdd) if sdd else None
+                target_ov.service_due_date = date.fromisoformat(sdd) if sdd else None
             except (ValueError, TypeError):
                 pass
 
         wof = vu.get("wof_expiry")
         if wof is not None:
             try:
-                gv.wof_expiry = date.fromisoformat(wof) if wof else None
+                target_ov.wof_expiry = date.fromisoformat(wof) if wof else None
+            except (ValueError, TypeError):
+                pass
+
+        cof = vu.get("cof_expiry")
+        if cof is not None:
+            try:
+                target_ov.cof_expiry = date.fromisoformat(cof) if cof else None
             except (ValueError, TypeError):
                 pass
 
         await db.flush()
 
         updated.append({
-            "global_vehicle_id": str(gv.id),
-            "rego": gv.rego,
-            "service_due_date": gv.service_due_date.isoformat() if gv.service_due_date else None,
-            "wof_expiry": gv.wof_expiry.isoformat() if gv.wof_expiry else None,
+            # Preserve the request key name for backwards compatibility —
+            # the frontend echoes this back when keying vehicleDateEdits.
+            "global_vehicle_id": str(payload_id),
+            "rego": target_ov.rego,
+            "service_due_date": target_ov.service_due_date.isoformat() if target_ov.service_due_date else None,
+            "wof_expiry": target_ov.wof_expiry.isoformat() if target_ov.wof_expiry else None,
+            "cof_expiry": target_ov.cof_expiry.isoformat() if target_ov.cof_expiry else None,
         })
 
     return updated

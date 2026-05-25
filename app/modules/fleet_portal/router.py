@@ -1949,16 +1949,40 @@ async def add_vehicle_to_fleet(
     """Add a vehicle to the current fleet (Req 6.5).
 
     Strategy: look up the rego in ``global_vehicles``; if a row exists,
-    link it. Otherwise create an ``org_vehicles`` row and link that.
+    promote it for the calling org via :func:`promote_vehicle` and link
+    via ``org_vehicle_id`` (vehicle-data-isolation Task 7.1). Otherwise
+    create an ``org_vehicles`` row directly with ``is_manual_entry=True``
+    and link that — the manual-entry path is born org-scoped and bypasses
+    promotion (vehicle-data-isolation design, B2B Fleet Portal Impact).
     Either way, the ``customer_vehicles`` link is keyed to the fleet
     account's ``customer_id`` so RLS and join paths agree.
+
+    Per the vehicle-data-isolation spec (Task 7.1), when a
+    ``GlobalVehicle`` row resolves for the supplied rego we must:
+
+    1. Call :func:`promote_vehicle` first so the per-org snapshot
+       (``org_vehicles``) is created/found before any link is built.
+    2. **Rebind ``gv = None`` and ``ov = <returned>``** before both the
+       link-existence query and the ``CustomerVehicle(...)`` constructor.
+       Without the rebind, the existence query would still filter on
+       ``CustomerVehicle.global_vehicle_id == gv.id`` (the original gv
+       id) and the constructor would still pass ``global_vehicle_id=
+       gv.id``, atomically undoing the promotion at link-create time.
+       This is the same rebind discipline as Task 4.1 (invoices) and
+       Task 6.2 (fleet-portal edit_vehicle).
     """
-    from sqlalchemy import select as _select
+    from sqlalchemy import (
+        and_ as _and_,
+        func as _func,
+        or_ as _or_,
+        select as _select,
+    )
     from app.modules.admin.models import GlobalVehicle
     from app.modules.vehicles.models import (
         CustomerVehicle,
         OrgVehicle,
     )
+    from app.modules.vehicles.service import promote_vehicle
     from app.modules.fleet_portal.models import (
         FleetReminderPreference,
         PortalFleetAccount,
@@ -1982,15 +2006,47 @@ async def add_vehicle_to_fleet(
         raise HTTPException(status_code=404, detail="Fleet account not found")
     customer_id = fa_row[0]
 
-    # Try GlobalVehicle first (CarJam-sourced)
+    # Try GlobalVehicle first (CarJam-sourced). When a ``global_vehicles``
+    # row exists for this rego, the calling org needs its own per-org
+    # snapshot before we link — otherwise the resulting
+    # ``customer_vehicles`` row would point at the cross-tenant cache and
+    # any subsequent customer-driven write would leak into other orgs'
+    # views (Req 1.4, 7.2). The same code path serves both the admin-link
+    # workflow (admin selects an existing CarJam-cached rego) and the
+    # CarJam-import workflow (frontend calls ``/api/v1/vehicles/lookup``
+    # to populate ``global_vehicles`` immediately before this endpoint).
     gv_res = await db.execute(
         _select(GlobalVehicle).where(GlobalVehicle.rego == rego).limit(1)
     )
     gv = gv_res.scalars().first()
 
     ov: OrgVehicle | None = None
-    if gv is None:
-        # Try existing OrgVehicle for this org so we don't duplicate
+    if gv is not None:
+        # Promote the rego for the calling org BEFORE any link query or
+        # constructor sees the original gv reference (vehicle-data-
+        # isolation Task 7.1). ``promote_vehicle`` is idempotent — if the
+        # org already has an ``org_vehicles`` row for this rego (e.g. via
+        # a prior promotion through invoices/kiosk/fleet-portal edit) it
+        # returns that existing row.
+        ov = await promote_vehicle(
+            db,
+            org_id=ctx.org_id,
+            global_vehicle_id=gv.id,
+            source_record=gv,
+            user_id=ctx.portal_account_id,
+            trigger_site="fleet_portal.admin_link",
+        )
+        # Rebind so the link-existence query and the ``CustomerVehicle``
+        # constructor below operate on the post-promotion identity. This
+        # is the discipline called out in the spec's "Implementation
+        # Note — Local Variable Rebinding": failing to clear ``gv`` here
+        # would silently re-link via ``global_vehicle_id`` and undo the
+        # promotion atomically with the create.
+        gv = None
+    else:
+        # No CarJam-sourced row for this rego — fall through to the
+        # manual-entry path, which is born org-scoped and does not need
+        # promotion (the row is already in ``org_vehicles``).
         ov_res = await db.execute(
             _select(OrgVehicle).where(
                 OrgVehicle.org_id == ctx.org_id,
@@ -2009,20 +2065,39 @@ async def add_vehicle_to_fleet(
             await db.flush()
             await db.refresh(ov)
 
-    # Refuse to double-link the same vehicle to the same customer
-    existing_link_q = _select(CustomerVehicle).where(
-        CustomerVehicle.org_id == ctx.org_id,
-        CustomerVehicle.customer_id == customer_id,
+    # Refuse to double-link the same vehicle to the same customer.
+    # vehicle-data-isolation Task 11.7: widened, rego-keyed existence
+    # check that catches legacy ``global_vehicle_id``-keyed links from
+    # pre-promotion plus the post-promotion ``org_vehicle_id`` link, so
+    # an admin attempting to add an already-promoted-elsewhere vehicle
+    # to the fleet is rejected with HTTP 409 rather than creating a
+    # duplicate ``customer_vehicles`` row (Req 3.4, 9.6, 13.3). Both
+    # ``GlobalVehicle.rego`` (case-insensitive) and ``OrgVehicle.rego``
+    # for the calling org are matched.
+    existing_link_q = (
+        _select(CustomerVehicle)
+        .outerjoin(
+            GlobalVehicle,
+            CustomerVehicle.global_vehicle_id == GlobalVehicle.id,
+        )
+        .outerjoin(
+            OrgVehicle,
+            CustomerVehicle.org_vehicle_id == OrgVehicle.id,
+        )
+        .where(
+            CustomerVehicle.org_id == ctx.org_id,
+            CustomerVehicle.customer_id == customer_id,
+            _or_(
+                _func.upper(GlobalVehicle.rego) == rego,
+                _and_(
+                    OrgVehicle.org_id == ctx.org_id,
+                    _func.upper(OrgVehicle.rego) == rego,
+                ),
+            ),
+        )
+        .limit(1)
     )
-    if gv is not None:
-        existing_link_q = existing_link_q.where(
-            CustomerVehicle.global_vehicle_id == gv.id
-        )
-    elif ov is not None:
-        existing_link_q = existing_link_q.where(
-            CustomerVehicle.org_vehicle_id == ov.id
-        )
-    existing_link = (await db.execute(existing_link_q.limit(1))).scalars().first()
+    existing_link = (await db.execute(existing_link_q)).scalars().first()
     if existing_link is not None:
         raise HTTPException(
             status_code=409,
@@ -2076,13 +2151,45 @@ async def edit_vehicle(
     Per-role allowlist enforced via
     ``vehicle_service.allowed_fields_for_role``. Unknown or disallowed
     field names return HTTP 403.
+
+    Per the vehicle-data-isolation spec (Task 6.2): when the resolved
+    target is the shared ``global_vehicles`` row and the payload writes
+    any Customer_Driven_Field (``odometer_last_recorded``,
+    ``service_due_date``, ``wof_expiry``, ``cof_expiry``,
+    ``inspection_type``), the vehicle is promoted for the calling org
+    via :func:`promote_vehicle` and the local ``target`` reference is
+    rebound to the new ``OrgVehicle`` BEFORE the ``setattr`` loop runs.
+    Without the rebind, the loop would still write to
+    ``cv.global_vehicle`` and one org's operational state would leak
+    into the cross-tenant cache (Req 1.4, 3.5, 7.1, 7.4).
     """
     from sqlalchemy import select as _select
+    from app.modules.admin.models import GlobalVehicle
     from app.modules.fleet_portal.services.vehicle_service import (
         _vehicle_query_for_session,
         allowed_fields_for_role,
     )
     from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.vehicles.service import (
+        migrate_link_to_org_vehicle,
+        promote_vehicle,
+    )
+
+    # Customer_Driven_Fields per the vehicle-data-isolation spec — when
+    # any of these is in the payload AND the resolved target is the
+    # shared ``global_vehicles`` row, we MUST promote the vehicle for
+    # the calling org first so the writes land on the per-org snapshot
+    # (Req 1.4, 3.5, 7.1, 7.4). Same five fields enumerated by every
+    # other promotion trigger site in the spec.
+    _CUSTOMER_DRIVEN_FIELDS: frozenset[str] = frozenset(
+        {
+            "odometer_last_recorded",
+            "service_due_date",
+            "wof_expiry",
+            "cof_expiry",
+            "inspection_type",
+        }
+    )
 
     base = await _vehicle_query_for_session(db, ctx)
     cv = (
@@ -2110,6 +2217,44 @@ async def edit_vehicle(
     if target is None:
         await db.flush()
         return S.StatusResponse(ok=True)
+
+    # Promotion gate (Task 6.2): if the resolved target is a
+    # ``GlobalVehicle`` and the payload would write any
+    # Customer_Driven_Field, promote the vehicle for the calling org
+    # FIRST and then **rebind ``target`` to the new ``OrgVehicle``**
+    # before the ``setattr`` loop runs. Without the rebind, ``setattr``
+    # writes still target ``cv.global_vehicle`` because ``cv`` was
+    # loaded earlier in the function and the relationship attribute
+    # still points at the ``GlobalVehicle`` — that would silently leak
+    # one org's odometer/WOF/COF/service-due/inspection-type values to
+    # every other org sharing the same ``global_vehicles`` row.
+    #
+    # The same loop can write 1..N fields, each of which would
+    # individually leak; promotion + rebind protects all of them.
+    if isinstance(target, GlobalVehicle) and any(
+        k in _CUSTOMER_DRIVEN_FIELDS for k in payload.keys()
+    ):
+        gv = target
+        ov = await promote_vehicle(
+            db,
+            org_id=ctx.org_id,
+            global_vehicle_id=gv.id,
+            source_record=gv,
+            user_id=ctx.portal_account_id,
+            trigger_site="fleet_portal.update_field",
+        )
+        # Rebind so the setattr loop below writes to ``org_vehicles``,
+        # not the shared ``global_vehicles`` cache.
+        target = ov
+        # Migrate the customer_vehicles link if it still points at the
+        # ``global_vehicle_id`` so subsequent reads/edits resolve the
+        # per-org snapshot natively.
+        if cv.global_vehicle_id is not None and cv.org_vehicle_id is None:
+            await migrate_link_to_org_vehicle(
+                db,
+                customer_vehicle_id=cv.id,
+                org_vehicle_id=ov.id,
+            )
 
     for key, value in payload.items():
         # Some fields (fleet_internal_name, fleet_number) only exist on

@@ -432,7 +432,10 @@ async def test_checkin_links_all_confirmed_vehicles(
         new=AsyncMock(),
     ) as mock_link, patch(
         "app.modules.kiosk.service.OdometerReading",
-    ) as mock_odometer_cls:
+    ) as mock_odometer_cls, patch(
+        "app.modules.vehicles.service.promote_vehicle",
+        new=AsyncMock(return_value=MagicMock(odometer_last_recorded=None)),
+    ):
         # OdometerReading() returns a mock object that db.add can accept
         mock_odometer_cls.return_value = MagicMock()
 
@@ -567,6 +570,9 @@ async def test_odometer_recording_for_vehicles_with_readings(
     ), patch(
         "app.modules.kiosk.service.OdometerReading",
         side_effect=capture_odometer,
+    ), patch(
+        "app.modules.vehicles.service.promote_vehicle",
+        new=AsyncMock(return_value=MagicMock(odometer_last_recorded=None)),
     ):
         result = await kiosk_check_in_v2(
             db,
