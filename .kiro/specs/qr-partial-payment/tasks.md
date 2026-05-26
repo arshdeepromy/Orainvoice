@@ -430,7 +430,7 @@ Existing behaviour is preserved when `amount` is omitted — every backend path 
     - Frontend: stop frontend + nginx, remove containers, delete `invoicing_frontend_dist` volume, rebuild with `--build` (per project deployment notes for frontend changes)
     - **Do NOT** sync to Pi (192.168.1.90), **do NOT** deploy to PROD or any standby. This spec ships to dev only
     - _Requirements: Release discipline_
-  - [-] 17.5 Commit and push to GitHub
+  - [x] 17.5 Commit and push to GitHub
     - Stage the spec changes (`.kiro/specs/qr-partial-payment/`), all source changes (`app/`, `frontend/`, `mobile/`, `alembic/versions/`), version bumps, and `CHANGELOG.md` / `docs/ISSUE_TRACKER.md` updates
     - Commit message format: `feat(payments): partial-amount QR payments` followed by a short body listing the new endpoint capability, migration revision, and version bump
     - Push to `main` on `arshdeepromy/Orainvoice`. Pi has no auto-pull — pushing is for source-of-truth/history only and does NOT trigger a Pi deploy

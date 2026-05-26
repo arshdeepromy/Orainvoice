@@ -434,15 +434,15 @@ Failure to rebind silently regresses isolation — subsequent `vehicle_record.<f
     - _Design: CHANGELOG Entry_
     - **Verify**: `head -30 CHANGELOG.md` shows the new `## [1.10.3]` section above the existing `## [1.10.2]` section, with both `Fixed` and `Security` subsections present, and the `Notes` subsection if Option A was selected.
 
-- [ ] 18. Commit and push to origin (no production deploy)
-  - [-] 18.1 Stage only the files this spec touches
+- [x] 18. Commit and push to origin (no production deploy)
+  - [x] 18.1 Stage only the files this spec touches
     - Stage exclusively: `app/modules/vehicles/service.py`, `app/modules/vehicles/router.py`, `app/modules/invoices/service.py`, `app/modules/invoices/schemas.py`, `app/modules/invoices/public_router.py`, `app/modules/kiosk/service.py`, `app/modules/fleet_portal/services/vehicle_service.py`, `app/modules/fleet_portal/router.py`, `app/modules/bookings/service.py`, `app/modules/customers/service.py`, `app/modules/customers/router.py`, `app/modules/customers/schemas.py`, `app/modules/organisations/dashboard_service.py`, `app/modules/notifications/service.py`, `app/modules/notifications/reminder_queue_service.py`, `app/modules/data_io/service.py`, `app/modules/admin/router.py` (one-line comment only), `tests/test_vehicle_data_isolation.py`, `tests/integration/test_vehicle_promotion_trigger_sites.py`, `scripts/test_vehicle_data_isolation_e2e.py`, `pyproject.toml`, `frontend/package.json`, `CHANGELOG.md`, and the three spec docs `.kiro/specs/vehicle-data-isolation/{requirements,design,tasks}.md`
     - Do **not** use `git add .` — explicit per-file staging avoids picking up unrelated working-tree changes (env files, IDE settings, untracked artefacts)
     - Run `git status` after staging and confirm the staged set matches the list above
     - _Requirements: (release discipline — `.kiro/steering/versioning-and-changelog.md`)_
     - **Verify**: `git diff --cached --name-only` output is a strict subset of the enumerated list; no `.env*`, `.kiro/settings/`, or other unrelated files appear.
 
-  - [~] 18.2 Commit with a descriptive message and push to the current branch on origin
+  - [x] 18.2 Commit with a descriptive message and push to the current branch on origin
     - Commit message: `fix(vehicles): isolate customer-driven vehicle data per organisation` followed by a body summarising the four pre-existing bug fixes absorbed and the new audit-log actions
     - Push to the **current branch** on `origin` with `git push -u origin HEAD` (so the branch is created on remote if it does not exist, and tracking is set up)
     - Do **not** push to `main`/`master` directly unless the user explicitly confirms — if the current branch is `main`, stop and ask the user to confirm or specify a feature branch name
