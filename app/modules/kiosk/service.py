@@ -462,6 +462,7 @@ async def kiosk_check_in_v2(
 
     Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 9.5, 9.6
     """
+    from app.core.audit import write_audit_log
     from app.modules.customers.service import create_customer
 
     is_new = False
@@ -486,18 +487,32 @@ async def kiosk_check_in_v2(
                 detail="Customer not found in this organisation",
             )
 
-        # Update customer details if changed
+        # Update customer details if changed. Capture per-field before
+        # and after values so changes write an audit row matching the
+        # ``customer.updated`` action emitted by the standard customer
+        # update service. Without this row the merge/audit history hides
+        # kiosk-driven edits to existing customers (Req 9.6).
         updated = False
+        before_value: dict[str, str | None] = {}
+        after_value: dict[str, str | None] = {}
         if customer.first_name != data.first_name:
+            before_value["first_name"] = customer.first_name
+            after_value["first_name"] = data.first_name
             customer.first_name = data.first_name
             updated = True
         if customer.last_name != data.last_name:
+            before_value["last_name"] = customer.last_name
+            after_value["last_name"] = data.last_name
             customer.last_name = data.last_name
             updated = True
         if customer.phone != data.phone:
+            before_value["phone"] = customer.phone
+            after_value["phone"] = data.phone
             customer.phone = data.phone
             updated = True
         if data.email is not None and customer.email != data.email:
+            before_value["email"] = customer.email
+            after_value["email"] = data.email
             customer.email = data.email
             updated = True
 
@@ -505,6 +520,17 @@ async def kiosk_check_in_v2(
             await db.flush()
             await db.refresh(customer)
             logger.info("Kiosk check-in v2: updated existing customer %s", customer.id)
+            await write_audit_log(
+                session=db,
+                org_id=org_id,
+                user_id=user_id,
+                action="customer.updated",
+                entity_type="customer",
+                entity_id=customer.id,
+                before_value=before_value,
+                after_value=after_value,
+                ip_address=ip_address,
+            )
 
         customer_id = customer.id
         customer_first_name = customer.first_name

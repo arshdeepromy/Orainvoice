@@ -306,6 +306,111 @@ class TestCheckInV2ExistingCustomerWithVehicles:
         assert existing_customer.phone == "0219999999"
         assert existing_customer.email == "new@example.com"
 
+    @pytest.mark.asyncio
+    async def test_existing_customer_field_change_emits_audit_log(self):
+        """When existing customer fields are updated, a customer.updated audit
+        row is written so kiosk-driven edits are visible in the merge/audit
+        history (Req 9.6)."""
+        org_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        customer_id = uuid.uuid4()
+
+        existing_customer = _make_mock_customer(
+            id=customer_id,
+            org_id=org_id,
+            first_name="Old",
+            last_name="Name",
+            phone="0211234567",
+            email="old@example.com",
+        )
+
+        request = _make_checkin_request(
+            first_name="Jane",
+            last_name="Name",
+            phone="0211234567",
+            email="old@example.com",
+            existing_customer_id=str(customer_id),
+        )
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_make_scalar_result(existing_customer))
+        db.flush = AsyncMock()
+        db.refresh = AsyncMock()
+        db.add = MagicMock()
+
+        with patch(
+            "app.modules.kiosk.service._ensure_vehicle_linked",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.core.audit.write_audit_log",
+            new_callable=AsyncMock,
+        ) as mock_audit:
+            await kiosk_check_in_v2(
+                db,
+                org_id=org_id,
+                user_id=user_id,
+                data=request,
+                ip_address="127.0.0.1",
+            )
+
+        mock_audit.assert_called_once()
+        kwargs = mock_audit.call_args.kwargs
+        assert kwargs["action"] == "customer.updated"
+        assert kwargs["entity_type"] == "customer"
+        assert kwargs["entity_id"] == customer_id
+        assert kwargs["org_id"] == org_id
+        assert kwargs["user_id"] == user_id
+        assert kwargs["before_value"] == {"first_name": "Old"}
+        assert kwargs["after_value"] == {"first_name": "Jane"}
+        assert kwargs["ip_address"] == "127.0.0.1"
+
+    @pytest.mark.asyncio
+    async def test_existing_customer_no_changes_skips_audit_log(self):
+        """When the kiosk submission matches existing customer fields exactly,
+        no customer.updated audit row is emitted (no-op write)."""
+        org_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        customer_id = uuid.uuid4()
+
+        existing_customer = _make_mock_customer(
+            id=customer_id,
+            org_id=org_id,
+            first_name="Same",
+            last_name="Name",
+            phone="0211234567",
+            email="same@example.com",
+        )
+
+        request = _make_checkin_request(
+            first_name="Same",
+            last_name="Name",
+            phone="0211234567",
+            email="same@example.com",
+            existing_customer_id=str(customer_id),
+        )
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_make_scalar_result(existing_customer))
+        db.flush = AsyncMock()
+        db.refresh = AsyncMock()
+        db.add = MagicMock()
+
+        with patch(
+            "app.modules.kiosk.service._ensure_vehicle_linked",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.core.audit.write_audit_log",
+            new_callable=AsyncMock,
+        ) as mock_audit:
+            await kiosk_check_in_v2(
+                db,
+                org_id=org_id,
+                user_id=user_id,
+                data=request,
+            )
+
+        mock_audit.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Integration Tests: No Vehicles (Backward Compatibility)
