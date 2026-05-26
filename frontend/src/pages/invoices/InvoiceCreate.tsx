@@ -408,6 +408,7 @@ function ItemTableRow({
   onChange,
   onRemove,
   onItemCreated,
+  readOnly = false,
 }: {
   item: LineItem
   index: number
@@ -416,6 +417,7 @@ function ItemTableRow({
   onChange: (index: number, updated: LineItem) => void
   onRemove: (index: number) => void
   onItemCreated: (ci: CatalogueItem) => void
+  readOnly?: boolean
 }) {
   const [showItemDropdown, setShowItemDropdown] = useState(false)
   const [itemSearch, setItemSearch] = useState('')
@@ -555,7 +557,8 @@ function ItemTableRow({
             onChange={(e) => { update({ description: e.target.value }); setItemSearch(e.target.value) }}
             onFocus={() => setShowItemDropdown(true)}
             placeholder="Type or click to select an item"
-            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled={readOnly}
+            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed"
           />
           {item.item_id && (
             <div className="mt-1">
@@ -698,7 +701,8 @@ function ItemTableRow({
           step="1"
           value={item.quantity}
           onChange={(e) => update({ quantity: Math.max(1, Number(e.target.value) || 1) })}
-          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+          disabled={readOnly}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed"
         />
       </td>
       {/* Rate */}
@@ -709,7 +713,8 @@ function ItemTableRow({
           step="0.01"
           value={item.rate}
           onChange={(e) => update({ rate: Math.max(0, Number(e.target.value) || 0), gst_inclusive: false, inclusive_price: undefined, _incGstTotal: undefined })}
-          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+          disabled={readOnly}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed"
         />
       </td>
       {/* Tax */}
@@ -721,7 +726,8 @@ function ItemTableRow({
           <select
             value={item.tax_id || ''}
             onChange={(e) => handleTaxChange(e.target.value)}
-            className="mt-0.5 w-full rounded border-0 bg-transparent px-0 py-0 text-[11px] text-blue-600 text-center cursor-pointer hover:text-blue-800 focus:outline-none focus:ring-0 appearance-none font-medium"
+            disabled={readOnly}
+            className="mt-0.5 w-full rounded border-0 bg-transparent px-0 py-0 text-[11px] text-blue-600 text-center cursor-pointer hover:text-blue-800 focus:outline-none focus:ring-0 appearance-none font-medium disabled:cursor-not-allowed disabled:text-gray-500"
           >
             {taxRates.map((tax) => (
               <option key={tax.id} value={tax.id}>{tax.name}</option>
@@ -749,7 +755,8 @@ function ItemTableRow({
               _incGstTotal: incGstTotal,
             })
           }}
-          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+          disabled={readOnly}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed"
         />
       </td>
       {/* Remove */}
@@ -757,7 +764,8 @@ function ItemTableRow({
         <button
           type="button"
           onClick={() => onRemove(index)}
-          className="rounded p-1 text-gray-400 hover:text-red-500"
+          disabled={readOnly}
+          className="rounded p-1 text-gray-400 hover:text-red-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-gray-400"
           aria-label="Remove item"
         >
           <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -785,6 +793,13 @@ export default function InvoiceCreate() {
   const { isEnabled } = useModules()
   const vehiclesEnabled = isEnabled('vehicles')
   const [loadingInvoice, setLoadingInvoice] = useState(isEditMode)
+
+  // Original invoice status when editing — used to lock the line-item
+  // editor on already-issued invoices. Editing prices/quantities on a
+  // non-draft invoice is rejected by the backend (state machine) and a
+  // credit note is the correct mechanism for corrections.
+  const [originalStatus, setOriginalStatus] = useState<string | null>(null)
+  const isLineItemsLocked = isEditMode && originalStatus !== null && originalStatus !== 'draft'
 
   // Read pre-fill params from URL (e.g., /invoices/new?customer_id=xxx&vehicle_rego=yyy)
   const [searchParams] = useState(() => new URLSearchParams(window.location.search))
@@ -1104,6 +1119,7 @@ export default function InvoiceCreate() {
           setVehicles([primaryVehicle, ...additionalVehicles])
         }
         if (inv.invoice_number) setInvoiceNumber(inv.invoice_number)
+        if (inv.status) setOriginalStatus(String(inv.status))
         if (inv.due_date) setDueDate(inv.due_date)
         if (inv.issue_date) setInvoiceDate(inv.issue_date)
         if (inv.notes_customer) setCustomerNotes(inv.notes_customer)
@@ -2088,7 +2104,26 @@ export default function InvoiceCreate() {
           {/* Line Items */}
           <div>
             {errors.lineItems && <p className="text-sm text-red-600 mb-2">{errors.lineItems}</p>}
-            
+
+            {isLineItemsLocked && (
+              <div
+                role="status"
+                className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+              >
+                <p className="font-medium">
+                  Line items are locked on issued invoices
+                </p>
+                <p className="mt-1">
+                  This invoice is already <span className="font-semibold">{originalStatus}</span>.
+                  Prices and quantities can&apos;t be changed once an invoice is issued — that would break
+                  GST records, payments, and accounting integrations. To correct an amount, either{' '}
+                  <span className="font-semibold">issue a credit note</span> (recommended for partial
+                  corrections) or <span className="font-semibold">void this invoice</span> and create a
+                  new one. You can still edit notes, due date, vehicle metadata, and terms below.
+                </p>
+              </div>
+            )}
+
             <div className="overflow-visible border border-gray-200 rounded-lg">
               <table className="w-full">
                 <thead className="bg-gray-50">
@@ -2112,20 +2147,21 @@ export default function InvoiceCreate() {
                       onChange={updateLineItem}
                       onRemove={removeLineItem}
                       onItemCreated={(ci) => setCatalogueItems(prev => [...prev, ci])}
+                      readOnly={isLineItemsLocked}
                     />
                   ))}
                 </tbody>
               </table>
             </div>
-            
+
             <div className="flex gap-3 mt-3">
-              <Button variant="secondary" size="sm" onClick={addLineItem}>
+              <Button variant="secondary" size="sm" onClick={addLineItem} disabled={isLineItemsLocked}>
                 + Add New Row
               </Button>
-              <Button variant="secondary" size="sm" onClick={openStockPicker}>+ Add from Inventory</Button>
+              <Button variant="secondary" size="sm" onClick={openStockPicker} disabled={isLineItemsLocked}>+ Add from Inventory</Button>
               {isAutomotive && vehiclesEnabled && (
                 <>
-                  <Button variant="secondary" size="sm" onClick={openLabourPicker}>+ Labour Charge</Button>
+                  <Button variant="secondary" size="sm" onClick={openLabourPicker} disabled={isLineItemsLocked}>+ Labour Charge</Button>
                 </>
               )}
               <Button variant="secondary" size="sm" disabled>

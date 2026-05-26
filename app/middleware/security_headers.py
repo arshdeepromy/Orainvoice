@@ -47,6 +47,13 @@ _CSRF_EXEMPT_PATHS: set[str] = {
     "/api/v1/ird/callback",
 }
 
+# Path prefixes exempt from CSRF — fleet portal auth endpoints use their
+# own CSRF mechanism (fleet_portal_csrf cookie) and must not be blocked
+# by the global staff-session CSRF check.
+_CSRF_EXEMPT_PREFIXES: tuple[str, ...] = (
+    "/fleet/api/auth/",
+)
+
 
 class SecurityHeadersMiddleware:
     """Inject security headers and enforce CSRF protection.
@@ -68,6 +75,7 @@ class SecurityHeadersMiddleware:
         if (
             request.method in _STATE_CHANGING_METHODS
             and request.url.path not in _CSRF_EXEMPT_PATHS
+            and not any(request.url.path.startswith(p) for p in _CSRF_EXEMPT_PREFIXES)
         ):
             has_bearer = (
                 request.headers.get("authorization", "").startswith("Bearer ")
@@ -86,6 +94,7 @@ class SecurityHeadersMiddleware:
         is_api = request.url.path.startswith("/api")
         is_dev = settings.environment == "development"
         is_public_html = request.url.path.startswith("/api/v1/public/") or request.url.path.startswith("/api/v2/public/")
+        is_fleet_api = request.url.path.startswith("/fleet/api")
 
         async def inject_headers(message):
             if message["type"] == "http.response.start":
@@ -99,6 +108,22 @@ class SecurityHeadersMiddleware:
                 if is_api and is_dev:
                     headers.append((b"cache-control", b"no-store, no-cache, must-revalidate, max-age=0"))
                     headers.append((b"pragma", b"no-cache"))
+                # Fleet portal API responses are always uncacheable —
+                # they carry per-user state. Also add a stricter
+                # Permissions-Policy that disables microphone and
+                # geolocation by default, leaving camera available for
+                # checklist photo upload (Req 23.1).
+                if is_fleet_api:
+                    headers.append(
+                        (b"cache-control", b"no-store, no-cache, must-revalidate, max-age=0")
+                    )
+                    headers.append((b"pragma", b"no-cache"))
+                    headers.append(
+                        (
+                            b"permissions-policy",
+                            b"camera=(self), microphone=(), geolocation=()",
+                        )
+                    )
                 message["headers"] = headers
             await send(message)
 

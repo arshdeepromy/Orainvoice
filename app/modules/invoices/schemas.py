@@ -415,6 +415,10 @@ class UpdateInvoiceRequest(BaseModel):
     global_vehicle_id: uuid.UUID | None = None
     vehicle_service_due_date: date | None = None
     vehicle_wof_expiry_date: date | None = None
+    vehicle_cof_expiry_date: date | None = Field(
+        default=None,
+        description="COF expiry date — saved to the vehicle record",
+    )
     vehicles: list[VehicleItem] | None = None
     branch_id: uuid.UUID | None = None
     status: InvoiceStatus | None = None

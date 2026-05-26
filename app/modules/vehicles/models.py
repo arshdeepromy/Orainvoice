@@ -127,6 +127,16 @@ class CustomerVehicle(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
+    # Per-vehicle override for the fleet portal pre-trip checklist template.
+    # Added by migration 0191 (B2B Fleet Portal). When NULL, the fleet
+    # account's default template (or NZTA seed) applies — see Property 20
+    # in .kiro/specs/b2b-fleet-portal/design.md.
+    fleet_checklist_template_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("fleet_checklist_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     __table_args__ = (
         CheckConstraint(
             "(global_vehicle_id IS NOT NULL AND org_vehicle_id IS NULL) OR "

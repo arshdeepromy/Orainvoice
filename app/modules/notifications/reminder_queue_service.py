@@ -49,7 +49,7 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
     Returns stats dict with counts.
     """
     from app.modules.customers.models import Customer
-    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
     from app.modules.admin.models import GlobalVehicle, Organisation
     from app.modules.admin.models import SubscriptionPlan
     from app.modules.admin.models import SmsVerificationProvider
@@ -187,17 +187,34 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
             stats["skipped"] += 1
             continue
 
-        # Get linked vehicles
-        cv_stmt = (
+        # Get linked vehicles — both link types (global = un-promoted,
+        # org = post-promotion). Pre-spec the single inner join against
+        # global_vehicles silently dropped every promoted link, so no
+        # reminders fired for any rego touched by a customer-driven write
+        # since deploy. Two-pass query covers both link types; both vehicle
+        # row types expose the same field set so the per-row body treats
+        # `vehicle` interchangeably.
+        cv_gv_stmt = (
             select(CustomerVehicle, GlobalVehicle)
             .join(GlobalVehicle, CustomerVehicle.global_vehicle_id == GlobalVehicle.id)
             .where(
                 CustomerVehicle.customer_id == customer.id,
                 CustomerVehicle.org_id == org_id,
+                CustomerVehicle.global_vehicle_id.isnot(None),
             )
         )
-        cv_result = await db.execute(cv_stmt)
-        vehicle_rows = cv_result.all()
+        cv_ov_stmt = (
+            select(CustomerVehicle, OrgVehicle)
+            .join(OrgVehicle, CustomerVehicle.org_vehicle_id == OrgVehicle.id)
+            .where(
+                CustomerVehicle.customer_id == customer.id,
+                CustomerVehicle.org_id == org_id,
+                CustomerVehicle.org_vehicle_id.isnot(None),
+            )
+        )
+        cv_gv_result = await db.execute(cv_gv_stmt)
+        cv_ov_result = await db.execute(cv_ov_stmt)
+        vehicle_rows = list(cv_gv_result.all()) + list(cv_ov_result.all())
         if not vehicle_rows:
             continue
 
@@ -223,14 +240,26 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
             template_type = type_config["template_type"]
             date_variable = type_config["date_variable"]
 
-            for cv, gv in vehicle_rows:
-                expiry_date = getattr(gv, expiry_field, None)
+            # NOTE: the ``vehicle_id`` passed to ``_insert_queue_item`` (and
+            # therefore the unique-constraint dedup key
+            # ``(org_id, customer_id, vehicle_id, reminder_type,
+            # scheduled_date)``) is the ``customer_vehicles.id`` link id —
+            # NOT the resolved vehicle id (which would flip from
+            # ``global_vehicles.id`` to ``org_vehicles.id`` after the
+            # vehicle-data-isolation spec promotes a vehicle). cv.id is
+            # stable across promotion, so the dedup contract holds across
+            # the link migration. Pre-spec the dedup keyed on
+            # ``gv.id`` would re-fire after promotion since the resolved
+            # vehicle id changes.
+
+            for cv, vehicle in vehicle_rows:
+                expiry_date = getattr(vehicle, expiry_field, None)
                 if expiry_date is None or expiry_date != target_date:
                     continue
 
-                rego = gv.rego or "Unknown"
+                rego = vehicle.rego or "Unknown"
                 vehicle_desc = " ".join(
-                    filter(None, [str(gv.year) if gv.year else None, gv.make, gv.model])
+                    filter(None, [str(vehicle.year) if vehicle.year else None, vehicle.make, vehicle.model])
                 )
 
                 send_email = channel in ("email", "both")
@@ -242,8 +271,8 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
                     "customer_last_name": customer.last_name or "",
                     "customer_email": customer.email or "",
                     "vehicle_rego": rego,
-                    "vehicle_make": gv.make or "",
-                    "vehicle_model": gv.model or "",
+                    "vehicle_make": vehicle.make or "",
+                    "vehicle_model": vehicle.model or "",
                     date_variable: str(expiry_date) if expiry_date else "",
                     "org_name": org_data["org_name"] or "",
                     "org_phone": org_data["org_phone"] or "",
@@ -306,7 +335,7 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
 
                     await _insert_queue_item(
                         db, org_id=org_id, customer_id=customer.id,
-                        vehicle_id=gv.id, reminder_type=reminder_type,
+                        vehicle_id=cv.id, reminder_type=reminder_type,
                         channel="email", recipient=customer.email,
                         subject=email_subject, body=email_body,
                         scheduled_for=now,
@@ -396,7 +425,7 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
 
                     await _insert_queue_item(
                         db, org_id=org_id, customer_id=customer.id,
-                        vehicle_id=gv.id, reminder_type=reminder_type,
+                        vehicle_id=cv.id, reminder_type=reminder_type,
                         channel="sms", recipient=normalized_phone,
                         subject=None, body=sms_body,
                         scheduled_for=now,

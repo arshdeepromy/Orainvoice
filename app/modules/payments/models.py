@@ -13,6 +13,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -117,6 +118,25 @@ class PaymentToken(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
+    amount_override: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2),
+        nullable=True,
+        comment=(
+            "Partial-payment amount for the QR partial-payment flow. "
+            "NULL means use invoice.balance_due (default behaviour)."
+        ),
+    )
+    last_pi_amount_cents: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        comment=(
+            "Cached cents value of the PaymentIntent's last-known "
+            "amount, used by create_qr_session_for_existing_invoice "
+            "to make a same-amount-reuse decision without a "
+            "synchronous Stripe API call. Refreshed on every "
+            "successful PI create or update-surcharge call."
+        ),
+    )
 
     # Relationships
     invoice = relationship("Invoice", backref="payment_tokens")
@@ -162,6 +182,22 @@ class PendingQrSession(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    # Soft-dismiss marker: set when the kiosk's "Close" button is pressed.
+    # The poll filters out rows where dismissed_at IS NOT NULL so the
+    # popup doesn't re-appear on kiosk page refresh, but the row + the
+    # underlying Stripe PaymentIntent stay alive so the customer who
+    # already scanned can complete payment from their phone. Cleared
+    # by create_qr_session_for_existing_invoice when staff re-fires QR
+    # Payment (so the popup re-appears for the new attempt).
+    dismissed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment=(
+            "When the kiosk dismissed this pending session display. "
+            "NULL = visible to kiosk poll. NOT NULL = hidden but Stripe "
+            "session stays alive for the customer to complete payment."
+        ),
     )
 
     # Relationships

@@ -21,6 +21,7 @@ interface LinkedVehicle {
   year: number | null
   colour: string | null
   source: string
+  origin?: string
   linked_at: string
 }
 
@@ -605,7 +606,17 @@ export default function CustomerProfilePage() {
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{v.colour || '—'}</td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm">
-                    <Badge variant={v.source === 'global' ? 'info' : 'neutral'}>{v.source === 'global' ? 'Carjam' : 'Manual'}</Badge>
+                    {(() => {
+                      // Prefer the explicit origin field; fall back to the
+                      // legacy storage-location heuristic for older clients.
+                      const origin = v.origin ?? (v.source === 'global' ? 'carjam' : 'manual')
+                      const isCarjam = origin === 'carjam'
+                      return (
+                        <Badge variant={isCarjam ? 'info' : 'neutral'}>
+                          {isCarjam ? 'Carjam' : 'Manual'}
+                        </Badge>
+                      )
+                    })()}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{formatDate(v.linked_at)}</td>
                 </tr>

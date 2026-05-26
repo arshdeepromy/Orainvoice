@@ -421,7 +421,11 @@ class LinkedVehicleResponse(BaseModel):
     model: Optional[str] = Field(None, description="Vehicle model")
     year: Optional[int] = Field(None, description="Vehicle year")
     colour: Optional[str] = Field(None, description="Vehicle colour")
-    source: str = Field(..., description="'global' or 'org'")
+    source: str = Field(..., description="'global' or 'org' (storage location)")
+    origin: str = Field(
+        "manual",
+        description="'carjam' if data was sourced from CarJam lookup, 'manual' if hand-entered",
+    )
     linked_at: str = Field(..., description="ISO 8601 link timestamp")
 
 

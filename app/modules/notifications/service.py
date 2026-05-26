@@ -1384,7 +1384,7 @@ async def process_wof_rego_reminders(db: AsyncSession) -> dict[str, Any]:
     Requirements: 39.1, 39.2, 39.3, 39.4
     """
     from app.modules.notifications.models import NotificationPreference
-    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
     from app.modules.customers.models import Customer
 
     # Import GlobalVehicle from admin models where it's defined
@@ -1460,7 +1460,15 @@ async def process_wof_rego_reminders(db: AsyncSession) -> dict[str, Any]:
             ("COF", "cof_expiry", "cof_expiry_reminder"),
             ("Registration", "registration_expiry", "registration_expiry_reminder"),
         ]:
-            # Find customer_vehicles linked to global vehicles expiring on target_date
+            # Two-pass query: customer_vehicles links may point at either
+            # global_vehicles (un-promoted) OR org_vehicles (post-promotion,
+            # per the vehicle-data-isolation spec). The original single
+            # INNER JOIN against global_vehicles silently dropped every
+            # promoted link, so no reminders fired for any rego touched by
+            # a customer-driven write since deploy. We now run two
+            # parallel queries and merge the rows; both vehicle types
+            # expose the same field set so the per-row processing block
+            # below treats `vehicle` interchangeably as gv-or-ov.
             cv_gv_stmt = (
                 select(CustomerVehicle, GlobalVehicle, Customer)
                 .join(
@@ -1470,22 +1478,44 @@ async def process_wof_rego_reminders(db: AsyncSession) -> dict[str, Any]:
                 .join(Customer, CustomerVehicle.customer_id == Customer.id)
                 .where(
                     CustomerVehicle.org_id == org_id,
+                    CustomerVehicle.global_vehicle_id.isnot(None),
                     getattr(GlobalVehicle, expiry_field) == target_date,
                     Customer.is_anonymised == False,  # noqa: E712
                 )
             )
+            cv_ov_stmt = (
+                select(CustomerVehicle, OrgVehicle, Customer)
+                .join(
+                    OrgVehicle,
+                    CustomerVehicle.org_vehicle_id == OrgVehicle.id,
+                )
+                .join(Customer, CustomerVehicle.customer_id == Customer.id)
+                .where(
+                    CustomerVehicle.org_id == org_id,
+                    CustomerVehicle.org_vehicle_id.isnot(None),
+                    getattr(OrgVehicle, expiry_field) == target_date,
+                    Customer.is_anonymised == False,  # noqa: E712
+                )
+            )
             cv_gv_result = await db.execute(cv_gv_stmt)
-            rows = cv_gv_result.all()
+            cv_ov_result = await db.execute(cv_ov_stmt)
+            rows = list(cv_gv_result.all()) + list(cv_ov_result.all())
 
-            for cv, gv, customer in rows:
-                rego = gv.rego
-                expiry_date_str = str(getattr(gv, expiry_field))
-                vehicle_make = gv.make or ""
-                vehicle_model = gv.model or ""
+            for cv, vehicle, customer in rows:
+                rego = vehicle.rego
+                expiry_date_str = str(getattr(vehicle, expiry_field))
+                vehicle_make = vehicle.make or ""
+                vehicle_model = vehicle.model or ""
 
-                # Dedup: check if we already sent this reminder
+                # Dedup key: keyed on cv.id (the link id) so it survives
+                # promotion. Pre-spec the key was f"..._{gv.id}_..." which
+                # changes when a link is migrated from global_vehicle_id
+                # to org_vehicle_id (resolved vehicle id flips from gv.id
+                # to ov.id), causing duplicate sends after every
+                # promotion. cv.id is stable across promotion and unique
+                # per (customer, vehicle, org).
                 dedup_subject = (
-                    f"{template_type}_{org_id}_{gv.id}_{expiry_date_str}"
+                    f"{template_type}_{org_id}_{cv.id}_{expiry_date_str}"
                 )
                 dedup_stmt = select(func.count(NotificationLog.id)).where(
                     NotificationLog.org_id == org_id,
@@ -1951,7 +1981,7 @@ async def process_customer_reminders(db: AsyncSession) -> dict[str, Any]:
     Logs detailed errors for org admins when delivery fails.
     """
     from app.modules.customers.models import Customer
-    from app.modules.vehicles.models import CustomerVehicle
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
     from app.modules.admin.models import GlobalVehicle, Organisation
     from app.modules.admin.models import SubscriptionPlan
     from app.modules.admin.models import SmsVerificationProvider
@@ -2061,17 +2091,34 @@ async def process_customer_reminders(db: AsyncSession) -> dict[str, Any]:
             stats["skipped"] += 1
             continue
 
-        # Get customer's linked vehicles (global vehicles only — they have expiry dates)
-        cv_stmt = (
+        # Get customer's linked vehicles — both link types (global = un-promoted,
+        # org = post-promotion). Pre-spec the single inner join against
+        # global_vehicles silently dropped every promoted link, so no
+        # reminders fired for any rego touched by a customer-driven write
+        # since deploy. Two-pass query covers both link types; both vehicle
+        # row types expose the same field set so the per-row body treats
+        # `vehicle` interchangeably.
+        cv_gv_stmt = (
             select(CustomerVehicle, GlobalVehicle)
             .join(GlobalVehicle, CustomerVehicle.global_vehicle_id == GlobalVehicle.id)
             .where(
                 CustomerVehicle.customer_id == customer.id,
                 CustomerVehicle.org_id == org_id,
+                CustomerVehicle.global_vehicle_id.isnot(None),
             )
         )
-        cv_result = await db.execute(cv_stmt)
-        vehicle_rows = cv_result.all()
+        cv_ov_stmt = (
+            select(CustomerVehicle, OrgVehicle)
+            .join(OrgVehicle, CustomerVehicle.org_vehicle_id == OrgVehicle.id)
+            .where(
+                CustomerVehicle.customer_id == customer.id,
+                CustomerVehicle.org_id == org_id,
+                CustomerVehicle.org_vehicle_id.isnot(None),
+            )
+        )
+        cv_gv_result = await db.execute(cv_gv_stmt)
+        cv_ov_result = await db.execute(cv_ov_stmt)
+        vehicle_rows = list(cv_gv_result.all()) + list(cv_ov_result.all())
 
         if not vehicle_rows:
             continue
@@ -2104,8 +2151,8 @@ async def process_customer_reminders(db: AsyncSession) -> dict[str, Any]:
             else:
                 continue
 
-            for cv, gv in vehicle_rows:
-                expiry_date = getattr(gv, expiry_field, None)
+            for cv, vehicle in vehicle_rows:
+                expiry_date = getattr(vehicle, expiry_field, None)
                 if expiry_date is None:
                     continue
 
@@ -2113,12 +2160,17 @@ async def process_customer_reminders(db: AsyncSession) -> dict[str, Any]:
                 if expiry_date != target_date:
                     continue
 
-                rego = gv.rego or "Unknown"
+                rego = vehicle.rego or "Unknown"
                 expiry_date_str = str(expiry_date)
-                vehicle_desc = " ".join(filter(None, [str(gv.year) if gv.year else None, gv.make, gv.model]))
+                vehicle_desc = " ".join(filter(None, [str(vehicle.year) if vehicle.year else None, vehicle.make, vehicle.model]))
 
-                # Dedup check
-                dedup_subject = f"{template_type}_{org_id}_{gv.id}_{customer.id}_{expiry_date_str}"
+                # Dedup key: keyed on cv.id (the link id) so it survives
+                # promotion. Pre-spec the key was f"..._{gv.id}_{customer.id}_..."
+                # which changes when a link is migrated from
+                # global_vehicle_id to org_vehicle_id, causing duplicate
+                # sends after every promotion. cv.id is stable across
+                # promotion and unique per (customer, vehicle, org).
+                dedup_subject = f"{template_type}_{org_id}_{cv.id}_{expiry_date_str}"
                 dedup_stmt = select(func.count(NotificationLog.id)).where(
                     NotificationLog.org_id == org_id,
                     NotificationLog.template_type == template_type,

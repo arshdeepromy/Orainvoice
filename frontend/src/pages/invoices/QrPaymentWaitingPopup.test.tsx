@@ -147,4 +147,45 @@ describe('QrPaymentWaitingPopup', () => {
 
     expect((apiClient.get as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(initialCallCount)
   })
+
+  it('shows superseded message and stops polling when status poll returns "expired"', async () => {
+    // First poll returns expired immediately so the popup transitions to the superseded state
+    ;(apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      data: { status: 'expired', payment_intent_id: null },
+    })
+
+    await act(async () => {
+      render(<QrPaymentWaitingPopup {...defaultProps} />)
+    })
+
+    // Wait for the initial poll to resolve and the state to transition
+    await waitFor(() => {
+      expect(
+        screen.getByText('This QR session was superseded by a newer payment attempt.'),
+      ).toBeInTheDocument()
+    })
+
+    // Heading and dialog label both reflect the superseded state
+    expect(screen.getByText('QR session superseded')).toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'QR session superseded')
+
+    // Polling should have stopped — capture the call count after transition
+    const callCountAfterExpired = (apiClient.get as ReturnType<typeof vi.fn>).mock.calls.length
+
+    // Advance well past several poll intervals; no further polls should fire
+    await act(async () => {
+      vi.advanceTimersByTime(10_000)
+    })
+
+    expect((apiClient.get as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callCountAfterExpired)
+
+    // Close button calls onClose without firing any expire/cancel API call
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await user.click(screen.getByRole('button', { name: /close/i }))
+    expect(defaultProps.onClose).toHaveBeenCalledTimes(1)
+    expect(apiClient.post).not.toHaveBeenCalled()
+
+    // onPaymentComplete must NOT fire on the superseded path
+    expect(defaultProps.onPaymentComplete).not.toHaveBeenCalled()
+  })
 })

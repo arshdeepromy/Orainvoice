@@ -39,7 +39,23 @@
       "Bash(ssh nerdy@192.168.1.90 'docker compose -f docker-compose.yml -f docker-compose.pi.yml logs app 2>&1 | grep -c \".\" && docker compose -f docker-compose.yml -f docker-compose.pi.yml logs app 2>&1 | tail -100 | grep -B2 -A10 \"Error\\\\|error\\\\|Exception\\\\|exception\" | head -60')",
       "Bash(ssh nerdy@192.168.1.90 'docker logs invoicing-app-1 2>&1 | tail -100')",
       "Bash(ssh nerdy@192.168.1.90 'docker exec invoicing-postgres-1 psql -U postgres -d workshoppro -c \"SELECT id, message, module, function_name, created_at, traceback FROM error_logs WHERE id = '\\\\''c53a278d-956c-47e8-a42b-f6d7b0408491'\\\\'' LIMIT 1;\" 2>&1')",
-      "Bash(docker exec *)"
+      "Bash(docker exec *)",
+      "Bash(sed -n '35,65p' /mnt/hindi-tv/Invoicing/app/cli/rotate_keys.py)",
+      "Bash(sed -n '205,235p' /mnt/hindi-tv/Invoicing/app/tasks/notifications.py)",
+      "Bash(sed -n '205,250p' /mnt/hindi-tv/Invoicing/app/integrations/brevo.py)",
+      "Bash(sed -n '411,460p' /mnt/hindi-tv/Invoicing/app/integrations/brevo.py)",
+      "Bash(sed -n '270,300p' /mnt/hindi-tv/Invoicing/app/modules/admin/models.py)",
+      "Bash(sed -n '605,640p' /mnt/hindi-tv/Invoicing/app/modules/notifications/service.py)",
+      "Bash(sed -n '573,605p' /mnt/hindi-tv/Invoicing/app/modules/notifications/service.py)",
+      "Bash(sed -n '1485,1510p' /mnt/hindi-tv/Invoicing/app/modules/admin/router.py)",
+      "Bash(sed -n '5826,5850p' /mnt/hindi-tv/Invoicing/app/modules/admin/service.py)",
+      "Bash(sed -n '4720,4740p' /mnt/hindi-tv/Invoicing/app/modules/admin/service.py)",
+      "Bash(sed -n '32,75p' /mnt/hindi-tv/Invoicing/app/tasks/notifications.py)",
+      "Bash(sed -n '19,35p' /mnt/hindi-tv/Invoicing/app/modules/email_providers/service.py)",
+      "Bash(sed -n '157,180p' /mnt/hindi-tv/Invoicing/app/modules/email_providers/service.py)",
+      "Bash(sed -n '100,125p' /mnt/hindi-tv/Invoicing/app/modules/email_providers/service.py)",
+      "Bash(grep -n \"email_providers/service.py\\\\` | 5\\\\|active_providers: list\" /mnt/hindi-tv/Invoicing/.kiro/specs/email-provider-unification/plan.md)",
+      "Bash(grep -c \"notifications/service.py\\\\` | 8a\" /mnt/hindi-tv/Invoicing/.kiro/specs/email-provider-unification/plan.md)"
     ],
     "deny": []
   }

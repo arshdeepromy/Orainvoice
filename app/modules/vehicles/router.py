@@ -6,8 +6,11 @@ Requirements: 14.1, 14.2, 14.3, 14.4, 14.5, 14.6, 14.7, 15.1, 15.2, 15.3, 15.4
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import date
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import JSONResponse, Response
@@ -53,6 +56,7 @@ from app.modules.vehicles.service import (
     list_org_vehicles,
     lookup_vehicle,
     lookup_vehicle_with_abcd_fallback,
+    manual_refresh_vehicle,
     record_odometer_reading,
     refresh_vehicle,
     search_vehicles,
@@ -249,6 +253,34 @@ async def vehicle_refresh(
             status_code=502,
             content={"detail": f"Vehicle lookup service error: {exc}"},
         )
+
+    # Vehicle data isolation (Task 12.1, Req 5.1, 5.2, 5.3, 5.4, 14.2):
+    # after the global cache has been refreshed, mirror the freshly-pulled
+    # CarJam_Owned_Spec_Fields into the calling org's per-tenant snapshot
+    # if this org has already been promoted for this rego. The check-then-
+    # call ordering is part of the contract — ``manual_refresh_vehicle``
+    # raises ``LookupError`` when no ``org_vehicles`` row exists, but the
+    # existence check below ensures that branch is unreachable from this
+    # route. Customer_Driven_Fields on ``org_vehicles`` are explicitly NOT
+    # touched (Task 1.3 — the helper copies CarJam-owned spec fields only).
+    rego_resp = result.get("rego")
+    if rego_resp:
+        rego_clean = rego_resp.upper().strip()
+        ov_lookup = await db.execute(
+            select(OrgVehicle.id).where(
+                OrgVehicle.org_id == org_uuid,
+                OrgVehicle.rego == rego_clean,
+            )
+        )
+        if ov_lookup.scalar_one_or_none() is not None:
+            await manual_refresh_vehicle(
+                db,
+                redis,
+                org_id=org_uuid,
+                rego=rego_clean,
+                user_id=user_uuid or uuid.uuid4(),
+                ip_address=ip_address,
+            )
 
     return VehicleRefreshResponse(**result)
 
@@ -540,6 +572,44 @@ async def bulk_refresh_vehicles(
                 error=None,
             ).model_dump())
             succeeded += 1
+
+            # Vehicle data isolation (Task 12.2, Req 5.1, 5.2, 14.2):
+            # mirror the freshly-pulled CarJam_Owned_Spec_Fields into the
+            # calling org's per-tenant snapshot when this org has been
+            # promoted for the rego. Identical pattern to Task 12.1's
+            # single-vehicle refresh route. Best-effort: any failure is
+            # logged and the bulk run continues — a manual_refresh_vehicle
+            # error must not abort processing of remaining vehicle_ids.
+            # Customer_Driven_Fields on org_vehicles are NOT touched
+            # (Task 1.3 — the helper copies CarJam-owned spec fields only).
+            rego_resp = result.get("rego")
+            if rego_resp:
+                rego_clean = rego_resp.upper().strip()
+                try:
+                    ov_lookup = await db.execute(
+                        select(OrgVehicle.id).where(
+                            OrgVehicle.org_id == org_uuid,
+                            OrgVehicle.rego == rego_clean,
+                        )
+                    )
+                    if ov_lookup.scalar_one_or_none() is not None:
+                        await manual_refresh_vehicle(
+                            db,
+                            redis,
+                            org_id=org_uuid,
+                            rego=rego_clean,
+                            user_id=user_uuid or uuid.uuid4(),
+                            ip_address=ip_address,
+                        )
+                except Exception as exc:  # noqa: BLE001 — best-effort follow-up
+                    logger.warning(
+                        "bulk_refresh_vehicles: manual_refresh_vehicle "
+                        "follow-up failed for vehicle_id=%s rego=%s "
+                        "(continuing with remaining vehicles): %s",
+                        vehicle_id,
+                        rego_clean,
+                        exc,
+                    )
         except CarjamNotFoundError:
             results.append(BulkRefreshResult(
                 vehicle_id=str(vehicle_id),

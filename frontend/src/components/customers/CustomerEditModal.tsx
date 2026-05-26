@@ -365,6 +365,10 @@ export function CustomerEditModal({ open, customerId, onClose, onSaved }: Custom
                     className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
                   <span className="text-sm text-gray-700">Allow portal access for this customer</span>
                 </label>
+                {/* Fleet Portal invite — only for business customers (B2B Fleet Portal spec) */}
+                {customerType === 'business' && customerId && (
+                  <FleetPortalInviteSection customerId={customerId} customerEmail={email} />
+                )}
               </div>
             </div>
           )}
@@ -464,6 +468,130 @@ export function CustomerEditModal({ open, customerId, onClose, onSaved }: Custom
       </div>
       )}
     </Modal>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Fleet Portal Invite Section (B2B Fleet Portal spec — Req 4.1, 4.2) */
+/* ------------------------------------------------------------------ */
+
+function FleetPortalInviteSection({
+  customerId,
+  customerEmail,
+}: {
+  customerId: string
+  customerEmail: string
+}) {
+  const [status, setStatus] = useState<'idle' | 'loading' | 'sent' | 'error'>('idle')
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [portalStatus, setPortalStatus] = useState<'not_invited' | 'pending' | 'active' | 'locked' | 'revoked' | null>(null)
+
+  // Check if this customer already has fleet portal access
+  useEffect(() => {
+    const controller = new AbortController()
+    apiClient.get<{ items: Array<{ customer_id: string; is_active: boolean; portal_account_count: number }> }>(
+      '/api/v2/fleet-portal/admin/accounts',
+      { signal: controller.signal, params: { limit: 100 } },
+    ).then(res => {
+      const match = (res.data?.items ?? []).find(
+        (a: { customer_id: string }) => a.customer_id === customerId
+      )
+      if (match) {
+        if (!(match as { is_active: boolean }).is_active) {
+          setPortalStatus('revoked')
+        } else if ((match as { portal_account_count: number }).portal_account_count === 0) {
+          setPortalStatus('pending')
+        } else {
+          setPortalStatus('active')
+        }
+      } else {
+        setPortalStatus('not_invited')
+      }
+    }).catch(() => {
+      setPortalStatus('not_invited')
+    })
+    return () => controller.abort()
+  }, [customerId])
+
+  const handleInvite = async () => {
+    if (!customerEmail?.trim()) {
+      setErrorMsg('Customer must have an email address to receive the invite.')
+      setStatus('error')
+      return
+    }
+    setStatus('loading')
+    setErrorMsg(null)
+    try {
+      await apiClient.post('/api/v2/fleet-portal/admin/invite', {
+        customer_id: customerId,
+      })
+      setStatus('sent')
+      setPortalStatus('pending')
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+        'Failed to send fleet portal invite.'
+      setErrorMsg(detail)
+      setStatus('error')
+    }
+  }
+
+  if (status === 'sent') {
+    return (
+      <div className="mt-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800 dark:border-green-900 dark:bg-green-950/40 dark:text-green-200">
+        <p className="font-medium">✓ Fleet Portal invite sent to {customerEmail}</p>
+        <p className="mt-1 text-xs text-green-700 dark:text-green-300">
+          The customer will receive an email with a link to set their password.
+          They can then log in at <code className="rounded bg-green-100 px-1 dark:bg-green-900">/fleet/login</code>.
+        </p>
+      </div>
+    )
+  }
+
+  const statusBadge = portalStatus === 'active'
+    ? { label: '● Active', cls: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' }
+    : portalStatus === 'pending'
+      ? { label: '● Pending', cls: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200' }
+      : portalStatus === 'locked'
+        ? { label: '● Locked', cls: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200' }
+        : portalStatus === 'revoked'
+          ? { label: '● Revoked', cls: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' }
+          : null
+
+  return (
+    <div className="mt-2 border-t border-gray-100 pt-3 dark:border-gray-800">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Fleet Portal Access</p>
+            {statusBadge && (
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusBadge.cls}`}>
+                {statusBadge.label}
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {portalStatus === 'active' ? 'This customer can log in to manage their fleet.' :
+             portalStatus === 'pending' ? 'Invite sent — waiting for the customer to set their password.' :
+             portalStatus === 'revoked' ? 'Fleet portal access has been revoked.' :
+             'Invite this business customer to manage their fleet via the self-service portal.'}
+          </p>
+        </div>
+        {portalStatus !== 'active' && (
+          <button
+            type="button"
+            onClick={handleInvite}
+            disabled={status === 'loading'}
+            className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50 min-h-[36px]"
+          >
+            {status === 'loading' ? 'Sending…' : portalStatus === 'revoked' ? 'Re-invite' : portalStatus === 'pending' ? 'Resend Invite' : 'Invite to Fleet Portal'}
+          </button>
+        )}
+      </div>
+      {errorMsg && (
+        <p className="mt-1 text-xs text-red-600">{errorMsg}</p>
+      )}
+    </div>
   )
 }
 

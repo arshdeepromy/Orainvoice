@@ -66,6 +66,7 @@ interface PaymentPageData {
   error_message: string | null
   surcharge_enabled: boolean
   surcharge_rates: Record<string, SurchargeRateInfo>
+  is_partial_payment?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +273,7 @@ interface PaymentFormProps {
   token: string
   surchargeEnabled: boolean
   surchargeRates: Record<string, SurchargeRateInfo>
+  isPartial: boolean
 }
 
 function PaymentForm({
@@ -280,6 +282,7 @@ function PaymentForm({
   token,
   surchargeEnabled,
   surchargeRates,
+  isPartial,
 }: PaymentFormProps) {
   const balanceDue = Number(rawBalanceDue) || 0
   const stripe = useStripe()
@@ -304,21 +307,37 @@ function PaymentForm({
       return
     }
 
+    // Local calculation for instant display — gross-up formula so
+    // the displayed surcharge matches what Stripe actually deducts
+    // from the gross charge. Mirrors backend ``calculate_surcharge``
+    // in ``app/modules/payments/surcharge.py``.
     const pct = parseFloat(rate?.percentage ?? '0') ?? 0
     const fixed = parseFloat(rate?.fixed ?? '0') ?? 0
-    const computed =
-      Math.round(((balanceDue ?? 0) * pct / 100 + fixed) * 100) / 100
+    const pctDec = pct / 100
+    const denom = 1 - pctDec
+    const numer = (balanceDue ?? 0) * pctDec + fixed
+    const computed = denom > 0
+      ? Math.round((numer / denom) * 100) / 100
+      : Math.round(numer * 100) / 100
     setSurchargeAmount(computed)
 
     const controller = new AbortController()
     const updatePI = async () => {
       setUpdatingPI(true)
       try {
-        await axios.post(
+        const res = await axios.post(
           `/api/v1/public/pay/${token}/update-surcharge`,
           { payment_method_type: selectedMethod },
           { signal: controller.signal },
         )
+        if (!controller.signal.aborted) {
+          // Adopt server-side surcharge as authoritative — it uses
+          // full Decimal precision and banker's rounding.
+          const serverAmount = parseFloat(res.data?.surcharge_amount ?? '0')
+          if (Number.isFinite(serverAmount)) {
+            setSurchargeAmount(serverAmount)
+          }
+        }
       } catch (err) {
         if (!controller.signal.aborted) {
           setError('Failed to update payment amount. Please try again.')
@@ -450,12 +469,25 @@ function PaymentForm({
           </div>
         )}
 
+        {/* Partial-payment banner — shown above the payment method picker
+            when the invoice token has an amount_override set
+            (Requirement 6.3, 6.5). Min 44px tap-target padding. */}
+        {isPartial && (
+          <div
+            role="status"
+            className="min-h-[44px] rounded-lg border bg-blue-50 border-blue-200 text-blue-900 px-4 py-3 text-sm dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-200"
+          >
+            You are paying a partial amount of {formatNZD(balanceDue)}. Please
+            contact the business if you intended to pay the full balance.
+          </div>
+        )}
+
         {/* Amount summary — surcharge-aware */}
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800">
           {(surchargeAmount ?? 0) > 0 ? (
             <div className="space-y-1.5 text-sm">
               <div className="flex justify-between text-gray-700 dark:text-gray-300">
-                <span>Invoice balance</span>
+                <span>{isPartial ? 'Amount Due (Partial)' : 'Amount Due'}</span>
                 <span className="tabular-nums">{formatNZD(balanceDue)}</span>
               </div>
               <div className="flex justify-between text-gray-700 dark:text-gray-300">
@@ -480,7 +512,7 @@ function PaymentForm({
             </div>
           ) : (
             <div className="flex justify-between text-sm font-semibold text-gray-900 dark:text-gray-100">
-              <span>Amount to pay</span>
+              <span>{isPartial ? 'Amount Due (Partial)' : 'Amount Due'}</span>
               <span className="tabular-nums">{formatNZD(balanceDue)}</span>
             </div>
           )}
@@ -840,6 +872,7 @@ export default function PublicPaymentScreen() {
               token={token ?? ''}
               surchargeEnabled={data?.surcharge_enabled ?? false}
               surchargeRates={data?.surcharge_rates ?? {}}
+              isPartial={data?.is_partial_payment ?? false}
             />
           </Elements>
         ) : (

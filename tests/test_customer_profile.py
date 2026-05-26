@@ -534,19 +534,41 @@ class TestTagVehicleToCustomer:
 
     @pytest.mark.asyncio
     async def test_tags_global_vehicle(self):
-        """Links a global vehicle to a customer."""
+        """Links a global vehicle to a customer.
+
+        vehicle-data-isolation Task 9.1: passing ``global_vehicle_id`` now
+        triggers ``promote_vehicle`` so the resulting link points at the
+        per-org snapshot (``source == "org"``), not the cross-tenant cache.
+        """
         c = _make_customer()
         gv = _make_global_vehicle()
         db = _mock_db_session()
 
-        # Calls: customer lookup, global vehicle lookup
+        # Calls (in order):
+        #   1. SELECT Customer                             → c
+        #   2. SELECT GlobalVehicle (by id)                → gv
+        #   3. SELECT pg_advisory_xact_lock (no-op)        → None
+        #   4. SELECT OrgVehicle existence (rego match)    → None (not yet promoted)
+        #   5. SELECT CustomerVehicle duplicate (org id)   → None (no duplicate)
+        #   6. SELECT CustomerVehicle legacy (rego)        → None (no legacy link)
         db.execute = AsyncMock(side_effect=[
             _mock_scalar_result(c),
             _mock_scalar_result(gv),
+            _mock_scalar_result(None),  # advisory lock
+            _mock_scalar_result(None),  # ov existence inside promote_vehicle
+            _mock_scalar_result(None),  # duplicate-link guard
+            _mock_scalar_result(None),  # legacy-link guard
         ])
 
         with patch(
             "app.modules.customers.service.write_audit_log",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.vehicles.service.write_audit_log",
             new_callable=AsyncMock,
         ):
             result = await tag_vehicle_to_customer(
@@ -557,13 +579,27 @@ class TestTagVehicleToCustomer:
                 global_vehicle_id=gv.id,
             )
 
+        # rego is normalised to upper-case by the OrgVehicle constructor
+        # path — but in this MagicMock setup the OrgVehicle.rego attribute
+        # we read after construction is whatever ``promote_vehicle`` set,
+        # which mirrors the source ``gv.rego`` ("ABC123") via the rego=rego
+        # kwarg. Source is now "org" because Task 9.1 promotes before
+        # constructing the link.
         assert result["rego"] == "ABC123"
-        assert result["source"] == "global"
-        db.add.assert_called_once()
+        assert result["source"] == "org"
+        # db.add is called twice: once for OrgVehicle (inside promote_vehicle)
+        # and once for CustomerVehicle (after the duplicate-link guard).
+        assert db.add.call_count == 2
 
     @pytest.mark.asyncio
     async def test_tags_org_vehicle(self):
-        """Links an org-scoped vehicle to a customer."""
+        """Links an org-scoped vehicle to a customer.
+
+        Task 9.1: passing an ``org_vehicle_id`` directly bypasses promotion
+        (the existing OrgVehicle is the per-org snapshot already). The
+        duplicate-link guard still runs, so two extra ``db.execute`` calls
+        are expected vs the original test.
+        """
         c = _make_customer()
         ov = _make_org_vehicle(org_id=c.org_id)
         db = _mock_db_session()
@@ -571,6 +607,8 @@ class TestTagVehicleToCustomer:
         db.execute = AsyncMock(side_effect=[
             _mock_scalar_result(c),
             _mock_scalar_result(ov),
+            _mock_scalar_result(None),  # duplicate-link guard
+            _mock_scalar_result(None),  # legacy-link guard
         ])
 
         with patch(
@@ -671,19 +709,37 @@ class TestTagVehicleToCustomer:
 
     @pytest.mark.asyncio
     async def test_audit_log_written(self):
-        """Verify audit log is written on vehicle tagging."""
+        """Verify audit log is written on vehicle tagging.
+
+        Task 9.1: promotion fires its own ``vehicle.promote`` audit log
+        through ``app.modules.vehicles.service.write_audit_log``, which is
+        a different module path from the one this test patches. The
+        ``customer.vehicle_tagged`` audit log on this path is still the
+        only call observed by the patched mock.
+        """
         c = _make_customer()
         gv = _make_global_vehicle()
         db = _mock_db_session()
         db.execute = AsyncMock(side_effect=[
             _mock_scalar_result(c),
             _mock_scalar_result(gv),
+            _mock_scalar_result(None),  # advisory lock
+            _mock_scalar_result(None),  # ov existence inside promote_vehicle
+            _mock_scalar_result(None),  # duplicate-link guard
+            _mock_scalar_result(None),  # legacy-link guard
         ])
 
         with patch(
             "app.modules.customers.service.write_audit_log",
             new_callable=AsyncMock,
-        ) as mock_audit:
+        ) as mock_audit, patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.vehicles.service.write_audit_log",
+            new_callable=AsyncMock,
+        ):
             await tag_vehicle_to_customer(
                 db,
                 org_id=c.org_id,

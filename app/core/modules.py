@@ -36,6 +36,7 @@ DEPENDENCY_GRAPH: dict[str, list[str]] = {
     "purchase_orders": ["inventory"],
     "staff": ["scheduling"],
     "ecommerce": ["inventory"],
+    "b2b-fleet-management": ["vehicles"],
 }
 
 # Modules with OR-style dependencies (at least one must be enabled)
@@ -46,6 +47,27 @@ OR_DEPENDENCIES: dict[str, list[str]] = {
 
 # Core modules that are always enabled and cannot be disabled.
 CORE_MODULES: set[str] = {"invoicing", "customers", "notifications"}
+
+# Modules restricted to specific trade families. The module is hidden from the
+# module list and setup guide for orgs whose ``tradeFamily`` does not match,
+# and the enable endpoint rejects mismatched orgs with HTTP 403.
+#
+# This pattern is used instead of a ``trade_family_required`` column on
+# ``module_registry`` to stay consistent with the setup-guide spec
+# (.kiro/specs/setup-guide/design.md — "trade_family_gated not stored in DB").
+TRADE_FAMILY_REQUIRED_MODULES: dict[str, str] = {
+    "b2b-fleet-management": "automotive-transport",
+}
+
+# Standard error message returned when an org tries to enable a module whose
+# trade-family restriction is not satisfied. Kept module-specific so the user
+# sees plain language rather than a generic slug.
+TRADE_FAMILY_REJECTION_MESSAGES: dict[str, str] = {
+    "b2b-fleet-management": (
+        "B2B Fleet Management is available only for automotive and "
+        "transport organisations"
+    ),
+}
 
 # Redis cache key pattern and TTL
 _CACHE_KEY_PREFIX = "module:enabled"
@@ -96,6 +118,69 @@ def get_all_dependents(module_slug: str) -> list[str]:
             visited.add(dep)
             stack.extend(reverse.get(dep, []))
     return list(visited)
+
+
+def is_trade_family_satisfied(module_slug: str, org_trade_family: str | None) -> bool:
+    """Return True if a module's trade-family restriction is satisfied.
+
+    Pure function — suitable for property-based testing.
+
+    A module is "satisfied" when either:
+    - It has no entry in ``TRADE_FAMILY_REQUIRED_MODULES`` (unrestricted), OR
+    - The org's trade family slug matches the required family for that module.
+
+    Args:
+        module_slug: The module slug being checked.
+        org_trade_family: The org's trade family slug (e.g. ``"automotive-transport"``)
+            or ``None`` if unknown.
+
+    Returns:
+        ``True`` if the module is allowed for this org's trade family,
+        ``False`` if the module is restricted to a different trade family.
+    """
+    required = TRADE_FAMILY_REQUIRED_MODULES.get(module_slug)
+    if required is None:
+        return True
+    return org_trade_family == required
+
+
+async def fetch_org_trade_family(db, org_id: str | UUID) -> str | None:
+    """Resolve the organisation's trade family slug.
+
+    Joins ``organisations.trade_category_id`` → ``trade_categories.family_id``
+    → ``trade_families.slug``. Returns ``None`` if the org has no trade
+    category set or the lookup fails.
+
+    Used by the module list / enable endpoints and the setup guide router
+    to apply ``TRADE_FAMILY_REQUIRED_MODULES`` gating.
+
+    Args:
+        db: An ``AsyncSession``.
+        org_id: The organisation UUID (string or ``UUID``).
+
+    Returns:
+        The trade family slug (e.g. ``"automotive-transport"``) or ``None``.
+    """
+    from sqlalchemy import text
+
+    try:
+        result = await db.execute(
+            text(
+                "SELECT tf.slug "
+                "FROM organisations o "
+                "JOIN trade_categories tc ON tc.id = o.trade_category_id "
+                "JOIN trade_families tf ON tf.id = tc.family_id "
+                "WHERE o.id = :org_id"
+            ),
+            {"org_id": str(org_id)},
+        )
+        row = result.fetchone()
+        if row is None:
+            return None
+        return row[0]
+    except Exception:
+        logger.warning("Failed to resolve trade family for org %s", org_id)
+        return None
 
 
 class ModuleService:
@@ -175,6 +260,46 @@ class ModuleService:
         # Disable the module itself
         await self._set_enabled(org_id, module_slug, False, None)
         await self._invalidate_cache(org_id)
+
+        # Module-disable cascade for the B2B Fleet Portal:
+        # tear down all active fleet portal sessions for this org so
+        # subsequent requests get the disabled-module 403 (Req 1.7,
+        # 17.6 — sessions invalidated within 60 s; doing it in this
+        # transaction makes the bound a few hundred ms instead).
+        if module_slug == "b2b-fleet-management":
+            try:
+                await self._cascade_fleet_portal_disable(org_id)
+            except Exception as exc:  # noqa: BLE001 — defensive
+                logger.warning(
+                    "fleet_portal disable cascade failed: %s", exc, exc_info=True
+                )
+
+    async def _cascade_fleet_portal_disable(self, org_id: str) -> int:
+        """Delete every fleet portal session for the org. Returns count."""
+        from sqlalchemy import delete, select as _select
+
+        from app.modules.fleet_portal.models import PortalAccount
+        from app.modules.portal.models import PortalSession
+
+        # Find all portal_accounts in this org that are fleet portal users.
+        ids_q = _select(PortalAccount.id).where(
+            PortalAccount.org_id == org_id,
+            PortalAccount.portal_user_role.in_(("fleet_admin", "driver")),
+        )
+        ids = [row[0] for row in (await self._db.execute(ids_q)).all()]
+        if not ids:
+            return 0
+
+        res = await self._db.execute(
+            delete(PortalSession).where(PortalSession.portal_account_id.in_(ids))
+        )
+        deleted = int(res.rowcount or 0)
+        logger.info(
+            "fleet_portal.module_disabled_cascade org_id=%s sessions_deleted=%d",
+            org_id,
+            deleted,
+        )
+        return deleted
 
     async def is_enabled(self, org_id: str, module_slug: str) -> bool:
         """Check if a module is enabled for an org. Uses Redis cache."""

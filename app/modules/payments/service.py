@@ -11,14 +11,43 @@ from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.audit import write_audit_log
+from app.integrations.stripe_connect import create_payment_intent
 from app.modules.in_app_notifications.service import create_in_app_notification
 from app.modules.invoices.models import Invoice
 from app.modules.invoices.service import _validate_transition
 from app.modules.payments.models import Payment
+from app.modules.payments.token_service import generate_payment_token
 
 logger = logging.getLogger(__name__)
+
+
+# Stripe minimum charge amounts per currency.
+# Source: https://stripe.com/docs/currencies#minimum-and-maximum-charge-amounts
+# Per-currency dict so multi-currency invoicing (when introduced) does not
+# require a code change here — only an entry in this dict.
+STRIPE_MIN_BY_CURRENCY: dict[str, Decimal] = {
+    "NZD": Decimal("0.50"),
+    "AUD": Decimal("0.50"),
+    "USD": Decimal("0.50"),
+    "GBP": Decimal("0.30"),
+    "EUR": Decimal("0.50"),
+    "JPY": Decimal("50"),
+}
+DEFAULT_STRIPE_MIN = Decimal("0.50")  # fallback for unlisted currencies
+
+
+def stripe_min_for_currency(currency: str | None) -> Decimal:
+    """Return the documented Stripe minimum charge for the given currency.
+
+    Falls back to DEFAULT_STRIPE_MIN if the currency is not in the dict
+    (defensive: better to refuse a sub-minimum charge than to assume).
+    """
+    if not currency:
+        return DEFAULT_STRIPE_MIN
+    return STRIPE_MIN_BY_CURRENCY.get(currency.upper(), DEFAULT_STRIPE_MIN)
 
 
 async def record_cash_payment(
@@ -346,6 +375,140 @@ async def generate_stripe_payment_link(
     }
 
 
+async def send_invoice_payment_link_email(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    base_url: str | None = None,
+    ip_address: str | None = None,
+) -> dict:
+    """Email the customer the existing on-domain payment page URL for an invoice.
+
+    Unlike ``generate_stripe_payment_link`` (which creates a Stripe Checkout
+    Session and redirects to the Stripe-hosted page), this function uses the
+    invoice's ``payment_page_url`` — the token-based public payment page on
+    the org's own domain (served by ``invoices/public_router.py`` and backed
+    by a Stripe PaymentIntent created via ``_maybe_create_stripe_payment_intent``).
+
+    Flow:
+    1. Validate invoice is in a payable state (issued / partially_paid / overdue).
+    2. Ensure ``payment_page_url`` exists; regenerate via the same path used
+       on issue if it's missing or stale.
+    3. Email the link using the org's active ``invoice_issued`` template
+       (or the default template with a Pay Now button).
+
+    Reuses the same notification template, email provider, and PaymentIntent
+    plumbing as ``email_invoice`` and ``_maybe_create_stripe_payment_intent``.
+    No Stripe Checkout Session is created.
+
+    Requirements: 25.3, 25.5
+    """
+    from app.modules.admin.models import Organisation
+    from app.modules.customers.models import Customer
+    from app.modules.invoices.service import _maybe_create_stripe_payment_intent
+
+    # Fetch invoice scoped to org
+    inv_result = await db.execute(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.org_id == org_id,
+        )
+    )
+    invoice = inv_result.scalar_one_or_none()
+    if invoice is None:
+        raise ValueError("Invoice not found in this organisation")
+
+    if invoice.status not in ("issued", "partially_paid", "overdue"):
+        raise ValueError(
+            f"Cannot send payment link for invoice with status "
+            f"'{invoice.status}'. Invoice must be issued, partially paid, "
+            f"or overdue."
+        )
+
+    if invoice.balance_due is None or invoice.balance_due <= 0:
+        raise ValueError("Invoice has no outstanding balance.")
+
+    # Customer must have an email on file
+    cust_result = await db.execute(
+        select(Customer).where(Customer.id == invoice.customer_id)
+    )
+    customer = cust_result.scalar_one_or_none()
+    if customer is None or not customer.email:
+        raise ValueError(
+            "Customer has no email address on file. Cannot send payment link."
+        )
+
+    # Org must be Stripe-connected so the payment page can take payments
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org is None or not getattr(org, "stripe_connect_account_id", None):
+        raise ValueError(
+            "Organisation has not connected a Stripe account. "
+            "Please complete Stripe Connect setup first."
+        )
+
+    # Ensure payment_page_url exists / is current. The same helper used on
+    # issue regenerates it when missing or stale (e.g. if FRONTEND_BASE_URL
+    # changed).  We tag the invoice so the helper proceeds even if it
+    # wasn't set up with payment_gateway=stripe at creation time.
+    inv_data = dict(invoice.invoice_data_json or {})
+    if inv_data.get("payment_gateway") != "stripe":
+        inv_data["payment_gateway"] = "stripe"
+        invoice.invoice_data_json = inv_data
+        flag_modified(invoice, "invoice_data_json")
+        await db.flush()
+
+    if not invoice.payment_page_url:
+        await _maybe_create_stripe_payment_intent(
+            db, invoice, org, base_url=base_url,
+        )
+        await db.refresh(invoice)
+
+    if not invoice.payment_page_url:
+        raise ValueError(
+            "Failed to generate payment link. Please try again or check "
+            "Stripe Connect configuration."
+        )
+
+    # Send the email using the invoice_issued template (default has a
+    # Pay Now button; custom templates configured in Settings → Templates
+    # are honoured automatically).
+    await _send_receipt_email(
+        db,
+        to_email=customer.email,
+        invoice=invoice,
+        pay_amount=invoice.balance_due,
+        template_type="invoice_issued",
+        payment_url=invoice.payment_page_url,
+    )
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="payment.payment_link_emailed",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        after_value={
+            "invoice_id": str(invoice.id),
+            "recipient_email": customer.email,
+            "payment_page_url": invoice.payment_page_url,
+        },
+        ip_address=ip_address,
+    )
+
+    return {
+        "invoice_id": invoice.id,
+        "recipient_email": customer.email,
+        "payment_page_url": invoice.payment_page_url,
+    }
+
+
 _METHOD_DISPLAY_NAMES: dict[str, str] = {
     "card": "Credit/Debit Card",
     "afterpay_clearpay": "Afterpay",
@@ -367,15 +530,25 @@ async def _send_receipt_email(
     pay_amount: Decimal,
     surcharge_amount: Decimal = Decimal("0"),
     payment_method_type: str | None = None,
+    template_type: str = "payment_received",
+    payment_url: str | None = None,
 ) -> None:
-    """Send a payment receipt email using the configured SMTP provider.
+    """Send a payment-related email using the configured SMTP provider.
 
-    Uses the same email provider infrastructure as email_invoice() — reads
-    from the email_providers table, not from brevo.py.  Best-effort: logs
-    warnings on failure but does not raise.
+    Reuses the org's email provider infrastructure (same as ``email_invoice``)
+    and resolves the customer's active notification template (or default).
 
-    Attaches the invoice PDF (with updated payment status) so the customer
-    has a complete record.
+    Two call modes:
+
+    - ``template_type="payment_received"`` (default): post-payment receipt.
+      Body summarises payment details. ``payment_url`` is ignored.
+    - ``template_type="invoice_issued"``: payment-link request. The Stripe
+      payment URL is exposed to the template as the ``{{payment_link}}``
+      variable, so the user's active ``invoice_issued`` template (or the
+      default one with a Pay Now button) renders correctly.
+
+    The invoice PDF is attached so the customer always has a copy.
+    Best-effort: logs warnings on failure but does not raise.
     """
     import json as _json
     import smtplib
@@ -424,6 +597,8 @@ async def _send_receipt_email(
         "customer_email": _customer.email if _customer else "",
         "invoice_number": inv_number,
         "total_due": _total_due_formatted,
+        "payment_link": payment_url or invoice.payment_page_url or "",
+        "due_date": str(invoice.due_date) if invoice.due_date else "",
         "org_name": org_name,
         "org_email": _org_email,
         "org_phone": _org_phone,
@@ -432,7 +607,7 @@ async def _send_receipt_email(
     _rendered_template = await resolve_template(
         db,
         org_id=invoice.org_id,
-        template_type="payment_received",
+        template_type=template_type,
         channel="email",
         variables=_template_variables,
     )
@@ -461,8 +636,25 @@ async def _send_receipt_email(
     if _rendered_template:
         subject = _rendered_template.subject
         body = _rendered_template.body
+    elif template_type == "invoice_issued":
+        # Fallback when the invoice_issued template can't be resolved —
+        # used for the "Send Payment Link" flow.
+        subject = f"Payment link for invoice {inv_number} from {org_name}"
+        _link_for_body = payment_url or invoice.payment_page_url or ""
+        body = (
+            f"Hi,\n\n"
+            f"Here is the secure online payment link for invoice {inv_number}.\n\n"
+            f"Amount due: {currency} {pay_amount}\n"
+        )
+        if _link_for_body:
+            body += f"\nPay online: {_link_for_body}\n"
+        body += (
+            f"\nIf you have any questions, please don't hesitate to contact us.\n\n"
+            f"Thank you for your business.\n\n"
+            f"{org_name}\n"
+        )
     else:
-        # Existing hardcoded content (unchanged)
+        # Existing hardcoded content for payment_received (unchanged)
         subject = f"Payment receipt for invoice {inv_number}"
 
         if surcharge_amount > 0:
@@ -769,6 +961,49 @@ async def handle_stripe_webhook(
                 "Failed to clear pending QR session for payment %s: %s",
                 payment.id, exc,
             )
+
+    # Clear stale invoice PI fields on the success path (Task 18.1 — qr-partial-payment).
+    # After a successful payment the PaymentIntent is in a terminal state
+    # (succeeded or canceled) and Stripe rejects further updates with
+    # `payment_intent_unexpected_state`. Without this cleanup, the next
+    # QR-payment click for this invoice (e.g. the second partial in a
+    # multi-partial settlement) enters the reuse-branch in
+    # create_qr_session_for_existing_invoice, finds a non-null
+    # `invoice.stripe_payment_intent_id` and an active `payment_token`,
+    # tries to reuse — and any subsequent `update-surcharge` call from the
+    # customer fails on Stripe. Wiping these fields forces the next QR
+    # session to create a fresh PaymentIntent + token.
+    from sqlalchemy import update as sa_update
+    from app.modules.payments.models import PaymentToken
+
+    invoice.stripe_payment_intent_id = None
+    invoice.payment_page_url = None
+    inv_json = dict(invoice.invoice_data_json or {})
+    inv_json.pop("stripe_client_secret", None)
+    invoice.invoice_data_json = inv_json
+    flag_modified(invoice, "invoice_data_json")
+    await db.flush()
+
+    # Deactivate all active payment_tokens for this invoice (Task 18.2 —
+    # qr-partial-payment). Closes a re-scan gap on the just-paid URL: without
+    # this, the URL stays active for its 72-hour TTL, and a re-scan in the
+    # window between payment-completion and the next partial being initiated
+    # would render `is_payable=true` with `client_secret=None` (because Task
+    # 18.1 cleared the PI fields), leaving the customer with a broken Stripe
+    # Elements form. Deactivation here means subsequent scans return a clean
+    # HTTP 404 "Invalid payment link" instead. The next partial generates a
+    # fresh active token via `generate_payment_token`, which already
+    # deactivates active tokens on insert — the just-paid one is safely
+    # retired here.
+    await db.execute(
+        sa_update(PaymentToken)
+        .where(
+            PaymentToken.invoice_id == invoice.id,
+            PaymentToken.is_active == True,  # noqa: E712
+        )
+        .values(is_active=False)
+    )
+    await db.flush()
 
     # Best-effort payment receipt email (non-blocking)
     try:
@@ -1079,17 +1314,13 @@ async def create_qr_payment_session(
     import time
     from datetime import datetime as dt, timezone as tz
 
-    from sqlalchemy.orm.attributes import flag_modified
-
     from app.config import settings
     from app.integrations.stripe_billing import (
         get_application_fee_percent,
     )
-    from app.integrations.stripe_connect import create_payment_intent
     from app.modules.admin.models import Organisation
     from app.modules.invoices.service import create_invoice
     from app.modules.payments.models import PendingQrSession
-    from app.modules.payments.token_service import generate_payment_token
 
     # 1. Issue the invoice (status="sent" maps to "issued" internally)
     invoice_result = await create_invoice(
@@ -1152,12 +1383,24 @@ async def create_qr_payment_session(
         application_fee_amount = int(amount_cents * fee_percent / 100)
 
     # 4. Create PaymentIntent on Connected Account
+    #
+    # Pass baseline metadata (source, original_amount, is_partial_payment)
+    # at creation time so the webhook handler can detect this as a
+    # kiosk-QR full payment without depending on the customer hitting
+    # update-surcharge first. Closes the pre-existing detection-bug gap
+    # where ``is_qr_payment`` was always False if the customer skipped
+    # update-surcharge. Requirements: 4.3, 4.4.
     pi_result = await create_payment_intent(
         amount=amount_cents,
         currency=currency,
         invoice_id=str(invoice_id),
         stripe_account_id=org.stripe_connect_account_id,
         application_fee_amount=application_fee_amount,
+        extra_metadata={
+            "source": "kiosk_qr",
+            "original_amount": str(total),
+            "is_partial_payment": "false",
+        },
     )
 
     # 5. Generate payment token + URL for custom payment page
@@ -1222,37 +1465,137 @@ async def create_qr_payment_session(
     }
 
 
+async def _cancel_payment_intent(
+    *,
+    pi_id: str,
+    stripe_account_id: str,
+) -> dict:
+    """Cancel a Stripe PaymentIntent on a connected account.
+
+    Direct httpx call to ``POST /v1/payment_intents/{id}/cancel`` with the
+    ``Stripe-Account`` header scoped to the org's connected account.
+    Mirrors the auth/header pattern of ``expire_qr_session`` and the
+    ``update_surcharge`` direct API call.
+
+    Used by ``create_qr_session_for_existing_invoice`` (Req 5.3) to clean
+    up the previous PaymentIntent when the staff member changes the
+    requested amount on a follow-up QR Payment click. Cancellation is
+    best-effort:
+
+    - 5xx responses raise (transient Stripe outage — caller decides whether
+      to retry or swallow).
+    - 4xx responses are logged at WARNING and treated as success-shaped
+      (PI already in a terminal state — ``canceled``, ``succeeded``, etc.).
+      The merchant's Stripe dashboard already shows the correct state in
+      that case so no follow-up action is required.
+
+    Returns
+    -------
+    dict
+        ``{"status": "canceled"}`` on success or for already-terminal PIs.
+
+    Requirements: 5.3
+    """
+    import base64
+
+    import httpx
+
+    from app.integrations.stripe_billing import get_stripe_secret_key
+
+    secret_key = await get_stripe_secret_key()
+    if not secret_key:
+        raise RuntimeError(
+            "Stripe secret key not configured. Set it via Global Admin > Integrations."
+        )
+
+    auth_header = base64.b64encode(f"{secret_key}:".encode()).decode()
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"https://api.stripe.com/v1/payment_intents/{pi_id}/cancel",
+            headers={
+                "Stripe-Account": stripe_account_id,
+                "Authorization": f"Basic {auth_header}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={"cancellation_reason": "abandoned"},
+        )
+
+    if response.status_code == 200:
+        logger.info("Stripe PaymentIntent %s cancelled successfully", pi_id)
+        return {"status": "canceled"}
+
+    # Inspect error details if Stripe returned JSON.
+    error_body: dict = {}
+    if response.headers.get("content-type", "").startswith("application/json"):
+        try:
+            error_body = response.json()
+        except ValueError:
+            error_body = {}
+    error_msg = (
+        error_body.get("error", {}).get("message")
+        or response.text[:200]
+        or "unknown error"
+    )
+
+    if response.status_code >= 500:
+        logger.error(
+            "Stripe 5xx cancelling PaymentIntent %s: %s", pi_id, error_msg
+        )
+        raise RuntimeError(
+            f"Failed to cancel PaymentIntent {pi_id}: {error_msg}"
+        )
+
+    # 4xx — PI already in a terminal state, or Stripe rejected for some
+    # other client-side reason. Log + swallow so the new-session
+    # creation can proceed (Req 5.3 — best-effort cancel, do not block
+    # the new PI on cancellation success).
+    logger.warning(
+        "Stripe 4xx cancelling PaymentIntent %s (status %d): %s; continuing",
+        pi_id,
+        response.status_code,
+        error_msg,
+    )
+    return {"status": "canceled"}
+
+
 async def create_qr_session_for_existing_invoice(
     db: AsyncSession,
     *,
     org_id: uuid.UUID,
     user_id: uuid.UUID,
     invoice_id: uuid.UUID,
+    partial_amount: Decimal | None = None,
     base_url: str | None = None,
 ) -> dict:
     """Create a QR payment session for an existing invoice.
 
-    Unlike create_qr_payment_session() which creates a new invoice,
+    Unlike ``create_qr_payment_session`` (which creates a new invoice),
     this function takes an existing invoice (by ID) and creates a Stripe
-    PaymentIntent + payment token for its current balance_due. The invoice
-    status is NOT modified (no status change, no amount_paid change, no
-    re-issue).
+    PaymentIntent + payment token for either:
 
-    Requirements: 2.3, 2.4, 3.3
+    - The invoice's full ``balance_due`` when ``partial_amount`` is
+      ``None`` (default; preserves pre-feature behaviour byte-for-byte).
+    - A partial amount when ``partial_amount`` is provided. The amount
+      is validated against the per-currency Stripe minimum and the
+      invoice's outstanding balance before the PaymentIntent is created.
+
+    The invoice status is NOT modified (no status change, no
+    amount_paid change, no re-issue).
+
+    Requirements: 2.3, 2.4, 3.1-3.7, 4.1-4.6, 5.1-5.4, 6.1, 9.1, 9.2, 9.3
     """
     import time
     from datetime import datetime as dt, timezone as tz
 
-    from sqlalchemy.orm.attributes import flag_modified
+    from sqlalchemy import update as sa_update
 
     from app.config import settings
     from app.integrations.stripe_billing import (
         get_application_fee_percent,
     )
-    from app.integrations.stripe_connect import create_payment_intent
     from app.modules.admin.models import Organisation
-    from app.modules.payments.models import PendingQrSession
-    from app.modules.payments.token_service import generate_payment_token
+    from app.modules.payments.models import PaymentToken, PendingQrSession
 
     # 1. Fetch invoice by ID scoped to org
     result = await db.execute(
@@ -1277,10 +1620,51 @@ async def create_qr_session_for_existing_invoice(
     if invoice.balance_due <= 0:
         raise ValueError("Invoice has no outstanding balance")
 
-    # 3b. Check if invoice already has a valid payment link — reuse it
-    from app.modules.payments.models import PaymentToken
+    # 4. Resolve billing amount and validate (Req 3.2-3.6).
+    # Validation runs BEFORE the reuse-branch guard so partial-amount
+    # requests pass through the validation gate first (Req 3.7) and never
+    # silently return a stale full-balance session.
+    currency = invoice.currency or "NZD"
+    balance_due_quantized = invoice.balance_due.quantize(Decimal("0.01"))
+    if partial_amount is None:
+        resolved_amount = balance_due_quantized
+        is_partial = False
+    else:
+        min_amount = stripe_min_for_currency(currency)
+        if partial_amount < min_amount:
+            raise ValueError(
+                f"Partial amount must be at least ${min_amount} {currency}"
+            )
+        if partial_amount > balance_due_quantized:
+            raise ValueError(
+                f"Partial amount cannot exceed the outstanding balance "
+                f"of ${balance_due_quantized}"
+            )
+        resolved_amount = partial_amount.quantize(Decimal("0.01"))
+        is_partial = True
+
+    target_cents = int(resolved_amount * 100)
+    if target_cents <= 0:
+        raise ValueError("Resolved billing amount must be greater than zero")
+
+    # Capture the balance-due reading at request time for the audit log
+    # (Req 9.1) before any subsequent flushes might touch the row.
+    balance_due_at_request_time = invoice.balance_due
+
+    # 5. Reuse-branch guard (Req 5.1, 5.2).
+    # Compare the cached PI cents on the active payment_token
+    # (``last_pi_amount_cents``, populated on every PI create or
+    # update-surcharge call) to the requested ``target_cents``. Reuse
+    # only when they match. Cache miss (NULL) is treated as "no existing
+    # amount known" and falls through to the create-new path.
+    #
+    # Out-of-band edge case: a manual amount edit via the Stripe Dashboard
+    # bypasses our code and leaves the cached value stale, in which case
+    # the reuse decision could be wrong on the very next click. This is
+    # accepted as a documented merchant workflow risk — Stripe Dashboard
+    # manual edits are out-of-band by definition (qr-partial-payment design).
+    existing_token: PaymentToken | None = None
     if invoice.payment_page_url and invoice.stripe_payment_intent_id:
-        # Check if there's an active, non-expired token for this invoice
         from datetime import datetime as _dt_check, timezone as _tz_check
         existing_token_result = await db.execute(
             select(PaymentToken).where(
@@ -1290,16 +1674,17 @@ async def create_qr_session_for_existing_invoice(
             )
         )
         existing_token = existing_token_result.scalar_one_or_none()
-        if existing_token:
-            # Reuse existing payment link — just update the PendingQrSession
-            import time
-            from datetime import datetime as dt, timezone as tz
-            from app.modules.payments.models import PendingQrSession
+        if (
+            existing_token is not None
+            and existing_token.last_pi_amount_cents is not None
+            and existing_token.last_pi_amount_cents == target_cents
+        ):
+            # Reuse path: refresh the pending_qr_sessions row only.
+            # No new PaymentIntent, no new token, no audit log entry
+            # (Req 9.2 — original creation already recorded the session).
             from sqlalchemy import delete as sa_delete
 
-            currency = invoice.currency or "NZD"
             invoice_number = invoice.invoice_number or str(invoice.id)
-            amount_cents = int(invoice.balance_due * 100)
             session_id = invoice.stripe_payment_intent_id
             checkout_url = invoice.payment_page_url
             expires_at = int(time.time() + 1800)
@@ -1314,7 +1699,7 @@ async def create_qr_session_for_existing_invoice(
                 org_id=org_id,
                 session_id=session_id,
                 checkout_url=checkout_url,
-                amount=invoice.balance_due,
+                amount=resolved_amount,
                 invoice_number=invoice_number,
                 invoice_id=invoice_id,
                 expires_at=dt.fromtimestamp(expires_at, tz=tz.utc),
@@ -1326,13 +1711,13 @@ async def create_qr_session_for_existing_invoice(
                 "session_id": session_id,
                 "invoice_id": invoice_id,
                 "invoice_number": invoice_number,
-                "amount": invoice.balance_due,
-                "amount_cents": amount_cents,
+                "amount": resolved_amount,
+                "amount_cents": target_cents,
                 "expires_at": expires_at_iso,
                 "currency": currency,
             }
 
-    # 4. Fetch org's stripe_connect_account_id
+    # 6. Fetch org's stripe_connect_account_id
     org_result = await db.execute(
         select(Organisation).where(Organisation.id == org_id)
     )
@@ -1344,39 +1729,96 @@ async def create_qr_session_for_existing_invoice(
             "Stripe Connect not configured for this organisation"
         )
 
-    # 5. Calculate amount in cents and application fee
-    amount_cents = int(invoice.balance_due * 100)
-    if amount_cents <= 0:
-        raise ValueError("Invoice balance must be greater than zero")
+    # 7. Cancel orphan PaymentIntent before creating a new one (Req 5.3).
+    # Best-effort: log Stripe failures at WARNING and swallow so the new
+    # session creation does not depend on cancellation success.
+    old_pi_id: str | None = invoice.stripe_payment_intent_id
+    if old_pi_id:
+        try:
+            await _cancel_payment_intent(
+                pi_id=old_pi_id,
+                stripe_account_id=org.stripe_connect_account_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to cancel orphan PaymentIntent %s: %s; continuing",
+                old_pi_id,
+                exc,
+            )
 
+    # 8. Compute application fee proportionally to the resolved amount
+    # (Req 4.2 — partial fee scales with partial amount, never the full
+    # balance).
     fee_percent = await get_application_fee_percent()
     application_fee_amount: int | None = None
     if fee_percent and fee_percent > 0:
-        application_fee_amount = int(amount_cents * fee_percent / 100)
+        application_fee_amount = int(target_cents * fee_percent / 100)
 
-    # 6. Create PaymentIntent on Connected Account
-    currency = invoice.currency or "NZD"
     invoice_number = invoice.invoice_number or str(invoice.id)
 
+    # 9. Create PaymentIntent on the Connected Account.
+    #
+    # Pass baseline metadata at creation time (Req 4.3, 4.4) so the
+    # webhook can detect this as a kiosk-QR payment without depending
+    # on update-surcharge to populate it. Sets ``original_amount`` to
+    # the resolved amount and ``is_partial_payment`` to "true"/"false"
+    # so audit-log filtering and downstream observers have an explicit
+    # marker that doesn't require querying ``payment_tokens.amount_override``.
     pi_result = await create_payment_intent(
-        amount=amount_cents,
+        amount=target_cents,
         currency=currency,
         invoice_id=str(invoice_id),
         stripe_account_id=org.stripe_connect_account_id,
         application_fee_amount=application_fee_amount,
+        extra_metadata={
+            "source": "kiosk_qr",
+            "original_amount": str(resolved_amount),
+            "is_partial_payment": "true" if is_partial else "false",
+        },
     )
 
-    # 7. Generate payment token + URL for custom payment page
-    _resolved_base_url = (base_url or settings.frontend_base_url or "http://localhost:5173").rstrip("/")
+    new_pi_id = pi_result["payment_intent_id"]
+
+    # 10. Generate a new payment_token (Req 6.1, 6.6).
+    # ``generate_payment_token`` already deactivates any prior active
+    # tokens for this invoice; we then explicitly mark the captured
+    # ``existing_token`` inactive too via an atomic UPDATE (Req 5.4)
+    # to make the intent obvious in code review.
+    _resolved_base_url = (
+        base_url or settings.frontend_base_url or "http://localhost:5173"
+    ).rstrip("/")
     token, payment_url = await generate_payment_token(
         db,
         org_id=org_id,
         invoice_id=invoice_id,
         base_url=_resolved_base_url,
+        amount_override=resolved_amount if is_partial else None,
     )
 
-    # 8. Store PaymentIntent on invoice
-    invoice.stripe_payment_intent_id = pi_result["payment_intent_id"]
+    if existing_token is not None:
+        # Idempotent — generate_payment_token already flipped is_active
+        # for active tokens on this invoice. Explicit per-id update for
+        # atomicity and audit-trail clarity (Req 5.4).
+        await db.execute(
+            sa_update(PaymentToken)
+            .where(PaymentToken.id == existing_token.id)
+            .values(is_active=False)
+        )
+        await db.flush()
+
+    # 11. Refresh the cached PI amount on the freshly-inserted token
+    # row (Req 6.3.1) so the next reuse-branch decision can be made
+    # without a synchronous Stripe API call. Updated by token primary
+    # key for atomicity.
+    await db.execute(
+        sa_update(PaymentToken)
+        .where(PaymentToken.token == token)
+        .values(last_pi_amount_cents=target_cents)
+    )
+    await db.flush()
+
+    # 12. Store PaymentIntent on the invoice.
+    invoice.stripe_payment_intent_id = new_pi_id
     invoice.payment_page_url = payment_url
     data_json = dict(invoice.invoice_data_json or {})
     data_json["stripe_client_secret"] = pi_result["client_secret"]
@@ -1384,14 +1826,13 @@ async def create_qr_session_for_existing_invoice(
     flag_modified(invoice, "invoice_data_json")
     await db.flush()
 
-    session_id = pi_result["payment_intent_id"]
-    checkout_url = payment_url
+    session_id = new_pi_id
     expires_at = int(time.time() + 1800)  # 30 minutes from now
-
-    # 9. Convert expires_at to ISO string for frontend
     expires_at_iso = dt.fromtimestamp(expires_at, tz=tz.utc).isoformat()
 
-    # 10. Upsert into pending_qr_sessions (DELETE existing for same org, then INSERT)
+    # 13. Upsert into pending_qr_sessions (DELETE existing for same org,
+    # then INSERT). The pending session amount tracks the resolved
+    # amount (Req 4.5), not the invoice's full balance.
     from sqlalchemy import delete as sa_delete
 
     await db.execute(
@@ -1402,8 +1843,8 @@ async def create_qr_session_for_existing_invoice(
     pending_session = PendingQrSession(
         org_id=org_id,
         session_id=session_id,
-        checkout_url=checkout_url,
-        amount=invoice.balance_due,
+        checkout_url=payment_url,
+        amount=resolved_amount,
         invoice_number=invoice_number,
         invoice_id=invoice_id,
         expires_at=dt.fromtimestamp(expires_at, tz=tz.utc),
@@ -1412,13 +1853,50 @@ async def create_qr_session_for_existing_invoice(
     await db.flush()
     await db.refresh(pending_session)
 
-    # 11. Return session details (invoice is NOT modified)
+    # 14. Audit log: payment.qr_session_superseded (Req 9.3).
+    # Fires only when an old PaymentIntent was cancelled in step 7.
+    if old_pi_id:
+        await write_audit_log(
+            session=db,
+            org_id=org_id,
+            user_id=user_id,
+            action="payment.qr_session_superseded",
+            entity_type="invoice",
+            entity_id=invoice_id,
+            before_value={"stripe_payment_intent_id": old_pi_id},
+            after_value={
+                "stripe_payment_intent_id": new_pi_id,
+                "reason": "amount_changed",
+            },
+        )
+
+    # 15. Audit log: payment.qr_session_created (Req 9.1).
+    # Fires on every new-PI path (skipped on the reuse branch per Req 9.2).
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="payment.qr_session_created",
+        entity_type="invoice",
+        entity_id=invoice_id,
+        before_value=None,
+        after_value={
+            "stripe_payment_intent_id": new_pi_id,
+            "amount": str(resolved_amount),
+            "balance_due_at_request_time": str(balance_due_at_request_time),
+            "is_partial_payment": is_partial,
+        },
+    )
+
+    # 16. Return session details (invoice payment record is NOT modified).
+    # The response amount is the resolved amount (Req 4.6) — the org user's
+    # waiting popup displays this value, not the invoice balance.
     return {
         "session_id": session_id,
         "invoice_id": invoice_id,
         "invoice_number": invoice_number,
-        "amount": invoice.balance_due,
-        "amount_cents": amount_cents,
+        "amount": resolved_amount,
+        "amount_cents": target_cents,
         "expires_at": expires_at_iso,
         "currency": currency,
     }
@@ -1433,8 +1911,12 @@ async def get_pending_qr_session(
 
     Queries the pending_qr_sessions table for the given org_id.
     If the session exists but has expired (expires_at < now), deletes it
-    and returns None. If the session exists and is still valid, returns
-    it as a dict. If no session exists, returns None.
+    and returns None. If the session exists but has been dismissed by
+    the kiosk (``dismissed_at IS NOT NULL``), returns None — the row
+    stays in the DB so the customer can still complete payment via
+    their phone, but the kiosk popup does not re-appear on a refresh.
+    If the session exists and is still valid, returns it as a dict.
+    If no session exists, returns None.
 
     Requirements: 3.1, 4.1, 4.2, 4.3
     """
@@ -1456,6 +1938,12 @@ async def get_pending_qr_session(
         await db.flush()
         return None
 
+    # Kiosk has dismissed the popup display for this session — hide it
+    # from the kiosk poll. The Stripe PI + the row stay alive so a
+    # customer who already scanned can complete payment from their phone.
+    if session.dismissed_at is not None:
+        return None
+
     return {
         "session_id": session.session_id,
         "checkout_url": session.checkout_url,
@@ -1464,6 +1952,44 @@ async def get_pending_qr_session(
         "expires_at": session.expires_at.isoformat(),
         "created_at": session.created_at.isoformat(),
     }
+
+
+async def dismiss_pending_qr_session(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    session_id: str,
+) -> bool:
+    """Mark a pending QR session as dismissed by the kiosk display.
+
+    Soft-dismiss (sets ``dismissed_at = now()``) — the row + the
+    underlying Stripe PaymentIntent are NOT touched. The customer who
+    already scanned can complete payment from their phone; the kiosk
+    poll just stops re-showing the popup.
+
+    Scoped to org_id so a kiosk cannot dismiss another org's session.
+    Returns True if the row was found and updated, False otherwise.
+
+    Requirements: kiosk dismissal must not break in-flight customer payments.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update as sa_update
+
+    from app.modules.payments.models import PendingQrSession
+
+    result = await db.execute(
+        sa_update(PendingQrSession)
+        .where(
+            PendingQrSession.org_id == org_id,
+            PendingQrSession.session_id == session_id,
+            PendingQrSession.dismissed_at.is_(None),
+        )
+        .values(dismissed_at=datetime.now(timezone.utc))
+        .returning(PendingQrSession.id)
+    )
+    await db.flush()
+    return result.scalar_one_or_none() is not None
 
 
 async def get_qr_session_status(
@@ -1567,7 +2093,7 @@ async def get_qr_session_status(
             # amount_received is in cents
             amount_cents = pi_data.get("amount_received", 0)
             return {"status": "complete", "payment_intent_id": session_id, "amount_charged": amount_cents / 100}
-        elif pi_status in ("canceled", "requires_payment_method"):
+        elif pi_status == "canceled":
             return {"status": "expired", "payment_intent_id": None, "amount_charged": None}
         else:
             return {"status": "open", "payment_intent_id": None, "amount_charged": None}

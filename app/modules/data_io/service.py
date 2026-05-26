@@ -740,11 +740,17 @@ async def export_vehicles_csv(
 
     for v in org_vehicles:
         names = "; ".join(vehicle_customers.get(v.id, []))
+        # Promoted org_vehicles rows (created by ``promote_vehicle()``) carry
+        # ``is_manual_entry=False`` because their fields originated from the
+        # CarJam-sourced ``global_vehicles`` row at promotion time. Reflect
+        # that origin in the CSV: hardcoding ``"manual"`` for every
+        # ``org_vehicles`` row mislabels promoted vehicles as user-entered.
+        lookup_type = "manual" if v.is_manual_entry else "carjam"
         writer.writerow([
             str(v.id), v.rego, v.make or "", v.model or "",
             v.year or "", v.colour or "", v.body_type or "",
             v.fuel_type or "", v.engine_size or "", v.num_seats or "",
-            "manual", names,
+            lookup_type, names,
         ])
 
     for v in global_vehicles:

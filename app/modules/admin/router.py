@@ -2812,6 +2812,7 @@ async def refresh_vehicle(
     Only Global_Admin users can access this endpoint.
     Requirement 50.1.
     """
+    # Global-admin refresh updates only the global cache; per-org snapshots refresh via /api/v1/vehicles/{id}/refresh which their org users invoke
     from app.modules.admin.schemas import GlobalVehicleRefreshResponse
     from app.modules.admin.service import refresh_global_vehicle
 

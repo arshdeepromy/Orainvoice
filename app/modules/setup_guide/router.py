@@ -19,7 +19,12 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
-from app.core.modules import DEPENDENCY_GRAPH, ModuleService
+from app.core.modules import (
+    DEPENDENCY_GRAPH,
+    TRADE_FAMILY_REQUIRED_MODULES,
+    ModuleService,
+    fetch_org_trade_family,
+)
 from app.modules.admin.models import Organisation, SubscriptionPlan
 from app.modules.auth.rbac import require_role
 from app.modules.module_management.models import ModuleRegistry, OrgModule
@@ -38,6 +43,35 @@ router = APIRouter()
 # Modules auto-enabled by trade family — excluded from setup guide questions.
 # Matches the CORE_MODULES pattern in app/core/modules.py (small, rarely-changing set).
 TRADE_GATED_MODULES: set[str] = {"vehicles"}
+
+
+def trade_gated_modules_for_org(org_trade_family: str | None) -> set[str]:
+    """Return the set of module slugs that should be excluded from the
+    setup guide for an org with the given ``tradeFamily``.
+
+    Combines two sources:
+    - ``TRADE_GATED_MODULES``: modules auto-enabled by trade family
+      (currently ``vehicles``), always excluded from the guide.
+    - ``TRADE_FAMILY_REQUIRED_MODULES`` (from ``app/core/modules.py``):
+      modules restricted to a specific trade family. They are excluded for
+      orgs whose ``tradeFamily`` does NOT match the required family, and
+      they are included (eligible) for orgs whose ``tradeFamily`` matches.
+
+    Pure function — suitable for property-based testing.
+
+    Args:
+        org_trade_family: The org's trade family slug
+            (e.g. ``"automotive-transport"``) or ``None``.
+
+    Returns:
+        The set of slugs that should be filtered out of the setup guide
+        for this org.
+    """
+    gated = set(TRADE_GATED_MODULES)
+    for slug, required_family in TRADE_FAMILY_REQUIRED_MODULES.items():
+        if org_trade_family != required_family:
+            gated.add(slug)
+    return gated
 
 
 # ---------------------------------------------------------------------------
@@ -286,10 +320,19 @@ async def get_questions(
     result_modules = await db.execute(stmt_modules)
     registry_modules = result_modules.scalars().all()
 
-    # 3. Filter using the pure helper (non-core, has question, not trade-gated, in plan)
-    eligible = filter_eligible_modules(registry_modules, plan_modules)
+    # 3. Resolve the org's trade family so we can build the per-org
+    #    trade-gated exclusion set. This excludes auto-trade-gated modules
+    #    (TRADE_GATED_MODULES) AND any module in TRADE_FAMILY_REQUIRED_MODULES
+    #    whose required family does not match the org's tradeFamily, while
+    #    keeping the matching restricted modules eligible (Requirement 1.2 of
+    #    b2b-fleet-portal — for matching orgs the question SHALL appear).
+    org_trade_family = await fetch_org_trade_family(db, org_id)
+    trade_gated = trade_gated_modules_for_org(org_trade_family)
 
-    # 4. If rerun=true, additionally filter to modules where org_modules.is_enabled = false
+    # 4. Filter using the pure helper (non-core, has question, not trade-gated, in plan)
+    eligible = filter_eligible_modules(registry_modules, plan_modules, trade_gated)
+
+    # 5. If rerun=true, additionally filter to modules where org_modules.is_enabled = false
     if rerun:
         # Get all enabled module slugs for this org
         stmt_enabled = select(OrgModule.module_slug).where(
@@ -303,14 +346,14 @@ async def get_questions(
 
         eligible = filter_rerun_modules(eligible, enabled_slugs)
 
-    # 5. Sort by topological order
+    # 6. Sort by topological order
     eligible_slugs = {mod.slug for mod in eligible}
     sorted_slugs = _topological_sort(eligible_slugs)
 
     # Build a lookup for quick access
     mod_by_slug = {mod.slug: mod for mod in eligible}
 
-    # 6. Build response
+    # 7. Build response
     questions = []
     for slug in sorted_slugs:
         mod = mod_by_slug[slug]

@@ -31,23 +31,26 @@ We will **not** keep both `integration_configs[smtp]` and `email_providers` in l
 
 Each site below has been read end-to-end. The "config source" column tells you whether the site reads from `email_providers` (good but duplicated) or the legacy `integration_configs.smtp` (no failover at all).
 
-### Group A — already reads `email_providers` but uses **raw `smtplib`** with a hand-rolled failover loop (13 sites, ~1400 LOC of near-duplicate code)
+### Group A — already reads `email_providers` but uses **raw `smtplib`** with a hand-rolled failover loop (14 sites, ~1500 LOC of near-duplicate code)
+
+> **Line numbers re-baselined 2026-05-25.** Function names are the source of truth; line numbers track HEAD at re-baseline time and may drift again.
 
 | # | Location | Function | Notes |
 |---|---|---|---|
-| A1 | `app/modules/invoices/service.py:3683` | `email_invoice` | Loop + attachments + MIME building; ~250 LOC. |
-| A2 | `app/modules/invoices/service.py:4047` | payment reminder (within `send_payment_reminder`) | Reuses the same provider loop pattern. |
+| A1 | `app/modules/invoices/service.py:4046` | `email_invoice` | Loop + attachments + MIME building; ~250 LOC. |
+| A2 | `app/modules/invoices/service.py:4441` | `send_payment_reminder` | Reuses the same provider loop pattern. |
 | A3 | `app/modules/quotes/service.py:989` | quote email send | Loop + attachments. |
-| A4 | `app/modules/payments/service.py:374` | payment receipt with PDF | Loop + PDF attachment. |
-| A5 | `app/modules/vehicles/report_service.py:317` | service-history report email | Loop + PDF + HTML template. |
+| A4 | `app/modules/payments/service.py:497` | `_send_receipt_email` | Post-payment receipt with PDF attachment. `smtplib` import at L526, provider loop ~L687. |
+| A5 | `app/modules/vehicles/report_service.py:293` | `email_service_history_report` | Loop + PDF + HTML template. |
 | A6 | `app/modules/bookings/service.py:1099` | `_send_booking_confirmation_email` | Plain-text body, loop. |
 | A7 | `app/modules/auth/service.py:360` | `_send_permanent_lockout_email` | HTML + text, loop. Uses `async_session_factory`. |
-| A8 | `app/modules/auth/service.py:2465` | `_send_invitation_email` | HTML + text, loop, dev fallback logs URL. |
-| A9 | `app/modules/auth/service.py:2741` | `send_verification_email` | HTML + text, loop, dev fallback. |
-| A10 | `app/modules/auth/service.py:2943` | `send_receipt_email` | Paid-plan signup receipt, loop. |
-| A11 | `app/modules/auth/mfa_service.py:370` | `_send_email_otp` | **`.limit(1)` — no failover.** Raises `RuntimeError` if provider 1 fails. Bug. |
-| A12 | `app/modules/customers/service.py:698` | `notify_customer()` (email channel) | Ad-hoc customer messages, loop. Uses `org_name` as `from_name` override. |
-| A13 | `app/modules/landing/router.py:60` | `post_demo_request()` | Public landing page demo request notification, loop. **No org context** (`org_id=None`). |
+| A8 | `app/modules/auth/service.py:2523` | `_send_invitation_email` | HTML + text, loop, dev fallback logs URL. |
+| A9 | `app/modules/auth/service.py:2825` | `send_verification_email` | HTML + text, loop, dev fallback. |
+| A10 | `app/modules/auth/service.py:3027` | `send_receipt_email` | Paid-plan signup receipt, loop. |
+| A11 | `app/modules/auth/mfa_service.py:370` | `_send_email_otp` | **`.limit(1)` at L397 — no failover.** Raises `RuntimeError` if provider 1 fails. Bug. |
+| A12 | `app/modules/customers/service.py:652` | `notify_customer()` (email channel) | `smtplib` import at L698; ad-hoc customer messages, loop. Uses `org_name` as `from_name` override. |
+| A13 | `app/modules/landing/router.py:57` | `submit_demo_request()` | Public landing page demo request notification, loop. **No org context** (`org_id=None`). |
+| A14 | `app/modules/payments/service.py:349` | `send_invoice_payment_link_email` | **Added in v1.10.2 "Send Payment Link"** — same hand-rolled `smtplib` loop pattern as A1. `smtplib` import at L526, provider query at L599, SMTP at L687. |
 
 ### Group B — uses unified `send_email_task` → `send_org_email` → `IntegrationConfig[smtp]` (17 sites, **no failover at all**)
 
@@ -61,10 +64,10 @@ All of these end up at `app/integrations/brevo.py:341` → `get_email_client` �
 | B4 | `app/modules/portal/service.py:1463` | portal booking notif |
 | B5 | `app/modules/portal/service.py:2127` | portal DSAR |
 | B6 | `app/modules/portal/service.py:2240` | portal recover (link recovery) |
-| B7 | `app/modules/notifications/service.py:1030` | customer notification dispatch (overdue) |
+| B7 | `app/modules/notifications/service.py:1214` | customer notification dispatch (overdue) — inside `process_wof_rego_reminders` body |
 | B8 | `app/modules/notifications/service.py:1328` | wof/rego reminders |
-| B9 | `app/modules/notifications/service.py:2014` | general notification rules |
-| B10 | `app/modules/notifications/reminder_queue_service.py:538` | scheduled reminder queue |
+| B9 | `app/modules/notifications/service.py:1510` | general notification rules send loop (scheduled rules dispatcher). **Note**: L2014-2025 is a separate `select(EmailProvider).where(is_active=True)` gating check (Group E, read-only) — do NOT migrate that one. |
+| B10 | `app/modules/notifications/reminder_queue_service.py:610` | scheduled reminder queue — inside `_send_email_reminder` at L590 |
 | B11 | `app/modules/compliance_docs/notification_service.py:270` | compliance doc notifications |
 | B12 | `app/tasks/subscriptions.py:489` | dunning email |
 | B13 | `app/tasks/subscriptions.py:567` | trial expiry reminder |
@@ -79,7 +82,7 @@ All of these end up at `app/integrations/brevo.py:341` → `get_email_client` �
 |---|---|---|
 | C1 | `app/modules/auth/service.py:861` `_send_token_reuse_alert` | currently just logs |
 | C2 | `app/modules/auth/service.py:635` `_send_anomalous_login_alert` | currently just logs |
-| C3 | `app/modules/auth/service.py:1877` `_send_password_reset_email` | currently just logs — **important auth flow!** |
+| C3 | `app/modules/auth/service.py:1892` `_send_password_reset_email` | currently just logs — **SECURITY HOTFIX, scheduled ahead of Phase 3 (see Phase 0.5)**. Today, every "Forgot password?" click silently fails to email; users cannot recover their account. |
 
 ### Group D — admin endpoints
 
@@ -87,8 +90,8 @@ All of these end up at `app/integrations/brevo.py:341` → `get_email_client` �
 |---|---|---|
 | D1 | `app/modules/admin/router.py:701` `test_smtp_email` | Legacy admin test endpoint; reads `IntegrationConfig.smtp`. |
 | D2 | `app/modules/admin/router.py:650` `configure_smtp` → `save_smtp_config` | Legacy write endpoint for `IntegrationConfig.smtp`. |
-| D3 | `app/modules/email_providers/router.py:130` `post_test` | New per-provider test endpoint. **Just fixed for Brevo REST API + SMTP-with-login (2026-05-13).** |
-| D4 | `app/modules/email_providers/router.py:46` `post_activate` | Currently deactivates all others — bug to fix here. |
+| D3 | `app/modules/email_providers/router.py:136` `post_test` | New per-provider test endpoint. **Just fixed for Brevo REST API + SMTP-with-login (2026-05-13).** |
+| D4 | `app/modules/email_providers/router.py:52` `post_activate` | Currently deactivates all others — bug to fix here. |
 | D5 | `app/modules/admin/router.py:1340` `list_integrations` + `:1206` `integration_cost_dashboard` + `app/modules/admin/service.py:4724` | Read-only callers that check "any active email provider"; already compatible with multi-active. |
 
 ### Group E — supporting modules (read-only or non-send)
@@ -96,10 +99,10 @@ All of these end up at `app/integrations/brevo.py:341` → `get_email_client` �
 | # | Location | Notes |
 |---|---|---|
 | E1 | `app/modules/notifications/reminder_queue_service.py:118` | Gating check `is_active=True ORDER BY priority` — compatible with multi-active. |
-| E2 | `app/modules/notifications/service.py:1835` | Same gating pattern. |
-| E3 | `app/modules/admin/service.py:5754` `export_integration_settings` / `:5833` `restore_integration_settings` | Backup/restore covers BOTH `integration_configs` and `email_providers`. Restore must remain backward-compatible during transition. |
+| E2 | `app/modules/notifications/service.py:2022` | Same gating pattern. (Previously documented as L1835; drift +187.) |
+| E3 | `app/modules/admin/service.py:5796` `export_integration_settings` / `app/modules/admin/router.py:1485` `restore_integration_settings` route → service-layer function is named **`import_integration_settings`** in `admin/service.py` (NOT `restore_integration_settings` — that's the route handler). Backup/restore covers BOTH `integration_configs` and `email_providers`. Restore must remain backward-compatible during transition. |
 | E4 | `app/cli/rotate_keys.py:23` | Key rotation iterates `EmailProvider.credentials_encrypted` and `IntegrationConfig.config_encrypted` separately; needs no changes if we keep both columns. |
-| E5 | `app/modules/notifications/router.py:844` `brevo_bounce_webhook` & `:927` `sendgrid_bounce_webhook` | Inbound webhooks — independent, unchanged. |
+| E5 | `app/modules/notifications/router.py:863` `brevo_bounce_webhook` & `:946` `sendgrid_bounce_webhook` | Inbound webhooks — independent, unchanged. |
 
 ---
 
@@ -112,7 +115,7 @@ All of these end up at `app/integrations/brevo.py:341` → `get_email_client` �
 - Verified flag (`is_verified` column on `integration_configs`) flipped by the legacy admin test endpoint.
 
 ### `email_providers` (current, target)
-- Multiple rows. Columns from [app/modules/admin/models.py:435-460](app/modules/admin/models.py#L435-L460):
+- Multiple rows. Columns from [app/modules/admin/models.py:435-463](app/modules/admin/models.py#L435-L463):
   - `provider_key` (unique): `brevo` | `sendgrid` | `mailgun` | `ses` | `gmail` | `outlook` | `custom_smtp`
   - `display_name`, `description`, `setup_guide`
   - `smtp_host`, `smtp_port`, `smtp_encryption` (none/tls/ssl)
@@ -163,16 +166,31 @@ class SendResult:
     error: str | None           # only set when success=False, summarizes last error
     attempts: list[EmailAttempt]
 
+    # --- Backwards-compat alias for one release ---
+    # The existing brevo.py SendResult exposed a single `provider: str` field.
+    # Tests assert on `result.provider` (e.g. test_security_focused.py:359,
+    # test_email_infrastructure.py). Expose a read-only alias so those tests
+    # keep working until Phase 9 retires the shim.
+    @property
+    def provider(self) -> str:
+        return self.provider_key or ""
+
 async def send_email(
     db: AsyncSession,
     message: EmailMessage,
     *,
     org_sender_name: str | None = None,   # overrides config.from_name
     org_reply_to: str | None = None,      # overrides config.reply_to
-    org_id: uuid.UUID | None = None,      # for in-app notification on total failure
     on_total_failure: TotalFailureAction = TotalFailureAction.LOG_ONLY,
 ) -> SendResult:
-    """Send via every active email_providers row in priority order until one succeeds."""
+    """Send via every active email_providers row in priority order until one succeeds.
+
+    The sender does NOT call ``create_in_app_notification`` or log to
+    ``notification_log`` itself — callers own those side-effects, using
+    ``result.success`` / ``result.attempts`` to decide what to do.
+    No ``org_id`` parameter: the caller already has the org context and
+    is the one that decides whether to surface a failure.
+    """
 ```
 
 ### 4.2 Dispatch matrix inside `send_email`
@@ -208,12 +226,13 @@ async def _send_email_async(...):
                 session, message,
                 org_sender_name=org_sender_name,
                 org_reply_to=org_reply_to,
-                org_id=uuid.UUID(org_id) if org_id else None,
             )
             if result.success:
+                # provider_key column added in Phase 8 sub-step 8a (see below)
                 await update_log_status(session, log_id=uuid.UUID(log_id),
                                         status="sent",
-                                        sent_at=datetime.now(timezone.utc))
+                                        sent_at=datetime.now(timezone.utc),
+                                        provider_key=result.provider_key)
                 return {"success": True, "message_id": result.message_id,
                         "provider": result.provider_key}
             return {"success": False, "error": result.error or "Unknown email send error"}
@@ -226,6 +245,8 @@ This single change fixes **all 17 Group B sites at once** without touching any o
 ### 4.5 Failure surfacing
 
 Today, Groups A1–A6 call `create_in_app_notification(category="email_failure", ...)` after total failure. Groups A7–A13 (auth + landing page) deliberately do not (no org context — documented as a v1 limitation).
+
+> **Import-path note:** `create_in_app_notification` lives in `app.modules.in_app_notifications.service` (a separate module from `app.modules.notifications`). Grepping the `notifications/` module will not find it — see [in_app_notifications/service.py:90](app/modules/in_app_notifications/service.py#L90).
 
 The unified sender will:
 - Not call `create_in_app_notification` itself (avoids tight coupling).
@@ -249,6 +270,16 @@ Each phase is independently shippable. The order minimises risk: build the new h
 
 **Gate:** all existing tests still pass.
 
+### Phase 0.5 — SECURITY HOTFIX: password-reset email (cherry-pick ahead of Phase 1)
+
+Today, [`_send_password_reset_email`](app/modules/auth/service.py#L1892) only logs; the "Forgot password?" flow silently fails to send. This is a standalone account-recovery bug and should ship **before** the rest of the unification work.
+
+- [ ] Implement `_send_password_reset_email` using the **existing** raw-`smtplib` + EmailProvider loop pattern (copy from `_send_invitation_email`) so it ships independently of Phase 1's unified sender. It will be rewritten to call `send_email()` in Phase 4, but until then the user-facing flow works.
+- [ ] Add `tests/test_password_reset_email.py` asserting the email is at least attempted.
+- [ ] Bump PATCH version and ship as a standalone hotfix release.
+
+**Gate:** forgot-password flow delivers an email in a manual test.
+
 ### Phase 1 — Implement send_email with full feature parity
 
 - [ ] Implement `_dispatch_brevo_rest` (copy from `email_providers/service.py::_send_test_via_rest_api`, extend for attachments — Brevo REST supports `attachment` array, see `brevo.py:163-171`).
@@ -259,7 +290,7 @@ Each phase is independently shippable. The order minimises risk: build the new h
 - [ ] Build MIME message helper (multipart/mixed for attachments, multipart/alternative for HTML+text only).
 - [ ] Implement provider loop with `EmailAttempt` accumulation.
 - [ ] Implement `org_sender_name` / `org_reply_to` overrides.
-- [ ] Honour the **default-host fallback table** currently in `email_providers/service.py:222-234` (for rows that have no `smtp_host` set, populate from provider_key).
+- [ ] Honour the **default-host fallback table** currently in `email_providers/service.py:246-260` (`default_hosts = {...}`) for rows that have no `smtp_host` set.
 - [ ] Add `EMAIL_SIZE_LIMIT = 25 * 1024 * 1024` as a module-level constant (currently local to `email_invoice`). The unified sender should expose this for callers that need to pre-check attachment sizes.
 - [ ] **Tests:**
   - Mock httpx for REST API success/auth-fail/network-error.
@@ -283,73 +314,96 @@ Each phase is independently shippable. The order minimises risk: build the new h
 
 ### Phase 3 — Migrate Group A sites (raw smtplib → send_email)
 
-For each of A1–A13, **one PR per site** so a regression is easy to bisect:
+For each of A1–A14, **one PR per site** so a regression is easy to bisect. Line numbers below are HEAD as of 2026-05-25; prefer grepping the function name when reviewing.
 
-#### A1 — `email_invoice` ([invoices/service.py:3683](app/modules/invoices/service.py#L3683))
-- Replace the provider query (3783-3786), MIME builder (3828-3866), and provider loop (3868-3905) with one `send_email` call. Build `EmailAttachment` list from the existing `attachment_data` tuples. Preserve `attachments_skipped_size` body suffix.
+#### A1 — `email_invoice` ([invoices/service.py:4046](app/modules/invoices/service.py#L4046))
+- Replace the provider query (~L4146), MIME builder, and provider loop (~L4322 SMTP fallback) with one `send_email` call. Build `EmailAttachment` list from the existing `attachment_data` tuples. Preserve `attachments_skipped_size` body suffix.
 - Keep the existing `log_email_sent` + `create_in_app_notification` failure path.
 
-#### A2 — `send_payment_reminder` ([invoices/service.py:4047+](app/modules/invoices/service.py#L4047))
-- Same as A1, smaller. Reuses parts of `email_invoice`.
+#### A2 — `send_payment_reminder` ([invoices/service.py:4441](app/modules/invoices/service.py#L4441))
+- Same as A1, smaller. Reuses parts of `email_invoice`. `import smtplib` at ~L4481, provider query at ~L4489.
 
 #### A3 — Quote send ([quotes/service.py:989](app/modules/quotes/service.py#L989))
-- Same pattern as A1.
+- Same pattern as A1. `import smtplib` at L991, provider query at L1083.
 
-#### A4 — Payment receipt ([payments/service.py:374](app/modules/payments/service.py#L374))
-- Has a PDF attachment generated by `generate_invoice_pdf`. Convert to `EmailAttachment`.
+#### A4 — `_send_receipt_email` ([payments/service.py:497](app/modules/payments/service.py#L497))
+- Post-payment receipt with PDF attachment generated by `generate_invoice_pdf`. Convert to `EmailAttachment`. `import smtplib` at L526, provider query at L599, SMTP at L687.
 
-#### A5 — Vehicle report ([vehicles/report_service.py:317](app/modules/vehicles/report_service.py#L317))
-- HTML body from jinja template, PDF attachment.
+#### A5 — Vehicle report ([vehicles/report_service.py:293](app/modules/vehicles/report_service.py#L293))
+- Function `email_service_history_report`. HTML body from jinja template, PDF attachment. Provider query at ~L435.
 
 #### A6 — Booking confirmation ([bookings/service.py:1099](app/modules/bookings/service.py#L1099))
-- Plain text only, no attachment.
+- Plain text only, no attachment. `import smtplib` at L1118, provider query at L1135.
 
 #### A7 — Lockout email ([auth/service.py:360](app/modules/auth/service.py#L360))
-- Uses its own `async_session_factory()` because called outside the request context. The unified sender should also accept an explicit `db` session, so caller opens one. No-org-context: pass `org_id=None`.
+- Uses its own `async_session_factory()` because called outside the request context. The unified sender should also accept an explicit `db` session, so caller opens one. No-org-context: pass `org_id=None`. Provider query at ~L429.
 
-#### A8 — Invite ([auth/service.py:2465](app/modules/auth/service.py#L2465))
-- Has `db` may-be-None path (function can be called either from a request or from a background task). Keep that conditional session-open logic in the caller.
+#### A8 — Invite ([auth/service.py:2523](app/modules/auth/service.py#L2523))
+- Has `db` may-be-None path (function can be called either from a request or from a background task). Keep that conditional session-open logic in the caller. Provider query at ~L2516.
 - Dev-fallback (`logger.warning("DEV INVITE URL: %s", invite_url)`) when no provider configured → check `result.attempts == []` (i.e., no providers tried).
 
-#### A9 — Verification ([auth/service.py:2741](app/modules/auth/service.py#L2741))
-- Same as A8.
+#### A9 — Verification ([auth/service.py:2825](app/modules/auth/service.py#L2825))
+- Same as A8. Provider query at ~L2905.
 
-#### A10 — Receipt ([auth/service.py:2943](app/modules/auth/service.py#L2943))
-- Same as A8.
+#### A10 — Receipt ([auth/service.py:3027](app/modules/auth/service.py#L3027))
+- Same as A8. Provider query at ~L3177.
 
 #### A11 — **MFA OTP** ([auth/mfa_service.py:370](app/modules/auth/mfa_service.py#L370))
-- **Currently uses `.limit(1)` — no failover.** This is a real bug. Migration also fixes it.
+- **Currently uses `.limit(1)` at L397 — no failover.** This is a real bug. Migration also fixes it.
 - Must keep raising `RuntimeError` (the MFA challenge API contract expects an exception on send-failure). Wrap `send_email` result: if `not result.success`, raise.
 
-#### A12 — **Customer notify** ([customers/service.py:698](app/modules/customers/service.py#L698))
-- Ad-hoc customer messages sent via the email channel in `notify_customer()`.
+#### A12 — **Customer notify** ([customers/service.py:652](app/modules/customers/service.py#L652))
+- Function `notify_customer()`. `import smtplib` at L698, provider query at L708.
+- Ad-hoc customer messages sent via the email channel.
 - Uses `org_name` as `from_name` override — must pass `org_sender_name=org_name` to `send_email`.
 - Calls `log_email_sent` after success — preserve this call.
 
-#### A13 — **Landing page demo request** ([landing/router.py:60](app/modules/landing/router.py#L60))
+#### A13 — **Landing page demo request** ([landing/router.py:57](app/modules/landing/router.py#L57))
+- Function is `submit_demo_request` (NOT `post_demo_request`). `import smtplib` at L15 (module-level), provider query at L97, SMTP at L161.
 - Public form — **no org context** (`org_id=None`). Sends to a hardcoded `DEMO_REQUEST_RECIPIENT`.
 - No `log_email_sent` call (no notification_log entry for public form submissions).
 - On total failure, returns HTTP 500 to the user (no in-app notification — no org context).
+
+#### A14 — **Invoice payment-link email** ([payments/service.py:349](app/modules/payments/service.py#L349))
+- Function `send_invoice_payment_link_email`. Added in v1.10.2 "Send Payment Link" feature, after the original plan was drafted.
+- Pattern is a near-duplicate of A1's `email_invoice`: `import smtplib` at L526, `select(EmailProvider).where(is_active && credentials_set).order_by(priority)` at L599, MIME build with optional PDF, SMTP loop at L687-689.
+- Migrate to `send_email` with `EmailAttachment` for the PDF (when generated). Preserve any `log_email_sent` + audit-log calls.
 
 **IMPORTANT — Phase 3 migration notes for all Group A sites:**
 - Each site that calls `log_email_sent` after a successful send **must preserve that call** after checking `result.success`. Forgetting this will create gaps in the `notification_log` table.
 - Each site that calls `create_in_app_notification` on failure **must preserve that call** after checking `not result.success`.
 - Sites that use `org_name` or other org-specific values as `from_name` must pass them via `org_sender_name` parameter.
 
-**Tests for each:** run module's existing tests (`test_invoice_email*`, `test_quote_email*`, `test_payment_*`, `test_vehicle_report_email`, `test_booking_*`, `test_mfa_email_otp`). Add a multi-provider failover assertion if missing.
+**Tests for each:** the per-module email tests enumerated below **do not exist today** and must be CREATED in each site's PR — they are NOT "existing tests to re-run".
+
+| New test file | Covers |
+|---|---|
+| `tests/test_invoice_email_failover.py` | A1 + A2 (`email_invoice`, `send_payment_reminder`) + A14 (`send_invoice_payment_link_email`) |
+| `tests/test_quote_email_failover.py` | A3 |
+| `tests/test_payment_receipt_email.py` | A4 (`_send_receipt_email`) |
+| `tests/test_vehicle_report_email.py` | A5 |
+| `tests/test_booking_confirmation_email.py` | A6 |
+| `tests/test_auth_email_failover.py` | A7–A10 (lockout, invite, verification, paid-plan receipt) |
+| `tests/test_mfa_email_otp.py` | A11 (also exercises BUG-2 fix) |
+| `tests/test_customer_notify_email.py` | A12 |
+| `tests/test_landing_demo_request_email.py` | A13 (no org context) |
+
+Each must include a 2-provider failover test: first provider returns auth-fail, second succeeds, assert `result.success` and `result.attempts == 2`.
 
 **Gate:** zero remaining `import smtplib` lines outside `app/integrations/email_sender.py` and `app/modules/email_providers/service.py` (test endpoint — see note below).
 
 **Note on `email_providers/service.py:test_email_provider`:** This function also uses raw `smtplib` for the per-provider test endpoint. It should be refactored to use the shared `_dispatch_smtp` / `_dispatch_brevo_rest` helpers from `email_sender.py` rather than duplicating the logic. This can be done as part of Phase 3 or deferred to Phase 9 cleanup.
 
+> **SMTP-test path is currently inline, not a helper.** Only `_send_test_via_rest_api` exists as a top-level helper (at [email_providers/service.py:314](app/modules/email_providers/service.py#L314)). The SMTP test path is **inline within `test_email_provider`** (between L177-314, after the `default_hosts = {...}` block at L246-260). Phase 1's `_dispatch_smtp` implementation therefore extracts BOTH the inline SMTP logic from `test_email_provider` AND copies the REST helper into the new `email_sender.py` module; Phase 3 then swaps the inline `test_email_provider` block for calls to the shared helpers.
+
 ### Phase 4 — Implement Group C TODO stubs
 
-- [ ] **C3 (`_send_password_reset_email`)** — high priority, auth flow. Build HTML/text body referencing existing pattern from `_send_invitation_email`. Call `send_email`.
-- [ ] **C1 / C2** — security alerts. Similar pattern. Body should include IP/device for anomalous-login alert and have a "Sessions invalidated automatically" notice for token-reuse.
+- [ ] **C3 (`_send_password_reset_email`)** — already implemented in **Phase 0.5 hotfix** with raw `smtplib`. In this phase, rewrite to call `send_email()` instead, matching the rest of the unified codebase. No new functionality, just plumbing parity.
+- [ ] **C1 / C2** — security alerts ([auth/service.py:861](app/modules/auth/service.py#L861) and [auth/service.py:635](app/modules/auth/service.py#L635)). Similar pattern. Body should include IP/device for anomalous-login alert and have a "Sessions invalidated automatically" notice for token-reuse.
 
-**Gate:** password reset emails are actually delivered (manual test).
+**Gate:** password reset emails route through `send_email` like every other path; security alerts are actually delivered (manual test).
 
-### Phase 5 — Fix the activate endpoint
+### Phase 5 — Fix the activate endpoint (and safety-net the deactivate endpoint)
 
 - [ ] Edit `app/modules/email_providers/service.py:34-65::activate_email_provider`:
   ```python
@@ -362,18 +416,22 @@ For each of A1–A13, **one PR per site** so a regression is easy to bisect:
   provider.is_active = True
   ```
 - [ ] Update the audit log action name + after_value to be clear: `email_provider_activated` (not `set_as_only_active`).
-- [ ] **Tests:** activate provider A → activate provider B → both active. List endpoint shows both.
+- [ ] **Safety net for deactivate** ([email_providers/service.py:68 `deactivate_email_provider`](app/modules/email_providers/service.py#L68)): with multi-active enabled, an admin could deactivate every provider, leaving zero active. Add a guard: count rows where `is_active=True AND credentials_set=True`. If deactivating this provider would drop the count to zero, raise `HTTPException(409, "Activate another provider before deactivating this one — at least one active email provider is required for outbound mail.")`. Frontend can additionally pre-check and disable the button for the last active provider.
+- [ ] **Tests:**
+  - `tests/test_email_provider_activate_multi.py` — activate provider A → activate provider B → both active. List endpoint shows both.
+  - `tests/test_email_provider_deactivate_last_blocked.py` — single active provider, attempt deactivate, assert HTTP 409 and provider still active.
 
-**Gate:** activating one provider no longer deactivates others.
+**Gate:** activating one provider no longer deactivates others. Deactivating the last active provider is rejected with 409.
 
 ### Phase 6 — Frontend (UI) updates
 
-#### 6a — Multi-active banner ([EmailProviders.tsx:163](frontend/src/pages/admin/EmailProviders.tsx#L163), and parent at top of file showing "Active Provider: Custom SMTP")
+#### 6a — Multi-active banner ([EmailProviders.tsx:442](frontend/src/pages/admin/EmailProviders.tsx#L442))
+- The banner `<span className="font-semibold">Active Provider:</span>` is at L442 (not L163 as originally drafted — the file was refactored).
 - Change `Active Provider: <name>` → `Active Providers: <comma-separated list>` when more than one.
 - The API already returns `active_provider` (singular) at `email_providers/service.py:25-31`. **Extend** the response to include `active_providers: list[str]` while keeping `active_provider` (set to the highest-priority active one) for backwards compatibility for one release.
 
-#### 6b — Priority slider visibility ([EmailProviders.tsx:238](frontend/src/pages/admin/EmailProviders.tsx#L238))
-- Currently `{provider.is_active && (<priority input>)}`. Show whenever `credentials_set` so users can pre-rank a configured-but-inactive provider.
+#### 6b — Priority slider visibility ([EmailProviders.tsx:239](frontend/src/pages/admin/EmailProviders.tsx#L239))
+- Currently `{provider.is_active && (<priority input>)}` at L239. Show whenever `credentials_set` so users can pre-rank a configured-but-inactive provider.
 
 #### 6c — Failover preview
 - Add a small "Send order: 1. Brevo → 2. Gmail → 3. Custom SMTP" preview line above the provider list, derived from the list response.
@@ -381,15 +439,59 @@ For each of A1–A13, **one PR per site** so a regression is easy to bisect:
 #### 6d — Setup guides updated
 - Update Brevo setup guide in migration 0065 — or better, in a new migration that does `UPDATE email_providers SET setup_guide = '...' WHERE provider_key = 'brevo'` — to document the **two key types** (REST API key vs SMTP key+login). The current text only mentions SMTP key.
 
+#### 6e — Verify integration_cost_dashboard renders correctly with N active providers
+- [admin/router.py:1206 `integration_cost_dashboard`](app/modules/admin/router.py#L1206) reads "any active email provider" to surface an "Email: Healthy/Unhealthy" tile. With multi-active enabled (Phase 5), confirm the tile either: (a) shows "Email: Healthy ✓ (N active providers)" or (b) lists the active provider names. If the dashboard hard-codes a singular provider field, update the response shape and the admin frontend tile.
+- _No backend change expected_; the existing query already iterates with `is_active=True ORDER BY priority`. A 5-minute visual check is sufficient — fix only if the tile is misleading.
+
 ### Phase 7 — Deprecate the legacy admin SMTP page
 
-- [ ] In `frontend/src/pages/admin/Integrations.tsx`, remove the "SMTP" integration card (the one that writes to `IntegrationConfig.smtp`). The `EmailProviders` tab already covers everything.
-- [ ] Remove `/api/v1/admin/integrations/smtp` (PUT) and `/api/v1/admin/integrations/smtp/test` (POST) endpoints in `admin/router.py:650` and `:701`.
-- [ ] Remove `save_smtp_config` and old `send_test_email` from `admin/service.py`.
+- [ ] **Pre-step — frontend audit.** Verified 2026-05-25: `Integrations.tsx` currently has 4 tabs (Carjam, Stripe, SMS Providers, Email Providers); there is **no visible "SMTP" card** in the tab list ([Integrations.tsx:754-772](frontend/src/pages/admin/Integrations.tsx#L754)). Before scoping the frontend removal, grep the entire `frontend/src/` tree for any code path that calls `PUT /admin/integrations/smtp` or `POST /admin/integrations/smtp/test`. If zero call sites exist, the frontend step is a no-op — skip it and proceed directly to the backend deprecation below.
+- [ ] **Backend deprecation (always required regardless of frontend state).** Replace the bodies of `/api/v1/admin/integrations/smtp` (PUT) and `/api/v1/admin/integrations/smtp/test` (POST) endpoints in `admin/router.py:640, 692` with HTTP 410 Gone responses carrying a `Location` header pointing to `/api/v2/admin/email-providers`.
+- [ ] **Telemetry during 410 window.** Add a structured log line (`logger.warning("legacy_smtp_endpoint_hit path=%s remote=%s", path, ip)`) at each 410 response. Tag with a known string so a single `grep legacy_smtp_endpoint_hit` over one release of access logs gives an exact count of remaining callers.
+- [ ] Remove `save_smtp_config` and old `send_test_email` from `admin/service.py` — both are unreferenced after the endpoint bodies are replaced. (Confirm via grep before deletion.)
 
-**Risk:** This is destructive. Any user/script still PUTting to the old URL will 404. Mitigate by leaving the endpoints in place for one release returning HTTP 410 Gone with a Location header pointing to `/api/v2/admin/email-providers`.
+**Risk:** This is destructive. Any user/script still PUTting to the old URL will get 410. Mitigate by keeping the endpoints in place for one release returning HTTP 410 Gone with a `Location` header pointing to `/api/v2/admin/email-providers`. **Phase 9 removal of the 410 endpoints is gated on zero `legacy_smtp_endpoint_hit` log lines across one full release window** — see Phase 9.
 
-### Phase 8 — One-time data migration
+### Phase 8 — Migrations
+
+This phase contains two independent migrations. **8a is a schema-only migration that should be applied with Phase 2** so the `update_log_status(..., provider_key=...)` call lands on a real column; 8b is the one-time data migration originally scoped here.
+
+#### 8a — Add `notification_log.provider_key` column
+
+Acceptance Criterion #4 (Section 13) asserts `notification_log.provider_key='<provider 2>'` after a failover. The column does not exist today ([notifications/models.py:79-120](app/modules/notifications/models.py#L79)). Without it, the AC is unverifiable and Phase 2's `update_log_status(..., provider_key=...)` call would TypeError at runtime.
+
+Migration `XXXX_add_notification_log_provider_key.py`:
+```python
+def upgrade():
+    op.add_column(
+        "notification_log",
+        sa.Column("provider_key", sa.String(50), nullable=True),
+    )
+    # Optional but useful for forensic queries:
+    op.create_index(
+        "ix_notification_log_provider_key",
+        "notification_log",
+        ["provider_key"],
+    )
+
+def downgrade():
+    op.drop_index("ix_notification_log_provider_key", table_name="notification_log")
+    op.drop_column("notification_log", "provider_key")
+```
+
+Service-layer signature changes (in the same patch):
+- `log_email_sent(db, *, org_id, recipient, template_type, subject, status="queued", channel="email", error_message=None, sent_at=None, **provider_key=None**)` — accept and persist.
+- `update_log_status(db, *, log_id, status, error_message=None, sent_at=None, **provider_key=None**)` — accept and persist.
+
+Backwards compat: column is NULL-able and has no default, so existing rows and existing call sites (which won't pass the kwarg) are unaffected.
+
+**Admin-UI surfacing (otherwise the column is invisible to operators):**
+- [ ] Update `_log_entry_to_dict` in `app/modules/notifications/service.py` to include `provider_key` in the serialised log entry.
+- [ ] Update `list_notification_log` response so the admin UI can read the new field. Add `provider_key: str | None` to the corresponding Pydantic schema.
+- [ ] In the admin notification-log frontend table (search for the consumer of `list_notification_log` — likely under `frontend/src/pages/admin/` notification log / activity viewer), add a "Provider" column. When `provider_key is null` (legacy rows before Phase 8a deploy), render `—`.
+- [ ] No frontend change required for non-admin users; this column is only visible inside the admin notifications viewer.
+
+#### 8b — Legacy SMTP → email_providers data migration
 
 If a user has only configured the legacy `integration_configs[smtp]` and not yet touched the new `email_providers` rows, we must not lose their config.
 
@@ -415,12 +517,19 @@ def upgrade():
 
 **Cannot be a pure SQL migration** because it needs to decrypt → re-encrypt with the same KMS DEK. Must be a Python migration script that imports `app.core.encryption`. Test in a copy of prod data before running.
 
+**Operational requirements before running this migration:**
+
+1. **Maintenance window required.** If an admin is mid-flight writing through the legacy `IntegrationConfig.smtp` form at the moment the migration reads the encrypted blob, the migration will silently overwrite the new value from the GUI race. Schedule a 15-min window with the GUI disabled (frontend Phase 7's removal of the SMTP card helps, but the API endpoint is still alive until Phase 7's 410 Gone step).
+2. **Verify no recent writes.** Pre-migration check: `SELECT updated_at FROM integration_configs WHERE name='smtp'` — if the row was updated within the last N minutes, abort and reschedule.
+3. **`is_verified` carry-over.** The legacy `integration_configs.is_verified` flag indicates the admin successfully tested the SMTP config. The new schema does not have a direct equivalent (see BUG-7 follow-up). Document in the post-migration runbook: "admins should re-run the per-provider test on the new EmailProviders page to confirm credentials carried over correctly."
+4. **Acquire `rotate_keys` advisory lock.** `app/cli/rotate_keys.py` re-encrypts both tables sequentially. If it runs mid-migration the state is half-encrypted. Acquire a PG advisory lock on both tables (or document operational constraint: "do not run rotate_keys during the maintenance window").
+
 ### Phase 9 — Cleanup (after one release in production)
 
 - [ ] Remove the `send_org_email`/`get_email_client`/`load_smtp_config_from_db`/`SmtpConfig`/`EmailClient` shims from `app/integrations/brevo.py`. File becomes empty stub or merges into `email_sender.py`.
-- [ ] Remove the 410 Gone endpoints from `admin/router.py`.
+- [ ] **Gate: 410-endpoint removal.** Confirm zero `legacy_smtp_endpoint_hit` log lines over one full release window (telemetry added in Phase 7). Only then remove the 410 Gone endpoints from `admin/router.py`. If callers remain, defer one more release and notify them.
 - [ ] Remove the `integration_configs[name='smtp']` row in a follow-up migration (or leave for forensic value — there's no harm in keeping it; storage is negligible).
-- [ ] Update `app/cli/rotate_keys.py:39-43` to skip the legacy smtp row if it no longer exists.
+- [ ] **No change required to `app/cli/rotate_keys.py`.** It iterates all `IntegrationConfig` rows generically; deleting the smtp row simply makes the iteration find one less item. The plan previously called for an update here — verified unnecessary against [rotate_keys.py:36-50](app/cli/rotate_keys.py#L36).
 
 ---
 
@@ -517,7 +626,9 @@ Each phase has a clean rollback because we kept the legacy path operational unti
 | `_send_email_async` is called inside `async_session_factory().begin()` — the unified sender must accept either an existing session or open its own. | Med | Standardise on caller-provided session (matches Phase 3 callers). For Phase 2, the task opens the session and passes it in — no behaviour change. |
 | Synchronous `smtplib` blocks the async event loop during SMTP send (2–15s per email). | Med | Wrap all `smtplib` calls in `asyncio.to_thread()` in the unified sender. This is a performance improvement over the current state. Not a correctness issue at current traffic levels but will cause request timeouts under load. |
 | Phase 3 PRs forget to preserve `log_email_sent` calls after migrating to `send_email`. | Med | Add to PR review checklist: every Group A site that previously called `log_email_sent` must still call it after checking `result.success`. Automated check: grep for `log_email_sent` in the diff to ensure it's not removed. |
-| `SendResult` shape change breaks tests that assert on `result.provider`. | Low | Phase 2 shim translates new shape → old shape. Tests that mock `send_org_email` continue to work until Phase 9 removes the shim. |
+| `SendResult` shape change breaks tests that assert on `result.provider`. | Low | The new dataclass exposes a `provider` read-only `@property` that returns `provider_key` (see Section 4.1). Existing tests (`test_security_focused.py:359`, `test_email_infrastructure.py`) keep passing without changes until Phase 9 removes the shim. |
+| Phase 8 migration overwrites a recent admin-GUI write to `IntegrationConfig.smtp`. | Med | Run during a scheduled maintenance window with the legacy GUI disabled. Pre-migration check `updated_at` on the legacy row and abort if recent. See Phase 8 operational requirements. |
+| Phase 4 rewrite of `_send_password_reset_email` from raw smtplib (Phase 0.5) to `send_email` introduces a regression on the only active-account-recovery path. | Med | The Phase 0.5 hotfix already ships a working raw-smtplib version. Phase 4's rewrite must include `test_password_reset_email.py::test_failover_chain` asserting it still delivers with 2-of-3 providers failing. |
 
 ---
 
@@ -539,8 +650,14 @@ For each phase, tick off:
 PHASE 0 — Preparation
 [ ] email_sender.py module created (empty stub + types)
 [ ] EmailMessage, EmailAttachment, SendResult moved out of brevo.py with re-exports
+[ ] New SendResult has `provider` @property alias for backwards-compat
 [ ] Dispatch matrix docstring written
 [ ] Existing test suite green
+
+PHASE 0.5 — SECURITY HOTFIX: password reset email
+[ ] _send_password_reset_email implemented with raw smtplib (mirrors _send_invitation_email pattern)
+[ ] test_password_reset_email.py asserts the email is attempted
+[ ] PATCH version bumped; standalone hotfix release shipped
 
 PHASE 1 — send_email implementation
 [ ] _dispatch_brevo_rest with attachment support (multi-attachment, mixed MIME types)
@@ -573,40 +690,59 @@ PHASE 3 — Group A migrations (one PR per site)
 [ ] A10 receipt_email
 [ ] A11 mfa_email_otp (also fixes BUG-2)
 [ ] A12 customer_notify (org_sender_name=org_name override)
-[ ] A13 landing_demo_request (org_id=None, no log_email_sent)
+[ ] A13 landing_demo_request — function name `submit_demo_request` (NOT `post_demo_request`); org_id=None, no log_email_sent
+[ ] A14 send_invoice_payment_link_email (v1.10.2 Send Payment Link feature)
 [ ] email_providers/service.py test_email_provider → use shared _dispatch_smtp/_dispatch_brevo_rest
 [ ] grep -r "import smtplib" app/ returns only email_sender.py
 
 PHASE 4 — Group C stubs
-[ ] C3 password_reset_email
+[ ] C3 password_reset_email — rewrite Phase 0.5 raw-smtplib impl to call send_email()
 [ ] C2 anomalous_login_alert
 [ ] C1 token_reuse_alert
 
-PHASE 5 — activate endpoint fix
+PHASE 5 — activate endpoint fix + deactivate safety net
 [ ] activate_email_provider no longer deactivates others
+[ ] deactivate_email_provider returns 409 if it would leave zero active providers
 [ ] Multi-active test passes
+[ ] Deactivate-last test passes (409 returned, provider still active)
 
-PHASE 6 — Frontend
+PHASE 6 — Frontend + dashboard
 [ ] Banner: multi-active list
 [ ] Priority slider always visible when credentials_set
 [ ] Failover preview text
 [ ] Brevo setup guide updated (two key types)
+[ ] integration_cost_dashboard verified to render correctly with N active providers (5-min visual check)
 
 PHASE 7 — Legacy SMTP page deprecation
-[ ] Old SMTP card removed from Integrations.tsx
-[ ] /admin/integrations/smtp endpoints return 410 Gone
+[ ] Frontend audit complete — confirmed whether Integrations.tsx has an SMTP card to remove (likely no-op)
+[ ] /admin/integrations/smtp endpoints return 410 Gone with Location header
+[ ] Telemetry log line `legacy_smtp_endpoint_hit` added at each 410 response
+[ ] save_smtp_config + old send_test_email removed from admin/service.py (after grep-confirmed unreferenced)
 
-PHASE 8 — Data migration
+PHASE 8a — Schema migration: notification_log.provider_key
+[ ] Migration XXXX_add_notification_log_provider_key.py written + downgrade
+[ ] log_email_sent + update_log_status signatures extended to accept provider_key
+[ ] _log_entry_to_dict includes provider_key
+[ ] list_notification_log response schema includes provider_key
+[ ] Admin notification-log viewer (frontend) shows new "Provider" column
+[ ] Applied alongside Phase 2 deploy (so update_log_status(provider_key=…) lands on a real column)
+
+PHASE 8b — Legacy SMTP → email_providers data migration
 [ ] Migration script written + downgrade
 [ ] Tested in copy-of-prod
+[ ] Maintenance window scheduled; legacy GUI disabled
+[ ] Pre-migration updated_at check passes (no recent writes to integration_configs[smtp])
+[ ] No rotate_keys job running during the window
 [ ] Run in staging
 [ ] Run in production
+[ ] Post-migration: admins notified to re-test each provider (is_verified carry-over runbook step)
 
 PHASE 9 — Cleanup (next release)
 [ ] Remove brevo.py shims
-[ ] Remove 410 Gone endpoints
+[ ] Confirm zero `legacy_smtp_endpoint_hit` log lines over one release window
+[ ] Remove 410 Gone endpoints from admin/router.py
 [ ] Optionally: drop integration_configs[smtp] row
-[ ] Update rotate_keys.py
+[ ] rotate_keys.py needs NO change (verified — iterates generically)
 [ ] Remove dead retry code (RETRY_DELAYS, MAX_RETRIES, _get_retry_delay) from notifications.py
 ```
 
@@ -617,7 +753,9 @@ PHASE 9 — Cleanup (next release)
 ### New files
 - `app/integrations/email_sender.py` (Phase 0/1)
 - `tests/test_email_sender_dispatch.py`, `test_email_sender_failover.py`, `test_email_sender_attachments.py`, `test_email_sender_overrides.py`, `test_send_email_task_integration.py`, `test_email_provider_activate_multi.py`, `test_password_reset_email.py`, `test_anomalous_login_email.py`, `test_migration_legacy_smtp_to_email_provider.py` (Phases 1–5, 8)
-- `alembic/versions/XXXX_migrate_legacy_smtp_to_email_provider.py` (Phase 8)
+- **Phase 3 per-site test files (none of these exist today)**: `test_invoice_email_failover.py`, `test_quote_email_failover.py`, `test_payment_receipt_email.py`, `test_vehicle_report_email.py`, `test_booking_confirmation_email.py`, `test_auth_email_failover.py`, `test_mfa_email_otp.py`, `test_customer_notify_email.py`, `test_landing_demo_request_email.py`
+- `alembic/versions/XXXX_add_notification_log_provider_key.py` (Phase 8a — schema)
+- `alembic/versions/XXXX_migrate_legacy_smtp_to_email_provider.py` (Phase 8b — data)
 - `alembic/versions/XXXX_update_brevo_setup_guide.py` (Phase 6d, optional — could be done in-app)
 - `alembic/versions/XXXX_add_email_provider_test_columns.py` (BUG-7, optional)
 
@@ -626,6 +764,7 @@ PHASE 9 — Cleanup (next release)
 |---|---|---|
 | `app/integrations/brevo.py` | 0, 2, 9 | Move types out; turn into shim; eventually delete |
 | `app/tasks/notifications.py` | 2 | `_send_email_async` rewrite |
+| `app/modules/notifications/models.py` | 8a | Add `provider_key: Mapped[str \| None]` column to `NotificationLog` |
 | `app/modules/invoices/service.py` | 3 (A1, A2) | Remove smtplib loops, call send_email |
 | `app/modules/quotes/service.py` | 3 (A3) | Same |
 | `app/modules/payments/service.py` | 3 (A4) | Same |
@@ -638,8 +777,11 @@ PHASE 9 — Cleanup (next release)
 | `app/modules/email_providers/service.py` | 3, 5 | Refactor `test_email_provider` to use shared dispatch helpers; activate fix |
 | `app/modules/admin/router.py` | 7 | 410 Gone old endpoints |
 | `app/modules/admin/service.py` | 7 | Delete `save_smtp_config`, old `send_test_email` |
-| `app/modules/email_providers/router.py` | 6a | Return `active_providers` list |
-| `app/modules/email_providers/schemas.py` | 6a | Add field |
+| `app/modules/email_providers/service.py` | 5, 6a | `activate_email_provider` no-deactivate-others fix; `deactivate_email_provider` last-active 409 guard; `list_email_providers` returns `active_providers: list[str]` in addition to existing `active_provider` |
+| `app/modules/email_providers/router.py` | 6a | Surface `active_providers` in API response |
+| `app/modules/email_providers/schemas.py` | 6a | Add `active_providers: list[str]` field to list response schema |
+| `app/modules/notifications/service.py` | 8a | Extend `log_email_sent` + `update_log_status` signatures with `provider_key`; include in `_log_entry_to_dict`; extend `list_notification_log` response |
+| `app/modules/notifications/schemas.py` | 8a | Add `provider_key: str \| None` to the log-entry schema |
 
 ### Modified — frontend
 | File | Phase | What |

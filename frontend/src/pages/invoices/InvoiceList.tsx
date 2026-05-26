@@ -25,6 +25,7 @@ import AttachmentList from '@/components/invoices/AttachmentList'
 import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
 import { buildVehicleDisplayFields } from '../../utils/buildVehicleDisplayFields'
 import { QrPaymentWaitingPopup } from './QrPaymentWaitingPopup'
+import { QrPaymentAmountModal } from './QrPaymentAmountModal'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -472,6 +473,7 @@ export default function InvoiceList() {
   const [qrPaymentLoading, setQrPaymentLoading] = useState(false)
   const [qrWaitingPopupOpen, setQrWaitingPopupOpen] = useState(false)
   const [qrSessionData, setQrSessionData] = useState<{ session_id: string; amount: number; invoice_number: string } | null>(null)
+  const [qrAmountModalOpen, setQrAmountModalOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
 
   /* Credit Note & Refund modals */
@@ -535,17 +537,21 @@ export default function InvoiceList() {
     setListLoading(true)
     setListError('')
     try {
-      const params: Record<string, string | number> = { page: pg, page_size: PAGE_SIZE }
+      // Backend uses offset/limit, not page/page_size. Convert here.
+      const offset = Math.max(0, (pg - 1) * PAGE_SIZE)
+      const params: Record<string, string | number> = { offset, limit: PAGE_SIZE }
       if (search.trim()) params.search = search.trim()
       if (status) params.status = status
       const res = await apiClient.get<InvoiceListResponse>('/invoices', { params, signal: controller.signal })
       const invoices = res.data?.items ?? (res.data as any)?.invoices ?? []
+      const total = res.data?.total ?? 0
+      const computedTotalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
       setData({
         items: invoices,
-        total: res.data?.total ?? 0,
-        page: res.data?.page ?? pg,
-        page_size: res.data?.page_size ?? PAGE_SIZE,
-        total_pages: res.data?.total_pages ?? Math.ceil((res.data?.total ?? 0) / PAGE_SIZE),
+        total,
+        page: pg,
+        page_size: PAGE_SIZE,
+        total_pages: computedTotalPages,
       })
       // Auto-select first invoice if none selected
       if (!selectedIdRef.current && invoices.length > 0) {
@@ -645,6 +651,23 @@ export default function InvoiceList() {
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
       showMsg(detail || 'Failed to send invoice.', 'error')
+    }
+    finally { setActionLoading(''); setSendMenuOpen(false) }
+  }
+
+  const handleSendPaymentLink = async () => {
+    if (!invoice) return
+    setActionLoading('sendPaymentLink')
+    try {
+      // Reuses the org's on-domain payment page URL (same one used by QR
+      // Payment) and emails it via the org's active invoice_issued template
+      // (or the default Pay Now template). No new Stripe Checkout Session
+      // is created — the same PaymentIntent-backed page is reused.
+      await apiClient.post(`/payments/invoice/${invoice.id}/send-payment-link`)
+      showMsg('Payment link emailed to customer.')
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      showMsg(detail || 'Failed to send payment link.', 'error')
     }
     finally { setActionLoading(''); setSendMenuOpen(false) }
   }
@@ -817,19 +840,29 @@ export default function InvoiceList() {
     finally { setActionLoading('') }
   }
 
-  const handleQrPayment = async () => {
+  const handleQrPayment = () => {
+    if (!invoice) return
+    setQrAmountModalOpen(true)
+  }
+
+  const handleAmountModalContinue = async (amount: number | null) => {
     if (!invoice) return
     setQrPaymentLoading(true)
     try {
+      const body: { invoice_id: string; amount?: string } =
+        amount === null
+          ? { invoice_id: invoice.id }
+          : { invoice_id: invoice.id, amount: amount.toFixed(2) }
       const res = await apiClient.post<{ session_id: string; amount: number; invoice_number: string; amount_cents: number; expires_at: string }>(
         '/payments/qr-session/existing',
-        { invoice_id: invoice.id },
+        body,
       )
       setQrSessionData({
         session_id: res.data?.session_id ?? '',
         amount: Number(res.data?.amount ?? 0),
         invoice_number: res.data?.invoice_number ?? '',
       })
+      setQrAmountModalOpen(false)
       setQrWaitingPopupOpen(true)
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
@@ -902,6 +935,9 @@ export default function InvoiceList() {
   /* ---------------------------------------------------------------- */
 
   const isDraft = invoice?.status === 'draft'
+  // Limited "correction edit" allowed on issued/partially_paid/overdue
+  // (notes, due date, vehicle metadata, payment terms, T&Cs only).
+  const canEdit = !!invoice && (isDraft || ['issued', 'partially_paid', 'overdue'].includes(invoice.status))
   const isVoided = invoice?.status === 'voided'
   const canVoid = invoice && !isVoided && !isDraft
   const canRecordPayment = invoice && !isVoided && invoice.status !== 'draft' && invoice.status !== 'refunded' && invoice.status !== 'partially_refunded' && (invoice.balance_due ?? 0) > 0
@@ -911,6 +947,12 @@ export default function InvoiceList() {
     stripeStatus?.is_connected === true &&
     ['issued', 'partially_paid', 'overdue'].includes(invoice?.status ?? '') &&
     (invoice?.balance_due ?? 0) > 0
+
+  /* Send Payment Link visibility — same gating as QR. Reuses the existing
+     /payments/stripe/create-link endpoint with send_via='email' which
+     emails the customer the payment link via the invoice_issued template
+     (or the org's customised version). */
+  const canShowSendPaymentLink = canShowQrPayment
 
   /* Computed values for credit notes and refunds */
   const creditableAmount = invoice ? computeCreditableAmount(
@@ -1152,7 +1194,7 @@ export default function InvoiceList() {
 
               <div className="flex items-center gap-2">
                 {/* Edit button */}
-                {isDraft && (
+                {canEdit && (
                   <button
                     onClick={() => navigate(`/invoices/${invoice.id}/edit`)}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
@@ -1187,6 +1229,15 @@ export default function InvoiceList() {
                       >
                         {actionLoading === 'send' ? 'Sending…' : 'Send Invoice'}
                       </button>
+                      {canShowSendPaymentLink && (
+                        <button
+                          onClick={handleSendPaymentLink}
+                          disabled={actionLoading === 'sendPaymentLink'}
+                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 border-t border-gray-100"
+                        >
+                          {actionLoading === 'sendPaymentLink' ? 'Sending…' : 'Send Payment Link'}
+                        </button>
+                      )}
                       {isDraft && (
                         <button
                           onClick={handleMarkAsSent}
@@ -1849,10 +1900,10 @@ export default function InvoiceList() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-gray-100">
-                        <th className="text-left py-2 text-xs text-gray-500 font-medium">Date</th>
-                        <th className="text-left py-2 text-xs text-gray-500 font-medium">Type</th>
-                        <th className="text-right py-2 text-xs text-gray-500 font-medium">Amount</th>
-                        <th className="text-left py-2 text-xs text-gray-500 font-medium">Method</th>
+                        <th className="text-left py-2 pr-6 text-xs text-gray-500 font-medium">Date</th>
+                        <th className="text-left py-2 pr-6 text-xs text-gray-500 font-medium">Type</th>
+                        <th className="text-left py-2 pr-6 text-xs text-gray-500 font-medium">Amount</th>
+                        <th className="text-left py-2 pr-6 text-xs text-gray-500 font-medium">Method</th>
                         <th className="text-left py-2 text-xs text-gray-500 font-medium">Recorded By</th>
                       </tr>
                     </thead>
@@ -1862,12 +1913,12 @@ export default function InvoiceList() {
                         return (
                           <Fragment key={p.id}>
                           <tr className="border-b border-gray-50">
-                            <td className="py-2 text-gray-900">{formatDateTime(p.date)}</td>
-                            <td className="py-2">
+                            <td className="py-2 pr-6 text-gray-900">{formatDateTime(p.date)}</td>
+                            <td className="py-2 pr-6">
                               <Badge variant={badgeType.color === 'green' ? 'success' : 'error'}>{badgeType.label}</Badge>
                             </td>
-                            <td className={`py-2 text-right tabular-nums font-medium ${p.is_refund ? 'text-red-600' : 'text-emerald-600'}`}>{formatNZD(p.amount)}</td>
-                            <td className="py-2 text-gray-700 capitalize">{p.method}</td>
+                            <td className={`py-2 pr-6 tabular-nums font-medium ${p.is_refund ? 'text-red-600' : 'text-emerald-600'}`}>{formatNZD(p.amount)}</td>
+                            <td className="py-2 pr-6 text-gray-700 capitalize">{p.method}</td>
                             <td className="py-2 text-gray-700">{p.recorded_by}</td>
                           </tr>
                           {shouldShowRefundNote(!!p.is_refund, p.refund_note) && (
@@ -2217,6 +2268,21 @@ export default function InvoiceList() {
           </Button>
         </div>
       </Modal>
+
+      {/* QR Payment Amount Modal */}
+      {qrAmountModalOpen && invoice && (
+        <QrPaymentAmountModal
+          open={qrAmountModalOpen}
+          onClose={() => setQrAmountModalOpen(false)}
+          invoice={{
+            id: invoice.id,
+            balance_due: invoice.balance_due ?? 0,
+            invoice_number: invoice.invoice_number ?? null,
+          }}
+          onContinue={handleAmountModalContinue}
+          loading={qrPaymentLoading}
+        />
+      )}
 
       {/* QR Payment Waiting Popup */}
       {qrWaitingPopupOpen && qrSessionData && (

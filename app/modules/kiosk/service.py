@@ -124,17 +124,72 @@ async def _ensure_vehicle_linked(
 
     This makes the operation idempotent — repeated check-ins with the same
     vehicle and customer won't create duplicate link rows.
+
+    vehicle-data-isolation Task 11.7: the existence check is widened to be
+    rego-keyed so it catches links pointing at either the pre-promotion
+    ``GlobalVehicle.id`` OR the post-promotion ``OrgVehicle.id`` for the
+    same rego. The previous global-id-only filter would miss promoted
+    links and the calling flow would create a duplicate row on every
+    subsequent kiosk check-in (Req 3.4, 9.6, 13.3).
     """
     from app.modules.vehicles.service import link_vehicle_to_customer
 
-    # Check for existing link
-    existing_link = await db.execute(
-        select(CustomerVehicle).where(
-            CustomerVehicle.org_id == org_id,
-            CustomerVehicle.customer_id == customer_id,
-            CustomerVehicle.global_vehicle_id == vehicle_id,
-        )
+    # Resolve the target rego up front so the existence check covers
+    # both link types. ``vehicle_id`` may resolve to either a
+    # GlobalVehicle (CarJam-sourced cache) or an OrgVehicle (manual-
+    # entry / already-promoted row), and either flavour can be present
+    # on the customer_vehicles link for this customer.
+    target_rego: str | None = None
+    gv_lookup = await db.execute(
+        select(GlobalVehicle.rego).where(GlobalVehicle.id == vehicle_id)
     )
+    target_rego = gv_lookup.scalar_one_or_none()
+    if target_rego is None:
+        ov_lookup = await db.execute(
+            select(OrgVehicle.rego).where(
+                OrgVehicle.id == vehicle_id,
+                OrgVehicle.org_id == org_id,
+            )
+        )
+        target_rego = ov_lookup.scalar_one_or_none()
+
+    # Widened existence check (Task 11.7): match a link via either the
+    # GlobalVehicle or OrgVehicle key for the resolved rego. Without
+    # this, every kiosk check-in for a previously-promoted vehicle
+    # creates a duplicate ``customer_vehicles`` row.
+    if target_rego is not None:
+        existing_link = await db.execute(
+            select(CustomerVehicle)
+            .outerjoin(
+                GlobalVehicle,
+                CustomerVehicle.global_vehicle_id == GlobalVehicle.id,
+            )
+            .outerjoin(
+                OrgVehicle,
+                CustomerVehicle.org_vehicle_id == OrgVehicle.id,
+            )
+            .where(
+                CustomerVehicle.org_id == org_id,
+                CustomerVehicle.customer_id == customer_id,
+                or_(
+                    func.upper(GlobalVehicle.rego) == target_rego.upper(),
+                    func.upper(OrgVehicle.rego) == target_rego.upper(),
+                ),
+            )
+            .limit(1)
+        )
+    else:
+        # Fallback when neither GlobalVehicle nor OrgVehicle resolves —
+        # preserve the historical id-keyed behaviour so a missing rego
+        # lookup does not silently bypass duplicate prevention.
+        existing_link = await db.execute(
+            select(CustomerVehicle).where(
+                CustomerVehicle.org_id == org_id,
+                CustomerVehicle.customer_id == customer_id,
+                CustomerVehicle.global_vehicle_id == vehicle_id,
+            )
+        )
+
     if existing_link.scalar_one_or_none() is not None:
         logger.info(
             "Vehicle %s already linked to customer %s — skipping",
@@ -407,6 +462,7 @@ async def kiosk_check_in_v2(
 
     Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 9.5, 9.6
     """
+    from app.core.audit import write_audit_log
     from app.modules.customers.service import create_customer
 
     is_new = False
@@ -431,18 +487,32 @@ async def kiosk_check_in_v2(
                 detail="Customer not found in this organisation",
             )
 
-        # Update customer details if changed
+        # Update customer details if changed. Capture per-field before
+        # and after values so changes write an audit row matching the
+        # ``customer.updated`` action emitted by the standard customer
+        # update service. Without this row the merge/audit history hides
+        # kiosk-driven edits to existing customers (Req 9.6).
         updated = False
+        before_value: dict[str, str | None] = {}
+        after_value: dict[str, str | None] = {}
         if customer.first_name != data.first_name:
+            before_value["first_name"] = customer.first_name
+            after_value["first_name"] = data.first_name
             customer.first_name = data.first_name
             updated = True
         if customer.last_name != data.last_name:
+            before_value["last_name"] = customer.last_name
+            after_value["last_name"] = data.last_name
             customer.last_name = data.last_name
             updated = True
         if customer.phone != data.phone:
+            before_value["phone"] = customer.phone
+            after_value["phone"] = data.phone
             customer.phone = data.phone
             updated = True
         if data.email is not None and customer.email != data.email:
+            before_value["email"] = customer.email
+            after_value["email"] = data.email
             customer.email = data.email
             updated = True
 
@@ -450,6 +520,17 @@ async def kiosk_check_in_v2(
             await db.flush()
             await db.refresh(customer)
             logger.info("Kiosk check-in v2: updated existing customer %s", customer.id)
+            await write_audit_log(
+                session=db,
+                org_id=org_id,
+                user_id=user_id,
+                action="customer.updated",
+                entity_type="customer",
+                entity_id=customer.id,
+                before_value=before_value,
+                after_value=after_value,
+                ip_address=ip_address,
+            )
 
         customer_id = customer.id
         customer_first_name = customer.first_name
@@ -500,6 +581,8 @@ async def kiosk_check_in_v2(
 
         # Record odometer reading if provided
         if vehicle_entry.odometer_km is not None:
+            from app.modules.vehicles.service import promote_vehicle
+
             odometer_reading = OdometerReading(
                 global_vehicle_id=vehicle_uuid,
                 reading_km=vehicle_entry.odometer_km,
@@ -508,6 +591,25 @@ async def kiosk_check_in_v2(
                 org_id=org_id,
             )
             db.add(odometer_reading)
+
+            # Promote the vehicle for the calling org (idempotent if the
+            # link step already promoted) and bump the per-org odometer
+            # cache. The shared `global_vehicles.odometer_last_recorded`
+            # is intentionally NOT bumped — that field is owned by the
+            # CarJam cache and per-org operational state must stay
+            # private (Req 1.3, 3.4, 11.1, 11.2).
+            ov = await promote_vehicle(
+                db,
+                org_id=org_id,
+                global_vehicle_id=vehicle_uuid,
+                user_id=user_id,
+                trigger_site="kiosk.v2_check_in",
+                ip_address=ip_address,
+            )
+            current = ov.odometer_last_recorded or 0
+            if vehicle_entry.odometer_km >= current:
+                ov.odometer_last_recorded = vehicle_entry.odometer_km
+
             logger.info(
                 "Kiosk check-in v2: recorded odometer %d km for vehicle %s",
                 vehicle_entry.odometer_km,

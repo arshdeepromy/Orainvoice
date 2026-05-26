@@ -632,6 +632,16 @@ NOTIFICATION_CATEGORIES: dict[str, list[str]] = {
         "branch_billing_updated",
         "stock_transfer_request",
     ],
+    "Fleet Portal": [
+        "fleet_booking_request",
+        "fleet_booking_accepted",
+        "fleet_booking_declined",
+        "fleet_quote_request",
+        "fleet_quote_quoted",
+        "fleet_quote_accepted",
+        "fleet_quote_declined",
+        "fleet_checklist_failure",
+    ],
 }
 
 # Flat set of all valid notification types

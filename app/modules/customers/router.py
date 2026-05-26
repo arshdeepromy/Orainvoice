@@ -1018,6 +1018,7 @@ async def send_portal_link_endpoint(
         401: {"description": "Authentication required"},
         403: {"description": "Org role required"},
         404: {"description": "Customer or vehicle not found"},
+        409: {"description": "Vehicle is already linked to this customer"},
     },
     summary="Tag a vehicle to a customer",
     dependencies=[require_role("org_admin", "salesperson")],
@@ -1070,6 +1071,16 @@ async def tag_vehicle_endpoint(
             global_vehicle_id=global_vid,
             org_vehicle_id=org_vid,
             ip_address=ip_address,
+        )
+    except LookupError as exc:
+        # vehicle-data-isolation Task 9.1: duplicate-link guard. The
+        # service layer raises ``LookupError`` when the same
+        # (org_id, customer_id, vehicle) link already exists — return
+        # HTTP 409 Conflict so the caller can distinguish duplicate-link
+        # from validation/not-found.
+        return JSONResponse(
+            status_code=409,
+            content={"detail": str(exc)},
         )
     except ValueError as exc:
         error_msg = str(exc)
@@ -1167,8 +1178,17 @@ async def update_vehicle_dates_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Update service_due_date and wof_expiry on vehicles linked to a customer."""
-    org_uuid, _, _ = _extract_org_context(request)
+    """Update service_due_date, wof_expiry, and cof_expiry on the calling
+    org's per-org snapshot of vehicles linked to a customer.
+
+    vehicle-data-isolation Task 10.1: writes target the calling org's
+    ``org_vehicles`` row (promoting the vehicle on first touch) rather
+    than the cross-tenant ``global_vehicles`` cache. The request body
+    schema gains an optional ``cof_expiry`` ISO date string per vehicle
+    update; the response shape gains a ``cof_expiry`` key on each
+    updated entry.
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
     if not org_uuid:
         return JSONResponse(
             status_code=403,
@@ -1192,6 +1212,8 @@ async def update_vehicle_dates_endpoint(
             org_id=org_uuid,
             customer_id=cust_uuid,
             vehicle_updates=vehicles,
+            user_id=user_uuid,
+            ip_address=ip_address,
         )
     except ValueError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})

@@ -178,28 +178,49 @@ class TestComputeExpiryIndicator:
 
 
 class TestLinkVehicleToCustomer:
-    """Tests for POST /api/v1/vehicles/{id}/link service logic."""
+    """Tests for POST /api/v1/vehicles/{id}/link service logic.
+
+    These tests cover the link-creation path. ``promote_vehicle`` is
+    exercised in its own dedicated test module
+    (``tests/test_vehicle_data_isolation.py``) so we patch it here to keep
+    the link tests focused on link semantics.
+    """
 
     @pytest.mark.asyncio
     async def test_link_happy_path(self):
-        """Successfully link a global vehicle to a customer."""
+        """Successfully link a global vehicle to a customer.
+
+        After Task 3.2 the link is created via ``org_vehicle_id`` after
+        promotion. The audit-log payload still records the original
+        ``vehicle_id`` so existing forensic queries continue to work.
+        """
         vehicle_id = uuid.uuid4()
         customer_id = uuid.uuid4()
         org_id = uuid.uuid4()
         user_id = uuid.uuid4()
+        ov_id = uuid.uuid4()
 
         vehicle = _make_global_vehicle(id=vehicle_id, rego="ABC123")
         customer = _make_customer(id=customer_id, org_id=org_id)
 
+        # promote_vehicle returns a stub OrgVehicle for the link to
+        # reference; its internals (advisory lock, SELECT, INSERT, audit
+        # log) are covered separately.
+        promoted_ov = MagicMock()
+        promoted_ov.id = ov_id
+        promoted_ov.rego = "ABC123"
+
         db = AsyncMock()
         call_count = 0
 
-        async def mock_execute(stmt):
+        async def mock_execute(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
+                # GlobalVehicle resolve
                 return _make_scalar_result(vehicle)
             elif call_count == 2:
+                # Customer resolve
                 return _make_scalar_result(customer)
             return MagicMock()
 
@@ -207,7 +228,14 @@ class TestLinkVehicleToCustomer:
         db.add = MagicMock()
         db.flush = AsyncMock()
 
-        with patch("app.modules.vehicles.service.write_audit_log", new_callable=AsyncMock):
+        with patch(
+            "app.modules.vehicles.service.write_audit_log",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.modules.vehicles.service.promote_vehicle",
+            new_callable=AsyncMock,
+            return_value=promoted_ov,
+        ) as mock_promote:
             result = await link_vehicle_to_customer(
                 db,
                 vehicle_id=vehicle_id,
@@ -223,10 +251,25 @@ class TestLinkVehicleToCustomer:
         assert result["odometer_at_link"] == 50000
         assert db.add.called
 
+        # promote_vehicle was called with the GlobalVehicle id and the
+        # vehicles.link trigger_site (Task 3.2).
+        assert mock_promote.await_count == 1
+        promote_kwargs = mock_promote.await_args.kwargs
+        assert promote_kwargs["org_id"] == org_id
+        assert promote_kwargs["global_vehicle_id"] == vehicle_id
+        assert promote_kwargs["trigger_site"] == "vehicles.link"
+
+        # The link was created pointing at the OrgVehicle, not the
+        # GlobalVehicle (Req 2.3, 3.1).
+        added = db.add.call_args[0][0]
+        assert added.org_vehicle_id == ov_id
+        assert added.global_vehicle_id is None
+
     @pytest.mark.asyncio
     async def test_link_vehicle_not_found(self):
-        """Raise ValueError when vehicle doesn't exist."""
+        """Raise ValueError when vehicle doesn't exist in either table."""
         db = AsyncMock()
+        # Both the GlobalVehicle and OrgVehicle resolves miss.
         db.execute = AsyncMock(return_value=_make_scalar_result(None))
 
         with pytest.raises(ValueError, match="not found"):
@@ -247,7 +290,7 @@ class TestLinkVehicleToCustomer:
         db = AsyncMock()
         call_count = 0
 
-        async def mock_execute(stmt):
+        async def mock_execute(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:

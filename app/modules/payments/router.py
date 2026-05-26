@@ -52,11 +52,13 @@ from app.modules.payments.surcharge import (
 from app.modules.payments.service import (
     record_cash_payment,
     generate_stripe_payment_link,
+    send_invoice_payment_link_email,
     get_payment_history,
     handle_stripe_webhook,
     process_refund,
     create_qr_payment_session,
     create_qr_session_for_existing_invoice,
+    dismiss_pending_qr_session,
     get_pending_qr_session,
     get_qr_session_status,
     expire_qr_session,
@@ -1176,6 +1178,51 @@ async def get_pending_qr_session_endpoint(
 
 
 @router.post(
+    "/qr-session/{session_id}/dismiss",
+    status_code=200,
+    responses={
+        200: {"description": "Dismissed (or already-dismissed)"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Kiosk or org role required"},
+    },
+    summary=(
+        "Soft-dismiss the kiosk QR popup for the current pending session"
+    ),
+    dependencies=[require_role("org_admin", "salesperson", "kiosk")],
+)
+async def dismiss_pending_qr_session_endpoint(
+    session_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Mark the kiosk QR popup as dismissed for ``session_id``.
+
+    Sets ``pending_qr_sessions.dismissed_at = now()`` so subsequent
+    kiosk polls hide the popup. The Stripe PaymentIntent + the row
+    itself are NOT cancelled — a customer who already scanned the QR
+    can still complete payment from their phone, which is the
+    intended hospitality flow.
+
+    Scoped to the caller's org (kiosk credentials carry an org).
+    Idempotent: dismissing an already-dismissed or non-existent
+    session is a 200 no-op.
+    """
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    await dismiss_pending_qr_session(
+        db,
+        org_id=org_uuid,
+        session_id=session_id,
+    )
+    return {"status": "dismissed"}
+
+
+@router.post(
     "/qr-session/existing",
     response_model=QrPaymentSessionResponse,
     status_code=201,
@@ -1214,6 +1261,7 @@ async def create_qr_session_existing_invoice_endpoint(
             org_id=org_uuid,
             user_id=user_uuid,
             invoice_id=payload.invoice_id,
+            partial_amount=payload.amount,
             base_url=request.headers.get("origin") or None,
         )
     except ValueError as exc:
@@ -1864,3 +1912,60 @@ async def regenerate_payment_link_endpoint(
         payment_page_url=payment_url,
         invoice_id=invoice.id,
     )
+
+
+@router.post(
+    "/invoice/{invoice_id}/send-payment-link",
+    status_code=200,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        404: {"description": "Invoice not found"},
+    },
+    summary="Email the on-domain payment link to the customer",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def send_payment_link_email_endpoint(
+    invoice_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Email the customer the existing on-domain payment page URL.
+
+    Reuses the same payment_page_url shown by the QR Payment flow (token-based
+    page on the org's domain backed by a Stripe PaymentIntent). The link is
+    delivered via the org's active ``invoice_issued`` template (or the
+    default Pay Now template) using the configured email provider chain.
+
+    No new Stripe Checkout Session is created.
+
+    Requirements: 25.3, 25.5
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid or not user_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        result = await send_invoice_payment_link_email(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            invoice_id=invoice_id,
+            base_url=request.headers.get("origin") or None,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    await db.commit()
+
+    return {
+        "invoice_id": str(result["invoice_id"]),
+        "recipient_email": result["recipient_email"],
+        "payment_page_url": result["payment_page_url"],
+        "status": "sent",
+    }

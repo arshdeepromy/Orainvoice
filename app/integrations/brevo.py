@@ -330,12 +330,82 @@ async def load_smtp_config_from_db(db) -> SmtpConfig | None:
 async def get_email_client(db) -> EmailClient | None:
     """Build an ``EmailClient`` from the stored SMTP config.
 
-    Returns None if no config is stored.
+    Checks two sources in order:
+    1. ``email_providers`` table — the GUI-configured providers
+       (Admin > Email Providers). Uses the first active provider with
+       credentials set.
+    2. ``integration_configs`` table (legacy) — for backward compat
+       with older deployments that stored SMTP config there.
+
+    Returns None if no config is found in either location.
     """
+    # Primary: email_providers table (GUI-configured)
+    config = await _load_from_email_providers(db)
+    if config is not None:
+        return EmailClient(config)
+
+    # Legacy fallback: integration_configs table
     config = await load_smtp_config_from_db(db)
-    if config is None:
+    if config is not None:
+        return EmailClient(config)
+
+    return None
+
+
+async def _load_from_email_providers(db) -> SmtpConfig | None:
+    """Load SMTP config from the email_providers table.
+
+    Picks the first active provider with credentials set, ordered by
+    priority. Decrypts the credentials_encrypted column to get the
+    SMTP host/port/username/password.
+
+    This is the primary path — email providers are configured via the
+    Global Admin GUI (Admin > Email Providers), not via .env files.
+    """
+    from sqlalchemy import text
+    from app.core.encryption import envelope_decrypt_str
+
+    try:
+        result = await db.execute(
+            text(
+                """
+                SELECT provider_key, smtp_host, smtp_port, credentials_encrypted
+                FROM email_providers
+                WHERE is_active = true AND credentials_set = true
+                ORDER BY priority
+                LIMIT 1
+                """
+            )
+        )
+        row = result.first()
+        if row is None:
+            return None
+
+        provider_key = row[0]
+        smtp_host = row[1]
+        smtp_port = row[2]
+        creds_encrypted = row[3]
+
+        if creds_encrypted is None:
+            return None
+
+        decrypted = envelope_decrypt_str(creds_encrypted)
+        data = json.loads(decrypted)
+
+        return SmtpConfig(
+            provider=provider_key if provider_key in ("brevo", "sendgrid", "smtp") else "smtp",
+            api_key=data.get("api_key", ""),
+            host=smtp_host or data.get("host", ""),
+            port=smtp_port or int(data.get("port", 587)),
+            username=data.get("username", ""),
+            password=data.get("password", data.get("api_key", "")),
+            from_email=data.get("from_email", data.get("sender_email", "")),
+            from_name=data.get("from_name", data.get("sender_name", "")),
+            reply_to=data.get("reply_to", ""),
+        )
+    except Exception:
+        logger.exception("Failed to load email config from email_providers")
         return None
-    return EmailClient(config)
 
 
 async def send_org_email(

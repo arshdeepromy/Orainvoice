@@ -628,29 +628,80 @@ async def get_expiry_reminders(
     dis_result = await db.execute(sa_text("SELECT vehicle_id, reminder_type, expiry_date::text FROM dashboard_reminder_dismissals WHERE org_id = :org_id"), {"org_id": str(org_id)})
     dismissed_set = {(str(r.vehicle_id), r.reminder_type, r.expiry_date[:10]) for r in dis_result.all()}
 
-    # Get vehicles with upcoming expiry
-    v_result = await db.execute(sa_text("""
+    # Get vehicles with upcoming expiry — Task 11.3 (vehicle-data-isolation).
+    #
+    # The widget reads from TWO sources:
+    #   1. org_vehicles directly for the calling org — every promoted
+    #      vehicle (and every is_manual_entry=True row) lives here, with
+    #      its customer-driven dates (wof_expiry, cof_expiry,
+    #      service_due_date) stored on the OrgVehicle row.
+    #   2. global_vehicles via customer_vehicles for un-promoted regos —
+    #      i.e. customer_vehicles rows whose link still points at
+    #      global_vehicle_id (org_vehicle_id IS NULL).
+    #
+    # Pre-Task-11.3 the widget joined ``org_vehicles ov ON
+    # ov.global_vehicle_id = gv.id``, but ``org_vehicles.global_vehicle_id``
+    # is not a column on the model — the query would error on any non-empty
+    # result. The new query has no such reference.
+    bind = {
+        "org_id": str(org_id),
+        "today": today,
+        "wof_cutoff": wof_cutoff,
+        "cof_cutoff": cof_cutoff,
+        "service_cutoff": service_cutoff,
+    }
+
+    # Source 1: org_vehicles rows for this org (covers promoted +
+    # manually-entered vehicles).
+    ov_result = await db.execute(sa_text("""
+        SELECT ov.id AS vehicle_id, ov.rego AS vehicle_rego, ov.make AS vehicle_make,
+               ov.model AS vehicle_model, ov.wof_expiry, ov.cof_expiry,
+               ov.inspection_type, ov.service_due_date
+        FROM org_vehicles ov
+        WHERE ov.org_id = :org_id
+          AND ((ov.wof_expiry IS NOT NULL AND ov.wof_expiry >= :today AND ov.wof_expiry <= :wof_cutoff)
+            OR (ov.cof_expiry IS NOT NULL AND ov.cof_expiry >= :today AND ov.cof_expiry <= :cof_cutoff)
+            OR (ov.service_due_date IS NOT NULL AND ov.service_due_date >= :today AND ov.service_due_date <= :service_cutoff))
+    """), bind)
+
+    # Source 2: global_vehicles via un-promoted customer_vehicles links.
+    gv_result = await db.execute(sa_text("""
         SELECT gv.id AS vehicle_id, gv.rego AS vehicle_rego, gv.make AS vehicle_make,
                gv.model AS vehicle_model, gv.wof_expiry, gv.cof_expiry,
                gv.inspection_type, gv.service_due_date
         FROM global_vehicles gv
-        JOIN org_vehicles ov ON ov.global_vehicle_id = gv.id
-        WHERE ov.org_id = :org_id
+        JOIN customer_vehicles cv ON cv.global_vehicle_id = gv.id
+        WHERE cv.org_id = :org_id
+          AND cv.org_vehicle_id IS NULL
           AND ((gv.wof_expiry IS NOT NULL AND gv.wof_expiry >= :today AND gv.wof_expiry <= :wof_cutoff)
             OR (gv.cof_expiry IS NOT NULL AND gv.cof_expiry >= :today AND gv.cof_expiry <= :cof_cutoff)
             OR (gv.service_due_date IS NOT NULL AND gv.service_due_date >= :today AND gv.service_due_date <= :service_cutoff))
-    """), {"org_id": str(org_id), "today": today, "wof_cutoff": wof_cutoff, "cof_cutoff": cof_cutoff, "service_cutoff": service_cutoff})
-    vehicles = v_result.all()
+    """), bind)
+
+    # Concatenate; deduplicate by vehicle_id in case the same row is
+    # surfaced by both sources (defensive — shouldn't normally happen).
+    seen_ids: set[str] = set()
+    vehicles = []
+    for row in list(ov_result.all()) + list(gv_result.all()):
+        rid = str(row.vehicle_id)
+        if rid in seen_ids:
+            continue
+        seen_ids.add(rid)
+        vehicles.append(row)
 
     items = []
     for v in vehicles:
         vid = str(v.vehicle_id)
-        # Get linked customer
+        # Get linked customer — accept either link type since the
+        # vehicle id may be an org_vehicle_id (Source 1) or a
+        # global_vehicle_id (Source 2). Always scope by org_id.
         cv_result = await db.execute(sa_text("""
             SELECT c.id, COALESCE(c.display_name, c.first_name || ' ' || c.last_name) AS name
             FROM customers c JOIN customer_vehicles cv ON cv.customer_id = c.id
-            WHERE cv.global_vehicle_id = :vid LIMIT 1
-        """), {"vid": vid})
+            WHERE (cv.org_vehicle_id = :vid OR cv.global_vehicle_id = :vid)
+              AND cv.org_id = :org_id
+            LIMIT 1
+        """), {"vid": vid, "org_id": str(org_id)})
         cv_row = cv_result.first()
         cust_name = cv_row.name if cv_row else "Unlinked"
         cust_id = str(cv_row.id) if cv_row else ""

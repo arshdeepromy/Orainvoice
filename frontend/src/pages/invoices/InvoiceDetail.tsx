@@ -23,6 +23,7 @@ import POSReceiptPreview from '../../components/pos/POSReceiptPreview'
 import PrinterErrorModal from '../../components/pos/PrinterErrorModal'
 import LinkedComplianceDocs from '../compliance/LinkedComplianceDocs'
 import { QrPaymentWaitingPopup } from './QrPaymentWaitingPopup'
+import { QrPaymentAmountModal } from './QrPaymentAmountModal'
 import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
 
 /* ------------------------------------------------------------------ */
@@ -315,6 +316,7 @@ export default function InvoiceDetail() {
   const [qrPaymentLoading, setQrPaymentLoading] = useState(false)
   const [qrWaitingPopupOpen, setQrWaitingPopupOpen] = useState(false)
   const [qrSessionData, setQrSessionData] = useState<{ session_id: string; amount: number; invoice_number: string } | null>(null)
+  const [qrAmountModalOpen, setQrAmountModalOpen] = useState(false)
 
   /* ---- Inject print styles ---- */
   useEffect(() => {
@@ -574,20 +576,30 @@ export default function InvoiceDetail() {
   }
 
   /* ---- QR Payment ---- */
-  const handleQrPayment = async () => {
+  const handleQrPayment = () => {
+    if (!invoice) return
+    setQrAmountModalOpen(true)
+  }
+
+  const handleAmountModalContinue = async (amount: number | null) => {
     if (!invoice) return
     setQrPaymentLoading(true)
     setActionMessage('')
     try {
+      const body: { invoice_id: string; amount?: string } =
+        amount === null
+          ? { invoice_id: invoice.id }
+          : { invoice_id: invoice.id, amount: amount.toFixed(2) }
       const res = await apiClient.post<{ session_id: string; amount: number; invoice_number: string; amount_cents: number; expires_at: string }>(
         '/payments/qr-session/existing',
-        { invoice_id: invoice.id },
+        body,
       )
       setQrSessionData({
         session_id: res.data?.session_id ?? '',
         amount: Number(res.data?.amount ?? 0),
         invoice_number: res.data?.invoice_number ?? '',
       })
+      setQrAmountModalOpen(false)
       setQrWaitingPopupOpen(true)
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
@@ -669,6 +681,9 @@ export default function InvoiceDetail() {
   const isVoided = invoice.status === 'voided'
   const isDraft = invoice.status === 'draft'
   const canVoid = !isVoided && !isDraft
+  // Limited "correction edit" allowed on issued/partially_paid/overdue
+  // (notes, due date, vehicle metadata, payment terms, T&Cs only).
+  const canEdit = isDraft || ['issued', 'partially_paid', 'overdue'].includes(invoice.status)
 
   /* Computed values for credit notes and refunds */
   const creditableAmount = computeCreditableAmount(
@@ -700,7 +715,7 @@ export default function InvoiceDetail() {
 
         {/* Action buttons */}
         <div className="flex flex-wrap items-center gap-2">
-          {isDraft && (
+          {canEdit && (
             <Button size="sm" variant="primary" onClick={() => { navigate(`/invoices/${invoice.id}/edit`) }}>
               Edit
             </Button>
@@ -1248,8 +1263,8 @@ export default function InvoiceDetail() {
                 <tr>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 w-44">Date</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 w-24">Type</th>
-                  <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500 w-32">Amount</th>
-                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 w-28">Method</th>
+                  <th scope="col" className="pl-4 pr-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 w-32">Amount</th>
+                  <th scope="col" className="pl-6 pr-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 w-28">Method</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Recorded By</th>
                 </tr>
               </thead>
@@ -1263,10 +1278,10 @@ export default function InvoiceDetail() {
                       <td className="whitespace-nowrap px-4 py-3 text-sm">
                         <Badge variant={badgeType.color === 'green' ? 'success' : 'error'}>{badgeType.label}</Badge>
                       </td>
-                      <td className={`whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums font-medium ${payment.is_refund ? 'text-red-600' : 'text-gray-900'}`}>
+                      <td className={`whitespace-nowrap pl-4 pr-6 py-3 text-sm text-left tabular-nums font-medium ${payment.is_refund ? 'text-red-600' : 'text-gray-900'}`}>
                         {formatNZD(payment.amount)}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm">
+                      <td className="whitespace-nowrap pl-6 pr-4 py-3 text-sm">
                         {(payment.method ?? 'cash') === 'stripe' ? (
                           <span className="inline-flex items-center rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-700 ring-1 ring-inset ring-indigo-600/20">
                             Stripe
@@ -1458,6 +1473,21 @@ export default function InvoiceDetail() {
           )}
         </div>
       </Modal>
+
+      {/* ---- QR Payment Amount Modal ---- */}
+      {qrAmountModalOpen && invoice && (
+        <QrPaymentAmountModal
+          open={qrAmountModalOpen}
+          onClose={() => setQrAmountModalOpen(false)}
+          invoice={{
+            id: invoice.id,
+            balance_due: invoice.balance_due ?? 0,
+            invoice_number: invoice.invoice_number ?? null,
+          }}
+          onContinue={handleAmountModalContinue}
+          loading={qrPaymentLoading}
+        />
+      )}
 
       {/* ---- QR Payment Waiting Popup ---- */}
       {qrWaitingPopupOpen && qrSessionData && (

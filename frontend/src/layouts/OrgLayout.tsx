@@ -74,6 +74,7 @@ const navItems: NavItem[] = [
   { to: '/ecommerce', label: 'Ecommerce', icon: EcommerceIcon, module: 'ecommerce', flagKey: 'ecommerce' },
   { to: '/sms', label: 'SMS', icon: SmsIcon, module: 'sms', flagKey: 'sms' },
   { to: '/claims', label: 'Claims', icon: ClaimsIcon, module: 'customer_claims' },
+  { to: '/fleet-portal-admin', label: 'Fleet Portal', icon: VehiclesIcon, module: 'b2b-fleet-management', adminOnly: true },
   { to: '/accounting', label: 'Accounting', icon: AccountingIcon, module: 'accounting' },
   { to: '/banking/accounts', label: 'Banking', icon: BankingIcon, module: 'accounting' },
   { to: '/tax/gst-periods', label: 'Tax', icon: TaxIcon, module: 'accounting' },

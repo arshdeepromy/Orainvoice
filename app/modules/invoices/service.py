@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import date, datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 from sqlalchemy import delete, func, select, text, update
@@ -401,9 +401,20 @@ async def _resolve_vehicle_type(
 ) -> tuple[str, Any] | None:
     """Determine whether *vehicle_id* refers to a global or org-scoped vehicle.
 
-    Returns ``("global", vehicle_record)`` when found in ``global_vehicles``,
+    Returns ``("global", vehicle_record)`` when found in ``global_vehicles``
+    AND the calling org has not been promoted for that rego;
     ``("org", vehicle_record)`` when found in ``org_vehicles`` (scoped to
-    *org_id*), or ``None`` when the ID does not exist in either table.
+    *org_id*) — either by direct id match, or because the org has been
+    promoted for the rego carried by the matched ``GlobalVehicle``;
+    or ``None`` when the ID does not exist in either table.
+
+    Promotion-aware lookup (vehicle-data-isolation Task 4.0): callers (e.g.
+    ``create_invoice`` / ``update_invoice``) pass the original
+    ``global_vehicles.id`` from the request payload even after the org has
+    been promoted for that rego. Without the rego-keyed follow-up query
+    below, this function would return ``("global", gv)`` and downstream
+    writes would silently regress isolation by writing to ``global_vehicles``
+    again. Promoted orgs always take the ``org_vehicles`` snapshot.
     """
     from app.modules.admin.models import GlobalVehicle
     from app.modules.vehicles.models import OrgVehicle
@@ -414,6 +425,22 @@ async def _resolve_vehicle_type(
     )
     gv = result.scalar_one_or_none()
     if gv is not None:
+        # Promotion-aware preference: if the calling org already owns an
+        # ``org_vehicles`` row for this rego, the org has been promoted and
+        # the org snapshot is the source of truth. Subsequent invoice writes
+        # then automatically target the OrgVehicle without callers having to
+        # thread an ``effective_vehicle_id``.
+        ov_result = await db.execute(
+            select(OrgVehicle)
+            .where(
+                OrgVehicle.org_id == org_id,
+                func.upper(OrgVehicle.rego) == func.upper(gv.rego),
+            )
+            .limit(1)
+        )
+        promoted_ov = ov_result.scalar_one_or_none()
+        if promoted_ov is not None:
+            return ("org", promoted_ov)
         return ("global", gv)
 
     # Fall back to org_vehicles (scoped by org_id for multi-tenant safety)
@@ -516,6 +543,57 @@ async def create_invoice(
         vehicle_year = None
         vehicle_odometer = None
         global_vehicle_id = None
+
+    # Backfill vehicle details from existing vehicle records when only rego
+    # was supplied (e.g. job card → invoice conversion, mobile minimal create,
+    # or kiosk-registered vehicle picked in the new-invoice form without full
+    # details flowing through). We look up the org's OrgVehicle first, then
+    # GlobalVehicle as a fallback. This ensures the invoice display shows
+    # make/model/year/odometer and lets _resolve_vehicle_type / vehicle_display
+    # include WOF/COF/service-due via the same code path as a manual New Invoice.
+    def _is_blank(value: object) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str) and value.strip() == "":
+            return True
+        return False
+
+    if (
+        vehicle_rego
+        and global_vehicle_id is None
+        and _is_blank(vehicle_make)
+        and _is_blank(vehicle_model)
+        and (vehicle_year is None or vehicle_year == 0)
+    ):
+        from app.modules.vehicles.models import OrgVehicle as _OrgVehicleLookup
+        from app.modules.admin.models import GlobalVehicle as _GlobalVehicleLookup
+
+        _rego_upper = vehicle_rego.strip().upper()
+        ov_res = await db.execute(
+            select(_OrgVehicleLookup).where(
+                _OrgVehicleLookup.org_id == org_id,
+                func.upper(_OrgVehicleLookup.rego) == _rego_upper,
+            )
+        )
+        _vrec_lookup = ov_res.scalar_one_or_none()
+        if _vrec_lookup is None:
+            gv_res = await db.execute(
+                select(_GlobalVehicleLookup).where(
+                    func.upper(_GlobalVehicleLookup.rego) == _rego_upper,
+                )
+            )
+            _vrec_lookup = gv_res.scalar_one_or_none()
+
+        if _vrec_lookup is not None:
+            if _is_blank(vehicle_make):
+                vehicle_make = getattr(_vrec_lookup, "make", None)
+            if _is_blank(vehicle_model):
+                vehicle_model = getattr(_vrec_lookup, "model", None)
+            if vehicle_year is None or vehicle_year == 0:
+                vehicle_year = getattr(_vrec_lookup, "year", None)
+            if vehicle_odometer is None:
+                vehicle_odometer = getattr(_vrec_lookup, "odometer_last_recorded", None)
+            global_vehicle_id = global_vehicle_id or getattr(_vrec_lookup, "id", None)
 
     # Validate currency against org settings (Req 79.1, 79.2)
     validate_invoice_currency(currency, org_settings)
@@ -855,23 +933,54 @@ async def create_invoice(
         ip_address=ip_address,
     )
 
-    # Resolve vehicle type (global vs org) before auto-link logic
+    # Resolve vehicle type (global vs org) before auto-link logic.
+    # ``effective_vehicle_id`` carries the post-resolution identity so
+    # downstream link-existence queries, link construction, and field
+    # writes do not accidentally key off the original ``global_vehicle_id``
+    # parameter — which is logically a "vehicle identity prior to
+    # promotion / resolution" once the resolver has run.
     vehicle_type: str | None = None
     vehicle_record = None
+    effective_vehicle_id: uuid.UUID | None = global_vehicle_id
     if global_vehicle_id:
         resolution = await _resolve_vehicle_type(db, global_vehicle_id, org_id)
         if resolution is not None:
             vehicle_type, vehicle_record = resolution
+            effective_vehicle_id = getattr(vehicle_record, "id", global_vehicle_id)
 
     # Auto-link customer to vehicle if global_vehicle_id provided and not already linked
     if global_vehicle_id and vehicle_type is not None:
+        # Promote the vehicle for this org when the resolved record is still
+        # a ``GlobalVehicle`` — vehicle-data-isolation Task 4.1. After
+        # promotion, rebind ``vehicle_record``, ``vehicle_type``, and
+        # ``effective_vehicle_id`` so the link-existence query, the
+        # ``CustomerVehicle`` constructor, the audit log payload, and any
+        # subsequent customer-driven field write (Task 4.2) all see the
+        # post-promotion ``OrgVehicle`` identity. Failing to rebind would
+        # silently regress isolation: downstream writes would still hit the
+        # ``GlobalVehicle`` reference held by the original ``vehicle_record``.
+        if vehicle_type == "global":
+            from app.modules.vehicles.service import promote_vehicle
+            ov = await promote_vehicle(
+                db,
+                org_id=org_id,
+                global_vehicle_id=vehicle_record.id,
+                source_record=vehicle_record,
+                user_id=user_id,
+                trigger_site="invoices.create",
+                ip_address=ip_address,
+            )
+            vehicle_record = ov
+            vehicle_type = "org"
+            effective_vehicle_id = ov.id
+
         # Duplicate-link detection: query correct FK column based on vehicle type
         if vehicle_type == "org":
             existing_link = await db.execute(
                 select(CustomerVehicle).where(
                     CustomerVehicle.org_id == org_id,
                     CustomerVehicle.customer_id == customer_id,
-                    CustomerVehicle.org_vehicle_id == global_vehicle_id,
+                    CustomerVehicle.org_vehicle_id == effective_vehicle_id,
                 )
             )
         else:
@@ -879,7 +988,7 @@ async def create_invoice(
                 select(CustomerVehicle).where(
                     CustomerVehicle.org_id == org_id,
                     CustomerVehicle.customer_id == customer_id,
-                    CustomerVehicle.global_vehicle_id == global_vehicle_id,
+                    CustomerVehicle.global_vehicle_id == effective_vehicle_id,
                 )
             )
         if existing_link.scalar_one_or_none() is None:
@@ -888,13 +997,13 @@ async def create_invoice(
                 cv = CustomerVehicle(
                     org_id=org_id,
                     customer_id=customer_id,
-                    org_vehicle_id=global_vehicle_id,
+                    org_vehicle_id=effective_vehicle_id,
                 )
             else:
                 cv = CustomerVehicle(
                     org_id=org_id,
                     customer_id=customer_id,
-                    global_vehicle_id=global_vehicle_id,
+                    global_vehicle_id=effective_vehicle_id,
                 )
             db.add(cv)
             await db.flush()
@@ -903,14 +1012,14 @@ async def create_invoice(
             if vehicle_type == "org":
                 link_after_value = {
                     "customer_id": str(customer_id),
-                    "org_vehicle_id": str(global_vehicle_id),
+                    "org_vehicle_id": str(effective_vehicle_id),
                     "linked_via": "invoice_creation",
                     "invoice_id": str(invoice.id),
                 }
             else:
                 link_after_value = {
                     "customer_id": str(customer_id),
-                    "global_vehicle_id": str(global_vehicle_id),
+                    "global_vehicle_id": str(effective_vehicle_id),
                     "linked_via": "invoice_creation",
                     "invoice_id": str(invoice.id),
                 }
@@ -926,15 +1035,90 @@ async def create_invoice(
                 ip_address=ip_address,
             )
 
-    # Record odometer reading if provided and vehicle is linked
+    # ------------------------------------------------------------------
+    # Customer_Driven_Field write block — vehicle-data-isolation Task 4.2
+    # ------------------------------------------------------------------
+    # After Task 4.1's link block ran, ``vehicle_type`` is "org" whenever
+    # ``global_vehicle_id`` resolved to anything (the link block promotes
+    # any ``("global", gv)`` resolution before falling through). The
+    # promote-and-rebind pattern below is still applied defensively so
+    # alternative entry points (e.g. a future caller that skips the link
+    # block, or a resolver result mutated by another code path) cannot
+    # regress isolation by silently writing to ``GlobalVehicle``.
+    #
+    # For ``service_due_date``, ``wof_expiry``, and ``cof_expiry`` the
+    # write always lands on the ``OrgVehicle``. The previous
+    # ``gv.<field> = value`` paths are removed (Req 1.2, 1.5, 2.2).
+    #
+    # For ``odometer`` we keep the unified ``record_odometer_reading()``
+    # call shape — the helper modified in Task 3.1 inserts the history
+    # row keyed by ``global_vehicle_id`` (Req 11.1) and bumps
+    # ``org_vehicles.odometer_last_recorded`` for the calling org.
+    # Replacing it with a direct ``ov.odometer_last_recorded = value``
+    # write would skip the ``odometer_readings`` history insert and
+    # silently break odometer history growth.
+    #
+    # Manual-entry-only fallback: when ``global_vehicle_id`` is actually
+    # an ``OrgVehicle.id`` (no underlying ``GlobalVehicle`` row — see
+    # ``invoice-vehicle-fk-fix`` spec), ``record_odometer_reading``
+    # would raise because its FK keys on ``global_vehicles``. We fall
+    # back to a direct ``ov.odometer_last_recorded`` write in that case;
+    # the history insert is by design impossible for vehicles that have
+    # never been CarJam-imported.
+
+    # Defensive promotion + link migration. Idempotent when Task 4.1
+    # already promoted in this transaction (``promote_vehicle`` returns
+    # the existing row).
+    if global_vehicle_id and vehicle_type == "global":
+        from app.modules.vehicles.service import promote_vehicle as _promote_vehicle
+        ov = await _promote_vehicle(
+            db,
+            org_id=org_id,
+            global_vehicle_id=vehicle_record.id,
+            source_record=vehicle_record,
+            user_id=user_id,
+            trigger_site="invoices.create",
+            ip_address=ip_address,
+        )
+        vehicle_record = ov
+        vehicle_type = "org"
+        effective_vehicle_id = ov.id
+
+    # Migrate any ``customer_vehicles`` link still pointing at the
+    # original ``global_vehicle_id`` to the promoted ``org_vehicle_id``.
+    # Catches links created earlier in this transaction by a different
+    # code path, or pre-existing links not migrated by 4.1. Bulk UPDATE
+    # so multiple links migrate atomically (the ``vehicle_link_check``
+    # CHECK constraint sees both columns set in one statement).
+    # Skipped when ``vehicle_record.id == global_vehicle_id`` because
+    # that is the manual-entry case — no ``global_vehicle_id`` link
+    # exists to migrate.
+    if (
+        global_vehicle_id
+        and vehicle_type == "org"
+        and vehicle_record is not None
+        and vehicle_record.id != global_vehicle_id
+    ):
+        await db.execute(
+            update(CustomerVehicle)
+            .where(
+                CustomerVehicle.org_id == org_id,
+                CustomerVehicle.customer_id == customer_id,
+                CustomerVehicle.global_vehicle_id == global_vehicle_id,
+            )
+            .values(global_vehicle_id=None, org_vehicle_id=vehicle_record.id)
+        )
+        await db.flush()
+
+    # Record odometer reading via the unified helper (preserves
+    # ``odometer_readings`` history; Req 11.1).
     if vehicle_odometer and vehicle_odometer > 0 and global_vehicle_id:
-        if vehicle_type == "org":
-            # Org vehicles: update odometer_last_recorded directly
-            # (record_odometer_reading only supports global vehicles via odometer_readings FK)
-            vehicle_record.odometer_last_recorded = vehicle_odometer
-            await db.flush()
-        else:
-            # Global vehicles: use existing record_odometer_reading call
+        has_real_global_vehicle = vehicle_type == "global" or (
+            vehicle_type == "org"
+            and vehicle_record is not None
+            and vehicle_record.id != global_vehicle_id
+        )
+        if has_real_global_vehicle:
             from app.modules.vehicles.service import record_odometer_reading
             await record_odometer_reading(
                 db,
@@ -946,56 +1130,43 @@ async def create_invoice(
                 org_id=org_id,
                 notes=f"Invoice {invoice_number or 'draft'}",
             )
-
-    # Update service due date on the vehicle if provided
-    if vehicle_service_due_date and global_vehicle_id:
-        if vehicle_type == "org":
-            # Org vehicles: update directly on the already-resolved record
-            vehicle_record.service_due_date = vehicle_service_due_date
+        elif vehicle_type == "org" and vehicle_record is not None:
+            # Manual-entry-only vehicle: no ``global_vehicles`` FK target
+            # available for the history insert. Direct write to the
+            # OrgVehicle's cache preserves the invoice-vehicle-fk-fix
+            # backwards-compatibility behaviour.
+            vehicle_record.odometer_last_recorded = vehicle_odometer
             await db.flush()
-        else:
-            # Global vehicles: existing query and update
-            from app.modules.admin.models import GlobalVehicle
-            gv_result = await db.execute(
-                select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
-            )
-            gv = gv_result.scalar_one_or_none()
-            if gv:
-                gv.service_due_date = vehicle_service_due_date
 
-    # Update WOF expiry on the vehicle if provided
-    if vehicle_wof_expiry_date and global_vehicle_id:
-        if vehicle_type == "org":
-            # Org vehicles: update directly on the already-resolved record
-            vehicle_record.wof_expiry = vehicle_wof_expiry_date
-            await db.flush()
-        else:
-            # Global vehicles: existing query and update
-            from app.modules.admin.models import GlobalVehicle
-            if not vehicle_service_due_date:
-                gv_result = await db.execute(
-                    select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
-                )
-                gv = gv_result.scalar_one_or_none()
-            if gv:
-                gv.wof_expiry = vehicle_wof_expiry_date
+    # service_due_date — write to the OrgVehicle snapshot (Req 1.2, 2.2).
+    if (
+        vehicle_service_due_date
+        and global_vehicle_id
+        and vehicle_type == "org"
+        and vehicle_record is not None
+    ):
+        vehicle_record.service_due_date = vehicle_service_due_date
+        await db.flush()
 
-    # Update COF expiry on the vehicle if provided
-    if vehicle_cof_expiry_date and global_vehicle_id:
-        if vehicle_type == "org":
-            # Org vehicles: update directly on the already-resolved record
-            vehicle_record.cof_expiry = vehicle_cof_expiry_date
-            await db.flush()
-        else:
-            # Global vehicles: query and update
-            from app.modules.admin.models import GlobalVehicle
-            if not vehicle_service_due_date and not vehicle_wof_expiry_date:
-                gv_result = await db.execute(
-                    select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
-                )
-                gv = gv_result.scalar_one_or_none()
-            if gv:
-                gv.cof_expiry = vehicle_cof_expiry_date
+    # wof_expiry — write to the OrgVehicle snapshot (Req 1.2, 2.2).
+    if (
+        vehicle_wof_expiry_date
+        and global_vehicle_id
+        and vehicle_type == "org"
+        and vehicle_record is not None
+    ):
+        vehicle_record.wof_expiry = vehicle_wof_expiry_date
+        await db.flush()
+
+    # cof_expiry — write to the OrgVehicle snapshot (Req 1.2, 2.2).
+    if (
+        vehicle_cof_expiry_date
+        and global_vehicle_id
+        and vehicle_type == "org"
+        and vehicle_record is not None
+    ):
+        vehicle_record.cof_expiry = vehicle_cof_expiry_date
+        await db.flush()
 
     # Auto-generate Stripe PaymentIntent when issuing with stripe gateway
     if status == "issued":
@@ -1639,45 +1810,50 @@ async def get_invoice(
             result["customer_portal_token"] = str(customer.portal_token) if customer.portal_token else None
             result["customer_enable_portal"] = bool(customer.enable_portal)
 
-    # Include vehicle details from global vehicle table (rego, make, model, year, odometer, WOF expiry)
-    # Falls back to org_vehicles if not found in global_vehicles
+    # Include vehicle details, preferring OrgVehicle over GlobalVehicle for the calling org.
+    # Per vehicle-data-isolation Task 11.5: read OrgVehicle first (org_id-scoped) so each org
+    # sees its own Customer_Driven_Field writes (wof_expiry, cof_expiry, service_due_date,
+    # odometer_last_recorded). Fall back to GlobalVehicle only when the org has no row for
+    # this rego, then to the invoice's flat fields as a last resort.
     if invoice.vehicle_rego:
         from app.modules.admin.models import GlobalVehicle
-        gv_result = await db.execute(
-            select(GlobalVehicle).where(
-                func.upper(GlobalVehicle.rego) == invoice.vehicle_rego.upper()
+        from app.modules.vehicles.models import OrgVehicle
+
+        ov_result = await db.execute(
+            select(OrgVehicle).where(
+                OrgVehicle.org_id == invoice.org_id,
+                func.upper(OrgVehicle.rego) == invoice.vehicle_rego.upper(),
             )
         )
-        gv = gv_result.scalar_one_or_none()
-        if gv:
+        ov = ov_result.scalar_one_or_none()
+        if ov:
             result["vehicle"] = {
-                "rego": gv.rego,
-                "make": gv.make,
-                "model": gv.model,
-                "year": gv.year,
-                "wof_expiry": gv.wof_expiry.isoformat() if getattr(gv, "wof_expiry", None) else None,
-                "odometer": getattr(gv, "odometer_last_recorded", None),
-                "service_due_date": gv.service_due_date.isoformat() if getattr(gv, "service_due_date", None) else None,
+                "rego": ov.rego,
+                "make": ov.make,
+                "model": ov.model,
+                "year": ov.year,
+                "wof_expiry": ov.wof_expiry.isoformat() if getattr(ov, "wof_expiry", None) else None,
+                "cof_expiry": ov.cof_expiry.isoformat() if getattr(ov, "cof_expiry", None) else None,
+                "odometer": getattr(ov, "odometer_last_recorded", None),
+                "service_due_date": ov.service_due_date.isoformat() if getattr(ov, "service_due_date", None) else None,
             }
         else:
-            # Fallback: check org_vehicles for org-scoped vehicles
-            from app.modules.vehicles.models import OrgVehicle
-            ov_result = await db.execute(
-                select(OrgVehicle).where(
-                    OrgVehicle.org_id == invoice.org_id,
-                    func.upper(OrgVehicle.rego) == invoice.vehicle_rego.upper(),
+            gv_result = await db.execute(
+                select(GlobalVehicle).where(
+                    func.upper(GlobalVehicle.rego) == invoice.vehicle_rego.upper()
                 )
             )
-            ov = ov_result.scalar_one_or_none()
-            if ov:
+            gv = gv_result.scalar_one_or_none()
+            if gv:
                 result["vehicle"] = {
-                    "rego": ov.rego,
-                    "make": ov.make,
-                    "model": ov.model,
-                    "year": ov.year,
-                    "wof_expiry": ov.wof_expiry.isoformat() if getattr(ov, "wof_expiry", None) else None,
-                    "odometer": getattr(ov, "odometer_last_recorded", None),
-                    "service_due_date": ov.service_due_date.isoformat() if getattr(ov, "service_due_date", None) else None,
+                    "rego": gv.rego,
+                    "make": gv.make,
+                    "model": gv.model,
+                    "year": gv.year,
+                    "wof_expiry": gv.wof_expiry.isoformat() if getattr(gv, "wof_expiry", None) else None,
+                    "cof_expiry": gv.cof_expiry.isoformat() if getattr(gv, "cof_expiry", None) else None,
+                    "odometer": getattr(gv, "odometer_last_recorded", None),
+                    "service_due_date": gv.service_due_date.isoformat() if getattr(gv, "service_due_date", None) else None,
                 }
             elif invoice.vehicle_make or invoice.vehicle_model or invoice.vehicle_year:
                 # Last resort: use the flat fields stored on the invoice itself
@@ -1687,18 +1863,43 @@ async def get_invoice(
                     "model": invoice.vehicle_model,
                     "year": invoice.vehicle_year,
                     "wof_expiry": None,
+                    "cof_expiry": None,
                     "odometer": invoice.vehicle_odometer,
                     "service_due_date": None,
                 }
 
-    # Enrich additional vehicles from invoice_data_json with GlobalVehicle data
+    # Enrich additional vehicles from invoice_data_json with OrgVehicle (preferred) or
+    # GlobalVehicle (fallback) data. Per vehicle-data-isolation Task 11.5: read OrgVehicle
+    # first scoped to invoice.org_id so promoted Customer_Driven_Field writes appear here
+    # rather than cross-tenant GlobalVehicle data.
     additional_vehicles_raw = (invoice.invoice_data_json or {}).get("additional_vehicles", [])
     if additional_vehicles_raw:
         from app.modules.admin.models import GlobalVehicle
+        from app.modules.vehicles.models import OrgVehicle
+
         enriched_vehicles = []
         for av in additional_vehicles_raw:
             av_rego = av.get("rego", "")
             if av_rego:
+                av_ov_result = await db.execute(
+                    select(OrgVehicle).where(
+                        OrgVehicle.org_id == invoice.org_id,
+                        func.upper(OrgVehicle.rego) == av_rego.upper(),
+                    )
+                )
+                av_ov = av_ov_result.scalar_one_or_none()
+                if av_ov:
+                    enriched_vehicles.append({
+                        "rego": av_ov.rego,
+                        "make": av_ov.make,
+                        "model": av_ov.model,
+                        "year": av_ov.year,
+                        "wof_expiry": av_ov.wof_expiry.isoformat() if getattr(av_ov, "wof_expiry", None) else None,
+                        "cof_expiry": av_ov.cof_expiry.isoformat() if getattr(av_ov, "cof_expiry", None) else None,
+                        "odometer": getattr(av_ov, "odometer_last_recorded", None),
+                    })
+                    continue
+
                 av_gv_result = await db.execute(
                     select(GlobalVehicle).where(
                         func.upper(GlobalVehicle.rego) == av_rego.upper()
@@ -1712,6 +1913,7 @@ async def get_invoice(
                         "model": av_gv.model,
                         "year": av_gv.year,
                         "wof_expiry": av_gv.wof_expiry.isoformat() if getattr(av_gv, "wof_expiry", None) else None,
+                        "cof_expiry": av_gv.cof_expiry.isoformat() if getattr(av_gv, "cof_expiry", None) else None,
                         "odometer": getattr(av_gv, "odometer_last_recorded", None),
                     })
                 else:
@@ -2107,11 +2309,17 @@ async def update_invoice(
     updates: dict,
     ip_address: str | None = None,
 ) -> dict:
-    """Update a draft invoice's editable fields.
+    """Update an invoice's editable fields.
 
-    Prevents modification of assigned invoice numbers (Req 23.2).
-    Only draft invoices allow structural edits; issued invoices only
-    allow notes updates via ``update_invoice_notes``.
+    Editing rules:
+    - Draft: structural edits allowed (line items, totals, customer, etc.).
+    - Issued / partially_paid / overdue: limited "correction edit" — only
+      notes, due date, branch, vehicle metadata, payment terms, and T&Cs.
+      Totals, line items, customer, currency, and discount stay locked.
+    - Voided / paid / refunded / partially_refunded: no edits — use a
+      credit note for corrections.
+
+    Invoice numbers are immutable once assigned (Req 23.2).
 
     Requirements: 23.2, 23.3
     """
@@ -2145,11 +2353,59 @@ async def update_invoice(
             "Invoice numbers are system-assigned and cannot be set manually"
         )
 
-    # Only drafts allow structural edits
-    if invoice.status != "draft":
+    # Editing rules by status:
+    # - draft: full edit (handled below)
+    # - issued / partially_paid / overdue: limited "correction edit" — only
+    #   non-financial metadata. Totals, line items, customer, currency,
+    #   discount stay locked to keep GST, Xero, payments consistent.
+    # - voided / paid / refunded / partially_refunded: no edits.
+    _LIMITED_EDIT_STATUSES = {"issued", "partially_paid", "overdue"}
+    _LIMITED_EDIT_FIELDS = {
+        "notes_internal",
+        "notes_customer",
+        "due_date",
+        "branch_id",
+        # Vehicle metadata — these only annotate the invoice and may update
+        # the underlying vehicle record; they don't touch financials.
+        "vehicle_rego",
+        "vehicle_make",
+        "vehicle_model",
+        "vehicle_year",
+        "vehicle_odometer",
+        "global_vehicle_id",
+        "vehicle_service_due_date",
+        "vehicle_wof_expiry_date",
+        "vehicle_cof_expiry_date",
+        "vehicle_wof_updated",
+        "vehicle_cof_updated",
+        "vehicle_service_due_updated",
+        "vehicles",
+        # JSON-backed fields that are presentational/contractual only.
+        "payment_terms",
+        "terms_and_conditions",
+    }
+
+    is_limited_edit = invoice.status in _LIMITED_EDIT_STATUSES
+    if invoice.status != "draft" and not is_limited_edit:
         raise ValueError(
-            "Only draft invoices can be updated. Use notes endpoint for issued invoices."
+            f"Invoices with status '{invoice.status}' cannot be edited. "
+            "Use a credit note to make corrections."
         )
+
+    if is_limited_edit:
+        # Drop any field that isn't in the allow-list. We ignore silently
+        # rather than raising so the frontend can keep sending the full
+        # payload; only the safe fields will land.
+        rejected = [
+            k for k in updates.keys()
+            if k not in _LIMITED_EDIT_FIELDS and k != "invoice_number"
+        ]
+        if rejected:
+            logger.info(
+                "Invoice %s is %s — ignoring non-editable fields on update: %s",
+                invoice_id, invoice.status, rejected,
+            )
+        updates = {k: v for k, v in updates.items() if k in _LIMITED_EDIT_FIELDS}
 
     # Capture before state for audit log
     before_value = {
@@ -2360,49 +2616,146 @@ async def update_invoice(
 
     await db.flush()
 
-    # Resolve vehicle type before metadata updates (Task 5.1)
+    # ------------------------------------------------------------------
+    # Vehicle resolution + Customer_Driven_Field write block —
+    # vehicle-data-isolation Task 4.3
+    # ------------------------------------------------------------------
+    # Resolve the vehicle once, then promote-and-rebind on the global
+    # branch so the downstream ``vehicle_type == "org"`` writes always
+    # land on the per-org snapshot. The resolution gate also includes
+    # ``vehicle_cof_expiry_date`` so a COF-only edit triggers
+    # resolution (without the widening, ``vehicle_type`` would stay
+    # ``None`` and the COF write would be silently dropped).
     vehicle_service_due_date = updates.get("vehicle_service_due_date")
     vehicle_wof_expiry_date = updates.get("vehicle_wof_expiry_date")
+    vehicle_cof_expiry_date = updates.get("vehicle_cof_expiry_date")
+    # ``vehicle_odometer`` is included in the resolution gate so that an
+    # odometer-only edit promotes the vehicle into the OrgVehicle space
+    # and bumps ``org_vehicles.odometer_last_recorded`` plus inserts an
+    # ``odometer_readings`` history row. Without this widening an edit
+    # of an issued invoice's odometer was silently dropped beyond the
+    # invoices row itself (vehicle profile and reports stayed stale).
+    vehicle_odometer_update = updates.get("vehicle_odometer")
     global_vehicle_id = updates.get("global_vehicle_id")
     vehicle_type = None
     vehicle_record = None
-    if global_vehicle_id and (vehicle_service_due_date or vehicle_wof_expiry_date):
+    if global_vehicle_id and (
+        vehicle_service_due_date
+        or vehicle_wof_expiry_date
+        or vehicle_cof_expiry_date
+        or (vehicle_odometer_update is not None and vehicle_odometer_update > 0)
+    ):
         resolution = await _resolve_vehicle_type(db, global_vehicle_id, org_id)
         if resolution is not None:
             vehicle_type, vehicle_record = resolution
 
-    # Update service due date on the vehicle if provided (Task 5.2)
-    if vehicle_service_due_date and global_vehicle_id and vehicle_type is not None:
-        if vehicle_type == "org":
-            # Org vehicles: update directly on the already-resolved record
-            vehicle_record.service_due_date = vehicle_service_due_date
-            await db.flush()
-        else:
-            # Global vehicles: existing query and update
-            from app.modules.admin.models import GlobalVehicle
-            gv_result = await db.execute(
-                select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
-            )
-            gv = gv_result.scalar_one_or_none()
-            if gv:
-                gv.service_due_date = vehicle_service_due_date
+        # When the resolved vehicle is still a ``GlobalVehicle``, promote
+        # for this org and rebind ``vehicle_record`` / ``vehicle_type``
+        # so the writes below take the org-vehicle branch. Without the
+        # rebind the code would fall through to the global branch and
+        # write to ``gv`` — silently regressing isolation.
+        if vehicle_type == "global" and vehicle_record is not None:
+            from app.modules.vehicles.models import CustomerVehicle as _CustomerVehicle
+            from app.modules.vehicles.service import promote_vehicle as _promote_vehicle
 
-    # Update WOF expiry on the vehicle if provided (Task 5.3)
-    if vehicle_wof_expiry_date and global_vehicle_id and vehicle_type is not None:
-        if vehicle_type == "org":
-            # Org vehicles: update directly on the already-resolved record
-            vehicle_record.wof_expiry = vehicle_wof_expiry_date
-            await db.flush()
-        else:
-            # Global vehicles: existing query and update
-            from app.modules.admin.models import GlobalVehicle
-            if not vehicle_service_due_date:
-                gv_result = await db.execute(
-                    select(GlobalVehicle).where(GlobalVehicle.id == global_vehicle_id)
+            ov = await _promote_vehicle(
+                db,
+                org_id=org_id,
+                global_vehicle_id=vehicle_record.id,
+                source_record=vehicle_record,
+                user_id=user_id,
+                trigger_site="invoices.update",
+                ip_address=ip_address,
+            )
+            vehicle_record = ov
+            vehicle_type = "org"
+
+            # Migrate any ``customer_vehicles`` link still pointing at
+            # the original ``global_vehicle_id`` to the promoted
+            # ``org_vehicle_id``. Bulk UPDATE so multiple links migrate
+            # atomically (the ``vehicle_link_check`` CHECK constraint
+            # sees both columns set in one statement).
+            await db.execute(
+                update(_CustomerVehicle)
+                .where(
+                    _CustomerVehicle.org_id == org_id,
+                    _CustomerVehicle.customer_id == invoice.customer_id,
+                    _CustomerVehicle.global_vehicle_id == global_vehicle_id,
                 )
-                gv = gv_result.scalar_one_or_none()
-            if gv:
-                gv.wof_expiry = vehicle_wof_expiry_date
+                .values(global_vehicle_id=None, org_vehicle_id=ov.id)
+            )
+            await db.flush()
+
+    # service_due_date — write to the OrgVehicle snapshot (Req 1.2, 2.2).
+    if (
+        vehicle_service_due_date
+        and global_vehicle_id
+        and vehicle_type == "org"
+        and vehicle_record is not None
+    ):
+        vehicle_record.service_due_date = vehicle_service_due_date
+        await db.flush()
+
+    # wof_expiry — write to the OrgVehicle snapshot (Req 1.2, 2.2).
+    if (
+        vehicle_wof_expiry_date
+        and global_vehicle_id
+        and vehicle_type == "org"
+        and vehicle_record is not None
+    ):
+        vehicle_record.wof_expiry = vehicle_wof_expiry_date
+        await db.flush()
+
+    # cof_expiry — write to the OrgVehicle snapshot (Req 1.2, 2.2, 3.3).
+    # Mirrors the WOF branch above. Without this branch a COF-only edit
+    # would be silently dropped even after the schema accepts the field.
+    if (
+        vehicle_cof_expiry_date
+        and global_vehicle_id
+        and vehicle_type == "org"
+        and vehicle_record is not None
+    ):
+        vehicle_record.cof_expiry = vehicle_cof_expiry_date
+        await db.flush()
+
+    # odometer — propagate edits made on issued invoices into the
+    # ``org_vehicles`` snapshot AND ``odometer_readings`` history.
+    # Mirrors the create_invoice block at line ~1115. Without this the
+    # invoice row holds the new reading but vehicle profile, service
+    # history aggregations, and the next-invoice odometer prefill stay
+    # stale (Req 1.1, 11.1, 11.2).
+    #
+    # Manual-entry-only fallback: when ``global_vehicle_id`` is actually
+    # an ``OrgVehicle.id`` (no underlying ``GlobalVehicle`` row),
+    # ``record_odometer_reading`` would raise on the FK insert. We fall
+    # back to a direct write on ``ov.odometer_last_recorded`` — the
+    # history row is by design impossible for a vehicle that was never
+    # CarJam-imported.
+    if (
+        vehicle_odometer_update is not None
+        and vehicle_odometer_update > 0
+        and global_vehicle_id
+        and vehicle_type == "org"
+        and vehicle_record is not None
+    ):
+        has_real_global_vehicle = vehicle_record.id != global_vehicle_id
+        if has_real_global_vehicle:
+            from app.modules.vehicles.service import (
+                record_odometer_reading as _record_odometer_reading,
+            )
+            await _record_odometer_reading(
+                db,
+                global_vehicle_id=global_vehicle_id,
+                reading_km=vehicle_odometer_update,
+                source="invoice",
+                recorded_by=user_id,
+                invoice_id=invoice.id,
+                org_id=org_id,
+                notes=f"Invoice {invoice.invoice_number or 'draft'} edit",
+            )
+        else:
+            vehicle_record.odometer_last_recorded = vehicle_odometer_update
+            await db.flush()
 
     # Recalculate totals if discount, line items, or financial fields changed
     needs_recalc = (
@@ -4131,13 +4484,71 @@ async def email_invoice(
         variables=_template_variables,
     )
 
+    # --- Detect partial-payment receipt context (Requirements 11.1, 11.4) ---
+    # When email_invoice fires after a payment is recorded but the invoice
+    # still has an outstanding balance, the hardcoded fallback subject/body
+    # should reflect the partial receipt. We detect by reading the most
+    # recent non-refund Payment row for this invoice ordered by created_at
+    # (the actual column name on Payment is `created_at`, not
+    # `recorded_at`). For a first-send (no payments yet) this query returns
+    # None and we fall through to the regular invoice-send phrasing.
+    _latest_payment_result = await db.execute(
+        select(Payment)
+        .where(
+            Payment.invoice_id == invoice_id,
+            Payment.org_id == org_id,
+            Payment.is_refund == False,  # noqa: E712
+        )
+        .order_by(Payment.created_at.desc())
+        .limit(1)
+    )
+    _latest_payment = _latest_payment_result.scalar_one_or_none()
+    try:
+        _balance_due_decimal = (
+            Decimal(str(balance_due)) if balance_due is not None else Decimal("0")
+        )
+    except (InvalidOperation, ValueError):
+        _balance_due_decimal = Decimal("0")
+    _is_partial_receipt = (
+        _latest_payment is not None
+        and _balance_due_decimal > Decimal("0")
+        and inv_status in ("partially_paid", "overdue")
+    )
+
     if _rendered_template:
+        # Custom templates pass through unchanged (Requirement 11.5):
+        # an org that configured a custom template has opted into its own
+        # phrasing, so the partial-vs-full logic does not override it.
         _email_subject = _rendered_template.subject
         _email_body = _rendered_template.body
     else:
-        # Existing hardcoded content (unchanged)
-        _email_subject = f"Invoice {inv_number} from {org_name}"
+        _balance_due_str = (
+            f"{_currency_symbol}{balance_due:.2f}"
+            if isinstance(balance_due, (int, float, Decimal))
+            else f"{_currency_symbol}{balance_due}"
+        )
+        if _is_partial_receipt:
+            # Partial-payment receipt subject + two-line summary above the
+            # existing body content (Requirements 11.1, 11.2).
+            _payment_amount_str = (
+                f"{_currency_symbol}{_latest_payment.amount:.2f}"
+            )
+            _email_subject = (
+                f"Partial payment received for invoice {inv_number} "
+                f"— {_payment_amount_str}"
+            )
+            _partial_summary = (
+                f"Payment received: {_payment_amount_str}\n"
+                f"Remaining balance: {_balance_due_str}\n\n"
+            )
+        else:
+            # Existing hardcoded content (unchanged): regular invoice send
+            # or full-payment receipt.
+            _email_subject = f"Invoice {inv_number} from {org_name}"
+            _partial_summary = ""
+
         _email_body = (
+            f"{_partial_summary}"
             f"Hi,\n\n"
             f"Please find attached invoice {inv_number} from {org_name}.\n\n"
             f"Amount Due: {currency} {balance_due}\n\n"
