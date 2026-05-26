@@ -58,6 +58,7 @@ from app.modules.payments.service import (
     process_refund,
     create_qr_payment_session,
     create_qr_session_for_existing_invoice,
+    dismiss_pending_qr_session,
     get_pending_qr_session,
     get_qr_session_status,
     expire_qr_session,
@@ -1174,6 +1175,51 @@ async def get_pending_qr_session_endpoint(
             created_at=datetime.fromisoformat(session["created_at"]),
         )
     )
+
+
+@router.post(
+    "/qr-session/{session_id}/dismiss",
+    status_code=200,
+    responses={
+        200: {"description": "Dismissed (or already-dismissed)"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Kiosk or org role required"},
+    },
+    summary=(
+        "Soft-dismiss the kiosk QR popup for the current pending session"
+    ),
+    dependencies=[require_role("org_admin", "salesperson", "kiosk")],
+)
+async def dismiss_pending_qr_session_endpoint(
+    session_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Mark the kiosk QR popup as dismissed for ``session_id``.
+
+    Sets ``pending_qr_sessions.dismissed_at = now()`` so subsequent
+    kiosk polls hide the popup. The Stripe PaymentIntent + the row
+    itself are NOT cancelled — a customer who already scanned the QR
+    can still complete payment from their phone, which is the
+    intended hospitality flow.
+
+    Scoped to the caller's org (kiosk credentials carry an org).
+    Idempotent: dismissing an already-dismissed or non-existent
+    session is a 200 no-op.
+    """
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    await dismiss_pending_qr_session(
+        db,
+        org_id=org_uuid,
+        session_id=session_id,
+    )
+    return {"status": "dismissed"}
 
 
 @router.post(

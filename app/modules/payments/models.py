@@ -183,6 +183,22 @@ class PendingQrSession(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
+    # Soft-dismiss marker: set when the kiosk's "Close" button is pressed.
+    # The poll filters out rows where dismissed_at IS NOT NULL so the
+    # popup doesn't re-appear on kiosk page refresh, but the row + the
+    # underlying Stripe PaymentIntent stay alive so the customer who
+    # already scanned can complete payment from their phone. Cleared
+    # by create_qr_session_for_existing_invoice when staff re-fires QR
+    # Payment (so the popup re-appears for the new attempt).
+    dismissed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment=(
+            "When the kiosk dismissed this pending session display. "
+            "NULL = visible to kiosk poll. NOT NULL = hidden but Stripe "
+            "session stays alive for the customer to complete payment."
+        ),
+    )
 
     # Relationships
     organisation = relationship("Organisation", backref="pending_qr_sessions")

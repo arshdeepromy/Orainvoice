@@ -1911,8 +1911,12 @@ async def get_pending_qr_session(
 
     Queries the pending_qr_sessions table for the given org_id.
     If the session exists but has expired (expires_at < now), deletes it
-    and returns None. If the session exists and is still valid, returns
-    it as a dict. If no session exists, returns None.
+    and returns None. If the session exists but has been dismissed by
+    the kiosk (``dismissed_at IS NOT NULL``), returns None — the row
+    stays in the DB so the customer can still complete payment via
+    their phone, but the kiosk popup does not re-appear on a refresh.
+    If the session exists and is still valid, returns it as a dict.
+    If no session exists, returns None.
 
     Requirements: 3.1, 4.1, 4.2, 4.3
     """
@@ -1934,6 +1938,12 @@ async def get_pending_qr_session(
         await db.flush()
         return None
 
+    # Kiosk has dismissed the popup display for this session — hide it
+    # from the kiosk poll. The Stripe PI + the row stay alive so a
+    # customer who already scanned can complete payment from their phone.
+    if session.dismissed_at is not None:
+        return None
+
     return {
         "session_id": session.session_id,
         "checkout_url": session.checkout_url,
@@ -1942,6 +1952,44 @@ async def get_pending_qr_session(
         "expires_at": session.expires_at.isoformat(),
         "created_at": session.created_at.isoformat(),
     }
+
+
+async def dismiss_pending_qr_session(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    session_id: str,
+) -> bool:
+    """Mark a pending QR session as dismissed by the kiosk display.
+
+    Soft-dismiss (sets ``dismissed_at = now()``) — the row + the
+    underlying Stripe PaymentIntent are NOT touched. The customer who
+    already scanned can complete payment from their phone; the kiosk
+    poll just stops re-showing the popup.
+
+    Scoped to org_id so a kiosk cannot dismiss another org's session.
+    Returns True if the row was found and updated, False otherwise.
+
+    Requirements: kiosk dismissal must not break in-flight customer payments.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update as sa_update
+
+    from app.modules.payments.models import PendingQrSession
+
+    result = await db.execute(
+        sa_update(PendingQrSession)
+        .where(
+            PendingQrSession.org_id == org_id,
+            PendingQrSession.session_id == session_id,
+            PendingQrSession.dismissed_at.is_(None),
+        )
+        .values(dismissed_at=datetime.now(timezone.utc))
+        .returning(PendingQrSession.id)
+    )
+    await db.flush()
+    return result.scalar_one_or_none() is not None
 
 
 async def get_qr_session_status(
@@ -2045,7 +2093,7 @@ async def get_qr_session_status(
             # amount_received is in cents
             amount_cents = pi_data.get("amount_received", 0)
             return {"status": "complete", "payment_intent_id": session_id, "amount_charged": amount_cents / 100}
-        elif pi_status in ("canceled", "requires_payment_method"):
+        elif pi_status == "canceled":
             return {"status": "expired", "payment_intent_id": None, "amount_charged": None}
         else:
             return {"status": "open", "payment_intent_id": None, "amount_charged": None}

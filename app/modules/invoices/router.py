@@ -682,6 +682,33 @@ async def update_invoice_endpoint(
     # Don't pass 'sent' status to the service — it only knows draft/issued
     updates.pop("status", None)
 
+    # Pre-check: if the caller wants to issue ('sent') but the invoice is
+    # already in a non-draft state, return a clearer message than the
+    # state-machine's "Invalid status transition: overdue → issued".
+    # Editing prices/line items on issued invoices is intentionally
+    # blocked to keep GST, Xero, and payment records consistent — use a
+    # credit note for corrections instead.
+    if should_email:
+        from app.modules.invoices.models import Invoice as _InvCheck
+        _status_check = await db.execute(
+            select(_InvCheck.status).where(
+                _InvCheck.id == invoice_id,
+                _InvCheck.org_id == org_uuid,
+            )
+        )
+        _current_status = _status_check.scalar_one_or_none()
+        if _current_status and _current_status != "draft":
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": (
+                        f"Invoice is already {_current_status} and cannot "
+                        "be re-issued. Use a credit note to correct "
+                        "prices, or void this invoice and create a new one."
+                    )
+                },
+            )
+
     # Only attempt email if customer has an email address on file
     if should_email:
         from app.modules.customers.models import Customer as _CustUpd

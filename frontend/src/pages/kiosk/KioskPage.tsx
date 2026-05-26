@@ -54,7 +54,6 @@ export function KioskPage() {
   const [qrSession, setQrSession] = useState<QrSession | null>(null)
 
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const dismissedSessionRef = useRef<string | null>(null)
 
   /** Poll for pending QR sessions while on the welcome screen. */
   useEffect(() => {
@@ -69,9 +68,10 @@ export function KioskPage() {
           { signal: controller.signal },
         )
         const session = res.data?.session ?? null
-        if (session && session.session_id !== dismissedSessionRef.current) {
-          setQrSession(session)
-        }
+        // Server-side dismissal: a dismissed session is filtered out by
+        // the backend and returns null here. No client-side bookkeeping
+        // needed — refresh-safe across browser tabs / multiple kiosks.
+        setQrSession(session)
       } catch {
         // Silent retry on network errors (Req 7.5)
       }
@@ -101,13 +101,40 @@ export function KioskPage() {
     setSuccessData(null)
   }, [])
 
-  /** Dismiss QR popup — payment completed or session expired. */
-  const handleQrDismiss = useCallback(() => {
-    if (qrSession) {
-      dismissedSessionRef.current = qrSession.session_id
-    }
-    setQrSession(null)
-  }, [qrSession])
+  /** Dismiss the QR popup.
+   *
+   * - ``manual`` (staff pressed Close on the QR popup): call
+   *   ``POST /payments/qr-session/{id}/dismiss`` so the backend hides
+   *   this session from subsequent kiosk polls. The Stripe
+   *   PaymentIntent and the ``pending_qr_sessions`` row stay alive —
+   *   a customer who already scanned the QR can complete payment from
+   *   their phone, matching the intended hospitality flow.
+   * - ``completed``: the payment succeeded and the webhook already
+   *   deleted the row. No backend call needed.
+   * - ``expired``: Stripe canceled the PI; the row has already been
+   *   removed via ``expire_qr_session`` or natural session expiry.
+   *
+   * The local ``setQrSession(null)`` is unconditional so the popup
+   * closes immediately for snappy UX. The backend stays authoritative
+   * on subsequent polls (server-side dismissal is refresh-safe across
+   * tabs and across multiple kiosk machines).
+   */
+  const handleQrDismiss = useCallback(
+    (reason: 'manual' | 'completed' | 'expired' = 'manual') => {
+      const sid = qrSession?.session_id
+      setQrSession(null)
+      if (sid && reason === 'manual') {
+        apiClient
+          .post(`/payments/qr-session/${encodeURIComponent(sid)}/dismiss`)
+          .catch(() => {
+            // Silent — dismiss is best-effort. If the call fails the
+            // popup will reappear on the next 2.5s poll, at which point
+            // the kiosk staff can press Close again.
+          })
+      }
+    },
+    [qrSession],
+  )
 
   /** Welcome → Check In: module-gated transition. */
   const handleCheckIn = useCallback(() => {
@@ -309,9 +336,9 @@ export function KioskPage() {
       {qrSession && (
         <KioskQrPopup
           session={qrSession}
-          onPaymentComplete={handleQrDismiss}
-          onExpired={handleQrDismiss}
-          onClose={handleQrDismiss}
+          onPaymentComplete={() => handleQrDismiss('completed')}
+          onExpired={() => handleQrDismiss('expired')}
+          onClose={() => handleQrDismiss('manual')}
         />
       )}
 
