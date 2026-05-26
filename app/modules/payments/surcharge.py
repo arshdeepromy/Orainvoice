@@ -30,14 +30,45 @@ def calculate_surcharge(
 ) -> Decimal:
     """Compute surcharge amount using banker's rounding.
 
-    surcharge = (balance_due * percentage / 100) + fixed
-    Rounded to 2 decimal places using ROUND_HALF_EVEN.
+    Uses the **gross-up** formula so the merchant nets the original
+    ``balance_due`` after Stripe's processing fee is deducted from the
+    gross charge. Naive ``balance × p + fixed`` causes a small but
+    systematic shortfall: Stripe charges its fee on
+    ``balance + surcharge`` (the gross), not on ``balance``. The
+    delta is approximately ``balance × p²`` per transaction — small
+    per charge, but compounding monthly across an org's volume.
 
-    The surcharge is computed on the original balance_due only —
-    no compounding (surcharge is never applied to itself).
+    Gross-up derivation (assuming Stripe's fee schedule matches the
+    surcharge schedule, i.e. the merchant is recovering exactly the
+    cost of acceptance, NZ Commerce Commission compliant)::
+
+        gross = balance + surcharge
+        stripe_fee = gross × p + fixed
+        net = gross − stripe_fee = balance   (target)
+
+        ⇒ surcharge = (balance × p + fixed) / (1 − p)
+
+    The non-compounding invariant still holds: the surcharge is
+    derived from the **original** ``balance_due``, not from a
+    recursive application to itself.
+
+    Edge case: when ``percentage >= 100%`` the gross-up is
+    mathematically undefined (would require infinite surcharge to
+    recover). ``MAX_PERCENTAGE = 10%`` keeps the denominator at
+    ``≥ 0.90`` so this is unreachable for any configured rate, but
+    we still guard explicitly.
     """
-    pct_component = balance_due * percentage / Decimal("100")
-    raw = pct_component + fixed
+    pct_decimal = percentage / Decimal("100")
+    if pct_decimal >= Decimal("1"):
+        # Defensive fallback — return the naive surcharge so we never
+        # divide by zero or a negative number even if a future config
+        # ever bypasses validation. Caller will still display *something*
+        # rather than crashing.
+        raw = balance_due * pct_decimal + fixed
+    else:
+        numerator = balance_due * pct_decimal + fixed
+        denominator = Decimal("1") - pct_decimal
+        raw = numerator / denominator
     return raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
 
 

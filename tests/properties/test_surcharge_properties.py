@@ -58,9 +58,12 @@ fixed_st = st.decimals(
 class TestP1SurchargeCalculationCorrectness:
     """For any valid balance_due (Decimal > 0, <= 999999.99) and any valid fee
     rate (percentage 0-10%, fixed $0-$5), calculate_surcharge() SHALL return a
-    value equal to (balance_due * percentage / 100) + fixed rounded to 2dp
-    using ROUND_HALF_EVEN. The result SHALL always be >= 0. The surcharge SHALL
-    be computed on the original balance_due only — no compounding.
+    value equal to the gross-up formula
+    ``(balance_due × percentage / 100 + fixed) / (1 − percentage / 100)``
+    rounded to 2dp using ROUND_HALF_EVEN. The result SHALL always be >= 0
+    and SHALL be >= the naive surcharge ``balance × p + fixed`` so the
+    merchant nets at least the invoice balance after Stripe's fee on the
+    gross charge.
 
     **Validates: Requirements 3.2, 3.4, 3.5, 5.3**
     """
@@ -68,13 +71,25 @@ class TestP1SurchargeCalculationCorrectness:
     # Feature: payment-method-surcharge, Property 1: Surcharge calculation correctness
     @given(balance_due=balance_due_st, percentage=percentage_st, fixed=fixed_st)
     @settings(max_examples=100, deadline=None)
-    def test_result_equals_formula_with_bankers_rounding(
+    def test_result_equals_grossup_formula_with_bankers_rounding(
         self, balance_due: Decimal, percentage: Decimal, fixed: Decimal
     ) -> None:
-        """P1: The surcharge equals (balance_due * percentage / 100) + fixed
-        rounded to 2dp with ROUND_HALF_EVEN."""
+        """P1: The surcharge equals the gross-up formula
+        ``(balance × p + fixed) / (1 − p)`` rounded to 2dp with
+        ROUND_HALF_EVEN, where p = percentage / 100. This makes the
+        gross charge ``balance + surcharge`` exactly cover Stripe's
+        fee at the same rate, so the merchant nets ``balance``.
+        """
+        from hypothesis import assume
+
         result = calculate_surcharge(balance_due, percentage, fixed)
-        expected = (balance_due * percentage / Decimal("100") + fixed).quantize(
+        pct_decimal = percentage / Decimal("100")
+        # MAX_PERCENTAGE = 10% so denominator is always > 0; assume it
+        # explicitly to be safe for any future range expansion.
+        assume(pct_decimal < Decimal("1"))
+        numerator = balance_due * pct_decimal + fixed
+        denominator = Decimal("1") - pct_decimal
+        expected = (numerator / denominator).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_EVEN
         )
         assert result == expected, (
@@ -98,35 +113,61 @@ class TestP1SurchargeCalculationCorrectness:
     # Feature: payment-method-surcharge, Property 1: Surcharge calculation correctness
     @given(balance_due=balance_due_st, percentage=percentage_st, fixed=fixed_st)
     @settings(max_examples=100, deadline=None)
-    def test_no_compounding(
+    def test_grossup_at_least_recovers_naive_surcharge(
         self, balance_due: Decimal, percentage: Decimal, fixed: Decimal
     ) -> None:
-        """P1: Applying surcharge to balance_due + surcharge produces a result
-        that is >= the original surcharge, confirming no compounding occurs in
-        the design. The surcharge is always computed on the original balance_due
-        only — if it were compounded, the function would need to be called with
-        balance_due + surcharge as the base, which yields a weakly larger value."""
+        """P1: For any positive percentage, the gross-up surcharge is at
+        least the naive ``balance × p + fixed`` (the value Stripe would
+        charge on the original balance only). This guarantees the
+        merchant cannot be worse off after the change."""
         from hypothesis import assume
 
-        surcharge = calculate_surcharge(balance_due, percentage, fixed)
-        # Only meaningful when percentage > 0 and the surcharge is non-zero.
         assume(percentage > Decimal("0"))
-        assume(surcharge > Decimal("0"))
 
-        compounded = calculate_surcharge(balance_due + surcharge, percentage, fixed)
-        assert compounded >= surcharge, (
-            f"balance_due={balance_due}, pct={percentage}, fixed={fixed}: "
-            f"surcharge on (balance_due + surcharge) should be >= "
-            f"original surcharge ({surcharge}), got {compounded}"
+        gross_up = calculate_surcharge(balance_due, percentage, fixed)
+        pct_decimal = percentage / Decimal("100")
+        naive = (balance_due * pct_decimal + fixed).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_EVEN
         )
-        # The compounded base is strictly larger, so the raw (pre-rounding)
-        # value is strictly larger. After rounding they may be equal, but
-        # the compounded result must never be less than the original.
-        raw_original = balance_due * percentage / Decimal("100") + fixed
-        raw_compounded = (balance_due + surcharge) * percentage / Decimal("100") + fixed
-        assert raw_compounded > raw_original, (
-            f"Pre-rounding compounded ({raw_compounded}) should be strictly "
-            f"greater than original ({raw_original})"
+        assert gross_up >= naive, (
+            f"balance_due={balance_due}, pct={percentage}, fixed={fixed}: "
+            f"gross_up surcharge {gross_up} should be >= naive {naive}"
+        )
+
+    # Feature: payment-method-surcharge, Property 1: Surcharge calculation correctness
+    @given(balance_due=balance_due_st, percentage=percentage_st, fixed=fixed_st)
+    @settings(max_examples=200, deadline=None)
+    def test_merchant_nets_at_least_balance_after_stripe_fee(
+        self, balance_due: Decimal, percentage: Decimal, fixed: Decimal
+    ) -> None:
+        """P1: The whole point of the gross-up — after Stripe deducts its
+        fee on the gross charge ``balance + surcharge``, the merchant
+        should net at least ``balance_due``. We allow up to 1 cent
+        rounding crumbs because the surcharge is rounded to 2dp.
+
+        Models Stripe's behaviour as ``stripe_fee = gross × p + fixed``
+        rounded to 2dp (Stripe processes everything in cents, half-even
+        is also Stripe's documented behaviour for partial-cent fees).
+        """
+        from hypothesis import assume
+
+        assume(percentage > Decimal("0"))
+
+        surcharge = calculate_surcharge(balance_due, percentage, fixed)
+        gross = balance_due + surcharge
+        pct_decimal = percentage / Decimal("100")
+        stripe_fee = (gross * pct_decimal + fixed).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_EVEN
+        )
+        net = gross - stripe_fee
+        # Allow 1 cent of rounding crumbs (the surcharge was rounded
+        # before Stripe's fee was applied, so the net can drift by at
+        # most one cent in either direction).
+        assert net >= balance_due - Decimal("0.01"), (
+            f"balance_due={balance_due}, pct={percentage}, fixed={fixed}: "
+            f"merchant nets {net} which is more than 1c short of "
+            f"{balance_due} (surcharge={surcharge}, gross={gross}, "
+            f"stripe_fee={stripe_fee})"
         )
 
 
