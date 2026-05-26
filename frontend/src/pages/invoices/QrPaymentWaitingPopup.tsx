@@ -11,7 +11,7 @@ interface QrPaymentWaitingPopupProps {
   onPaymentComplete: () => void
 }
 
-type PopupState = 'waiting' | 'success'
+type PopupState = 'waiting' | 'success' | 'superseded'
 
 /* ── Component ── */
 
@@ -70,6 +70,13 @@ export function QrPaymentWaitingPopup({
             pollIntervalRef.current = null
           }
           setPopupState('success')
+        } else if (status === 'expired') {
+          // Stop polling, surface superseded message (Requirement 10.2)
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current)
+            pollIntervalRef.current = null
+          }
+          setPopupState('superseded')
         }
       } catch (err: unknown) {
         // Silent retry on network errors
@@ -150,6 +157,54 @@ export function QrPaymentWaitingPopup({
             Payment received — {formattedAmount}
           </h2>
           <p className="text-sm text-gray-500">{invoiceNumber ?? ''}</p>
+        </div>
+      </div>
+    )
+  }
+
+  /* ── Superseded State ── */
+  if (popupState === 'superseded') {
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        role="dialog"
+        aria-modal="true"
+        aria-label="QR session superseded"
+      >
+        <div className="flex flex-col items-center gap-4 rounded-xl bg-white p-8 text-center shadow-xl max-w-sm w-full mx-4">
+          {/* Info icon (amber) */}
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-amber-100">
+            <svg
+              className="h-10 w-10 text-amber-600"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth={2}
+              stroke="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 9v3.75m0 3.75h.008v.008H12v-.008zM12 3a9 9 0 100 18 9 9 0 000-18z"
+              />
+            </svg>
+          </div>
+
+          {/* Superseded message */}
+          <h2 className="text-lg font-semibold text-gray-900">QR session superseded</h2>
+          <p className="text-sm text-gray-600">
+            This QR session was superseded by a newer payment attempt.
+          </p>
+          <p className="text-xs text-gray-500">{invoiceNumber ?? ''}</p>
+
+          {/* Close button */}
+          <button
+            type="button"
+            onClick={onClose}
+            className="mt-2 rounded-lg border border-gray-300 px-5 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors"
+          >
+            Close
+          </button>
         </div>
       </div>
     )

@@ -211,6 +211,15 @@ async def get_payment_page(
         for li in (invoice.line_items or [])
     ]
 
+    # --- Resolve display amount: honour payment_token.amount_override
+    # for the QR partial-payment flow (Req 6.2, 6.3) ---
+    resolved_balance = (
+        payment_token.amount_override
+        if payment_token.amount_override is not None
+        else invoice.balance_due
+    )
+    is_partial = payment_token.amount_override is not None
+
     # --- Base response data (always returned) ---
     base_data = dict(
         org_name=org.name,
@@ -225,10 +234,11 @@ async def get_payment_page(
         gst_amount=invoice.gst_amount,
         total=invoice.total,
         amount_paid=invoice.amount_paid,
-        balance_due=invoice.balance_due,
+        balance_due=resolved_balance,
         status=invoice.status,
         surcharge_enabled=surcharge_enabled,
         surcharge_rates=surcharge_rates_for_response,
+        is_partial_payment=is_partial,
     )
 
     # --- Invoice already paid ---
@@ -537,7 +547,15 @@ async def update_surcharge(
     # --- Compute surcharge server-side ---
     from decimal import Decimal
 
-    balance_due = invoice.balance_due or Decimal("0")
+    # Honour payment_token.amount_override for the QR partial-payment flow
+    # (Req 6.4): surcharge is computed against the partial amount, not the
+    # invoice's full balance, so the gross PI amount stays
+    # `partial + surcharge_on_partial`.
+    resolved_balance = (
+        payment_token.amount_override
+        if payment_token.amount_override is not None
+        else (invoice.balance_due or Decimal("0"))
+    )
 
     # Map wallet types to their underlying payment method for surcharge lookup
     # Apple Pay and Google Pay are card payments through a wallet — same fee
@@ -547,12 +565,12 @@ async def update_surcharge(
     if surcharge_enabled and raw_rates:
         rates = deserialise_rates(raw_rates, DEFAULT_SURCHARGE_RATES)
         surcharge = get_surcharge_for_method(
-            balance_due, surcharge_method, rates,
+            resolved_balance, surcharge_method, rates,
         )
     else:
         surcharge = Decimal("0.00")
 
-    total_amount = balance_due + surcharge
+    total_amount = resolved_balance + surcharge
 
     # --- Update PaymentIntent via Stripe API ---
     pi_id = invoice.stripe_payment_intent_id
@@ -569,7 +587,7 @@ async def update_surcharge(
                 "amount": str(new_amount_cents),
                 "metadata[surcharge_amount]": str(surcharge),
                 "metadata[surcharge_method]": body.payment_method_type,
-                "metadata[original_amount]": str(balance_due),
+                "metadata[original_amount]": str(resolved_balance),
             }
             try:
                 async with httpx.AsyncClient() as client:
@@ -583,6 +601,11 @@ async def update_surcharge(
                     )
                     stripe_resp.raise_for_status()
                     pi_updated = True
+                    # Refresh the cached PI amount so the same-amount-reuse
+                    # decision in create_qr_session_for_existing_invoice
+                    # stays accurate after this surcharge rewrite (task 6.3.1).
+                    payment_token.last_pi_amount_cents = new_amount_cents
+                    await db.flush()
             except Exception:
                 logger.exception(
                     "Failed to update PaymentIntent %s with surcharge", pi_id,

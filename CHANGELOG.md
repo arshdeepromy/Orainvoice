@@ -4,6 +4,187 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
+## [1.11.0] — 2026-05-26
+
+### Added
+
+- **QR partial-payment flow** — org users now see a small modal between
+  the QR Payment button and the existing kiosk waiting popup that lets
+  them pick Full (default) or Partial. Choosing Partial reveals an
+  amount input pre-populated with `balance_due`; the typed amount is
+  validated against the per-currency Stripe minimum ($0.50 NZD) and
+  the invoice's outstanding balance, then sent to
+  `POST /api/v1/payments/qr-session/existing` as the new optional
+  `amount` field. Existing callers that omit `amount` get the
+  pre-feature full-balance behaviour byte-for-byte. Implemented across
+  `QrPaymentAmountModal`, `InvoiceList`, `InvoiceDetail`,
+  `create_qr_session_for_existing_invoice`, and the public payment
+  page (web + mobile).
+- **`payment_tokens.amount_override` and `payment_tokens.last_pi_amount_cents`
+  columns** — the per-token override carries the partial amount through
+  to the public payment page and the surcharge recompute; the cached PI
+  cents lets the reuse-branch decision skip a synchronous Stripe API
+  call without sacrificing accuracy. Both are nullable so existing
+  rows remain unaffected. Added in alembic revision `0193`.
+- **`is_partial_payment` field on `PaymentPageResponse`** — `GET
+  /api/v1/public/pay/{token}` now returns a boolean flag the public
+  payment page consumes to display an informational banner ("You are
+  paying a partial amount of $X. Please contact the business if you
+  intended to pay the full balance.") and switch the payment-summary
+  label from "Amount Due" to "Amount Due (Partial)". Defaults to
+  `false` so older frontends ignore it cleanly.
+- **Partial-payment-aware receipt emails** — when `email_invoice` fires
+  after a partial payment is recorded (most recent Payment row exists,
+  `balance_due > 0`, status in `partially_paid`/`overdue`), the
+  hardcoded fallback subject becomes "Partial payment received for
+  invoice {N} — ${X}" and the body is prefixed with "Payment
+  received: $X.XX / Remaining balance: $Y.YY". Custom `invoice_send`
+  templates pass through unchanged, preserving existing
+  template-customisation semantics.
+- **Audit log entries `payment.qr_session_created` and
+  `payment.qr_session_superseded`** — fire on every new-PI path and
+  whenever an old PaymentIntent is cancelled because the requested
+  amount changed. Skipped on the reuse-branch path so duplicate audit
+  entries are not emitted.
+- **`expired` state on `QrPaymentWaitingPopup`** — when the polled
+  status returns `expired` (e.g. the session was superseded by a
+  newer payment attempt from another tab), the popup transitions to
+  a "QR session superseded" state instead of polling forever.
+
+### Changed
+
+- **`create_payment_intent` accepts an `extra_metadata: dict[str, str]
+  | None` parameter** — appended to the Stripe payload as
+  `metadata[KEY]` form fields before the POST. Backwards-compatible:
+  existing callers continue to work unchanged.
+
+### Fixed
+
+- **PI metadata now set at creation time** — `source: "kiosk_qr"`,
+  `original_amount`, and `is_partial_payment` are written into
+  `metadata` when the PaymentIntent is first created instead of
+  waiting for the customer to reach `update-surcharge`. Closes a
+  pre-existing detection-bug gap where `is_qr_payment` in the
+  webhook handler was always `false` if the customer skipped
+  payment-method selection. Applies to both new-invoice
+  (`create_qr_payment_session`) and existing-invoice
+  (`create_qr_session_for_existing_invoice`) paths.
+- **Stale invoice PI fields cleared after the webhook records a
+  payment** — `invoice.stripe_payment_intent_id`,
+  `invoice.payment_page_url`, and the `stripe_client_secret` entry on
+  `invoice.invoice_data_json` are reset on the success path. Without
+  this, a second-partial QR click on the same invoice was entering
+  the reuse-branch with a non-null PI ID that had already moved to a
+  terminal state on Stripe, breaking the next surcharge update.
+  Regression-fix discovered during the qr-partial-payment audit; the
+  existing webhook handler is otherwise unchanged — partial payments
+  record correctly via the existing `metadata.original_amount`
+  plumbing.
+- **Active payment_tokens deactivated in the webhook on payment
+  completion** — closes a re-scan gap on the just-paid URL: the URL
+  no longer stays active for its 72-hour TTL, so re-scans between
+  payment-completion and the next partial-initiation now return a
+  clean HTTP 404 ("Invalid payment link") instead of `is_payable=true`
+  with a null `client_secret`.
+
+### Compliance
+
+- The 1.10.5 surcharge gross-up continues to apply to the partial
+  amount, so the merchant nets exactly the typed partial. Stripe's
+  per-currency minimum charge amounts are sourced from
+  `STRIPE_MIN_BY_CURRENCY` so multi-currency invoicing (future work)
+  needs only an entry in this dict — no code change.
+
+### Tests
+
+- 21 integration tests in `tests/test_qr_partial_payment_integration.py`
+  including the highest-value `test_webhook_duplicate_event_for_partial_pi_idempotent`
+  guarding against silent double-debits on Stripe at-least-once
+  webhook delivery.
+- 5 Hypothesis property tests in
+  `tests/properties/test_qr_partial_properties.py` (cents round-trip,
+  validation envelope inside/outside, webhook records exactly the
+  partial within 1¢ regardless of surcharge configuration).
+- 4 partial-receipt email tests in `tests/test_email_invoice_partial.py`.
+- Updated frontend Vitest coverage for `QrPaymentAmountModal`,
+  `QrPaymentWaitingPopup` (`expired` branch), `InvoiceList`,
+  `InvoiceDetail`, the public payment page, and the mobile public
+  payment screen.
+
+### Migration
+
+- Alembic revision `0193_payment_tokens_amount_override` — adds two
+  nullable columns to `payment_tokens` (`amount_override NUMERIC(12,2)
+  NULL` and `last_pi_amount_cents BIGINT NULL`). Idempotent
+  (no backfill required), no table rewrite.
+
+---
+
+## [1.10.5] — 2026-05-26
+
+### Fixed
+
+- **Stripe surcharge undercollected on every payment** — the in-app
+  Stripe payment page computed the surcharge as ``balance × p + fixed``
+  and charged Stripe ``balance + surcharge``. Stripe then deducted its
+  fee on the gross (which it computes as ``gross × p + fixed``), so
+  the merchant absorbed a small shortfall on every transaction
+  approximately equal to ``balance × p²``. For Afterpay (6%) on $240
+  the merchant lost $0.88 per transaction; for card (2.9%) on $1000
+  it was $0.84. The fix replaces the formula with the gross-up
+  ``(balance × p + fixed) / (1 − p)`` so the gross charge fully
+  covers Stripe's fee and the merchant nets exactly the invoice
+  balance. Implemented in ``app/modules/payments/surcharge.py`` with
+  matching client-side instant-display calculations in
+  ``frontend/src/pages/public/InvoicePaymentPage.tsx`` and
+  ``mobile/src/screens/auth/PublicPaymentScreen.tsx``. The frontend
+  now also adopts the backend response's ``surcharge_amount`` as
+  authoritative once available, eliminating any tiny float drift on
+  the displayed value. Property tests in
+  ``tests/properties/test_surcharge_properties.py`` were rewritten
+  to assert the new formula and added a 200-example invariant
+  verifying the merchant nets ≥ ``balance_due − $0.01`` after
+  Stripe's fee on the gross charge for any combination of
+  ``(balance, percentage, fixed)``. NZ Commerce Commission's
+  May 2026 surcharge rules require surcharges to not exceed actual
+  cost of acceptance — the gross-up is exactly cost recovery, no
+  markup, so it remains compliant.
+
+---
+
+## [1.10.4] — 2026-05-26
+
+### Fixed
+
+- **Customer profile vehicle "Source" badge mislabelled CarJam as Manual** —
+  the `LinkedVehicleResponse.source` field carries storage location
+  (`'global'` vs `'org'`), but the customer profile UI rendered it as data
+  origin, so every newly-promoted org-scoped vehicle (per the 1.10.3 isolation
+  rollout) showed as "Manual" even when its data came from CarJam. Backend
+  now also returns an explicit `origin` field (`'carjam'` / `'manual'`)
+  derived from `org_vehicles.is_manual_entry` for org rows and always
+  `'carjam'` for global rows. The customer profile badge uses the new field
+  with a fallback to the old heuristic for backwards compatibility.
+- **Invoice odometer edits silently dropped after first issue** — editing
+  `vehicle_odometer` on an issued invoice (or duplicate-then-edit) updated
+  the invoice row but did not propagate to `org_vehicles.odometer_last_recorded`
+  or insert an `odometer_readings` history row. The vehicle profile and
+  service-history aggregations stayed stale until a future invoice. The
+  resolution gate in `update_invoice` now includes `vehicle_odometer`, and
+  a write block mirroring `create_invoice` records the reading via the
+  unified `record_odometer_reading` helper (with the manual-entry-only
+  fallback to a direct write).
+- **Kiosk existing-customer field updates emitted no audit row** — when a
+  walk-in check-in updated `first_name` / `last_name` / `phone` / `email`
+  on an existing customer (`existing_customer_id` payload branch), the
+  edit landed silently with no `customer.updated` audit log entry, so the
+  change was invisible on the merge/audit history. The kiosk service now
+  captures per-field before/after values and writes a `customer.updated`
+  row matching the standard customer update service shape, with
+  `entity_type=customer`, `org_id`, `user_id`, and `ip_address`.
+
+---
+
 ## [1.10.3] — 2026-05-25
 
 ### Fixed

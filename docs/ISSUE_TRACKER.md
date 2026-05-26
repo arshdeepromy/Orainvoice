@@ -5011,3 +5011,56 @@ All six sites used `db.add(NotificationLog(... channel="in_app" ...))` which wou
 
 **Related Issues**: ISSUE-037 (InvoiceList split-panel redesign introduced this pattern)
 
+
+
+---
+
+### ISSUE-133: QR Payment flow lacked partial-amount support; PI metadata not set at creation; stale PI fields after webhook broke multi-partial flow
+
+- **Date**: 2026-05-26
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: spec workflow (qr-partial-payment)
+- **Regression of**: N/A — spec implementation that also closed two pre-existing latent regressions
+
+**Symptoms**: Three connected issues addressed under the qr-partial-payment spec:
+
+1. The kiosk QR Payment flow shipped in 1.10.x always collected the invoice's full `balance_due` — there was no way for org users to take a deposit / instalment / cash-plus-card split via QR.
+2. `is_qr_payment` detection in the Stripe webhook handler was always `False` if the customer skipped `update-surcharge` (e.g. paid via Apple Pay without picking a method first), because `metadata.source` and `metadata.original_amount` were only populated by the surcharge endpoint, not at PaymentIntent creation.
+3. The webhook handler did not clear `invoice.stripe_payment_intent_id`, `invoice.payment_page_url`, or the cached `stripe_client_secret` after recording a payment. A subsequent QR Payment click on the same invoice (e.g. the second partial in a multi-partial settlement) entered the reuse-branch in `create_qr_session_for_existing_invoice`, found a non-null PI ID that had moved to a terminal state on Stripe, and any further `update-surcharge` call failed with `payment_intent_unexpected_state`.
+
+**Root Cause**:
+
+1. Feature gap — the QR session schema and service had no partial-amount field.
+2. `create_payment_intent` did not accept arbitrary `metadata[*]` form fields, so metadata could only be added later by `update-surcharge`.
+3. The webhook success path emitted the `payment.stripe_webhook_received` audit log but never touched the invoice's PI bookkeeping fields. The reuse-branch in `create_qr_session_for_existing_invoice` then keyed off stale data.
+
+**Fix Applied**:
+
+- New optional `amount: Decimal | None` field on `QrSessionExistingInvoiceRequest` plus per-currency `STRIPE_MIN_BY_CURRENCY` validation in the service.
+- New `payment_tokens.amount_override` and `payment_tokens.last_pi_amount_cents` columns (alembic 0193) so the public payment page surfaces the partial amount and the reuse-branch decision can be made from a DB cache instead of a synchronous Stripe API call.
+- Refactored `create_qr_session_for_existing_invoice` to validate, narrow the reuse-branch guard to "same cents only", proactively cancel the old PI on amount-change, and emit `payment.qr_session_created` / `payment.qr_session_superseded` audit entries.
+- Added `extra_metadata: dict[str, str] | None` parameter to `create_payment_intent` and threaded `source: "kiosk_qr"`, `original_amount`, `is_partial_payment` at PI creation through both `create_qr_payment_session` (new-invoice path) and `create_qr_session_for_existing_invoice` (existing-invoice path). Closes the metadata detection gap.
+- Webhook handler now clears `invoice.stripe_payment_intent_id`, `invoice.payment_page_url`, and the `stripe_client_secret` JSON entry on the success path, and bulk-deactivates active `payment_tokens` for the invoice. Closes the second-partial reuse-branch regression and a re-scan gap on the just-paid token URL.
+- `email_invoice` now distinguishes partial-payment receipts ("Partial payment received for invoice {N} — ${X}" with a two-line summary) from full-payment receipts. Custom `invoice_send` templates pass through unchanged (Requirement 11.5).
+- Frontend gains `QrPaymentAmountModal` (Full/Partial radio with inline validation), the `expired` state on `QrPaymentWaitingPopup` (Requirement 10.2), and a partial-payment banner on the public payment page (web + mobile).
+
+**Files Changed**:
+- `alembic/versions/2026_05_26_0900-0193_payment_tokens_amount_override.py`
+- `app/modules/payments/{models,schemas,service,router,public_router,token_service}.py`
+- `app/integrations/stripe_connect.py` — `create_payment_intent` `extra_metadata` parameter
+- `app/modules/invoices/service.py` — partial-payment-aware `email_invoice`
+- `frontend/src/pages/invoices/{QrPaymentAmountModal,QrPaymentWaitingPopup,InvoiceList,InvoiceDetail}.tsx`
+- `frontend/src/pages/public/InvoicePaymentPage.tsx`
+- `mobile/src/screens/auth/PublicPaymentScreen.tsx`
+- `tests/test_qr_partial_payment_integration.py` (new, 21 tests)
+- `tests/properties/test_qr_partial_properties.py` (new, 5 Hypothesis tests)
+- `tests/test_email_invoice_partial.py` (new, 4 tests)
+
+**Similar Bugs Found & Fixed**:
+- Pre-existing webhook detection-bug for non-partial QR payments (issue #2 above) — fixed alongside as a regression-fix forward port.
+- Pre-existing reuse-branch bug for second QR session on a just-paid invoice (issue #3 above) — fixed alongside.
+
+**Related Issues**: ISSUE-111 (kiosk-qr-payment Stripe webhook plumbing — same module).
+
+**Spec**: `.kiro/specs/qr-partial-payment/`

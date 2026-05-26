@@ -395,6 +395,7 @@ class PaymentPageResponse(BaseModel):
     is_paid: bool = False
     is_payable: bool = False
     error_message: str | None = None
+    is_partial_payment: bool = False
 
     # Surcharge config (only populated when surcharging is enabled)
     surcharge_enabled: bool = False
@@ -482,10 +483,43 @@ class QrSessionExistingInvoiceRequest(BaseModel):
     """Request body for POST /api/v1/payments/qr-session/existing.
 
     Creates a QR payment session for an existing unpaid invoice.
-    Requirements: 2.4
+
+    Backwards-compatible partial-payment semantics:
+    - Omit ``amount`` (or send ``null``) → the QR session bills the
+      invoice's full ``balance_due`` (existing behaviour, preserved for
+      callers that have not been updated yet).
+    - Provide ``amount`` → a partial QR payment session is created for
+      the supplied amount. The amount must be greater than zero, have at
+      most 2 decimal places, and be within the partial-payment bounds
+      enforced by the service layer (>= $0.50 and <= invoice.balance_due).
+
+    Requirements: 2.4, 3.1, 3.5, 3.6
     """
 
     invoice_id: uuid.UUID = Field(..., description="ID of the existing invoice to collect QR payment for")
+    amount: Decimal | None = Field(
+        None,
+        gt=Decimal("0"),
+        description=(
+            "Optional partial amount. When omitted, the QR session bills "
+            "the invoice's full balance_due (existing behaviour). When "
+            "provided, must be >= $0.50 and <= invoice.balance_due."
+        ),
+    )
+
+    @field_validator("amount")
+    @classmethod
+    def _quantize_to_cents(cls, v: Decimal | None) -> Decimal | None:
+        """Reject sub-cent precision and normalise to 2 decimal places.
+
+        Rejecting >2dp at the schema level ensures we never silently
+        round customer-typed cents.
+        """
+        if v is None:
+            return None
+        if v.as_tuple().exponent < -2:
+            raise ValueError("Amount must have at most 2 decimal places")
+        return v.quantize(Decimal("0.01"))
 
 
 class QrPaymentSessionResponse(BaseModel):

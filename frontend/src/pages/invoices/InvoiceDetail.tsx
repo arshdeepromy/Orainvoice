@@ -23,6 +23,7 @@ import POSReceiptPreview from '../../components/pos/POSReceiptPreview'
 import PrinterErrorModal from '../../components/pos/PrinterErrorModal'
 import LinkedComplianceDocs from '../compliance/LinkedComplianceDocs'
 import { QrPaymentWaitingPopup } from './QrPaymentWaitingPopup'
+import { QrPaymentAmountModal } from './QrPaymentAmountModal'
 import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
 
 /* ------------------------------------------------------------------ */
@@ -315,6 +316,7 @@ export default function InvoiceDetail() {
   const [qrPaymentLoading, setQrPaymentLoading] = useState(false)
   const [qrWaitingPopupOpen, setQrWaitingPopupOpen] = useState(false)
   const [qrSessionData, setQrSessionData] = useState<{ session_id: string; amount: number; invoice_number: string } | null>(null)
+  const [qrAmountModalOpen, setQrAmountModalOpen] = useState(false)
 
   /* ---- Inject print styles ---- */
   useEffect(() => {
@@ -574,20 +576,30 @@ export default function InvoiceDetail() {
   }
 
   /* ---- QR Payment ---- */
-  const handleQrPayment = async () => {
+  const handleQrPayment = () => {
+    if (!invoice) return
+    setQrAmountModalOpen(true)
+  }
+
+  const handleAmountModalContinue = async (amount: number | null) => {
     if (!invoice) return
     setQrPaymentLoading(true)
     setActionMessage('')
     try {
+      const body: { invoice_id: string; amount?: string } =
+        amount === null
+          ? { invoice_id: invoice.id }
+          : { invoice_id: invoice.id, amount: amount.toFixed(2) }
       const res = await apiClient.post<{ session_id: string; amount: number; invoice_number: string; amount_cents: number; expires_at: string }>(
         '/payments/qr-session/existing',
-        { invoice_id: invoice.id },
+        body,
       )
       setQrSessionData({
         session_id: res.data?.session_id ?? '',
         amount: Number(res.data?.amount ?? 0),
         invoice_number: res.data?.invoice_number ?? '',
       })
+      setQrAmountModalOpen(false)
       setQrWaitingPopupOpen(true)
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
@@ -1461,6 +1473,21 @@ export default function InvoiceDetail() {
           )}
         </div>
       </Modal>
+
+      {/* ---- QR Payment Amount Modal ---- */}
+      {qrAmountModalOpen && invoice && (
+        <QrPaymentAmountModal
+          open={qrAmountModalOpen}
+          onClose={() => setQrAmountModalOpen(false)}
+          invoice={{
+            id: invoice.id,
+            balance_due: invoice.balance_due ?? 0,
+            invoice_number: invoice.invoice_number ?? null,
+          }}
+          onContinue={handleAmountModalContinue}
+          loading={qrPaymentLoading}
+        />
+      )}
 
       {/* ---- QR Payment Waiting Popup ---- */}
       {qrWaitingPopupOpen && qrSessionData && (

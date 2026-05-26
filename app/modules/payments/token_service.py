@@ -12,6 +12,7 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +32,7 @@ async def generate_payment_token(
     org_id: uuid.UUID,
     invoice_id: uuid.UUID,
     base_url: str | None = None,
+    amount_override: Decimal | None = None,
 ) -> tuple[str, str]:
     """Generate a payment token and payment page URL for an invoice.
 
@@ -44,6 +46,12 @@ async def generate_payment_token(
         The origin of the incoming request (e.g. ``https://one.oraflows.com``).
         When provided, the payment URL uses this domain so it matches the
         domain the browser is actually on.  Falls back to FRONTEND_BASE_URL.
+    amount_override:
+        Optional partial-payment amount. When ``None`` (default), the
+        ``amount_override`` column is NULL on insert and the public
+        payment page falls back to ``invoice.balance_due``. When provided,
+        the column carries the partial amount for the QR partial-payment
+        flow.
 
     Returns
     -------
@@ -73,6 +81,7 @@ async def generate_payment_token(
         invoice_id=invoice_id,
         org_id=org_id,
         expires_at=expires_at,
+        amount_override=amount_override,
     )
     db.add(payment_token)
     await db.flush()

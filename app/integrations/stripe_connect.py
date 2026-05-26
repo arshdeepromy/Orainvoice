@@ -306,6 +306,7 @@ async def create_payment_intent(
     stripe_account_id: str,
     application_fee_amount: int | None = None,
     shipping: dict | None = None,
+    extra_metadata: dict[str, str] | None = None,
 ) -> dict:
     """Create a Stripe PaymentIntent on a Connected Account.
 
@@ -332,6 +333,17 @@ async def create_payment_intent(
         ``address.line1``, ``address.city``, ``address.state``,
         ``address.postal_code``, ``address.country``.  When provided,
         enables Afterpay/Clearpay and improves acceptance rates.
+    extra_metadata:
+        Optional mapping of additional Stripe ``metadata[KEY]`` fields to
+        attach to the PaymentIntent at creation time. When provided and
+        non-empty, each ``(key, value)`` pair is appended to the form
+        payload as ``metadata[key] = value`` BEFORE the POST. Existing
+        baseline metadata (``invoice_id``, ``platform``) is always set;
+        ``extra_metadata`` keys that collide with the baseline overwrite
+        it. Used by the QR partial-payment flow to set
+        ``original_amount``, ``is_partial_payment``, and ``source`` at
+        PI creation time so the webhook handler does not have to depend
+        on ``update-surcharge`` to populate them.
 
     Returns
     -------
@@ -343,7 +355,7 @@ async def create_payment_intent(
     httpx.HTTPStatusError
         If the Stripe API call fails.
 
-    Requirements: 1.1, 1.3, 1.4, 1.6
+    Requirements: 1.1, 1.3, 1.4, 1.6, 4.3, 4.4
     """
     payload = {
         "amount": str(amount),
@@ -355,6 +367,14 @@ async def create_payment_intent(
 
     if application_fee_amount and application_fee_amount > 0:
         payload["application_fee_amount"] = str(application_fee_amount)
+
+    # Append additional metadata fields (e.g. source, original_amount,
+    # is_partial_payment) before the POST so the PaymentIntent carries
+    # them from creation onwards. Values are coerced to strings because
+    # Stripe metadata values must be strings.
+    if extra_metadata:
+        for key, value in extra_metadata.items():
+            payload[f"metadata[{key}]"] = str(value)
 
     # Add shipping/billing address for Afterpay/Clearpay eligibility
     if shipping:

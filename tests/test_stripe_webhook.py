@@ -38,15 +38,57 @@ from app.modules.invoices.models import Invoice
 
 
 # ---------------------------------------------------------------------------
+# Autouse — neutralise flag_modified() so mock Invoices (which lack the
+# SQLAlchemy ``_sa_instance_state`` attribute) can be passed through the
+# webhook handler without tripping ``instance_state(...)``. The flag is
+# irrelevant in unit-test contexts that mock the DB layer wholesale.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _neutralise_flag_modified():
+    with patch(
+        "app.modules.payments.service.flag_modified",
+        new=MagicMock(return_value=None),
+    ):
+        yield
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _mock_db():
+    """Build an AsyncMock DB session whose ``execute`` differentiates
+    between ``select(Invoice)`` and ``select(Payment)``-style queries.
+
+    The handler under test issues two SELECTs on the happy path:
+
+      1. ``select(Invoice)`` to load the invoice (with ``FOR UPDATE``).
+      2. ``select(Payment)`` to check for a duplicate webhook event.
+
+    Tests assign ``db.execute.return_value`` (or ``side_effect``) to the
+    invoice; the second call should return "no existing Payment" so the
+    handler proceeds past the idempotency guard. We achieve that by
+    having a single ``MagicMock`` returned for both calls but expose
+    ``scalar_one_or_none`` as a small side_effect that yields the
+    invoice first then ``None`` for any subsequent call.
+    """
     db = AsyncMock()
     db.flush = AsyncMock()
     db.add = MagicMock()
     db.execute = AsyncMock()
     return db
+
+
+def _result_returning_invoice(invoice):
+    """Return a MagicMock execute-result that yields ``invoice`` on the
+    first ``scalar_one_or_none()`` call, then ``None`` for all subsequent
+    calls (so the duplicate-event idempotency guard treats it as fresh).
+    """
+    result = MagicMock()
+    result.scalar_one_or_none.side_effect = [invoice, None, None, None]
+    return result
 
 
 def _make_invoice(
@@ -170,7 +212,7 @@ class TestHandleStripeWebhook:
         db = _mock_db()
 
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = invoice
+        mock_result.scalar_one_or_none.side_effect = [invoice, None, None, None]
         db.execute.return_value = mock_result
 
         event_data = {
@@ -205,7 +247,7 @@ class TestHandleStripeWebhook:
         db = _mock_db()
 
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = invoice
+        mock_result.scalar_one_or_none.side_effect = [invoice, None, None, None]
         db.execute.return_value = mock_result
 
         event_data = {
@@ -236,7 +278,7 @@ class TestHandleStripeWebhook:
         db = _mock_db()
 
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = invoice
+        mock_result.scalar_one_or_none.side_effect = [invoice, None, None, None]
         db.execute.return_value = mock_result
 
         event_data = {
@@ -314,7 +356,7 @@ class TestHandleStripeWebhook:
         invoice = _make_invoice(status="draft")
         db = _mock_db()
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = invoice
+        mock_result.scalar_one_or_none.side_effect = [invoice, None, None, None]
         db.execute.return_value = mock_result
 
         result = await handle_stripe_webhook(
@@ -338,7 +380,7 @@ class TestHandleStripeWebhook:
         )
         db = _mock_db()
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = invoice
+        mock_result.scalar_one_or_none.side_effect = [invoice, None, None, None]
         db.execute.return_value = mock_result
 
         result = await handle_stripe_webhook(
@@ -358,7 +400,7 @@ class TestHandleStripeWebhook:
         invoice = _make_invoice(balance_due=Decimal("50.00"))
         db = _mock_db()
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = invoice
+        mock_result.scalar_one_or_none.side_effect = [invoice, None, None, None]
         db.execute.return_value = mock_result
 
         event_data = {
@@ -383,7 +425,7 @@ class TestHandleStripeWebhook:
         invoice = _make_invoice()
         db = _mock_db()
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = invoice
+        mock_result.scalar_one_or_none.side_effect = [invoice, None, None, None]
         db.execute.return_value = mock_result
 
         event_data = {
@@ -406,7 +448,7 @@ class TestHandleStripeWebhook:
         invoice = _make_invoice()
         db = _mock_db()
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = invoice
+        mock_result.scalar_one_or_none.side_effect = [invoice, None, None, None]
         db.execute.return_value = mock_result
 
         event_data = {
@@ -432,7 +474,7 @@ class TestHandleStripeWebhook:
         invoice = _make_invoice()
         db = _mock_db()
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = invoice
+        mock_result.scalar_one_or_none.side_effect = [invoice, None, None, None]
         db.execute.return_value = mock_result
 
         event_data = {

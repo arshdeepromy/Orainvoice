@@ -13,6 +13,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -116,6 +117,25 @@ class PaymentToken(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    amount_override: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2),
+        nullable=True,
+        comment=(
+            "Partial-payment amount for the QR partial-payment flow. "
+            "NULL means use invoice.balance_due (default behaviour)."
+        ),
+    )
+    last_pi_amount_cents: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        comment=(
+            "Cached cents value of the PaymentIntent's last-known "
+            "amount, used by create_qr_session_for_existing_invoice "
+            "to make a same-amount-reuse decision without a "
+            "synchronous Stripe API call. Refreshed on every "
+            "successful PI create or update-surcharge call."
+        ),
     )
 
     # Relationships

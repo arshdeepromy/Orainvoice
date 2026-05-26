@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import date, datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 from sqlalchemy import delete, func, select, text, update
@@ -2629,6 +2629,13 @@ async def update_invoice(
     vehicle_service_due_date = updates.get("vehicle_service_due_date")
     vehicle_wof_expiry_date = updates.get("vehicle_wof_expiry_date")
     vehicle_cof_expiry_date = updates.get("vehicle_cof_expiry_date")
+    # ``vehicle_odometer`` is included in the resolution gate so that an
+    # odometer-only edit promotes the vehicle into the OrgVehicle space
+    # and bumps ``org_vehicles.odometer_last_recorded`` plus inserts an
+    # ``odometer_readings`` history row. Without this widening an edit
+    # of an issued invoice's odometer was silently dropped beyond the
+    # invoices row itself (vehicle profile and reports stayed stale).
+    vehicle_odometer_update = updates.get("vehicle_odometer")
     global_vehicle_id = updates.get("global_vehicle_id")
     vehicle_type = None
     vehicle_record = None
@@ -2636,6 +2643,7 @@ async def update_invoice(
         vehicle_service_due_date
         or vehicle_wof_expiry_date
         or vehicle_cof_expiry_date
+        or (vehicle_odometer_update is not None and vehicle_odometer_update > 0)
     ):
         resolution = await _resolve_vehicle_type(db, global_vehicle_id, org_id)
         if resolution is not None:
@@ -2709,6 +2717,45 @@ async def update_invoice(
     ):
         vehicle_record.cof_expiry = vehicle_cof_expiry_date
         await db.flush()
+
+    # odometer — propagate edits made on issued invoices into the
+    # ``org_vehicles`` snapshot AND ``odometer_readings`` history.
+    # Mirrors the create_invoice block at line ~1115. Without this the
+    # invoice row holds the new reading but vehicle profile, service
+    # history aggregations, and the next-invoice odometer prefill stay
+    # stale (Req 1.1, 11.1, 11.2).
+    #
+    # Manual-entry-only fallback: when ``global_vehicle_id`` is actually
+    # an ``OrgVehicle.id`` (no underlying ``GlobalVehicle`` row),
+    # ``record_odometer_reading`` would raise on the FK insert. We fall
+    # back to a direct write on ``ov.odometer_last_recorded`` — the
+    # history row is by design impossible for a vehicle that was never
+    # CarJam-imported.
+    if (
+        vehicle_odometer_update is not None
+        and vehicle_odometer_update > 0
+        and global_vehicle_id
+        and vehicle_type == "org"
+        and vehicle_record is not None
+    ):
+        has_real_global_vehicle = vehicle_record.id != global_vehicle_id
+        if has_real_global_vehicle:
+            from app.modules.vehicles.service import (
+                record_odometer_reading as _record_odometer_reading,
+            )
+            await _record_odometer_reading(
+                db,
+                global_vehicle_id=global_vehicle_id,
+                reading_km=vehicle_odometer_update,
+                source="invoice",
+                recorded_by=user_id,
+                invoice_id=invoice.id,
+                org_id=org_id,
+                notes=f"Invoice {invoice.invoice_number or 'draft'} edit",
+            )
+        else:
+            vehicle_record.odometer_last_recorded = vehicle_odometer_update
+            await db.flush()
 
     # Recalculate totals if discount, line items, or financial fields changed
     needs_recalc = (
@@ -4437,13 +4484,71 @@ async def email_invoice(
         variables=_template_variables,
     )
 
+    # --- Detect partial-payment receipt context (Requirements 11.1, 11.4) ---
+    # When email_invoice fires after a payment is recorded but the invoice
+    # still has an outstanding balance, the hardcoded fallback subject/body
+    # should reflect the partial receipt. We detect by reading the most
+    # recent non-refund Payment row for this invoice ordered by created_at
+    # (the actual column name on Payment is `created_at`, not
+    # `recorded_at`). For a first-send (no payments yet) this query returns
+    # None and we fall through to the regular invoice-send phrasing.
+    _latest_payment_result = await db.execute(
+        select(Payment)
+        .where(
+            Payment.invoice_id == invoice_id,
+            Payment.org_id == org_id,
+            Payment.is_refund == False,  # noqa: E712
+        )
+        .order_by(Payment.created_at.desc())
+        .limit(1)
+    )
+    _latest_payment = _latest_payment_result.scalar_one_or_none()
+    try:
+        _balance_due_decimal = (
+            Decimal(str(balance_due)) if balance_due is not None else Decimal("0")
+        )
+    except (InvalidOperation, ValueError):
+        _balance_due_decimal = Decimal("0")
+    _is_partial_receipt = (
+        _latest_payment is not None
+        and _balance_due_decimal > Decimal("0")
+        and inv_status in ("partially_paid", "overdue")
+    )
+
     if _rendered_template:
+        # Custom templates pass through unchanged (Requirement 11.5):
+        # an org that configured a custom template has opted into its own
+        # phrasing, so the partial-vs-full logic does not override it.
         _email_subject = _rendered_template.subject
         _email_body = _rendered_template.body
     else:
-        # Existing hardcoded content (unchanged)
-        _email_subject = f"Invoice {inv_number} from {org_name}"
+        _balance_due_str = (
+            f"{_currency_symbol}{balance_due:.2f}"
+            if isinstance(balance_due, (int, float, Decimal))
+            else f"{_currency_symbol}{balance_due}"
+        )
+        if _is_partial_receipt:
+            # Partial-payment receipt subject + two-line summary above the
+            # existing body content (Requirements 11.1, 11.2).
+            _payment_amount_str = (
+                f"{_currency_symbol}{_latest_payment.amount:.2f}"
+            )
+            _email_subject = (
+                f"Partial payment received for invoice {inv_number} "
+                f"— {_payment_amount_str}"
+            )
+            _partial_summary = (
+                f"Payment received: {_payment_amount_str}\n"
+                f"Remaining balance: {_balance_due_str}\n\n"
+            )
+        else:
+            # Existing hardcoded content (unchanged): regular invoice send
+            # or full-payment receipt.
+            _email_subject = f"Invoice {inv_number} from {org_name}"
+            _partial_summary = ""
+
         _email_body = (
+            f"{_partial_summary}"
             f"Hi,\n\n"
             f"Please find attached invoice {inv_number} from {org_name}.\n\n"
             f"Amount Due: {currency} {balance_due}\n\n"

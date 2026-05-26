@@ -1215,6 +1215,7 @@ async def create_qr_session_existing_invoice_endpoint(
             org_id=org_uuid,
             user_id=user_uuid,
             invoice_id=payload.invoice_id,
+            partial_amount=payload.amount,
             base_url=request.headers.get("origin") or None,
         )
     except ValueError as exc:

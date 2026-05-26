@@ -45,6 +45,7 @@ interface PaymentPageData {
   error_message: string | null
   surcharge_enabled: boolean
   surcharge_rates: Record<string, SurchargeRateInfo>
+  is_partial_payment?: boolean
 }
 
 /* ── Currency formatter ── */
@@ -176,9 +177,10 @@ interface PaymentFormProps {
   token: string
   surchargeEnabled: boolean
   surchargeRates: Record<string, SurchargeRateInfo>
+  isPartial: boolean
 }
 
-function PaymentForm({ balanceDue: rawBalanceDue, currency, invoiceNumber, clientSecret: _clientSecret, token, surchargeEnabled, surchargeRates }: PaymentFormProps) {
+function PaymentForm({ balanceDue: rawBalanceDue, currency, invoiceNumber, clientSecret: _clientSecret, token, surchargeEnabled, surchargeRates, isPartial }: PaymentFormProps) {
   const balanceDue = Number(rawBalanceDue) || 0
   const stripe = useStripe()
   const elements = useElements()
@@ -208,22 +210,41 @@ function PaymentForm({ balanceDue: rawBalanceDue, currency, invoiceNumber, clien
       return
     }
 
-    // Local calculation for instant display
+    // Local calculation for instant display — gross-up formula so the
+    // amount shown matches what Stripe will actually take from the
+    // payment (Stripe charges its fee on balance + surcharge, so we
+    // gross up to recover exactly the invoice balance after fees).
+    // Mirrors backend ``calculate_surcharge`` in
+    // ``app/modules/payments/surcharge.py``.
     const pct = parseFloat(rate?.percentage ?? '0') ?? 0
     const fixed = parseFloat(rate?.fixed ?? '0') ?? 0
-    const computed = Math.round(((balanceDue ?? 0) * pct / 100 + fixed) * 100) / 100
+    const pctDec = pct / 100
+    const denom = 1 - pctDec
+    const numer = (balanceDue ?? 0) * pctDec + fixed
+    const computed = denom > 0
+      ? Math.round((numer / denom) * 100) / 100
+      : Math.round(numer * 100) / 100
     setSurchargeAmount(computed)
 
-    // Update PaymentIntent on backend
+    // Update PaymentIntent on backend, then adopt the backend's
+    // surcharge as authoritative (it computes with full Decimal
+    // precision and banker's rounding; tiny float drifts on the
+    // client should not be displayed).
     const controller = new AbortController()
     const updatePI = async () => {
       setUpdatingPI(true)
       try {
-        await axios.post(
+        const res = await axios.post(
           `/api/v1/public/pay/${token}/update-surcharge`,
           { payment_method_type: selectedMethod },
           { signal: controller.signal },
         )
+        if (!controller.signal.aborted) {
+          const serverAmount = parseFloat(res.data?.surcharge_amount ?? '0')
+          if (Number.isFinite(serverAmount)) {
+            setSurchargeAmount(serverAmount)
+          }
+        }
       } catch (err) {
         if (!controller.signal.aborted) {
           setError('Failed to update payment amount. Please try again.')
@@ -337,12 +358,20 @@ function PaymentForm({ balanceDue: rawBalanceDue, currency, invoiceNumber, clien
           </AlertBanner>
         )}
 
+        {/* Partial-payment banner — shown above the payment method picker
+            when the invoice token has an amount_override set (Requirement 6.3, 6.5). */}
+        {isPartial && (
+          <div className="rounded-md border bg-blue-50 border-blue-200 text-blue-900 px-4 py-3 text-sm">
+            You are paying a partial amount of {formatCurrency(balanceDue ?? 0, currency ?? 'NZD')}. Please contact the business if you intended to pay the full balance.
+          </div>
+        )}
+
         {/* Amount summary — surcharge-aware */}
         <div className="rounded-md border border-gray-200 bg-gray-50 p-4">
           {(surchargeAmount ?? 0) > 0 ? (
             <div className="space-y-2">
               <div className="flex justify-between text-sm text-gray-700">
-                <span>Invoice balance</span>
+                <span>{isPartial ? 'Amount Due (Partial)' : 'Amount Due'}</span>
                 <span className="tabular-nums">{formatCurrency(balanceDue ?? 0, currency ?? 'NZD')}</span>
               </div>
               <div className="flex justify-between text-sm text-gray-700">
@@ -359,7 +388,7 @@ function PaymentForm({ balanceDue: rawBalanceDue, currency, invoiceNumber, clien
             </div>
           ) : (
             <div className="flex justify-between text-sm font-semibold text-gray-900">
-              <span>Amount to pay</span>
+              <span>{isPartial ? 'Amount Due (Partial)' : 'Amount Due'}</span>
               <span className="tabular-nums">{amountDisplay}</span>
             </div>
           )}
@@ -579,6 +608,7 @@ export default function InvoicePaymentPage() {
 
   /* ── Payable invoice — two-column layout ── */
   const primaryColour = data?.org_primary_colour ?? '#2563eb'
+  const isPartial = data?.is_partial_payment ?? false
 
   return (
     <div className="min-h-screen bg-gray-50 overflow-y-auto" style={{ height: '100vh' }}>
@@ -621,6 +651,7 @@ export default function InvoicePaymentPage() {
                   token={token ?? ''}
                   surchargeEnabled={data?.surcharge_enabled ?? false}
                   surchargeRates={data?.surcharge_rates ?? {}}
+                  isPartial={isPartial}
                 />
               </Elements>
             ) : (
