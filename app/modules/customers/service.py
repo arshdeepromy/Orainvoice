@@ -599,6 +599,9 @@ async def get_customer_profile(
                 "year": gv.year if gv else None,
                 "colour": gv.colour if gv else None,
                 "source": "global",
+                # GlobalVehicle records are created exclusively from CarJam
+                # lookups (manual entries land directly in OrgVehicle).
+                "origin": "carjam",
                 "linked_at": cv.linked_at.isoformat() if cv.linked_at else None,
             })
         elif cv.org_vehicle_id:
@@ -617,6 +620,10 @@ async def get_customer_profile(
                 "year": ov.year if ov else None,
                 "colour": ov.colour if ov else None,
                 "source": "org",
+                # OrgVehicle.is_manual_entry is set to False when the row was
+                # promoted from a CarJam lookup, True when the user typed
+                # the details by hand.
+                "origin": "manual" if (ov and ov.is_manual_entry) else "carjam",
                 "linked_at": cv.linked_at.isoformat() if cv.linked_at else None,
             })
 
