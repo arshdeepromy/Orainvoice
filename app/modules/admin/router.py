@@ -63,9 +63,6 @@ from app.modules.admin.schemas import (
     PlatformSettingsUpdateRequest,
     ProvisionOrganisationRequest,
     ProvisionOrganisationResponse,
-    SmtpConfigRequest,
-    SmtpConfigResponse,
-    SmtpTestEmailResponse,
     StoragePackageCreateRequest,
     StoragePackageListResponse,
     StoragePackageResponse,
@@ -110,10 +107,8 @@ from app.modules.admin.service import (
     reactivate_coupon,
     redeem_coupon,
     save_carjam_config,
-    save_smtp_config,
     save_stripe_config,
     save_twilio_config,
-    send_test_email,
     send_test_sms,
     test_carjam_connection,
     test_stripe_connection,
@@ -632,112 +627,77 @@ async def get_sms_usage(
 
 
 # ---------------------------------------------------------------------------
-# SMTP / Email integration configuration (Req 33.1, 33.2, 33.3)
+# SMTP / Email integration configuration — DEPRECATED (Phase 7)
 # ---------------------------------------------------------------------------
+#
+# These endpoints used to write the legacy `integration_configs[smtp]` row.
+# Email configuration now lives in the `email_providers` table and is
+# managed exclusively through `/api/v2/admin/email-providers`. The route
+# stubs are retained so old clients see a clear deprecation signal (HTTP
+# 410 Gone with a `Location` header) rather than a silent 404. Phase 9
+# will remove the route registrations entirely once a full release window
+# passes with zero `legacy_smtp_endpoint_hit` log lines.
 
 
 @router.put(
     "/integrations/smtp",
-    response_model=SmtpConfigResponse,
-    responses={
-        400: {"description": "Validation error"},
-        401: {"description": "Authentication required"},
-        403: {"description": "Global_Admin role required"},
-    },
-    summary="Configure platform-wide email relay",
+    responses={410: {"description": "Endpoint deprecated — use /api/v2/admin/email-providers"}},
+    summary="DEPRECATED: configure platform-wide email relay (use /api/v2/admin/email-providers)",
     dependencies=[require_role("global_admin")],
 )
 async def configure_smtp(
-    payload: SmtpConfigRequest,
     request: Request,
-    db: AsyncSession = Depends(get_db_session),
+    payload: dict | None = None,
 ):
-    """Configure the platform-wide SMTP or email relay.
+    """Deprecated SMTP configuration endpoint — returns HTTP 410 Gone.
 
-    Supports Brevo, SendGrid, or custom SMTP with API key, domain,
-    from name, and reply-to address.
+    Phase 9 of the email-provider-unification spec will drop this route
+    entirely. Until then it logs every caller with the structured tag
+    ``legacy_smtp_endpoint_hit`` so we can grep access logs and confirm
+    nothing still depends on it.
 
-    Only Global_Admin users can access this endpoint.
-    Requirement 33.1.
+    Configure email via ``/api/v2/admin/email-providers`` instead.
     """
-    user_id = getattr(request.state, "user_id", None)
-    ip_address = getattr(request.state, "client_ip", None)
-
-    try:
-        result = await save_smtp_config(
-            db,
-            provider=payload.provider,
-            api_key=payload.api_key,
-            host=payload.host,
-            port=payload.port,
-            username=payload.username,
-            password=payload.password,
-            domain=payload.domain,
-            from_email=payload.from_email,
-            from_name=payload.from_name,
-            reply_to=payload.reply_to,
-            updated_by=uuid.UUID(user_id) if user_id else uuid.uuid4(),
-            ip_address=ip_address,
-        )
-    except ValueError as exc:
-        return JSONResponse(
-            status_code=400,
-            content={"detail": str(exc)},
-        )
-
-    return SmtpConfigResponse(message="SMTP configuration saved", **result)
+    del payload  # accepted but discarded; old clients still send a body
+    logger.warning(
+        "legacy_smtp_endpoint_hit path=%s remote=%s",
+        request.url.path,
+        request.client.host if request.client else "?",
+    )
+    return JSONResponse(
+        status_code=410,
+        content={
+            "detail": "This endpoint is deprecated. Configure email via /api/v2/admin/email-providers.",
+        },
+        headers={"Location": "/api/v2/admin/email-providers"},
+    )
 
 
 @router.post(
     "/integrations/smtp/test",
-    response_model=SmtpTestEmailResponse,
-    responses={
-        401: {"description": "Authentication required"},
-        403: {"description": "Global_Admin role required"},
-    },
-    summary="Send test email to Global Admin",
+    responses={410: {"description": "Endpoint deprecated — use /api/v2/admin/email-providers"}},
+    summary="DEPRECATED: send test email (use /api/v2/admin/email-providers)",
     dependencies=[require_role("global_admin")],
 )
-async def test_smtp_email(
-    request: Request,
-    db: AsyncSession = Depends(get_db_session),
-):
-    """Send a real test email to the Global_Admin's address to confirm
-    the SMTP configuration is working.
+async def test_smtp_email(request: Request):
+    """Deprecated test-email endpoint — returns HTTP 410 Gone.
 
-    Only Global_Admin users can access this endpoint.
-    Requirement 33.2.
+    The unified Email Providers admin page exposes a per-provider Test
+    button that calls ``POST /api/v2/admin/email-providers/{id}/test``;
+    use that instead.
     """
-    user_id = getattr(request.state, "user_id", None)
-    ip_address = getattr(request.state, "client_ip", None)
-
-    # Look up the admin's email
-    admin_email = getattr(request.state, "email", None)
-    if not admin_email and user_id:
-        from app.modules.auth.models import User
-        from sqlalchemy import select
-
-        result = await db.execute(
-            select(User).where(User.id == uuid.UUID(user_id))
-        )
-        user = result.scalar_one_or_none()
-        if user:
-            admin_email = user.email
-
-    if not admin_email:
-        return SmtpTestEmailResponse(
-            success=False,
-            message="Could not determine admin email address",
-        )
-
-    test_result = await send_test_email(
-        db,
-        admin_email=admin_email,
-        admin_user_id=uuid.UUID(user_id) if user_id else uuid.uuid4(),
-        ip_address=ip_address,
+    logger.warning(
+        "legacy_smtp_endpoint_hit path=%s remote=%s",
+        request.url.path,
+        request.client.host if request.client else "?",
     )
-
-    return SmtpTestEmailResponse(**test_result)
+    return JSONResponse(
+        status_code=410,
+        content={
+            "detail": "This endpoint is deprecated. Configure email via /api/v2/admin/email-providers.",
+        },
+        headers={"Location": "/api/v2/admin/email-providers"},
+    )
 
 
 

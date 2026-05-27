@@ -1094,187 +1094,16 @@ async def get_org_carjam_usage(db: AsyncSession, org_id: uuid.UUID) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# SMTP / Email integration configuration (Req 33.1, 33.2, 33.3)
+# SMTP / Email integration configuration — REMOVED in Phase 7
 # ---------------------------------------------------------------------------
-
-
-async def save_smtp_config(
-    db: AsyncSession,
-    *,
-    provider: str,
-    api_key: str,
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    domain: str,
-    from_email: str,
-    from_name: str,
-    reply_to: str,
-    updated_by: uuid.UUID,
-    ip_address: str | None = None,
-) -> dict:
-    """Save or update the platform-wide SMTP configuration.
-
-    The config is stored encrypted in the ``integration_configs`` table
-    with name='smtp'.
-
-    Returns a dict with the saved (non-secret) config fields.
-    Requirement 33.1.
-    """
-    from app.modules.admin.models import IntegrationConfig
-    from app.core.encryption import envelope_encrypt
-
-    valid_providers = ("brevo", "sendgrid", "smtp")
-    if provider not in valid_providers:
-        raise ValueError(f"Provider must be one of: {', '.join(valid_providers)}")
-
-    # SSRF protection: validate the SMTP host is not a private/internal address
-    if host:
-        from app.core.url_validation import validate_url_for_ssrf
-
-        ok, reason = validate_url_for_ssrf(f"https://{host}")
-        if not ok:
-            raise ValueError(f"SMTP host rejected: {reason}")
-
-    config_data = json.dumps({
-        "provider": provider,
-        "api_key": api_key,
-        "host": host,
-        "port": port,
-        "username": username,
-        "password": password,
-        "domain": domain,
-        "from_email": from_email,
-        "from_name": from_name,
-        "reply_to": reply_to,
-    })
-    encrypted = envelope_encrypt(config_data)
-
-    result = await db.execute(
-        select(IntegrationConfig).where(IntegrationConfig.name == "smtp")
-    )
-    existing = result.scalar_one_or_none()
-
-    if existing is not None:
-        existing.config_encrypted = encrypted
-        existing.is_verified = False
-    else:
-        new_config = IntegrationConfig(
-            name="smtp",
-            config_encrypted=encrypted,
-            is_verified=False,
-        )
-        db.add(new_config)
-
-    await db.flush()
-
-    await write_audit_log(
-        session=db,
-        org_id=None,
-        user_id=updated_by,
-        action="admin.smtp_config_updated",
-        entity_type="integration_config",
-        entity_id=None,
-        after_value={
-            "provider": provider,
-            "domain": domain,
-            "from_email": from_email,
-            "from_name": from_name,
-            "reply_to": reply_to,
-            "ip_address": ip_address,
-        },
-        ip_address=ip_address,
-    )
-
-    return {
-        "provider": provider,
-        "domain": domain,
-        "from_email": from_email,
-        "from_name": from_name,
-        "reply_to": reply_to,
-        "is_verified": False,
-    }
-
-
-async def send_test_email(
-    db: AsyncSession,
-    *,
-    admin_email: str,
-    admin_user_id: uuid.UUID,
-    ip_address: str | None = None,
-) -> dict:
-    """Send a test email to the Global_Admin to verify SMTP config.
-
-    Requirement 33.2.
-    """
-    from app.integrations.brevo import get_email_client, EmailMessage
-
-    client = await get_email_client(db)
-    if client is None:
-        return {
-            "success": False,
-            "message": "SMTP configuration not found. Please configure email settings first.",
-            "provider": "",
-            "error": "No SMTP config",
-        }
-
-    message = EmailMessage(
-        to_email=admin_email,
-        to_name="Global Admin",
-        subject="WorkshopPro NZ — Test Email",
-        html_body=(
-            "<h2>Email Configuration Test</h2>"
-            "<p>This is a test email from WorkshopPro NZ.</p>"
-            "<p>If you received this, your email infrastructure is working correctly.</p>"
-            f"<p><strong>Provider:</strong> {client.config.provider}</p>"
-            f"<p><strong>Domain:</strong> {client.config.domain}</p>"
-        ),
-        text_body=(
-            "Email Configuration Test\n\n"
-            "This is a test email from WorkshopPro NZ.\n"
-            "If you received this, your email infrastructure is working correctly.\n"
-            f"Provider: {client.config.provider}\n"
-            f"Domain: {client.config.domain}\n"
-        ),
-    )
-
-    result = await client.send(message)
-
-    if result.success:
-        # Mark config as verified
-        from app.modules.admin.models import IntegrationConfig
-
-        config_result = await db.execute(
-            select(IntegrationConfig).where(IntegrationConfig.name == "smtp")
-        )
-        config_row = config_result.scalar_one_or_none()
-        if config_row is not None:
-            config_row.is_verified = True
-            await db.flush()
-
-        await write_audit_log(
-            session=db,
-            org_id=None,
-            user_id=admin_user_id,
-            action="admin.smtp_test_email_sent",
-            entity_type="integration_config",
-            entity_id=None,
-            after_value={
-                "recipient": admin_email,
-                "provider": result.provider,
-                "success": True,
-                "ip_address": ip_address,
-            },
-            ip_address=ip_address,
-        )
-
-    return {
-        "success": result.success,
-        "message": "Test email sent successfully" if result.success else "Test email failed",
-        "provider": result.provider,
-        "error": result.error,
-    }
+#
+# `save_smtp_config` and `send_test_email` (the legacy admin helpers that
+# wrote `integration_configs[smtp]` and dispatched a verification email
+# through the deprecated `EmailClient` shim) were removed when the legacy
+# endpoints in `admin/router.py` were turned into HTTP 410 Gone stubs.
+# Email configuration now lives exclusively in the `email_providers`
+# table, configured through `/api/v2/admin/email-providers`. See the
+# email-provider-unification spec, Phase 7.
 
 
 # ---------------------------------------------------------------------------
@@ -6001,6 +5830,19 @@ async def import_integration_settings(
     """Restore integration settings from a backup JSON dict.
 
     Overwrites existing configs. Returns a summary of what was restored.
+
+    Phase 7 compatibility: backups generated before the Phase 8b data
+    migration only contain the legacy ``integration_configs[smtp]`` row,
+    not the new ``email_providers`` rows. When such a backup is restored
+    we mirror the same migration that Phase 8b performs in-place: map
+    the legacy ``provider`` field onto the corresponding
+    ``email_providers`` row and set ``credentials_set=true`` so the
+    unified sender (`app/integrations/email_sender.py`) picks it up
+    immediately. The mapping is the one defined in the spec, Phase 8b:
+    ``brevo → brevo``, ``sendgrid → sendgrid``, ``smtp → custom_smtp``.
+    Newer backups (post-8b) carry the ``email_providers`` rows directly
+    and the legacy mirror is a no-op for whichever provider_key the
+    backup already populated.
     """
     from app.modules.admin.models import IntegrationConfig, SmsVerificationProvider, EmailProvider
     from app.core.encryption import envelope_encrypt
@@ -6118,6 +5960,54 @@ async def import_integration_settings(
                 credentials_set=creds_set,
             ))
         restored["email_providers"].append(provider_key)
+
+    # ------------------------------------------------------------------
+    # Phase 7 compatibility: mirror the legacy `integration_configs[smtp]`
+    # row into the matching `email_providers` row when the backup
+    # predates Phase 8b. The mapping is identical to the one used by the
+    # Phase 8b Alembic migration.
+    # ------------------------------------------------------------------
+    legacy_smtp = integrations.get("smtp", {}).get("config", {}) if isinstance(integrations, dict) else {}
+    legacy_provider = legacy_smtp.get("provider") if isinstance(legacy_smtp, dict) else None
+    _LEGACY_PROVIDER_MAP = {
+        "brevo": "brevo",
+        "sendgrid": "sendgrid",
+        "smtp": "custom_smtp",
+    }
+    target_provider_key = _LEGACY_PROVIDER_MAP.get(legacy_provider) if legacy_provider else None
+    if target_provider_key:
+        result = await db.execute(
+            select(EmailProvider).where(EmailProvider.provider_key == target_provider_key)
+        )
+        target_row = result.scalar_one_or_none()
+        # No-clobber: only mirror if the email_providers row exists and is
+        # not already configured (matches Phase 8b's no-clobber rule).
+        if target_row is not None and not target_row.credentials_set:
+            if target_provider_key in ("brevo", "sendgrid"):
+                creds = {"api_key": legacy_smtp.get("api_key", "")}
+            else:
+                creds = {
+                    "username": legacy_smtp.get("username", ""),
+                    "password": legacy_smtp.get("password", ""),
+                }
+            # Skip if there are no credentials to migrate (e.g. the
+            # backup was redacted).
+            if any(creds.values()):
+                target_row.credentials_encrypted = envelope_encrypt(json.dumps(creds))
+                target_row.credentials_set = True
+                if legacy_smtp.get("host"):
+                    target_row.smtp_host = legacy_smtp["host"]
+                if legacy_smtp.get("port"):
+                    target_row.smtp_port = legacy_smtp["port"]
+                target_row.is_active = True
+                target_row.priority = 1
+                target_row.config = {
+                    "from_email": legacy_smtp.get("from_email", ""),
+                    "from_name": legacy_smtp.get("from_name", ""),
+                    "reply_to": legacy_smtp.get("reply_to", ""),
+                }
+                if target_provider_key not in restored["email_providers"]:
+                    restored["email_providers"].append(target_provider_key)
 
     await db.flush()
 

@@ -781,13 +781,29 @@ class TestServiceLayerPreservation:
     **Validates: Requirements 3.6**
     """
 
-    def test_admin_service_has_save_smtp_config(self):
-        """Admin service must have save_smtp_config function."""
+    def test_admin_service_legacy_smtp_helpers_removed(self):
+        """Legacy SMTP helpers must NOT exist in admin service.
+
+        Phase 7 of the email-provider-unification spec replaced the
+        legacy ``PUT/POST /api/v1/admin/integrations/smtp`` endpoints
+        with HTTP 410 Gone stubs and removed the supporting
+        ``save_smtp_config`` and (legacy) ``send_test_email`` helpers
+        from ``admin/service.py``. Email configuration now lives in the
+        ``email_providers`` table exclusively. This audit guard flips
+        the previous "must exist" assertion to a "must NOT exist"
+        assertion so a regression that resurrects the helpers is caught
+        immediately.
+        """
         import pathlib
 
         source = pathlib.Path("app/modules/admin/service.py").read_text()
-        assert "async def save_smtp_config" in source, (
-            "Admin service must have save_smtp_config function"
+        assert "async def save_smtp_config" not in source, (
+            "Admin service must NOT have save_smtp_config function "
+            "(removed in Phase 7 — see email-provider-unification spec, Req 14.3)"
+        )
+        assert "async def send_test_email" not in source, (
+            "Admin service must NOT have legacy send_test_email function "
+            "(removed in Phase 7 — see email-provider-unification spec, Req 14.3)"
         )
 
     def test_admin_service_has_list_organisations(self):

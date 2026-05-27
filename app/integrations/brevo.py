@@ -159,12 +159,11 @@ async def get_email_client(db: Any) -> EmailClient | None:
     """Legacy ``EmailClient`` builder.
 
     Phase 2 rewrote ``_send_email_async`` to call
-    ``app.integrations.email_sender.send_email`` directly. The only
-    remaining in-tree caller is the legacy
-    ``app.modules.admin.service.send_test_email`` admin endpoint, which
-    Phase 7 retires (HTTP 410 Gone). Returning ``None`` here makes that
-    endpoint cleanly report "SMTP configuration not found" until the
-    Phase 7 cut-over.
+    ``app.integrations.email_sender.send_email`` directly and Phase 7
+    removed the legacy ``app.modules.admin.service.send_test_email``
+    admin endpoint that used to be the last in-tree caller. Returning
+    ``None`` here makes any straggling caller cleanly fall through to
+    its "config not found" branch until Phase 9 deletes this shim.
     """
     del db
     logger.warning(
