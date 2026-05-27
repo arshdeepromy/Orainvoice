@@ -360,19 +360,42 @@ async def _audit_failed_login(
 async def _send_permanent_lockout_email(email: str) -> None:
     """Send an email alert when an account is permanently locked.
 
-    Uses the same SMTP email-provider infrastructure as other transactional
-    emails.  Wrapped in a top-level try/except so a delivery failure never
-    blocks the lockout process (Requirement 7.3).
+    Migrated from a hand-rolled ``smtplib`` provider loop in Phase 3
+    task 3.7 (A7) of the email-provider-unification spec. Dispatch goes
+    through :func:`app.integrations.email_sender.send_email`, which owns
+    failover, error classification, and per-attempt + total time
+    budgets.
+
+    Per the per-site variation table in
+    ``.kiro/specs/email-provider-unification/design.md`` row A7:
+
+    - **No org context.** ``EmailMessage.org_id`` is ``None`` —
+      permanent-lockout alerts are a security path triggered from the
+      auth flow, which has no org session at this point. The
+      bounce-blocklist pre-check still runs against the platform-wide
+      block list (org_id IS NULL rows).
+    - **Caller opens its own session.** This function is invoked from
+      ``authenticate_user`` after a failed login, where the caller's
+      ``AsyncSession`` is mid-transaction and may already be torn down
+      by the time this best-effort send fires. We open a dedicated
+      session via ``async_session_factory`` and pass it to
+      ``send_email`` (the unified sender accepts a caller-provided
+      session per design Components §3).
+    - Wrapped in a top-level ``try`` / ``except`` so a delivery failure
+      never blocks the lockout process (Requirement 7.3).
+
+    No ``log_email_sent`` or ``create_in_app_notification`` are called
+    on failure — auth flows run without an ``org_id``, so there is no
+    org admin to notify; the in-app notification surface is org-scoped
+    in v1 (see in-app-notifications design §4.2). The original
+    raw-smtplib version had this same gap, and the migration preserves
+    that behaviour.
+
+    Requirements: 6.1, 6.3, 6.4
     """
     try:
-        import smtplib
-        import json as _json
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
-        from sqlalchemy import select as _select
-        from app.modules.admin.models import EmailProvider
-        from app.core.encryption import envelope_decrypt_str
         from app.core.database import async_session_factory
+        from app.integrations.email_sender import EmailMessage, send_email
 
         support_url = f"{settings.frontend_base_url}/support"
         platform_name = "WorkshopPro NZ"
@@ -424,75 +447,42 @@ async def _send_permanent_lockout_email(email: str) -> None:
             f"{support_url}\n"
         )
 
+        # Open a dedicated session — the caller's session may already
+        # be torn down by the time this best-effort send fires (see
+        # the docstring above and design Components §9 row A7).
         async with async_session_factory() as session:
-            provider_result = await session.execute(
-                _select(EmailProvider)
-                .where(
-                    EmailProvider.is_active == True,
-                    EmailProvider.credentials_set == True,
-                )
-                .order_by(EmailProvider.priority)
+            message = EmailMessage(
+                to_email=email,
+                to_name="",
+                subject=subject,
+                html_body=html_body,
+                text_body=text_body,
+                attachments=[],
+                # No org context — security-path send. The bounce
+                # blocklist falls through to platform-wide rows
+                # (org_id IS NULL) on the pre-check.
+                org_id=None,
             )
-            providers = list(provider_result.scalars().all())
+            result = await send_email(session, message)
 
-        if not providers:
-            logger.warning(
-                "No active email provider configured — cannot send lockout email to %s",
+        if result.success:
+            logger.info(
+                "Lockout email sent to %s via %s",
                 email,
+                result.provider_key,
             )
             return
 
-        last_error = None
-        for provider in providers:
-            try:
-                creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-                credentials = _json.loads(creds_json)
-
-                smtp_host = provider.smtp_host
-                smtp_port = provider.smtp_port or 587
-                smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-                username = credentials.get("username") or credentials.get("api_key", "")
-                password = credentials.get("password") or credentials.get("api_key", "")
-
-                config = provider.config or {}
-                from_email = config.get("from_email") or username
-                from_name = config.get("from_name") or platform_name
-
-                msg = MIMEMultipart("alternative")
-                msg["From"] = f"{from_name} <{from_email}>"
-                msg["To"] = email
-                msg["Subject"] = subject
-                msg.attach(MIMEText(text_body, "plain"))
-                msg.attach(MIMEText(html_body, "html"))
-
-                if smtp_encryption == "ssl":
-                    server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-                else:
-                    server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-                    if smtp_encryption == "tls":
-                        server.starttls()
-
-                if username and password:
-                    server.login(username, password)
-
-                server.sendmail(from_email, email, msg.as_string())
-                server.quit()
-                logger.info("Lockout email sent to %s via %s", email, provider.provider_key)
-                return
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    "Email provider %s failed for lockout email to %s: %s",
-                    provider.provider_key, email, e,
-                )
-                continue
-
-        # NOTE: In-app notification skipped for auth email failures in v1.
-        # Auth flows run on sessions without org_id context.
-        # Known limitation — see in-app-notifications design §4.2.
+        # No org admin to notify (auth flow → no org_id), and
+        # ``log_email_sent`` is org-scoped, so total failure is logged
+        # at WARNING and not surfaced anywhere in-app. Same gap the
+        # legacy raw-smtplib version had; explicitly preserved by the
+        # A7 migration.
+        last_error = result.error or "send failed"
         logger.warning(
             "All email providers failed for lockout email to %s: %s",
-            email, last_error,
+            email,
+            last_error,
         )
     except Exception:
         logger.exception("Failed to send lockout email to %s", email)
