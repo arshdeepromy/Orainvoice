@@ -4,7 +4,7 @@ This file is the home for end-to-end failover tests covering all the
 invoice-related Group A migrations in Phase 3:
 
 - **A1** ``email_invoice`` — task 3.1 (this commit)
-- **A2** ``send_payment_reminder`` — task 3.2 (lands in a later commit)
+- **A2** ``send_payment_reminder`` — task 3.2 (this commit)
 - **A14** ``send_invoice_payment_link_email`` — task 3.14 (lands in a
   later commit)
 
@@ -522,6 +522,308 @@ class TestA1EmailInvoiceFailover:
         _log_args, log_kwargs = log_email_stub.await_args
         assert log_kwargs["status"] == "failed"
         assert log_kwargs["template_type"] == "invoice_send"
+        assert log_kwargs["recipient"] == "casey@example.com"
+
+        # create_in_app_notification was called once with the
+        # 'email_failure' category (preserved from the original
+        # raw-smtplib failure handler).
+        in_app_stub.assert_awaited_once()
+        _ian_args, ian_kwargs = in_app_stub.await_args
+        assert ian_kwargs["category"] == "email_failure"
+        assert ian_kwargs["entity_type"] == "invoice"
+        assert ian_kwargs["entity_id"] == INVOICE_ID
+        assert "casey@example.com" in ian_kwargs["title"]
+
+
+# ---------------------------------------------------------------------------
+# A2 — send_payment_reminder
+# ---------------------------------------------------------------------------
+
+
+def _make_customer() -> MagicMock:
+    """Mock a ``Customer`` ORM row used by ``send_payment_reminder``.
+
+    Only the fields the email branch reads matter:
+    ``email`` / ``first_name`` / ``last_name``. ``phone`` / ``mobile_phone``
+    are set to None so a misrouted SMS branch test would fail loudly
+    rather than silently succeed.
+    """
+    cust = MagicMock()
+    cust.id = CUSTOMER_ID
+    cust.org_id = ORG_ID
+    cust.email = "casey@example.com"
+    cust.first_name = "Casey"
+    cust.last_name = "Tester"
+    cust.phone = None
+    cust.mobile_phone = None
+    return cust
+
+
+def _make_reminder_invoice_dict() -> dict:
+    """Build an invoice dict for the payment-reminder code path.
+
+    Mirrors ``_make_invoice_dict`` but with ``balance_due`` populated
+    (the reminder body templates the outstanding balance) and the
+    ``customer`` sub-dict left out — ``send_payment_reminder`` reads the
+    real ``Customer`` row via the SELECT, not the dict.
+    """
+    return {
+        "id": INVOICE_ID,
+        "org_id": ORG_ID,
+        "invoice_number": "INV-9001",
+        "customer_id": CUSTOMER_ID,
+        "vehicle_rego": None,
+        "branch_id": None,
+        "status": "issued",
+        "issue_date": date(2024, 6, 15),
+        "due_date": date(2024, 7, 15),
+        "currency": "NZD",
+        "subtotal": Decimal("100.00"),
+        "discount_amount": Decimal("0.00"),
+        "gst_amount": Decimal("0.00"),
+        "total": Decimal("100.00"),
+        "amount_paid": Decimal("0.00"),
+        "balance_due": Decimal("100.00"),
+        "payment_gateway": None,
+        "payment_page_url": None,
+        "org_name": "Test Workshop Ltd",
+        "org_email": "info@test.co.nz",
+        "org_phone": "09-555-1234",
+        "line_items": [],
+        "created_at": datetime(2024, 6, 15, 10, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 6, 15, 10, 0, tzinfo=timezone.utc),
+    }
+
+
+class TestA2SendPaymentReminderFailover:
+    """End-to-end failover for ``send_payment_reminder`` (task 3.2).
+
+    Same Brevo 401 → SendGrid 202 chain as A1, smaller body, no PDF
+    attachment in the email branch (per the task description). The SMS
+    branch is intentionally untouched by Phase 3 and is not exercised
+    here.
+
+    Validates: Requirements 6.1, 6.3, 6.4
+    """
+
+    @pytest.mark.asyncio
+    async def test_failover_to_second_provider_succeeds(self) -> None:
+        """Brevo 401 → SendGrid 202 → audit log records ``sendgrid``.
+
+        Pins the contract that the migrated ``send_payment_reminder``:
+
+        1. Calls ``send_email`` exactly once on the email branch (no
+           manual ``smtplib`` loop leaks back in).
+        2. Surfaces both REST URLs as POSTed in priority order — Brevo
+           first, then SendGrid. Failure on the first must not abort the
+           chain.
+        3. Returns the canonical reminder envelope: ``status='sent'``,
+           ``channel='email'``, ``recipient`` echoed back.
+        4. Logs the send to ``notification_log`` with
+           ``template_type='payment_reminder'`` and ``status='sent'``.
+        5. Writes an audit-log entry whose ``after_value['provider']``
+           is ``"sendgrid"`` (the winning provider, not Brevo) — the
+           task explicitly requires the audit log to record
+           ``result.provider_key`` after the migration.
+
+        Validates: Requirements 6.1, 6.3, 6.4
+        """
+        inv_dict = _make_reminder_invoice_dict()
+        customer = _make_customer()
+
+        brevo_provider = _make_provider("brevo", priority=1)
+        sendgrid_provider = _make_provider("sendgrid", priority=2)
+
+        db = AsyncMock()
+        # The only db.execute call before send_email in
+        # send_payment_reminder is the customer lookup; the active-
+        # provider query now lives inside send_email, which we patch via
+        # _load_active_providers below.
+        db.execute = AsyncMock(
+            side_effect=[_scalar_one_or_none_result(customer)]
+        )
+
+        load_providers_stub = AsyncMock(
+            return_value=[brevo_provider, sendgrid_provider]
+        )
+        blocklist_stub = AsyncMock(return_value=(False, None))
+        audit_log_stub = AsyncMock()
+        log_email_stub = AsyncMock()
+
+        # Reset the fake client's recorded URLs so this test is order-
+        # independent within the suite.
+        _FakeClient.posted_urls = []
+
+        with patch(
+            "app.modules.invoices.service.get_invoice",
+            new_callable=AsyncMock,
+            return_value=inv_dict,
+        ), patch(
+            "app.modules.invoices.service.write_audit_log",
+            new=audit_log_stub,
+        ), patch(
+            "app.modules.notifications.service.resolve_template",
+            new_callable=AsyncMock,
+            return_value=None,
+        ), patch(
+            "app.modules.notifications.service.log_email_sent",
+            new=log_email_stub,
+        ), patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.integrations.email_sender.envelope_decrypt_str",
+            return_value='{"api_key": "test-api-key"}',
+        ), patch(
+            "app.integrations.email_sender.httpx.AsyncClient",
+            _FakeClient,
+        ):
+            from app.modules.invoices.service import send_payment_reminder
+
+            result = await send_payment_reminder(
+                db,
+                org_id=ORG_ID,
+                invoice_id=INVOICE_ID,
+                channel="email",
+            )
+
+        # 1. The function returns the reminder contract.
+        assert result["status"] == "sent"
+        assert result["channel"] == "email"
+        assert result["recipient"] == "casey@example.com"
+
+        # 2. Both REST endpoints were hit in priority order — Brevo
+        #    first (401, SOFT_AUTH), then SendGrid (202, success).
+        assert _FakeClient.posted_urls == [
+            _FakeClient.BREVO_URL,
+            _FakeClient.SENDGRID_URL,
+        ]
+
+        # 3. Provider chain was loaded once and the bounce-blocklist
+        #    pre-check fired exactly once.
+        load_providers_stub.assert_awaited_once()
+        blocklist_stub.assert_awaited_once()
+
+        # 4. log_email_sent recorded the successful send to
+        #    notification_log with the reminder template type.
+        log_email_stub.assert_awaited_once()
+        _log_args, log_kwargs = log_email_stub.await_args
+        assert log_kwargs["status"] == "sent"
+        assert log_kwargs["template_type"] == "payment_reminder"
+        assert log_kwargs["recipient"] == "casey@example.com"
+        assert log_kwargs["channel"] == "email"
+
+        # 5. Audit log records the winning provider — SendGrid, not
+        #    Brevo. The task requires the audit log to surface
+        #    result.provider_key after the migration.
+        audit_log_stub.assert_awaited_once()
+        _audit_args, audit_kwargs = audit_log_stub.await_args
+        assert audit_kwargs["action"] == "invoice.reminder_email_sent"
+        assert audit_kwargs["entity_id"] == INVOICE_ID
+        assert audit_kwargs["after_value"]["provider"] == "sendgrid"
+        assert audit_kwargs["after_value"]["recipient"] == "casey@example.com"
+        assert audit_kwargs["after_value"]["invoice_number"] == "INV-9001"
+
+    @pytest.mark.asyncio
+    async def test_all_providers_fail_logs_and_creates_in_app_notification(
+        self,
+    ) -> None:
+        """When every provider returns ``SOFT_AUTH`` ``send_payment_reminder``
+        raises ``ValueError`` and the failure path runs both
+        ``log_email_sent(status='failed')`` and
+        ``create_in_app_notification(category='email_failure')`` —
+        preserving the contract the original raw-smtplib version had.
+
+        Validates: Requirements 6.3, 6.4
+        """
+        inv_dict = _make_reminder_invoice_dict()
+        customer = _make_customer()
+
+        brevo_provider = _make_provider("brevo", priority=1)
+        sendgrid_provider = _make_provider("sendgrid", priority=2)
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[_scalar_one_or_none_result(customer)]
+        )
+
+        load_providers_stub = AsyncMock(
+            return_value=[brevo_provider, sendgrid_provider]
+        )
+        blocklist_stub = AsyncMock(return_value=(False, None))
+        log_email_stub = AsyncMock()
+        in_app_stub = AsyncMock()
+
+        # Both providers fail with 401 (SOFT_AUTH). Reuse the all-fail
+        # client used by the A1 test.
+        class _AllFail401Client(_FakeClient):
+            async def post(self, url, json=None, headers=None):  # noqa: A002
+                type(self).posted_urls.append(url)
+                return _FakeResponse(
+                    401,
+                    text='{"code":"unauthorized","message":"invalid api key"}',
+                    headers={"content-type": "application/json"},
+                    json_body={
+                        "code": "unauthorized",
+                        "message": "invalid api key",
+                    },
+                )
+
+        _AllFail401Client.posted_urls = []
+
+        with patch(
+            "app.modules.invoices.service.get_invoice",
+            new_callable=AsyncMock,
+            return_value=inv_dict,
+        ), patch(
+            "app.modules.invoices.service.write_audit_log",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.modules.notifications.service.resolve_template",
+            new_callable=AsyncMock,
+            return_value=None,
+        ), patch(
+            "app.modules.notifications.service.log_email_sent",
+            new=log_email_stub,
+        ), patch(
+            "app.modules.in_app_notifications.service.create_in_app_notification",
+            new=in_app_stub,
+        ), patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.integrations.email_sender.envelope_decrypt_str",
+            return_value='{"api_key": "test-api-key"}',
+        ), patch(
+            "app.integrations.email_sender.httpx.AsyncClient",
+            _AllFail401Client,
+        ):
+            from app.modules.invoices.service import send_payment_reminder
+
+            with pytest.raises(ValueError, match="All email providers failed"):
+                await send_payment_reminder(
+                    db,
+                    org_id=ORG_ID,
+                    invoice_id=INVOICE_ID,
+                    channel="email",
+                )
+
+        # Both providers were attempted (chain not short-circuited by a
+        # HARD_* failure).
+        assert len(_AllFail401Client.posted_urls) == 2
+
+        # log_email_sent was called once with status='failed' (preserved
+        # from the original raw-smtplib failure handler).
+        log_email_stub.assert_awaited_once()
+        _log_args, log_kwargs = log_email_stub.await_args
+        assert log_kwargs["status"] == "failed"
+        assert log_kwargs["template_type"] == "payment_reminder"
         assert log_kwargs["recipient"] == "casey@example.com"
 
         # create_in_app_notification was called once with the

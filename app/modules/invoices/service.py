@@ -4739,23 +4739,12 @@ async def send_payment_reminder(
         if not customer.email:
             raise ValueError("Customer has no email address on file.")
 
-        # Reuse the email_invoice infrastructure but with reminder subject/body
-        import json as _json
-        import smtplib
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
-
-        from app.core.encryption import envelope_decrypt_str
-        from app.modules.admin.models import EmailProvider
-
-        provider_result = await db.execute(
-            select(EmailProvider)
-            .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
-            .order_by(EmailProvider.priority)
-        )
-        providers = list(provider_result.scalars().all())
-        if not providers:
-            raise ValueError("No active email provider configured.")
+        # Dispatch goes through the unified sender — failover, error
+        # classification, per-attempt + total time budgets all live in
+        # ``app.integrations.email_sender``. No PDF attachment for the
+        # email branch (per task 3.2 — A2 is the smaller body sibling of
+        # A1).
+        from app.integrations.email_sender import EmailMessage, send_email
 
         # --- Template resolution for payment_overdue_reminder (email) ---
         from app.modules.notifications.service import resolve_template
@@ -4806,44 +4795,23 @@ async def send_payment_reminder(
                 f"Thank you,\n{org_name}"
             )
 
-        used_provider = None
-        last_error = None
-        for provider in providers:
-            try:
-                creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-                credentials = _json.loads(creds_json)
-                smtp_host = provider.smtp_host
-                smtp_port = provider.smtp_port or 587
-                smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-                username = credentials.get("username") or credentials.get("api_key", "")
-                password = credentials.get("password") or credentials.get("api_key", "")
-                config = provider.config or {}
-                from_email = config.get("from_email") or username
-                from_name = config.get("from_name") or org_name
+        # Mirror A1's text→HTML conversion so reminder emails always
+        # carry a multipart/alternative body (newline → <br>).
+        _html_body = body_text.replace("\n", "<br>")
 
-                msg = MIMEMultipart("mixed")
-                msg["From"] = f"{from_name} <{from_email}>"
-                msg["To"] = customer.email
-                msg["Subject"] = subject
-                msg.attach(MIMEText(body_text, "plain", "utf-8"))
+        _message = EmailMessage(
+            to_email=customer.email,
+            to_name=customer_name,
+            subject=subject,
+            html_body=_html_body,
+            text_body=body_text,
+            attachments=[],
+            org_id=org_id,
+        )
+        result = await send_email(db, _message)
 
-                if smtp_encryption == "ssl":
-                    server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-                else:
-                    server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-                    if smtp_encryption == "tls":
-                        server.starttls()
-                if username and password:
-                    server.login(username, password)
-                server.sendmail(from_email, customer.email, msg.as_string())
-                server.quit()
-                used_provider = provider
-                break
-            except Exception as e:
-                last_error = e
-                continue
-
-        if used_provider is None:
+        if not result.success:
+            last_error = result.error or "send failed"
             error_msg = f"All email providers failed. Last error: {last_error}"
 
             # Log the failed email attempt for parity with customers pattern
@@ -4893,7 +4861,11 @@ async def send_payment_reminder(
             entity_type="invoice",
             entity_id=invoice_id,
             org_id=org_id,
-            after_value={"recipient": customer.email, "invoice_number": inv_number},
+            after_value={
+                "recipient": customer.email,
+                "invoice_number": inv_number,
+                "provider": result.provider_key,
+            },
         )
         await db.flush()
 
