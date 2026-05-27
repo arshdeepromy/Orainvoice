@@ -15,7 +15,7 @@ import argparse
 import asyncio
 import sys
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.core.database import async_session_factory
 from app.core.encryption import rotate_master_key
@@ -23,6 +23,20 @@ from app.modules.admin.models import (
     EmailProvider,
     IntegrationConfig,
     SmsVerificationProvider,
+)
+
+# PostgreSQL advisory-lock key shared with the Phase 8b legacy-SMTP
+# migration (alembic 0198). Both this rotate-keys job and that migration
+# touch ``email_providers.credentials_encrypted``; the lock serialises
+# them so a master-key rotation can never interleave with the legacy
+# import. ``lock_timeout`` is set to 60s before acquiring so a live
+# migration aborts the rotate cleanly rather than hanging the deploy.
+_EMAIL_PROVIDER_LOCK_SQL_SET_TIMEOUT = "SET LOCAL lock_timeout = '60s'"
+_EMAIL_PROVIDER_LOCK_SQL_ACQUIRE = (
+    "SELECT pg_advisory_lock(hashtext('email_provider_rotate'))"
+)
+_EMAIL_PROVIDER_LOCK_SQL_RELEASE = (
+    "SELECT pg_advisory_unlock(hashtext('email_provider_rotate'))"
 )
 
 
@@ -57,15 +71,26 @@ async def rotate_all_keys(old_key: str, new_key: str) -> int:
                     re_encrypted += 1
 
             # --- EmailProvider.credentials_encrypted ---
-            email_rows = (
-                await session.execute(select(EmailProvider))
-            ).scalars().all()
-            for row in email_rows:
-                if row.credentials_encrypted:
-                    row.credentials_encrypted = rotate_master_key(
-                        old_key, new_key, row.credentials_encrypted
-                    )
-                    re_encrypted += 1
+            # Acquire the same PG advisory lock that alembic 0198
+            # (Phase 8b legacy SMTP migration) uses, so a rotation and
+            # that migration can never interleave on
+            # ``email_providers.credentials_encrypted``. The lock is
+            # released in ``finally`` so a crash mid-loop still frees
+            # it for the next process to acquire.
+            await session.execute(text(_EMAIL_PROVIDER_LOCK_SQL_SET_TIMEOUT))
+            await session.execute(text(_EMAIL_PROVIDER_LOCK_SQL_ACQUIRE))
+            try:
+                email_rows = (
+                    await session.execute(select(EmailProvider))
+                ).scalars().all()
+                for row in email_rows:
+                    if row.credentials_encrypted:
+                        row.credentials_encrypted = rotate_master_key(
+                            old_key, new_key, row.credentials_encrypted
+                        )
+                        re_encrypted += 1
+            finally:
+                await session.execute(text(_EMAIL_PROVIDER_LOCK_SQL_RELEASE))
 
     return re_encrypted
 

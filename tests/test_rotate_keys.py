@@ -122,10 +122,17 @@ class TestRotateAllKeys:
         mock_row = MagicMock()
         mock_row.config_encrypted = fake_blob
 
+        # Side-effect order matches the rotate_all_keys call sequence:
+        # IntegrationConfig select, SmsVerificationProvider select,
+        # SET LOCAL lock_timeout, pg_advisory_lock,
+        # EmailProvider select, pg_advisory_unlock.
         mock_factory, _ = self._make_mock_session([
             self._make_result([mock_row]),
             self._make_result([]),
+            MagicMock(),  # SET LOCAL lock_timeout
+            MagicMock(),  # pg_advisory_lock
             self._make_result([]),
+            MagicMock(),  # pg_advisory_unlock
         ])
 
         with patch("app.cli.rotate_keys.async_session_factory", mock_factory), \
@@ -147,7 +154,10 @@ class TestRotateAllKeys:
         mock_factory, _ = self._make_mock_session([
             self._make_result([mock_row]),
             self._make_result([]),
+            MagicMock(),  # SET LOCAL lock_timeout
+            MagicMock(),  # pg_advisory_lock
             self._make_result([]),
+            MagicMock(),  # pg_advisory_unlock
         ])
 
         with patch("app.cli.rotate_keys.async_session_factory", mock_factory), \
@@ -169,7 +179,10 @@ class TestRotateAllKeys:
         mock_factory, _ = self._make_mock_session([
             self._make_result([ic_row]),
             self._make_result([sms_row]),
+            MagicMock(),  # SET LOCAL lock_timeout
+            MagicMock(),  # pg_advisory_lock
             self._make_result([email_row]),
+            MagicMock(),  # pg_advisory_unlock
         ])
 
         with patch("app.cli.rotate_keys.async_session_factory", mock_factory), \
