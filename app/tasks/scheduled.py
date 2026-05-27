@@ -133,6 +133,55 @@ async def archive_error_logs_task() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 3a. Clean up expired bounce-blocklist rows (Req 12.6 — Phase 8c)
+# ---------------------------------------------------------------------------
+
+async def cleanup_expired_bounce_rows_task() -> dict:
+    """Delete soft-bounce rows from ``bounced_addresses`` whose
+    ``expires_at`` is in the past.
+
+    Phase 8c (task 9.10) of the email-provider-unification spec. Hard
+    bounces leave ``expires_at NULL`` and are never pruned by this
+    task — admins clear them manually via the Delivery Health UI. The
+    partial index ``ix_bounced_addresses_expires`` (created in
+    migration 0197) keeps this query cheap.
+
+    Scheduled hourly via the existing scheduled-tasks framework — the
+    spec calls for daily but hourly cleanup keeps the table small with
+    no downside, matches the existing 1h cadence used by
+    ``cleanup_stale_sessions_task``, and means a soft bounce expires
+    promptly rather than hanging around for up to a day past its
+    seven-day window.
+    """
+    from sqlalchemy import text as sql_text
+    from app.core.database import async_session_factory
+
+    try:
+        async with async_session_factory() as session:
+            async with session.begin():
+                result = await session.execute(
+                    sql_text(
+                        "DELETE FROM bounced_addresses "
+                        "WHERE expires_at IS NOT NULL "
+                        "  AND expires_at < now()"
+                    )
+                )
+                deleted = result.rowcount or 0
+        if deleted > 0:
+            logger.info(
+                "cleanup_expired_bounce_rows: removed %d expired soft "
+                "bounces",
+                deleted,
+            )
+        return {"deleted_rows": deleted}
+    except Exception as exc:
+        logger.exception(
+            "cleanup_expired_bounce_rows_task failed: %s", exc
+        )
+        return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # 4. Generate recurring invoices (Req 60.2, 60.4)
 # ---------------------------------------------------------------------------
 
@@ -787,6 +836,7 @@ WRITE_TASKS: set[str] = {
     "compliance_expiry",           # check_compliance_expiry_task — sends expiry emails, writes notification log
     "sync_public_holidays",        # sync_public_holidays_task — DELETE + INSERT holidays + audit log (ISSUE-147)
     "quote_expiry",                # check_quote_expiry_task — UPDATE quotes to expired status
+    "cleanup_bounce_rows",         # cleanup_expired_bounce_rows_task — deletes expired soft bounces (Phase 8c)
 }
 
 # (task_fn, interval_seconds, name)
@@ -809,6 +859,7 @@ _DAILY_TASKS: list[tuple] = [
     (check_trial_expiry_task, 86400, "check_trial_expiry"),  # daily
     (check_grace_period_task, 900, "check_grace_period"),  # every 15 minutes (matches billing cadence)
     (check_suspension_retention_task, 86400, "check_suspension_retention"),  # daily
+    (cleanup_expired_bounce_rows_task, 3600, "cleanup_bounce_rows"),  # hourly (Phase 8c)
 ]
 
 _stop_event: asyncio.Event | None = None

@@ -45,7 +45,7 @@ from email.utils import make_msgid
 from enum import Enum
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.encryption import envelope_decrypt_str
@@ -1303,14 +1303,41 @@ async def _check_bounce_blocklist(
     non-None ``reason`` means a soft-bounce is on file but the address
     is still allowed through; the caller logs a warning and proceeds.
 
-    Phase 1 stub: returns ``(False, None)`` because the
-    ``bounced_addresses`` table doesn't exist yet (it's created in
-    Phase 8c, task 9.1). The call site in :func:`send_email` is wired up
-    now so Phase 8c only has to swap the body for the real query.
+    Phase 8c (task 9.3): real query against the ``bounced_addresses``
+    table created in migration 0197. The lookup is case-insensitive on
+    the address and accepts both org-scoped rows and platform-wide
+    (``org_id IS NULL``) rows. Expired soft bounces are filtered out
+    via ``expires_at > now()`` (or ``expires_at IS NULL`` for hard
+    bounces, which never expire). When multiple rows match, a hard
+    bounce takes precedence — the function returns ``(True, reason)``
+    on the first hard hit; otherwise it reports the soft bounce so the
+    caller can log and proceed.
     """
-    # TODO(9.3): query bounced_addresses for (org_id OR NULL,
-    #            lower(email_address)); return (is_blocked, reason).
-    del db, org_id, email_address
+    # Local import to avoid a circular import: notifications.models
+    # imports from app.core.database which is initialised before
+    # this module loads.
+    from sqlalchemy import or_
+    from app.modules.notifications.models import BouncedAddress
+
+    stmt = select(BouncedAddress).where(
+        func.lower(BouncedAddress.email_address) == email_address.lower(),
+        or_(
+            BouncedAddress.org_id == org_id,
+            BouncedAddress.org_id.is_(None),
+        ),
+        or_(
+            BouncedAddress.expires_at.is_(None),
+            BouncedAddress.expires_at > func.now(),
+        ),
+    )
+    rows = list((await db.execute(stmt)).scalars().all())
+    for row in rows:
+        if row.bounce_kind == "hard":
+            return True, row.reason or "hard bounce on file"
+    if rows:
+        # Soft bounce only — proceed but signal the caller so it can
+        # emit a warning log line.
+        return False, "soft bounce observed (proceeding)"
     return False, None
 
 

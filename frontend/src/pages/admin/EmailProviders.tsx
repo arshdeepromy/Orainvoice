@@ -5,6 +5,7 @@ import { AlertBanner } from '@/components/ui/AlertBanner'
 import { Input } from '@/components/ui/Input'
 import { ToastContainer, useToast } from '@/components/ui/Toast'
 import apiClient from '@/api/client'
+import { EmailDeliveryHealth } from './EmailDeliveryHealth'
 
 interface EmailProvider {
   id: string
@@ -328,6 +329,13 @@ export function EmailProviders() {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
+  // Phase 8c (task 9.11): tabbed layout — "Providers" stays the
+  // default landing tab so the page is unchanged for existing admin
+  // workflows; "Delivery Health" surfaces aggregate bounce stats and
+  // the recent-bounces table.
+  const [activeTab, setActiveTab] = useState<'providers' | 'delivery_health'>(
+    'providers',
+  )
   const { toasts, addToast, dismissToast } = useToast()
 
   const fetchProviders = useCallback(async () => {
@@ -435,8 +443,32 @@ export function EmailProviders() {
 
   if (loading) {
     return (
-      <div className="flex justify-center py-12">
-        <Spinner size="lg" label="Loading email providers" />
+      <div className="space-y-6">
+        <div className="border-b border-gray-200 dark:border-gray-700">
+          <nav className="-mb-px flex gap-4" aria-label="Email Providers tabs">
+            <button
+              type="button"
+              onClick={() => setActiveTab('providers')}
+              className="whitespace-nowrap border-b-2 border-blue-500 px-1 pb-3 pt-1 text-sm font-medium text-blue-600 dark:text-blue-300"
+            >
+              Providers
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('delivery_health')}
+              className="whitespace-nowrap border-b-2 border-transparent px-1 pb-3 pt-1 text-sm font-medium text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+            >
+              Delivery Health
+            </button>
+          </nav>
+        </div>
+        {activeTab === 'delivery_health' ? (
+          <EmailDeliveryHealth />
+        ) : (
+          <div className="flex justify-center py-12">
+            <Spinner size="lg" label="Loading email providers" />
+          </div>
+        )}
       </div>
     )
   }
@@ -449,7 +481,43 @@ export function EmailProviders() {
     <div className="space-y-6">
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-      {/* Active provider banner — multi-active aware (Phase 6.1) */}
+      {/* Tab bar — Phase 8c (task 9.11). Providers (default) +
+          Delivery Health. The Delivery Health tab fetches its own
+          data, so we mount it lazily when activated. */}
+      <div className="border-b border-gray-200 dark:border-gray-700">
+        <nav className="-mb-px flex gap-4" aria-label="Email Providers tabs">
+          <button
+            type="button"
+            onClick={() => setActiveTab('providers')}
+            className={`whitespace-nowrap border-b-2 px-1 pb-3 pt-1 text-sm font-medium ${
+              activeTab === 'providers'
+                ? 'border-blue-500 text-blue-600 dark:text-blue-300'
+                : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+            }`}
+            aria-current={activeTab === 'providers' ? 'page' : undefined}
+          >
+            Providers
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('delivery_health')}
+            className={`whitespace-nowrap border-b-2 px-1 pb-3 pt-1 text-sm font-medium ${
+              activeTab === 'delivery_health'
+                ? 'border-blue-500 text-blue-600 dark:text-blue-300'
+                : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+            }`}
+            aria-current={activeTab === 'delivery_health' ? 'page' : undefined}
+          >
+            Delivery Health
+          </button>
+        </nav>
+      </div>
+
+      {activeTab === 'delivery_health' ? (
+        <EmailDeliveryHealth />
+      ) : (
+        <>
+          {/* Active provider banner — multi-active aware (Phase 6.1) */}
       {activeProviders.length === 0 ? (
         <div className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 dark:border-red-700 dark:bg-red-900/30 px-5 py-3">
           <svg className="h-6 w-6 text-red-600 dark:text-red-300 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
@@ -533,6 +601,8 @@ export function EmailProviders() {
             />
           ))}
       </div>
+        </>
+      )}
     </div>
   )
 }

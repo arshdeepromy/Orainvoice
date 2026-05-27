@@ -18,7 +18,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.requests import Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
@@ -840,23 +840,99 @@ async def update_notification_settings(
 
 
 # ---------------------------------------------------------------------------
-# Bounce webhook endpoints (Req 2.20 — Brevo & SendGrid bounce handling)
+# Bounce webhook endpoints (Req 2.20 — Brevo & SendGrid bounce handling;
+# Phase 8c tasks 9.6/9.7/9.15: per-provider secret + correlation +
+# delivered-event handling)
 # ---------------------------------------------------------------------------
 
 import logging
 
 from app.config import settings as app_settings
 from app.core.webhook_security import verify_webhook_signature
+from app.modules.notifications.bounce_correlation import flag_bounce
 from app.modules.notifications.schemas import (
     BrevoBounceWebhookRequest,
     SendGridBounceEvent,
 )
-from app.modules.notifications.service import flag_bounced_email_on_customer
 
 logger = logging.getLogger(__name__)
 
 BREVO_BOUNCE_EVENTS = {"hard_bounce", "soft_bounce", "blocked", "invalid_email"}
 SENDGRID_BOUNCE_EVENTS = {"bounce", "dropped", "deferred"}
+BREVO_DELIVERED_EVENTS = {"delivered", "request"}
+
+
+async def _candidate_provider_secrets(
+    db: AsyncSession,
+    *,
+    provider_kind: str,
+    config_key: str,
+    env_fallback: str | None,
+) -> list[tuple[str, str | None]]:
+    """Return ``(secret, provider_key)`` pairs to try in priority order.
+
+    Phase 8c (Req 13.1, 13.2, 13.3, 25.5): the bounce webhook handlers
+    must accept signatures signed with any active provider's
+    ``<kind>_webhook_secret`` from ``email_providers.config``, and fall
+    back to the legacy env-var secret for one release. The fallback
+    secret has ``provider_key=None`` so we can detect it for the
+    deprecation log.
+
+    Active providers are returned first, in priority order, so the
+    expected-common-case secret is tried before the legacy fallback.
+    """
+    candidates: list[tuple[str, str | None]] = []
+
+    # Local import to avoid a circular import at module load.
+    try:
+        from app.modules.admin.models import EmailProvider
+
+        stmt = (
+            select(EmailProvider)
+            .where(
+                EmailProvider.provider_key == provider_kind,
+                EmailProvider.is_active.is_(True),
+            )
+            .order_by(EmailProvider.priority.asc())
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+        for row in rows:
+            secret = (row.config or {}).get(config_key)
+            if isinstance(secret, str) and secret:
+                candidates.append((secret, row.provider_key))
+    except Exception:  # pragma: no cover — defensive against schema drift
+        logger.exception(
+            "bounce webhook: failed to load per-provider secrets for "
+            "%s — falling back to env",
+            provider_kind,
+        )
+
+    if env_fallback:
+        candidates.append((env_fallback, None))
+
+    return candidates
+
+
+def _verify_with_any_secret(
+    *,
+    payload: bytes,
+    signature: str,
+    candidates: list[tuple[str, str | None]],
+) -> tuple[bool, str | None]:
+    """Try each ``(secret, provider_key)`` until one verifies.
+
+    Returns ``(matched, provider_key_or_None)``. The boolean signals
+    whether any candidate matched; the second element is the
+    ``provider_key`` of the matching provider (``None`` when the env-
+    var fallback won, which we record for the one-release deprecation
+    telemetry).
+    """
+    if not signature:
+        return False, None
+    for secret, provider_key in candidates:
+        if verify_webhook_signature(payload, signature, secret):
+            return True, provider_key
+    return False, None
 
 
 @router.post("/webhooks/brevo-bounce")
@@ -864,24 +940,63 @@ async def brevo_bounce_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Receive Brevo bounce webhook events and flag customer emails.
+    """Receive Brevo bounce + delivered webhook events.
 
-    Verifies the webhook signature using HMAC-SHA256 with the configured
-    brevo_webhook_secret. Extracts bounced emails and calls
-    flag_bounced_email_on_customer() for each.
+    Phase 8c rewrite (task 9.6). Signature verification accepts any
+    active Brevo provider's ``brevo_webhook_secret`` from
+    ``email_providers.config``; falls back to the legacy
+    ``app_settings.brevo_webhook_secret`` env var for one release per
+    Req 25.5. For each event:
 
-    Returns 200 on success, 401 on invalid signature.
-    Requirements: 2.20
+    - ``BREVO_BOUNCE_EVENTS`` → :func:`flag_bounce` to flip the
+      originating ``notification_log`` row, upsert into
+      ``bounced_addresses``, and fire the in-app alert.
+    - ``delivered`` / ``request`` → ``UPDATE notification_log
+      SET delivered_at = now()`` for the matching
+      ``provider_message_id``.
+
+    Returns 200 on success, 403 on invalid signature, 400 on malformed
+    JSON. Requirements: 11.1, 11.2, 11.3, 11.4, 13.1, 13.3, 13.4, 25.5
     """
     raw_body = await request.body()
     signature = request.headers.get("X-Brevo-Signature", "")
 
-    if not app_settings.brevo_webhook_secret or not verify_webhook_signature(
-        raw_body, signature, app_settings.brevo_webhook_secret
-    ):
+    candidates = await _candidate_provider_secrets(
+        db,
+        provider_kind="brevo",
+        config_key="brevo_webhook_secret",
+        env_fallback=app_settings.brevo_webhook_secret or None,
+    )
+    if not candidates:
+        logger.warning(
+            "Brevo bounce webhook: no signing secret configured "
+            "(neither email_providers.config nor app_settings) — "
+            "rejecting"
+        )
         return JSONResponse(
-            status_code=401,
+            status_code=403,
+            content={"detail": "Webhook signature verification unavailable"},
+        )
+
+    matched, matched_provider_key = _verify_with_any_secret(
+        payload=raw_body, signature=signature, candidates=candidates
+    )
+    if not matched:
+        logger.warning(
+            "Brevo bounce webhook: signature did not match any of "
+            "%d candidate secrets",
+            len(candidates),
+        )
+        return JSONResponse(
+            status_code=403,
             content={"detail": "Invalid webhook signature"},
+        )
+
+    if matched_provider_key is None:
+        logger.warning(
+            "Brevo bounce webhook: env-var fallback secret matched — "
+            "rotate and store in email_providers.config "
+            "(legacy_brevo_webhook_secret_env_used)"
         )
 
     try:
@@ -892,52 +1007,92 @@ async def brevo_bounce_webhook(
             content={"detail": "Invalid JSON payload"},
         )
 
-    payload = BrevoBounceWebhookRequest(**body) if isinstance(body, dict) else None
+    payload = (
+        BrevoBounceWebhookRequest(**body) if isinstance(body, dict) else None
+    )
 
-    bounced_emails: list[str] = []
+    bounce_events: list[dict] = []
+    delivered_events: list[dict] = []
 
-    if payload and payload.events:
-        for ev in payload.events:
-            if ev.event in BREVO_BOUNCE_EVENTS and ev.email:
-                bounced_emails.append(ev.email)
-    elif payload and payload.event and payload.email:
-        if payload.event in BREVO_BOUNCE_EVENTS:
-            bounced_emails.append(payload.email)
+    # Brevo can send a batch (events: [...]) or a single event object.
+    raw_events: list[dict]
+    if isinstance(body, dict) and isinstance(body.get("events"), list):
+        raw_events = [e for e in body["events"] if isinstance(e, dict)]
+    elif isinstance(body, dict):
+        raw_events = [body]
+    else:
+        raw_events = []
 
-    # Flag bounced emails across all orgs (webhook is global)
-    total_flagged = 0
-    for email in bounced_emails:
-        # Brevo webhooks are global — we flag across all orgs by querying
-        # without org_id filter. Use a sentinel org_id approach: iterate
-        # orgs that have this customer email.
-        from app.modules.customers.models import Customer
-        from sqlalchemy import select as sa_select
+    for ev in raw_events:
+        kind = (ev.get("event") or "").lower()
+        if kind in BREVO_BOUNCE_EVENTS:
+            bounce_events.append(ev)
+        elif kind in BREVO_DELIVERED_EVENTS:
+            delivered_events.append(ev)
 
-        stmt = sa_select(Customer.org_id).where(
-            Customer.email == email,
-            Customer.email_bounced == False,  # noqa: E712
-        ).distinct()
-        result = await db.execute(stmt)
-        org_ids = result.scalars().all()
+    # Process bounces via flag_bounce (handles notification_log flip,
+    # bounced_addresses upsert, in-app notification, and customer
+    # email_bounced flag).
+    for ev in bounce_events:
+        recipient = ev.get("email") or ""
+        if not recipient:
+            continue
+        # Brevo emits the message id either as ``message-id`` (legacy)
+        # or ``message_id`` (newer events). The Pydantic model aliases
+        # ``message-id`` → ``message_id``; we prefer the dict path so
+        # we don't rely on schema validation for non-required fields.
+        msg_id = ev.get("message-id") or ev.get("message_id") or ""
+        await flag_bounce(
+            db,
+            provider_message_id=msg_id,
+            recipient=recipient,
+            kind=ev.get("event") or "",
+            reason=ev.get("reason"),
+            provider_key="brevo",
+        )
 
-        for oid in org_ids:
-            count = await flag_bounced_email_on_customer(
-                db, org_id=oid, email_address=email
+    # Process delivered events: set delivered_at on matching log rows.
+    delivered_count = 0
+    for ev in delivered_events:
+        msg_id = ev.get("message-id") or ev.get("message_id") or ""
+        if not msg_id:
+            continue
+        from sqlalchemy import update as sa_update
+
+        from app.modules.notifications.models import NotificationLog as NL
+
+        result = await db.execute(
+            sa_update(NL)
+            .where(NL.provider_message_id == msg_id)
+            .values(delivered_at=func.now())
+        )
+        if (result.rowcount or 0) > 0:
+            delivered_count += result.rowcount or 0
+        else:
+            logger.info(
+                "Brevo delivered event for unknown provider_message_id=%s",
+                msg_id,
             )
-            total_flagged += count
+
+    if delivered_events:
+        await db.flush()
 
     logger.info(
-        "Brevo bounce webhook processed: %d emails, %d customers flagged",
-        len(bounced_emails),
-        total_flagged,
+        "Brevo bounce webhook: %d bounces, %d delivered (provider=%s, "
+        "payload_count=%d, parsed_ok=%s)",
+        len(bounce_events),
+        delivered_count,
+        matched_provider_key or "env_fallback",
+        len(raw_events),
+        payload is not None,
     )
 
     return JSONResponse(
         status_code=200,
         content={
-            "message": "Bounce events processed",
-            "emails_processed": len(bounced_emails),
-            "customers_flagged": total_flagged,
+            "message": "Events processed",
+            "emails_processed": len(bounce_events),
+            "delivered_processed": delivered_count,
         },
     )
 
@@ -947,23 +1102,55 @@ async def sendgrid_bounce_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Receive SendGrid Event Webhook bounce events and flag customer emails.
+    """Receive SendGrid Event Webhook bounce + delivered events.
 
-    Verifies the webhook signature using HMAC-SHA256 with the configured
-    sendgrid_webhook_secret. SendGrid sends an array of event objects.
+    Phase 8c rewrite (task 9.7). Signature verification accepts any
+    active SendGrid provider's ``sendgrid_webhook_secret`` from
+    ``email_providers.config``; falls back to the legacy
+    ``app_settings.sendgrid_webhook_secret`` env var for one release.
 
-    Returns 200 on success, 401 on invalid signature.
-    Requirements: 2.20
+    Requirements: 11.2, 11.3, 13.2, 13.3, 13.4, 25.5
     """
     raw_body = await request.body()
-    signature = request.headers.get("X-Twilio-Email-Event-Webhook-Signature", "")
+    signature = request.headers.get(
+        "X-Twilio-Email-Event-Webhook-Signature", ""
+    )
 
-    if not app_settings.sendgrid_webhook_secret or not verify_webhook_signature(
-        raw_body, signature, app_settings.sendgrid_webhook_secret
-    ):
+    candidates = await _candidate_provider_secrets(
+        db,
+        provider_kind="sendgrid",
+        config_key="sendgrid_webhook_secret",
+        env_fallback=app_settings.sendgrid_webhook_secret or None,
+    )
+    if not candidates:
+        logger.warning(
+            "SendGrid bounce webhook: no signing secret configured — "
+            "rejecting"
+        )
         return JSONResponse(
-            status_code=401,
+            status_code=403,
+            content={"detail": "Webhook signature verification unavailable"},
+        )
+
+    matched, matched_provider_key = _verify_with_any_secret(
+        payload=raw_body, signature=signature, candidates=candidates
+    )
+    if not matched:
+        logger.warning(
+            "SendGrid bounce webhook: signature did not match any of "
+            "%d candidate secrets",
+            len(candidates),
+        )
+        return JSONResponse(
+            status_code=403,
             content={"detail": "Invalid webhook signature"},
+        )
+
+    if matched_provider_key is None:
+        logger.warning(
+            "SendGrid bounce webhook: env-var fallback secret matched "
+            "— rotate and store in email_providers.config "
+            "(legacy_sendgrid_webhook_secret_env_used)"
         )
 
     try:
@@ -974,48 +1161,76 @@ async def sendgrid_bounce_webhook(
             content={"detail": "Invalid JSON payload"},
         )
 
-    # SendGrid sends an array of event objects
-    events: list[dict] = body if isinstance(body, list) else [body] if isinstance(body, dict) else []
+    # SendGrid sends an array of event objects.
+    raw_events: list[dict] = (
+        body if isinstance(body, list)
+        else ([body] if isinstance(body, dict) else [])
+    )
 
-    bounced_emails: list[str] = []
-    for raw_event in events:
-        try:
-            ev = SendGridBounceEvent(**raw_event)
-            if ev.event in SENDGRID_BOUNCE_EVENTS and ev.email:
-                bounced_emails.append(ev.email)
-        except Exception:
-            continue  # Skip malformed events
+    bounce_count = 0
+    delivered_count = 0
+    for raw_event in raw_events:
+        if not isinstance(raw_event, dict):
+            continue
+        event_kind = (raw_event.get("event") or "").lower()
 
-    total_flagged = 0
-    for email in bounced_emails:
-        from app.modules.customers.models import Customer
-        from sqlalchemy import select as sa_select
-
-        stmt = sa_select(Customer.org_id).where(
-            Customer.email == email,
-            Customer.email_bounced == False,  # noqa: E712
-        ).distinct()
-        result = await db.execute(stmt)
-        org_ids = result.scalars().all()
-
-        for oid in org_ids:
-            count = await flag_bounced_email_on_customer(
-                db, org_id=oid, email_address=email
+        if event_kind in SENDGRID_BOUNCE_EVENTS:
+            try:
+                ev = SendGridBounceEvent(**raw_event)
+            except Exception:
+                # Malformed event — skip but keep processing the batch.
+                continue
+            if not ev.email:
+                continue
+            await flag_bounce(
+                db,
+                provider_message_id=ev.sg_message_id or "",
+                recipient=ev.email,
+                kind=ev.event,
+                reason=ev.reason,
+                provider_key="sendgrid",
             )
-            total_flagged += count
+            bounce_count += 1
+        elif event_kind == "delivered":
+            msg_id = raw_event.get("sg_message_id") or ""
+            if not msg_id:
+                continue
+            from sqlalchemy import update as sa_update
+
+            from app.modules.notifications.models import NotificationLog as NL
+
+            result = await db.execute(
+                sa_update(NL)
+                .where(NL.provider_message_id == msg_id)
+                .values(delivered_at=func.now())
+            )
+            if (result.rowcount or 0) > 0:
+                delivered_count += result.rowcount or 0
+            else:
+                logger.info(
+                    "SendGrid delivered event for unknown "
+                    "sg_message_id=%s",
+                    msg_id,
+                )
+
+    if delivered_count:
+        await db.flush()
 
     logger.info(
-        "SendGrid bounce webhook processed: %d emails, %d customers flagged",
-        len(bounced_emails),
-        total_flagged,
+        "SendGrid bounce webhook: %d bounces, %d delivered "
+        "(provider=%s, payload_count=%d)",
+        bounce_count,
+        delivered_count,
+        matched_provider_key or "env_fallback",
+        len(raw_events),
     )
 
     return JSONResponse(
         status_code=200,
         content={
-            "message": "Bounce events processed",
-            "emails_processed": len(bounced_emails),
-            "customers_flagged": total_flagged,
+            "message": "Events processed",
+            "emails_processed": bounce_count,
+            "delivered_processed": delivered_count,
         },
     )
 

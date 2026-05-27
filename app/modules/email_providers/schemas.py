@@ -83,3 +83,72 @@ class EmailProviderPriorityResponse(BaseModel):
     """Response after updating priority."""
     message: str
     priority: int
+
+
+
+# ---------------------------------------------------------------------------
+# Delivery Health (Phase 8c, task 9.9 — design API Endpoints)
+# ---------------------------------------------------------------------------
+
+
+class BounceWindowStats(BaseModel):
+    """Per-window aggregate bounce statistics.
+
+    The Delivery Health UI renders one card per window (24h / 7d / 30d)
+    showing ``total`` plus a horizontal bar by ``provider_key``.
+    """
+
+    total: int = Field(0, description="Total bounces in the window")
+    by_provider: dict[str, int] = Field(
+        default_factory=dict,
+        description="Bounce count keyed by provider_key (excludes nulls)",
+    )
+
+
+class DeliveryHealthStats(BaseModel):
+    """Stats payload for the three windows shown on the Delivery Health page."""
+
+    last_24h: BounceWindowStats = Field(default_factory=BounceWindowStats)
+    last_7d: BounceWindowStats = Field(default_factory=BounceWindowStats)
+    last_30d: BounceWindowStats = Field(default_factory=BounceWindowStats)
+
+
+class BounceRow(BaseModel):
+    """A single ``bounced_addresses`` row, decorated with linked-entity hints."""
+
+    id: str
+    org_id: str | None = None
+    email_address: str
+    bounce_kind: str
+    reason: str | None = None
+    first_seen_at: datetime
+    last_seen_at: datetime
+    hit_count: int
+    expires_at: datetime | None = None
+    # Convenience fields computed at response time per design API
+    # Endpoints — let the UI render a "View customer" link without a
+    # second round-trip.
+    linked_customer_id: str | None = None
+    linked_user_id: str | None = None
+    # The most recent provider that bounced this address, derived from
+    # ``notification_log.provider_key`` matching the recipient. Optional;
+    # NULL when no log row matches.
+    provider_key: str | None = None
+
+
+class DeliveryHealthResponse(BaseModel):
+    """``GET /api/v2/admin/email-providers/delivery-health`` response."""
+
+    stats: DeliveryHealthStats
+    recent_bounces: list[BounceRow]
+    total: int = Field(
+        0,
+        description="Total bounce rows visible to the caller after RLS",
+    )
+
+
+class ClearBounceResponse(BaseModel):
+    """``DELETE /api/v2/admin/email-providers/bounced-addresses/{id}`` response."""
+
+    message: str
+    cleared: bool

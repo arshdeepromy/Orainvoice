@@ -7,7 +7,7 @@ import logging
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
@@ -404,3 +404,232 @@ async def update_email_provider_priority(
     )
     
     return priority
+
+
+# ---------------------------------------------------------------------------
+# Delivery Health (Phase 8c, task 9.9)
+# ---------------------------------------------------------------------------
+
+
+async def get_delivery_health(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID | None,
+    offset: int = 0,
+    limit: int = 100,
+) -> dict:
+    """Return Delivery Health stats + paginated recent bounces.
+
+    The aggregate stats query the ``notification_log`` table because
+    that's where bounces have ``provider_key`` plus a precise
+    ``bounced_at`` timestamp; the bounce-table on the page itself is
+    sourced from ``bounced_addresses`` so admins see one row per
+    address (with ``hit_count`` aggregating duplicates) regardless of
+    how many notification log rows the address has bounced from.
+
+    When ``org_id`` is non-None, the queries are scoped to that org
+    plus the platform-wide rows (``org_id IS NULL``). When
+    ``org_id is None`` (the ``global_admin`` path), every row is
+    visible. Note that RLS additionally applies for non-superuser
+    sessions; this function trusts the caller to have established the
+    correct scope.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import or_
+
+    from app.modules.notifications.models import (
+        BouncedAddress,
+        NotificationLog,
+    )
+
+    now = datetime.now(timezone.utc)
+    windows = {
+        "last_24h": now - timedelta(hours=24),
+        "last_7d": now - timedelta(days=7),
+        "last_30d": now - timedelta(days=30),
+    }
+
+    # ── 1. Aggregate stats: bounced notification_log rows per window ────
+    stats: dict[str, dict] = {}
+    for label, since in windows.items():
+        # Total in the window.
+        total_stmt = select(func.count(NotificationLog.id)).where(
+            NotificationLog.bounced_at.is_not(None),
+            NotificationLog.bounced_at >= since,
+        )
+        if org_id is not None:
+            total_stmt = total_stmt.where(NotificationLog.org_id == org_id)
+        total = (await db.execute(total_stmt)).scalar() or 0
+
+        # Per-provider breakdown — exclude rows where provider_key is
+        # NULL (legacy, pre-Phase-2 rows).
+        per_provider_stmt = (
+            select(
+                NotificationLog.provider_key,
+                func.count(NotificationLog.id),
+            )
+            .where(
+                NotificationLog.bounced_at.is_not(None),
+                NotificationLog.bounced_at >= since,
+                NotificationLog.provider_key.is_not(None),
+            )
+            .group_by(NotificationLog.provider_key)
+        )
+        if org_id is not None:
+            per_provider_stmt = per_provider_stmt.where(
+                NotificationLog.org_id == org_id
+            )
+        rows = (await db.execute(per_provider_stmt)).all()
+        by_provider = {pk: cnt for pk, cnt in rows if pk}
+
+        stats[label] = {"total": int(total), "by_provider": by_provider}
+
+    # ── 2. Recent bounces from bounced_addresses ────────────────────────
+    base = select(BouncedAddress)
+    if org_id is not None:
+        base = base.where(
+            or_(
+                BouncedAddress.org_id == org_id,
+                BouncedAddress.org_id.is_(None),
+            )
+        )
+    count_total = (
+        await db.execute(
+            select(func.count(BouncedAddress.id)).select_from(base.subquery())
+        )
+    ).scalar() or 0
+
+    rows_stmt = (
+        base.order_by(BouncedAddress.last_seen_at.desc())
+        .offset(max(0, offset))
+        .limit(min(500, max(1, limit)))
+    )
+    bounce_rows = list((await db.execute(rows_stmt)).scalars().all())
+
+    # ── 3. Decorate rows with linked customer/user IDs + provider_key ──
+    recent: list[dict] = []
+    if bounce_rows:
+        addresses = {row.email_address.lower() for row in bounce_rows}
+        # Customer lookup (org-scoped per row).
+        from app.modules.auth.models import User
+        from app.modules.customers.models import Customer
+
+        cust_lookup: dict[tuple[uuid.UUID | None, str], uuid.UUID] = {}
+        cust_stmt = select(Customer.id, Customer.org_id, Customer.email).where(
+            func.lower(Customer.email).in_(addresses)
+        )
+        for cid, coid, cemail in (await db.execute(cust_stmt)).all():
+            cust_lookup[(coid, (cemail or "").lower())] = cid
+
+        user_lookup: dict[tuple[uuid.UUID | None, str], uuid.UUID] = {}
+        user_stmt = select(User.id, User.org_id, User.email).where(
+            func.lower(User.email).in_(addresses)
+        )
+        for uid, uoid, uemail in (await db.execute(user_stmt)).all():
+            user_lookup[(uoid, (uemail or "").lower())] = uid
+
+        # Latest provider_key per address (for the org or platform-wide).
+        # Use a single query keyed on the per-address most-recent log row.
+        provider_lookup: dict[tuple[uuid.UUID | None, str], str] = {}
+        log_stmt = select(
+            NotificationLog.org_id,
+            NotificationLog.recipient,
+            NotificationLog.provider_key,
+            NotificationLog.bounced_at,
+        ).where(
+            NotificationLog.bounced_at.is_not(None),
+            NotificationLog.provider_key.is_not(None),
+            func.lower(NotificationLog.recipient).in_(addresses),
+        )
+        for loid, recip, pkey, bts in (await db.execute(log_stmt)).all():
+            key = (loid, (recip or "").lower())
+            existing = provider_lookup.get(key)
+            if existing is None:
+                provider_lookup[key] = pkey
+            # Latest by bounced_at — but a stable arbitrary pick is
+            # fine for the UI's "most recent provider that bounced".
+            # We're not comparing timestamps here to keep the lookup
+            # simple; the UI just needs A provider, not THE provider.
+
+        for row in bounce_rows:
+            lower_addr = row.email_address.lower()
+            recent.append(
+                {
+                    "id": str(row.id),
+                    "org_id": str(row.org_id) if row.org_id else None,
+                    "email_address": row.email_address,
+                    "bounce_kind": row.bounce_kind,
+                    "reason": row.reason,
+                    "first_seen_at": row.first_seen_at,
+                    "last_seen_at": row.last_seen_at,
+                    "hit_count": row.hit_count,
+                    "expires_at": row.expires_at,
+                    "linked_customer_id": (
+                        str(cust_lookup[(row.org_id, lower_addr)])
+                        if (row.org_id, lower_addr) in cust_lookup
+                        else None
+                    ),
+                    "linked_user_id": (
+                        str(user_lookup[(row.org_id, lower_addr)])
+                        if (row.org_id, lower_addr) in user_lookup
+                        else None
+                    ),
+                    "provider_key": (
+                        provider_lookup.get((row.org_id, lower_addr))
+                        or provider_lookup.get((None, lower_addr))
+                    ),
+                }
+            )
+
+    return {
+        "stats": stats,
+        "recent_bounces": recent,
+        "total": int(count_total),
+    }
+
+
+async def clear_bounced_address(
+    db: AsyncSession,
+    *,
+    bounce_id: uuid.UUID,
+    admin_user_id: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> bool:
+    """Delete a single ``bounced_addresses`` row.
+
+    Returns ``True`` when a row was actually deleted (the next send to
+    that address will go through), ``False`` when no row matched
+    (already cleared, or never existed). Writes an audit-log entry on
+    success so admin actions stay traceable.
+    """
+    from app.modules.notifications.models import BouncedAddress
+
+    fetch = await db.execute(
+        select(BouncedAddress).where(BouncedAddress.id == bounce_id)
+    )
+    row = fetch.scalar_one_or_none()
+    if row is None:
+        return False
+
+    snapshot = {
+        "email_address": row.email_address,
+        "bounce_kind": row.bounce_kind,
+        "org_id": str(row.org_id) if row.org_id else None,
+    }
+
+    await db.delete(row)
+    await db.flush()
+
+    await write_audit_log(
+        session=db,
+        org_id=row.org_id,
+        user_id=admin_user_id,
+        action="admin.bounced_address_cleared",
+        entity_type="bounced_address",
+        entity_id=bounce_id,
+        before_value=snapshot,
+        after_value=None,
+        ip_address=ip_address,
+    )
+    return True

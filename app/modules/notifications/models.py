@@ -5,6 +5,7 @@ Tables:
 - notification_log: delivery log for all sent notifications (RLS enabled)
 - overdue_reminder_rules: configurable overdue payment reminder rules (RLS enabled)
 - notification_preferences: per-org notification type preferences (RLS enabled)
+- bounced_addresses: bounce-correlation blocklist (Phase 8c, RLS enabled)
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -351,3 +353,73 @@ class ReminderQueue(Base):
     )
 
     organisation = relationship("Organisation")
+
+
+class BouncedAddress(Base):
+    """Bounce-correlation blocklist row.
+
+    Phase 8c (task 9.2) of the email-provider-unification spec. The
+    table backs ``_check_bounce_blocklist`` in
+    ``app/integrations/email_sender.py`` — the pre-send check that
+    short-circuits delivery to known-bad recipients — and stores rows
+    upserted by the Brevo / SendGrid bounce webhook handlers via
+    :func:`app.modules.notifications.bounce_correlation.flag_bounce`.
+
+    Columns mirror migration 0197 verbatim. ``org_id`` is nullable: a
+    NULL value means the row applies platform-wide (visible to every
+    tenant), a non-NULL value scopes it to one organisation.
+    ``bounce_kind`` is one of ``hard`` / ``soft`` / ``blocked``; hard
+    bounces leave ``expires_at`` NULL (never expire) while soft and
+    blocked bounces have it set seven days out by the webhook handler
+    so the daily cleanup task can prune them.
+    """
+
+    __tablename__ = "bounced_addresses"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    org_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    email_address: Mapped[str] = mapped_column(Text, nullable=False)
+    bounce_kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    hit_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="1"
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "bounce_kind IN ('hard', 'soft', 'blocked')",
+            name="ck_bounced_addresses_kind",
+        ),
+        # Functional unique index lives in the migration (PG-specific
+        # COALESCE / LOWER), declared here without the expression so
+        # SQLAlchemy still records the constraint name for tooling.
+        Index(
+            "ix_bounced_addresses_email",
+            func.lower(email_address),
+        ),
+        Index(
+            "ix_bounced_addresses_expires",
+            "expires_at",
+            postgresql_where="expires_at IS NOT NULL",
+        ),
+    )
+
+    organisation = relationship("Organisation", backref="bounced_addresses")
