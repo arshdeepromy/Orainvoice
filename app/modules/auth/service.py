@@ -603,6 +603,7 @@ async def _check_anomalous_login(
             ip_address=ip_address,
             device_type=device_type,
             browser=browser,
+            org_id=user.org_id,
         )
 
         await write_audit_log(
@@ -630,23 +631,184 @@ async def _send_anomalous_login_alert(
     ip_address: str | None,
     device_type: str | None,
     browser: str | None,
+    org_id: uuid.UUID | None = None,
 ) -> None:
-    """Send an email alert about an anomalous login with a 'This wasn't me' link.
+    """Send a security alert about an anomalous login attempt.
 
-    In production this dispatches via the notification infrastructure.
-    The 'This wasn't me' link points to the session invalidation endpoint.
+    Implemented in Phase 4 task 4.2 (C2) of the
+    email-provider-unification spec. Dispatch goes through
+    :func:`app.integrations.email_sender.send_email`, which owns
+    failover, error classification, and per-attempt + total time
+    budgets.
+
+    Per design row C2 of the per-site variation table:
+
+    - ``EmailMessage.org_id`` is set to ``org_id`` when known (passed
+      in by ``_check_anomalous_login`` from ``user.org_id``), else
+      ``None``. The bounce-blocklist pre-check scopes accordingly.
+    - **Caller opens its own session.** Mirrors A7 — the caller's
+      ``AsyncSession`` is mid-transaction in ``authenticate_user`` and
+      may be torn down by the time this best-effort send fires. We
+      open a dedicated session via ``async_session_factory`` and pass
+      it to ``send_email``.
+    - **No** ``log_email_sent`` and **no** ``create_in_app_notification``
+      on failure — the auth-flow carve-out (in-app-notifications
+      design §4.2) keeps security-path emails out of org notification
+      logs.
+    - Wrapped in a top-level ``try`` / ``except`` so a delivery failure
+      never blocks login (best-effort security alert).
+
+    Requirements: 8.2
     """
-    logger.warning(
-        "Anomalous login detected for %s — anomalies: %s, IP: %s, device: %s. "
-        "Alert email with 'This wasn't me' link queued.",
-        email,
-        anomalies,
-        ip_address,
-        device_type,
-    )
-    # TODO: Replace with Celery task dispatching a real email via
-    # app.integrations.brevo. The email should contain a signed link to
-    # POST /api/v1/auth/sessions/invalidate-all?token=<signed_token>
+    try:
+        from app.core.database import async_session_factory
+        from app.integrations.email_sender import EmailMessage, send_email
+
+        timestamp = datetime.now(timezone.utc)
+        timestamp_str = timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+        security_url = (
+            f"{getattr(settings, 'frontend_base_url', '') or 'http://localhost'}"
+            f"/account/security"
+        )
+        reset_url = (
+            f"{getattr(settings, 'frontend_base_url', '') or 'http://localhost'}"
+            f"/reset-password"
+        )
+
+        # Build a human-readable details block, omitting fields we
+        # don't have. The device fingerprint is a composite of
+        # device_type + browser when available.
+        device_fingerprint_parts = [p for p in (device_type, browser) if p]
+        device_fingerprint = (
+            " · ".join(device_fingerprint_parts) if device_fingerprint_parts else None
+        )
+
+        subject = "Security alert: unusual sign-in to your OraInvoice account"
+
+        details_rows_html = [
+            f"<tr><td style='padding:6px 12px;color:#6b7280;'>When</td>"
+            f"<td style='padding:6px 12px;color:#111827;'>{timestamp_str}</td></tr>"
+        ]
+        if ip_address:
+            details_rows_html.append(
+                f"<tr><td style='padding:6px 12px;color:#6b7280;'>IP address</td>"
+                f"<td style='padding:6px 12px;color:#111827;'>{ip_address}</td></tr>"
+            )
+        if device_fingerprint:
+            details_rows_html.append(
+                f"<tr><td style='padding:6px 12px;color:#6b7280;'>Device</td>"
+                f"<td style='padding:6px 12px;color:#111827;'>{device_fingerprint}</td></tr>"
+            )
+
+        html_body = f"""
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: #b91c1c; font-size: 24px; margin: 0;">Unusual sign-in detected</h1>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+            We noticed a sign-in to your OraInvoice account that doesn't
+            match your usual pattern. The details are below.
+          </p>
+
+          <table style="border-collapse: collapse; margin: 20px 0; width: 100%; font-size: 14px;">
+            {''.join(details_rows_html)}
+          </table>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+            <strong>If this was you</strong>, you can ignore this email.
+          </p>
+
+          <p style="color: #b91c1c; font-size: 16px; line-height: 1.6;">
+            <strong>If this wasn't you, change your password immediately</strong>
+            and review your active sessions.
+          </p>
+
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="{reset_url}"
+               style="display: inline-block; padding: 14px 32px; background-color: #b91c1c;
+                      color: #ffffff; text-decoration: none; border-radius: 8px;
+                      font-size: 16px; font-weight: 600;">
+              Change Password
+            </a>
+          </div>
+
+          <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+            You can also review your account security at:
+            <a href="{security_url}" style="color: #2563eb; word-break: break-all;">{security_url}</a>
+          </p>
+
+          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;" />
+
+          <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+            OraInvoice — Invoicing made simple
+          </p>
+        </div>
+        """
+
+        text_lines = [
+            "Unusual sign-in detected on your OraInvoice account.",
+            "",
+            f"When: {timestamp_str}",
+        ]
+        if ip_address:
+            text_lines.append(f"IP address: {ip_address}")
+        if device_fingerprint:
+            text_lines.append(f"Device: {device_fingerprint}")
+        text_lines.extend(
+            [
+                "",
+                "If this was you, you can ignore this email.",
+                "",
+                "If this wasn't you, change your password immediately and "
+                "review your active sessions:",
+                f"  Change password: {reset_url}",
+                f"  Account security: {security_url}",
+                "",
+            ]
+        )
+        text_body = "\n".join(text_lines)
+
+        async with async_session_factory() as session:
+            message = EmailMessage(
+                to_email=email,
+                to_name="",
+                subject=subject,
+                html_body=html_body,
+                text_body=text_body,
+                attachments=[],
+                # Per design row C2: scope to the user's org when we
+                # know it, otherwise platform-wide. The bounce-blocklist
+                # pre-check uses this scope.
+                org_id=org_id,
+            )
+            result = await send_email(session, message)
+
+        if result.success:
+            logger.info(
+                "Anomalous-login alert sent to %s via %s (anomalies: %s)",
+                email,
+                result.provider_key,
+                anomalies,
+            )
+            return
+
+        # No org admin to notify in v1 (auth-flow carve-out — see
+        # in-app-notifications design §4.2). Total failure logged at
+        # WARNING; a delivery error must never block the login flow.
+        last_error = result.error or "send failed"
+        logger.warning(
+            "All email providers failed for anomalous-login alert to %s: %s "
+            "(anomalies: %s)",
+            email,
+            last_error,
+            anomalies,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to send anomalous-login alert to %s",
+            email,
+        )
 
 
 async def invalidate_all_sessions(
@@ -849,21 +1011,125 @@ async def _invalidate_family(db: AsyncSession, family_id: uuid.UUID) -> None:
 
 
 async def _send_token_reuse_alert(email: str) -> None:
-    """Send an email alert about potential token theft.
+    """Send a security alert when a refresh-token replay is detected.
 
-    In production this dispatches via the notification infrastructure
-    (Brevo/SendGrid).  For now we log the intent so the flow is wired up
-    and easily replaceable.
+    Implemented in Phase 4 task 4.3 (C1) of the
+    email-provider-unification spec. Dispatch goes through
+    :func:`app.integrations.email_sender.send_email`, which owns
+    failover, error classification, and per-attempt + total time
+    budgets.
+
+    Per design row C1 of the per-site variation table:
+
+    - ``EmailMessage.org_id = None`` — sessions are org-agnostic; a
+      single user can hold sessions across multiple orgs (e.g. a
+      consultant). The bounce-blocklist pre-check falls through to
+      platform-wide rows.
+    - **Caller opens its own session.** Mirrors A7 / C2 — the caller's
+      ``AsyncSession`` is mid-transaction in ``rotate_refresh_token``
+      and may be torn down by the time this best-effort send fires.
+      We open a dedicated session via ``async_session_factory`` and
+      pass it to ``send_email``.
+    - **No** ``log_email_sent`` and **no**
+      ``create_in_app_notification`` on failure — auth-flow carve-out
+      (in-app-notifications design §4.2).
+    - Wrapped in a top-level ``try`` / ``except`` so a delivery failure
+      never blocks the rotation path; ``rotate_refresh_token`` already
+      raises ``ValueError`` to signal the reuse to the caller.
+
+    Requirements: 8.3
     """
-    import logging
+    try:
+        from app.core.database import async_session_factory
+        from app.integrations.email_sender import EmailMessage, send_email
 
-    logger = logging.getLogger(__name__)
-    logger.warning(
-        "Token reuse detected — security alert email queued for %s",
-        email,
-    )
-    # TODO: Replace with Celery task dispatching a real email via
-    # app.integrations.brevo once the Notification_Module is implemented.
+        sessions_url = (
+            f"{getattr(settings, 'frontend_base_url', '') or 'http://localhost'}"
+            f"/account/sessions"
+        )
+
+        subject = "Security alert: refresh token replay detected"
+
+        html_body = f"""
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: #b91c1c; font-size: 24px; margin: 0;">Sessions invalidated</h1>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+            We detected a refresh token replay attempt on your OraInvoice
+            account. As a precaution, all of your active sessions have
+            been invalidated. Please sign in again to continue.
+          </p>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+            If you did not trigger this, your account credentials may be
+            compromised — change your password and review your active
+            sessions.
+          </p>
+
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="{sessions_url}"
+               style="display: inline-block; padding: 14px 32px; background-color: #b91c1c;
+                      color: #ffffff; text-decoration: none; border-radius: 8px;
+                      font-size: 16px; font-weight: 600;">
+              Review Active Sessions
+            </a>
+          </div>
+
+          <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+            Or copy and paste this link into your browser:<br/>
+            <a href="{sessions_url}" style="color: #2563eb; word-break: break-all;">{sessions_url}</a>
+          </p>
+
+          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;" />
+
+          <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+            OraInvoice — Invoicing made simple
+          </p>
+        </div>
+        """
+
+        text_body = (
+            "We detected a refresh token replay attempt on your OraInvoice "
+            "account. As a precaution, all of your active sessions have "
+            "been invalidated. Please sign in again.\n\n"
+            "If you did not trigger this, your credentials may be "
+            "compromised — change your password and review your active "
+            "sessions:\n"
+            f"{sessions_url}\n"
+        )
+
+        async with async_session_factory() as session:
+            message = EmailMessage(
+                to_email=email,
+                to_name="",
+                subject=subject,
+                html_body=html_body,
+                text_body=text_body,
+                attachments=[],
+                # Per design row C1: sessions are org-agnostic — a
+                # single user may hold sessions across multiple orgs.
+                org_id=None,
+            )
+            result = await send_email(session, message)
+
+        if result.success:
+            logger.info(
+                "Token-reuse alert sent to %s via %s",
+                email,
+                result.provider_key,
+            )
+            return
+
+        last_error = result.error or "send failed"
+        logger.warning(
+            "All email providers failed for token-reuse alert to %s: %s",
+            email,
+            last_error,
+        )
+    except Exception:
+        logger.exception("Failed to send token-reuse alert to %s", email)
 
 
 async def authenticate_google(
