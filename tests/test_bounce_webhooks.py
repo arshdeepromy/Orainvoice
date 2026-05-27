@@ -349,3 +349,50 @@ class TestRouteRegistration:
 
     def test_sendgrid_route(self):
         assert "/webhooks/sendgrid-bounce" in [p for p, _ in self._routes()]
+
+
+class TestWebhooksAreRegisteredAsPublicPaths:
+    """The bounce webhooks must skip JWT auth — Brevo and SendGrid sign
+    payloads with a per-provider secret stored in
+    ``email_providers.config``, and the handlers verify that signature
+    before processing. JWT auth would just block legitimate webhook
+    deliveries with a 401 before the handler ever ran.
+
+    Pinned here as a regression guard so a future refactor of
+    ``PUBLIC_PATHS`` can't accidentally re-introduce the auth gap.
+
+    Validates: Requirements 13.1, 13.2 (signature-verified webhooks
+    must be reachable from the provider's webhook delivery worker)
+    """
+
+    def test_brevo_v1_webhook_is_public(self):
+        from app.middleware.auth import PUBLIC_PATHS
+
+        assert "/api/v1/notifications/webhooks/brevo-bounce" in PUBLIC_PATHS
+
+    def test_sendgrid_v1_webhook_is_public(self):
+        from app.middleware.auth import PUBLIC_PATHS
+
+        assert "/api/v1/notifications/webhooks/sendgrid-bounce" in PUBLIC_PATHS
+
+    def test_brevo_v2_webhook_is_public(self):
+        from app.middleware.auth import PUBLIC_PATHS
+
+        assert "/api/v2/notifications/webhooks/brevo-bounce" in PUBLIC_PATHS
+
+    def test_sendgrid_v2_webhook_is_public(self):
+        from app.middleware.auth import PUBLIC_PATHS
+
+        assert "/api/v2/notifications/webhooks/sendgrid-bounce" in PUBLIC_PATHS
+
+    def test_is_public_helper_returns_true_for_webhook_paths(self):
+        """Spot-check the ``_is_public`` helper since that's what the
+        ASGI middleware actually calls — set membership alone isn't
+        sufficient if the helper logic ever changes shape.
+        """
+        from app.middleware.auth import _is_public
+
+        assert _is_public("/api/v1/notifications/webhooks/brevo-bounce")
+        assert _is_public("/api/v1/notifications/webhooks/sendgrid-bounce")
+        assert _is_public("/api/v2/notifications/webhooks/brevo-bounce")
+        assert _is_public("/api/v2/notifications/webhooks/sendgrid-bounce")

@@ -97,6 +97,15 @@ PUBLIC_PATHS: set[str] = {
     "/api/webhooks/connexus/incoming",
     "/api/webhooks/connexus/status",
     "/api/webhooks/xero",
+    # Email-provider bounce webhooks — Phase 8c of the
+    # email-provider-unification spec. Brevo and SendGrid sign their
+    # webhook payloads with a per-provider secret stored in
+    # email_providers.config; the handlers verify the signature
+    # before processing, so JWT auth would just block delivery.
+    "/api/v1/notifications/webhooks/brevo-bounce",
+    "/api/v1/notifications/webhooks/sendgrid-bounce",
+    "/api/v2/notifications/webhooks/brevo-bounce",
+    "/api/v2/notifications/webhooks/sendgrid-bounce",
     "/api/v1/ha/heartbeat",
     "/api/v1/ha/status",
     "/api/v2/trade-families",
