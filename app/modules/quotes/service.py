@@ -986,15 +986,16 @@ async def send_quote(
                 quote_obj.acceptance_token = secrets.token_urlsafe(32)
             await db.flush()
 
-    # Send the email with PDF attachment using EmailProvider (same as invoice email)
-    import json as _json
-    import smtplib
-    from email.mime.application import MIMEApplication
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-
-    from app.core.encryption import envelope_decrypt_str
-    from app.modules.admin.models import EmailProvider
+    # Send the email with PDF attachment via the unified sender
+    # (:mod:`app.integrations.email_sender`). Failover, error
+    # classification, per-attempt + total time budgets are all handled
+    # inside ``send_email``. This was migrated from a hand-rolled
+    # ``smtplib`` provider loop in Phase 3 task 3.3 (A3).
+    from app.integrations.email_sender import (
+        EmailAttachment,
+        EmailMessage,
+        send_email,
+    )
 
     org_result2 = await db.execute(
         select(Organisation).where(Organisation.id == org_id)
@@ -1078,87 +1079,40 @@ async def send_quote(
             f"Kind regards,\n{org_name}\n"
         )
 
-    # Find all active email providers ordered by priority (failover)
-    provider_result = await db.execute(
-        select(EmailProvider)
-        .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
-        .order_by(EmailProvider.priority)
+    # Build HTML body with conditional email signature (mirrors the
+    # previous in-line MIME builder: newline → ``<br>`` plus an
+    # ``<hr>``-separated signature when one is configured on the org).
+    _html_body = _email_body.replace("\n", "<br>")
+    _email_signature_enabled = org_settings.get("email_signature_enabled", False)
+    _email_signature = org_settings.get("email_signature", "") or ""
+    if _email_signature_enabled and _email_signature.strip():
+        _html_body += "<hr>" + _email_signature
+
+    # The legacy code set ``Reply-To`` to ``org_settings['email']`` when
+    # configured. The unified sender's ``org_reply_to`` override drives
+    # the same header regardless of which provider in the failover chain
+    # ultimately delivers the message (see Requirement 4.3).
+    _org_reply_to = org_settings.get("email") or None
+
+    _message = EmailMessage(
+        to_email=recipient_email,
+        to_name="",
+        subject=_email_subject,
+        html_body=_html_body,
+        text_body=_email_body,
+        attachments=[
+            EmailAttachment(
+                filename=f"{quote_dict['quote_number']}.pdf",
+                content=pdf_bytes,
+                mime_type="application/pdf",
+            )
+        ],
+        org_id=org_id,
     )
-    providers = list(provider_result.scalars().all())
+    result = await send_email(db, _message, org_reply_to=_org_reply_to)
 
-    if not providers:
-        raise ValueError(
-            "No active email provider configured. Please set up an email provider in Admin > Email Providers."
-        )
-
-    def _build_message(from_name: str, from_email: str) -> MIMEMultipart:
-        msg = MIMEMultipart("mixed")
-        msg["From"] = f"{from_name} <{from_email}>"
-        msg["To"] = recipient_email
-        msg["Subject"] = _email_subject
-        reply_to = org_settings.get("email")
-        if reply_to:
-            msg["Reply-To"] = reply_to
-
-        body = _email_body
-
-        # Build HTML body with conditional email signature
-        html_body = body.replace("\n", "<br>")
-        _email_signature_enabled = org_settings.get("email_signature_enabled", False)
-        _email_signature = org_settings.get("email_signature", "") or ""
-        if _email_signature_enabled and _email_signature.strip():
-            html_body += "<hr>" + _email_signature
-
-        msg.attach(MIMEText(html_body, "html"))
-
-        pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
-        pdf_attachment.add_header(
-            "Content-Disposition", "attachment",
-            filename=f"{quote_dict['quote_number']}.pdf",
-        )
-        msg.attach(pdf_attachment)
-        return msg
-
-    # Try each provider in priority order until one succeeds
-    last_error = None
-    used_provider = None
-
-    for provider in providers:
-        try:
-            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-            credentials = _json.loads(creds_json)
-
-            smtp_host = provider.smtp_host
-            smtp_port = provider.smtp_port or 587
-            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-            username = credentials.get("username") or credentials.get("api_key", "")
-            password = credentials.get("password") or credentials.get("api_key", "")
-
-            config = provider.config or {}
-            from_email = config.get("from_email") or username
-            from_name = config.get("from_name") or org_name
-
-            msg = _build_message(from_name, from_email)
-
-            if smtp_encryption == "ssl":
-                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-            else:
-                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-                if smtp_encryption == "tls":
-                    server.starttls()
-
-            if username and password:
-                server.login(username, password)
-
-            server.sendmail(from_email, recipient_email, msg.as_string())
-            server.quit()
-            used_provider = provider
-            break
-        except Exception as e:
-            last_error = e
-            continue
-
-    if used_provider is None:
+    if not result.success:
+        last_error = result.error or "send failed"
         error_msg = f"All email providers failed. Last error: {last_error}"
 
         # Log the failed email attempt for parity with customers pattern
@@ -1207,7 +1161,7 @@ async def send_quote(
             "quote_number": quote_dict["quote_number"],
             "pdf_size_bytes": len(pdf_bytes),
             "email_sent": True,
-            "provider": used_provider.provider_key,
+            "provider": result.provider_key,
         },
         ip_address=ip_address,
     )
