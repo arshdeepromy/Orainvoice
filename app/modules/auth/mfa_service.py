@@ -368,78 +368,48 @@ async def _send_sms_otp(db: AsyncSession, phone_number: str, code: str) -> None:
 
 
 async def _send_email_otp(db: AsyncSession, email: str, code: str) -> None:
-    """Send an OTP code via the active EmailProvider (highest priority).
+    """Send an OTP code via the unified email sender.
 
-    Resolves the active ``EmailProvider`` with the highest priority,
-    decrypts its SMTP credentials, and sends a branded OTP email.
-    Falls back to the legacy ``IntegrationConfig`` SMTP entry if no
-    ``EmailProvider`` is active.
+    Migrated from a hand-rolled ``smtplib`` + ``EmailProvider`` loop in
+    Phase 3 task 3.11 (A11) of the email-provider-unification spec.
+    Dispatch goes through :func:`app.integrations.email_sender.send_email`,
+    which owns failover, error classification, and per-attempt + total
+    time budgets.
 
-    Raises ``RuntimeError`` if no email provider is configured.
+    Per the per-site variation table in
+    ``.kiro/specs/email-provider-unification/design.md`` row A11:
+
+    - ``EmailMessage.org_id`` is ``None``. The MFA challenge runs
+      before the user has any org-bound auth state, and email-change
+      OTPs are user-scoped — there is no useful org context to scope
+      the bounce blocklist by.
+    - ``org_sender_name`` is not passed; the From header reads as the
+      provider's configured name (typically the platform).
+    - **MUST raise ``RuntimeError`` on ``not result.success``.** The
+      MFA challenge contract relies on the OTP being delivered — if
+      no provider can send it, the caller must surface the failure to
+      the user so the challenge is aborted rather than silently
+      stalling. This is the A11-specific deviation from A7-A10 (which
+      log and return ``None`` because they are best-effort sends).
+
+    Also fixes BUG-2: the legacy implementation had ``.limit(1)`` on
+    the EmailProvider query so only the highest-priority provider was
+    ever tried. The unified sender loads the full
+    Active_Provider_Set and walks through it in priority order.
+
+    Raises:
+        RuntimeError: if no provider can deliver the OTP. The error
+            message is ``f"MFA email send failed: {result.error}"`` so
+            the caller can log it without leaking provider details to
+            the user.
+
+    Requirements: 6.1, 6.6
     """
-    import json
-    import smtplib
-    import ssl
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-
-    from app.core.encryption import envelope_decrypt_str
-    from app.modules.admin.models import EmailProvider
-
-    # Resolve the active provider with highest priority (lowest number = highest priority)
-    stmt = (
-        select(EmailProvider)
-        .where(
-            EmailProvider.is_active == True,  # noqa: E712
-            EmailProvider.credentials_set == True,  # noqa: E712
-        )
-        .order_by(EmailProvider.priority)
-        .limit(1)
-    )
-    result = await db.execute(stmt)
-    provider = result.scalar_one_or_none()
-
-    if provider is None or not provider.credentials_encrypted:
-        raise RuntimeError("No active email provider configured. Please set up an email provider in admin settings.")
-
-    # Decrypt credentials
-    try:
-        creds = json.loads(envelope_decrypt_str(provider.credentials_encrypted))
-    except Exception:
-        logger.exception("Failed to decrypt email provider credentials for %s", provider.provider_key)
-        raise RuntimeError("Email provider credentials could not be decrypted")
-
-    smtp_host = provider.smtp_host
-    smtp_port = provider.smtp_port or 587
-    smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-    username = creds.get("username") or creds.get("api_key", "")
-    password = creds.get("password") or creds.get("api_key", "")
-
-    config = provider.config or {}
-    from_email = config.get("from_email", "noreply@oraflows.co.nz")
-    from_name = config.get("from_name", "OraInvoice")
-
-    if not smtp_host:
-        # Fallback hosts for known providers
-        _default_hosts = {
-            "brevo": "smtp-relay.brevo.com",
-            "sendgrid": "smtp.sendgrid.net",
-            "gmail": "smtp.gmail.com",
-            "outlook": "smtp.office365.com",
-            "mailgun": "smtp.mailgun.org",
-        }
-        smtp_host = _default_hosts.get(provider.provider_key)
-        if not smtp_host:
-            raise RuntimeError(f"SMTP host not configured for email provider '{provider.display_name}'")
+    from app.integrations.email_sender import EmailMessage, send_email
 
     platform_name = await _get_platform_name(db)
 
-    # Build the email
-    msg = MIMEMultipart("alternative")
-    msg["From"] = f"{from_name} <{from_email}>"
-    msg["To"] = email
-    msg["Subject"] = f"Your {platform_name} verification code"
-
+    subject = f"Your {platform_name} verification code"
     text_body = (
         f"Your {platform_name} verification code is: {code}\n\n"
         "This code expires in 10 minutes. If you did not request this, please ignore this email."
@@ -453,27 +423,39 @@ async def _send_email_otp(db: AsyncSession, email: str, code: str) -> None:
         f'<p style="color:#6B7280;font-size:14px">This code expires in 10 minutes.<br>'
         f'If you did not request this, please ignore this email.</p></div>'
     )
-    msg.attach(MIMEText(text_body, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
 
-    # Send via SMTP
-    try:
-        if smtp_encryption == "ssl":
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-        else:
-            server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-            if smtp_encryption == "tls":
-                server.starttls(context=ssl.create_default_context())
+    message = EmailMessage(
+        to_email=email,
+        to_name="",
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        attachments=[],
+        # No org context: MFA challenge runs before org-bound auth
+        # state is available; email-change OTP is user-scoped.
+        org_id=None,
+    )
 
-        if username and password:
-            server.login(username, password)
+    result = await send_email(db, message)
 
-        server.sendmail(from_email, email, msg.as_string())
-        server.quit()
-        logger.info("Email OTP sent to %s via %s", email, provider.provider_key)
-    except Exception:
-        logger.exception("Failed to send email OTP to %s via %s", email, provider.provider_key)
-        raise RuntimeError("Verification email could not be sent. Please try again.")
+    if not result.success:
+        # MFA challenge contract: the caller cannot proceed without
+        # the OTP, so surface the failure as a RuntimeError. The
+        # unified sender already logged each attempt's failure_kind;
+        # log a single summary line here so operators can grep the
+        # MFA layer for delivery failures.
+        logger.warning(
+            "MFA email OTP send failed for %s: %s",
+            email,
+            result.error,
+        )
+        raise RuntimeError(f"MFA email send failed: {result.error}")
+
+    logger.info(
+        "Email OTP sent to %s via %s",
+        email,
+        result.provider_key,
+    )
 
 
 # ---------------------------------------------------------------------------
