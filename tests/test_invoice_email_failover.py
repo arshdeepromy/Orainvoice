@@ -835,3 +835,339 @@ class TestA2SendPaymentReminderFailover:
         assert ian_kwargs["entity_type"] == "invoice"
         assert ian_kwargs["entity_id"] == INVOICE_ID
         assert "casey@example.com" in ian_kwargs["title"]
+
+
+# ---------------------------------------------------------------------------
+# A14 — send_invoice_payment_link_email
+# ---------------------------------------------------------------------------
+
+
+def _make_payment_link_invoice_orm() -> MagicMock:
+    """Mock an Invoice ORM row used by ``send_invoice_payment_link_email``.
+
+    Pre-populates ``payment_page_url`` so the test bypasses the
+    ``_maybe_create_stripe_payment_intent`` regen branch (which would
+    otherwise need its own mock). ``invoice_data_json['payment_gateway']``
+    is already ``"stripe"`` so the ``flag_modified`` + ``db.flush()``
+    branch is also skipped, keeping the ``db.execute`` side-effect list
+    short and predictable.
+    """
+    inv_obj = MagicMock()
+    inv_obj.id = INVOICE_ID
+    inv_obj.org_id = ORG_ID
+    inv_obj.customer_id = CUSTOMER_ID
+    inv_obj.status = "issued"
+    inv_obj.invoice_number = "INV-9001"
+    inv_obj.issue_date = date(2024, 6, 15)
+    inv_obj.due_date = date(2024, 7, 15)
+    inv_obj.currency = "NZD"
+    inv_obj.balance_due = Decimal("100.00")
+    inv_obj.amount_paid = Decimal("0.00")
+    inv_obj.payment_page_url = "https://app.example.com/pay/inv-9001-token"
+    inv_obj.invoice_data_json = {"payment_gateway": "stripe"}
+    return inv_obj
+
+
+def _make_stripe_connected_org() -> MagicMock:
+    """Mock an Organisation ORM row that has Stripe Connect configured.
+
+    The A14 path requires ``stripe_connect_account_id`` to be truthy
+    before it will email the payment link. ``settings`` is an empty dict
+    so the default subject/body fallbacks render without surprises (the
+    template resolution is patched out anyway).
+    """
+    org = MagicMock()
+    org.id = ORG_ID
+    org.name = "Test Workshop Ltd"
+    org.stripe_connect_account_id = "acct_test_1234"
+    org.settings = {}
+    return org
+
+
+def _make_payment_link_customer() -> MagicMock:
+    """Mock a Customer ORM row with an email on file (A14 prereq)."""
+    cust = MagicMock()
+    cust.id = CUSTOMER_ID
+    cust.org_id = ORG_ID
+    cust.email = "casey@example.com"
+    cust.first_name = "Casey"
+    cust.last_name = "Tester"
+    return cust
+
+
+class TestA14SendInvoicePaymentLinkEmailFailover:
+    """End-to-end failover for ``send_invoice_payment_link_email`` (task 3.14).
+
+    A14 does **not** loop over providers itself — it delegates the
+    actual send to ``_send_receipt_email`` (migrated in task 3.4 / A4),
+    which calls :func:`app.integrations.email_sender.send_email` with
+    ``template_type="invoice_issued"`` and the invoice PDF as an
+    optional attachment. These tests pin the failover end-to-end:
+
+    1. ``send_email`` is invoked once (no manual ``smtplib`` loop has
+       leaked back into the call site).
+    2. ``EmailMessage.org_id`` is the invoice's ``org_id`` (the unified
+       sender resolves a per-call recipient blocklist from this).
+    3. The audit-log entry (``payment.payment_link_emailed``) fires
+       after the send returns — explicitly required by the task.
+    4. On all-providers-failed, the in-app notification preserved
+       inside ``_send_receipt_email`` (``category='email_failure'``)
+       still fires; the function does not raise (best-effort contract,
+       matching the original implementation).
+
+    Validates: Requirements 6.1, 6.3, 6.8
+    """
+
+    @pytest.mark.asyncio
+    async def test_failover_to_second_provider_succeeds(self) -> None:
+        """Brevo 401 → SendGrid 202 → audit log entry written.
+
+        Pins the contract that the migrated
+        ``send_invoice_payment_link_email``:
+
+        1. Calls ``send_email`` exactly once (no manual ``smtplib`` loop
+           leaks back in via ``_send_receipt_email``).
+        2. Surfaces both REST URLs as POSTed in priority order — Brevo
+           first, then SendGrid. Failure on the first must not abort
+           the chain.
+        3. Returns the canonical A14 envelope: ``invoice_id``,
+           ``recipient_email``, and ``payment_page_url`` echoed back.
+        4. Writes an audit-log entry with action
+           ``payment.payment_link_emailed`` (preserved per task 3.14;
+           audit-log preservation is the explicit Req 6.8 hook for
+           A14).
+
+        Validates: Requirements 6.1, 6.3, 6.8
+        """
+        invoice_obj = _make_payment_link_invoice_orm()
+        customer = _make_payment_link_customer()
+        org = _make_stripe_connected_org()
+
+        brevo_provider = _make_provider("brevo", priority=1)
+        sendgrid_provider = _make_provider("sendgrid", priority=2)
+
+        db = AsyncMock()
+        # Order of db.execute calls in the success path:
+        #   1. select(Invoice)        — in send_invoice_payment_link_email
+        #   2. select(Customer)       — in send_invoice_payment_link_email
+        #   3. select(Organisation)   — in send_invoice_payment_link_email
+        #   4. select(Organisation)   — in _send_receipt_email (org_name)
+        #   5. select(Customer)       — in _send_receipt_email (template vars)
+        # The active-provider query lives inside send_email and is
+        # bypassed by the _load_active_providers patch below — so it
+        # does not appear here.
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalar_one_or_none_result(invoice_obj),
+                _scalar_one_or_none_result(customer),
+                _scalar_one_or_none_result(org),
+                _scalar_one_or_none_result(org),
+                _scalar_one_or_none_result(customer),
+            ]
+        )
+
+        load_providers_stub = AsyncMock(
+            return_value=[brevo_provider, sendgrid_provider]
+        )
+        blocklist_stub = AsyncMock(return_value=(False, None))
+        audit_log_stub = AsyncMock()
+
+        # Reset the fake client's recorded URLs so this test is order-
+        # independent within the suite.
+        _FakeClient.posted_urls = []
+
+        with patch(
+            "app.modules.payments.service.write_audit_log",
+            new=audit_log_stub,
+        ), patch(
+            "app.modules.invoices.service.generate_invoice_pdf",
+            new_callable=AsyncMock,
+            return_value=b"%PDF-fake-bytes",
+        ), patch(
+            "app.modules.notifications.service.resolve_template",
+            new_callable=AsyncMock,
+            return_value=None,
+        ), patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.integrations.email_sender.envelope_decrypt_str",
+            return_value='{"api_key": "test-api-key"}',
+        ), patch(
+            "app.integrations.email_sender.httpx.AsyncClient",
+            _FakeClient,
+        ):
+            from app.modules.payments.service import (
+                send_invoice_payment_link_email,
+            )
+
+            result = await send_invoice_payment_link_email(
+                db,
+                org_id=ORG_ID,
+                user_id=uuid.uuid4(),
+                invoice_id=INVOICE_ID,
+            )
+
+        # 1. The function returns the A14 contract.
+        assert result["invoice_id"] == INVOICE_ID
+        assert result["recipient_email"] == "casey@example.com"
+        assert (
+            result["payment_page_url"]
+            == "https://app.example.com/pay/inv-9001-token"
+        )
+
+        # 2. Both REST endpoints were hit in priority order — Brevo
+        #    first (401, SOFT_AUTH), then SendGrid (202, success).
+        assert _FakeClient.posted_urls == [
+            _FakeClient.BREVO_URL,
+            _FakeClient.SENDGRID_URL,
+        ]
+
+        # 3. Provider chain was loaded once and the bounce-blocklist
+        #    pre-check fired exactly once.
+        load_providers_stub.assert_awaited_once()
+        blocklist_stub.assert_awaited_once()
+
+        # 4. Audit log was written with the A14 action — Req 6.8 explicitly
+        #    requires audit-log calls to be preserved through the
+        #    migration.
+        audit_log_stub.assert_awaited_once()
+        _audit_args, audit_kwargs = audit_log_stub.await_args
+        assert audit_kwargs["action"] == "payment.payment_link_emailed"
+        assert audit_kwargs["entity_type"] == "invoice"
+        assert audit_kwargs["entity_id"] == INVOICE_ID
+        assert audit_kwargs["after_value"]["recipient_email"] == "casey@example.com"
+        assert (
+            audit_kwargs["after_value"]["payment_page_url"]
+            == "https://app.example.com/pay/inv-9001-token"
+        )
+
+    @pytest.mark.asyncio
+    async def test_all_providers_fail_creates_in_app_notification(
+        self,
+    ) -> None:
+        """When every provider returns ``SOFT_AUTH`` the inner
+        ``_send_receipt_email`` fires
+        ``create_in_app_notification(category='email_failure')`` (its
+        best-effort failure path) and ``send_invoice_payment_link_email``
+        completes normally — it does NOT raise. The audit-log entry
+        still fires because the original implementation always wrote
+        the audit log after the email attempt regardless of delivery
+        outcome (Req 6.8 — preserve audit-log calls).
+
+        Validates: Requirements 6.3, 6.8
+        """
+        invoice_obj = _make_payment_link_invoice_orm()
+        customer = _make_payment_link_customer()
+        org = _make_stripe_connected_org()
+
+        brevo_provider = _make_provider("brevo", priority=1)
+        sendgrid_provider = _make_provider("sendgrid", priority=2)
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalar_one_or_none_result(invoice_obj),
+                _scalar_one_or_none_result(customer),
+                _scalar_one_or_none_result(org),
+                _scalar_one_or_none_result(org),
+                _scalar_one_or_none_result(customer),
+            ]
+        )
+
+        load_providers_stub = AsyncMock(
+            return_value=[brevo_provider, sendgrid_provider]
+        )
+        blocklist_stub = AsyncMock(return_value=(False, None))
+        audit_log_stub = AsyncMock()
+        in_app_stub = AsyncMock()
+
+        # Both providers fail with 401 (SOFT_AUTH). Reuse the all-fail
+        # client shape used by the A1/A2 tests.
+        class _AllFail401Client(_FakeClient):
+            async def post(self, url, json=None, headers=None):  # noqa: A002
+                type(self).posted_urls.append(url)
+                return _FakeResponse(
+                    401,
+                    text='{"code":"unauthorized","message":"invalid api key"}',
+                    headers={"content-type": "application/json"},
+                    json_body={
+                        "code": "unauthorized",
+                        "message": "invalid api key",
+                    },
+                )
+
+        _AllFail401Client.posted_urls = []
+
+        with patch(
+            "app.modules.payments.service.write_audit_log",
+            new=audit_log_stub,
+        ), patch(
+            "app.modules.payments.service.create_in_app_notification",
+            new=in_app_stub,
+        ), patch(
+            "app.modules.invoices.service.generate_invoice_pdf",
+            new_callable=AsyncMock,
+            return_value=b"%PDF-fake-bytes",
+        ), patch(
+            "app.modules.notifications.service.resolve_template",
+            new_callable=AsyncMock,
+            return_value=None,
+        ), patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.integrations.email_sender.envelope_decrypt_str",
+            return_value='{"api_key": "test-api-key"}',
+        ), patch(
+            "app.integrations.email_sender.httpx.AsyncClient",
+            _AllFail401Client,
+        ):
+            from app.modules.payments.service import (
+                send_invoice_payment_link_email,
+            )
+
+            # Best-effort contract: the function does NOT raise on
+            # all-providers-failed. The original raw-smtplib version
+            # also did not raise from this code path.
+            result = await send_invoice_payment_link_email(
+                db,
+                org_id=ORG_ID,
+                user_id=uuid.uuid4(),
+                invoice_id=INVOICE_ID,
+            )
+
+        # The function returned the canonical envelope even though
+        # delivery failed — the in-app notification is the failure
+        # surface, not an exception.
+        assert result["invoice_id"] == INVOICE_ID
+        assert result["recipient_email"] == "casey@example.com"
+
+        # Both providers were attempted (chain not short-circuited by a
+        # HARD_* failure).
+        assert len(_AllFail401Client.posted_urls) == 2
+
+        # create_in_app_notification was called exactly once with the
+        # 'email_failure' category (preserved from the original
+        # raw-smtplib failure handler inside _send_receipt_email).
+        in_app_stub.assert_awaited_once()
+        _ian_args, ian_kwargs = in_app_stub.await_args
+        assert ian_kwargs["category"] == "email_failure"
+        assert ian_kwargs["entity_type"] == "invoice"
+        assert ian_kwargs["entity_id"] == INVOICE_ID
+        assert "casey@example.com" in ian_kwargs["title"]
+
+        # Audit log was still written — Req 6.8 explicitly requires
+        # audit-log calls to survive the migration. The original
+        # implementation always wrote the audit log after the email
+        # attempt, regardless of delivery outcome.
+        audit_log_stub.assert_awaited_once()
+        _audit_args, audit_kwargs = audit_log_stub.await_args
+        assert audit_kwargs["action"] == "payment.payment_link_emailed"
+        assert audit_kwargs["entity_id"] == INVOICE_ID
