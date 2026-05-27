@@ -5091,6 +5091,12 @@ Additional pre-existing collection error not in the Phase 0 scoped set but worth
 
 - `tests/integration/test_notifications.py` — `ModuleNotFoundError: No module named 'app.integrations.twilio_sms'` at collection time. Test file imports a module that does not exist in this branch.
 
+Surfaced again during Phase 2 + 8a scoped run (2026-05-27) — same 27-test failure set, no Phase 2 regressions:
+
+- `tests/test_notification_retry_property.py` (6 tests) — `AttributeError: 'function' object has no attribute 'max_retries'`. The tests were written assuming `send_email_task` / `send_sms_async` were Celery tasks (with a `.max_retries` attribute), but they are plain async functions. Pre-existing test/implementation drift; predates email-provider-unification.
+- `tests/test_email_delivery_tracking.py` (7 tests) — same `Mapper[PartSupplier]` ↔ `Supplier` mapper-resolution failure as the items above. Tests construct `NotificationLog` ORM instances without first calling `configure_mappers()` over the full module graph.
+- `tests/test_email_infrastructure.py` (11 `TestEmailClient` / `TestSendOrgEmail` tests) — these were written against the now-deprecated `EmailClient` class and `send_org_email` function in `app/integrations/brevo.py`. Phase 2 task 2.7 converted those symbols to thin shims around `send_email`, so the test cases that mock `httpx.AsyncClient` / `smtplib.SMTP` and assert on the legacy class' inline transport logic no longer exercise the real send path. **These tests should be rewritten** in a future maintenance pass to drive the unified sender directly (or simply removed once Phase 9 deletes `app/integrations/brevo.py` outright). Failure pattern is consistent across the pre- and post-Phase-2 baselines, confirming this is the expected consequence of the deprecation, not a regression.
+
 **Root Cause**: Three independent pre-existing issues, none related to the email-provider-unification work:
 
 1. The `PartSupplier` ↔ `Supplier` SQLAlchemy mapper resolution drift — the test config does not import the model graph in a way that makes `Supplier` resolvable to the `PartSupplier.supplier` relationship. Root cause is the same class of bug as the older mapper-config issue documented in ISSUE-093 (cross-module relationship strings not resolving without `configure_mappers()`).

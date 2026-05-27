@@ -14,6 +14,11 @@ interface LogEntry {
   subject: string
   status: 'queued' | 'sent' | 'delivered' | 'bounced' | 'opened' | 'failed'
   created_at: string
+  provider_key?: string | null
+  provider_message_id?: string | null
+  bounced_at?: string | null
+  bounce_reason?: string | null
+  delivered_at?: string | null
 }
 
 interface LogResponse {
@@ -23,10 +28,17 @@ interface LogResponse {
   page_size: number
 }
 
+// Status colour mapping per email-provider-unification spec (Req 16.6):
+//   sent      → green  (success)
+//   delivered → blue   (info)     — distinct from sent so admins see provider-confirmed delivery
+//   bounced   → red    (error)    — hover tooltip exposes bounce_reason
+//   failed    → red    (error)
+//   queued    → grey   (neutral)
+//   opened    → green  (success)
 const STATUS_BADGE: Record<LogEntry['status'], 'neutral' | 'info' | 'success' | 'error' | 'warning'> = {
   queued: 'neutral',
-  sent: 'info',
-  delivered: 'success',
+  sent: 'success',
+  delivered: 'info',
   bounced: 'error',
   opened: 'success',
   failed: 'error',
@@ -151,6 +163,7 @@ export default function NotificationLog() {
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Channel</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Template</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Subject</th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Provider</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Sent</th>
                 </tr>
@@ -158,7 +171,7 @@ export default function NotificationLog() {
               <tbody className="divide-y divide-gray-200 bg-white">
                 {filteredEntries.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-12 text-center text-sm text-gray-500">
+                    <td colSpan={7} className="px-4 py-12 text-center text-sm text-gray-500">
                       {search || statusFilter || channelFilter
                         ? 'No log entries match your filters.'
                         : 'No notifications sent yet.'}
@@ -175,10 +188,21 @@ export default function NotificationLog() {
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">{entry.template_type}</td>
                       <td className="px-4 py-3 text-sm text-gray-700 max-w-xs truncate">{entry.subject}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-700">
+                        {entry.provider_key ?? '—'}
+                      </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm">
-                        <Badge variant={STATUS_BADGE[entry.status]}>
-                          {entry.status.charAt(0).toUpperCase() + entry.status.slice(1)}
-                        </Badge>
+                        {entry.status === 'bounced' ? (
+                          <span title={entry.bounce_reason ?? ''}>
+                            <Badge variant={STATUS_BADGE[entry.status]}>
+                              {entry.status.charAt(0).toUpperCase() + entry.status.slice(1)}
+                            </Badge>
+                          </span>
+                        ) : (
+                          <Badge variant={STATUS_BADGE[entry.status]}>
+                            {entry.status.charAt(0).toUpperCase() + entry.status.slice(1)}
+                          </Badge>
+                        )}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-500">
                         {new Date(entry.created_at).toLocaleString('en-NZ')}

@@ -101,6 +101,18 @@ class NotificationLog(Base):
         Integer, nullable=False, server_default="0"
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Provider tracking + bounce/delivery columns (migration 0195, Phase 2 + 8a
+    # of the email-provider-unification spec). All nullable — existing rows
+    # predate the unified sender. Ordering mirrors migration 0195.
+    provider_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bounced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    bounce_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

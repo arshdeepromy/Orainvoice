@@ -567,6 +567,11 @@ def _log_entry_to_dict(entry: NotificationLog) -> dict[str, Any]:
         "error_message": entry.error_message,
         "sent_at": entry.sent_at.isoformat() if entry.sent_at else None,
         "created_at": entry.created_at.isoformat() if entry.created_at else "",
+        "provider_key": entry.provider_key,
+        "provider_message_id": entry.provider_message_id,
+        "bounced_at": entry.bounced_at.isoformat() if entry.bounced_at else None,
+        "bounce_reason": entry.bounce_reason,
+        "delivered_at": entry.delivered_at.isoformat() if entry.delivered_at else None,
     }
 
 
@@ -581,10 +586,15 @@ async def log_email_sent(
     channel: str = "email",
     error_message: str | None = None,
     sent_at: datetime | None = None,
+    provider_key: str | None = None,
+    provider_message_id: str | None = None,
+    bounced_at: datetime | None = None,
+    bounce_reason: str | None = None,
+    delivered_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Log a sent email to the notification_log table.
 
-    Requirements: 35.1
+    Requirements: 35.1, 16.3
     """
     entry = NotificationLog(
         org_id=org_id,
@@ -595,6 +605,11 @@ async def log_email_sent(
         status=status,
         error_message=error_message,
         sent_at=sent_at,
+        provider_key=provider_key,
+        provider_message_id=provider_message_id,
+        bounced_at=bounced_at,
+        bounce_reason=bounce_reason,
+        delivered_at=delivered_at,
     )
     db.add(entry)
     await db.flush()
@@ -609,10 +624,15 @@ async def update_log_status(
     status: str,
     error_message: str | None = None,
     sent_at: datetime | None = None,
+    provider_key: str | None = None,
+    provider_message_id: str | None = None,
+    bounced_at: datetime | None = None,
+    bounce_reason: str | None = None,
+    delivered_at: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Update the delivery status of a notification log entry.
 
-    Requirements: 35.1
+    Requirements: 35.1, 16.3
     """
     stmt = select(NotificationLog).where(NotificationLog.id == log_id)
     result = await db.execute(stmt)
@@ -625,6 +645,16 @@ async def update_log_status(
         entry.error_message = error_message
     if sent_at is not None:
         entry.sent_at = sent_at
+    if provider_key is not None:
+        entry.provider_key = provider_key
+    if provider_message_id is not None:
+        entry.provider_message_id = provider_message_id
+    if bounced_at is not None:
+        entry.bounced_at = bounced_at
+    if bounce_reason is not None:
+        entry.bounce_reason = bounce_reason
+    if delivered_at is not None:
+        entry.delivered_at = delivered_at
 
     await db.flush()
     await db.refresh(entry)

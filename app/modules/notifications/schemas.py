@@ -394,6 +394,23 @@ class NotificationLogEntry(BaseModel):
     status: str = Field(..., description="Delivery status")
     error_message: Optional[str] = Field(None, description="Error details if failed/bounced")
     sent_at: Optional[str] = Field(None, description="ISO 8601 timestamp when sent")
+    provider_key: Optional[str] = Field(
+        None,
+        description="Provider that delivered the email (e.g. brevo, sendgrid)",
+    )
+    provider_message_id: Optional[str] = Field(
+        None,
+        description="Provider-issued message ID for bounce correlation",
+    )
+    bounced_at: Optional[str] = Field(
+        None, description="ISO 8601 timestamp when the message bounced"
+    )
+    bounce_reason: Optional[str] = Field(
+        None, description="Reason string from the bounce webhook"
+    )
+    delivered_at: Optional[str] = Field(
+        None, description="ISO 8601 timestamp when delivery was confirmed"
+    )
     created_at: str = Field(..., description="ISO 8601 timestamp when queued")
 
 

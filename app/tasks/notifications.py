@@ -40,20 +40,41 @@ async def _send_email_async(
     org_sender_name: str | None,
     org_reply_to: str | None,
 ) -> dict:
-    """Execute the actual email send and update the notification log."""
+    """Execute the actual email send and update the notification log.
+
+    Delegates to the unified ``app.integrations.email_sender.send_email``
+    which handles provider failover, error classification, time budgets,
+    and the bounce-blocklist pre-check (per email-provider-unification
+    design Components §9). On success, persists ``provider_key`` and
+    ``provider_message_id`` onto the notification_log row so bounce
+    webhooks can correlate back to the originating send. On failure,
+    marks the log row ``failed`` with the last attempt's error message.
+
+    Return shape preserves the legacy contract used by ``send_email_task``
+    and downstream tests: ``{"success", "message_id", "provider"}`` on
+    success, ``{"success": False, "error": ...}`` on failure.
+
+    Requirements: 7.1, 7.2, 7.4, 16.3
+    """
     from app.core.database import async_session_factory
-    from app.integrations.brevo import send_org_email
+    from app.integrations.email_sender import EmailMessage, send_email
     from app.modules.notifications.service import update_log_status
 
     async with async_session_factory() as session:
         async with session.begin():
-            result = await send_org_email(
-                session,
+            org_uuid = uuid.UUID(org_id) if org_id else None
+            message = EmailMessage(
                 to_email=to_email,
-                to_name=to_name,
+                to_name=to_name or "",
                 subject=subject,
-                html_body=html_body,
-                text_body=text_body,
+                html_body=html_body or "",
+                text_body=text_body or "",
+                attachments=[],
+                org_id=org_uuid,
+            )
+            result = await send_email(
+                session,
+                message,
                 org_sender_name=org_sender_name,
                 org_reply_to=org_reply_to,
             )
@@ -64,10 +85,39 @@ async def _send_email_async(
                     log_id=uuid.UUID(log_id),
                     status="sent",
                     sent_at=datetime.now(timezone.utc),
+                    provider_key=result.provider_key,
+                    provider_message_id=result.message_id,
                 )
-                return {"success": True, "message_id": result.message_id}
+                logger.info(
+                    "email send succeeded: log_id=%s provider=%s message_id=%s",
+                    log_id,
+                    result.provider_key,
+                    result.message_id,
+                )
+                return {
+                    "success": True,
+                    "message_id": result.message_id,
+                    "provider": result.provider,
+                }
 
-            return {"success": False, "error": result.error or "Unknown email send error"}
+            await update_log_status(
+                session,
+                log_id=uuid.UUID(log_id),
+                status="failed",
+                error_message=result.error or "Unknown email send error",
+            )
+            logger.warning(
+                "email send failed: log_id=%s error=%s attempts=%d",
+                log_id,
+                result.error,
+                len(result.attempts),
+            )
+            return {
+                "success": False,
+                "error": result.error or "Unknown email send error",
+                "message_id": None,
+                "provider": result.provider,
+            }
 
 
 

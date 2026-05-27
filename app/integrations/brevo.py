@@ -1,45 +1,56 @@
-"""Brevo / SendGrid / custom SMTP email client.
+"""Legacy email integration module — DEPRECATED.
 
-Provides a unified ``EmailClient`` that reads the platform-wide SMTP
-configuration from the ``integration_configs`` table (name='smtp') and
-dispatches emails via the configured provider.
+# DEPRECATED — Phase 9 deletes this. See email-provider-unification spec.
 
-Supported providers:
-- **brevo**: Brevo transactional email API (v3)
-- **sendgrid**: SendGrid v3 mail/send API
-- **smtp**: Generic SMTP relay (STARTTLS)
+This module used to host the hand-rolled ``EmailClient`` / ``SmtpConfig``
+implementation that read SMTP credentials from the
+``integration_configs`` table. Phase 1 of the
+email-provider-unification spec moved the real implementation to
+``app.integrations.email_sender`` (driven by the ``email_providers``
+table with priority-ordered failover, error classification, and bounce
+correlation).
 
-Org-level emails use the global infrastructure but override the sender
-name and reply-to with the organisation's configured values.
+This file now contains only thin shims kept for one release so existing
+imports of ``EmailMessage``, ``EmailAttachment``, ``SendResult``,
+``send_org_email``, ``EmailClient``, ``SmtpConfig``,
+``get_email_client`` and ``load_smtp_config_from_db`` still resolve
+during Phase 2 cutover. Phase 9 (task 10.2) deletes the file outright.
 
-Requirements: 33.1, 33.2, 33.3
+Each shim either re-exports the new symbol or delegates to the
+unified sender. None of the shims re-implement the old SMTP path;
+the only outbound code path is ``app.integrations.email_sender.send_email``.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import smtplib
-import ssl
 from dataclasses import dataclass
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from typing import Any
 
-import httpx
-
-from app.integrations.email_sender import (
+# DEPRECATED — Phase 9 deletes this. See email-provider-unification spec.
+from app.integrations.email_sender import (  # noqa: F401  (re-exports)
     EmailAttachment,
     EmailMessage,
     SendResult,
+    send_email,
 )
 
 logger = logging.getLogger(__name__)
 
 
+# DEPRECATED — Phase 9 deletes this. See email-provider-unification spec.
 @dataclass
 class SmtpConfig:
-    """Platform-wide SMTP / email relay configuration."""
+    """Legacy platform-wide SMTP / email relay configuration.
+
+    Retained as a thin compat dataclass so existing imports in
+    ``tests/test_email_infrastructure.py`` (and the admin-service
+    legacy-test path that still asks for ``client.config.provider`` /
+    ``client.config.domain``) continue to resolve. The fields here have
+    no effect on the actual outbound email path — that goes through
+    ``app.integrations.email_sender.send_email`` which reads from the
+    ``email_providers`` table.
+    """
 
     provider: str = "smtp"  # brevo | sendgrid | smtp
     api_key: str = ""
@@ -82,11 +93,18 @@ class SmtpConfig:
         }
 
 
+# DEPRECATED — Phase 9 deletes this. See email-provider-unification spec.
 class EmailClient:
-    """Unified email sending client.
+    """Legacy unified email sending client.
 
-    Reads config from an ``SmtpConfig`` instance and dispatches via the
-    appropriate provider.
+    The original implementation dispatched to Brevo / SendGrid / SMTP
+    using a single ``SmtpConfig``. Phase 1 of email-provider-unification
+    replaced it with the multi-provider, failover-aware ``send_email``
+    in ``app.integrations.email_sender``. This shim is retained for one
+    release so existing ``EmailClient(config)`` constructor calls keep
+    importing cleanly. ``.send`` is a no-op that returns a clear failure
+    so any forgotten caller surfaces immediately rather than silently
+    succeeding.
     """
 
     def __init__(self, config: SmtpConfig) -> None:
@@ -97,318 +115,68 @@ class EmailClient:
         return self._config
 
     async def send(self, message: EmailMessage) -> SendResult:
-        """Send a single email using the configured provider."""
-        provider = self._config.provider.lower()
-        from_name = message.from_name or self._config.from_name
-        reply_to = message.reply_to or self._config.reply_to
+        """Deprecated send. Use ``app.integrations.email_sender.send_email``.
 
-        if provider == "brevo":
-            return await self._send_brevo(message, from_name, reply_to)
-        elif provider == "sendgrid":
-            return await self._send_sendgrid(message, from_name, reply_to)
-        elif provider == "smtp":
-            return await self._send_smtp(message, from_name, reply_to)
-        else:
-            return SendResult(
-                success=False,
-                error=f"Unknown provider: {provider}",
-                provider_key=provider,
-                transport=None,
-            )
-
-    async def _send_brevo(
-        self, msg: EmailMessage, from_name: str, reply_to: str
-    ) -> SendResult:
-        """Send via Brevo transactional email API v3."""
-        payload: dict[str, Any] = {
-            "sender": {
-                "name": from_name,
-                "email": self._config.from_email,
-            },
-            "to": [{"email": msg.to_email, "name": msg.to_name or msg.to_email}],
-            "subject": msg.subject,
-        }
-        if msg.html_body:
-            payload["htmlContent"] = msg.html_body
-        if msg.text_body:
-            payload["textContent"] = msg.text_body
-        if reply_to:
-            payload["replyTo"] = {"email": reply_to}
-        if msg.attachments:
-            import base64
-            payload["attachment"] = [
-                {
-                    "name": att.filename,
-                    "content": base64.b64encode(att.content).decode(),
-                }
-                for att in msg.attachments
-            ]
-
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    "https://api.brevo.com/v3/smtp/email",
-                    json=payload,
-                    headers={
-                        "api-key": self._config.api_key,
-                        "Content-Type": "application/json",
-                    },
-                )
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                return SendResult(
-                    success=True,
-                    message_id=data.get("messageId"),
-                    provider_key="brevo",
-                    transport="rest_api",
-                )
-            return SendResult(
-                success=False,
-                error=f"Brevo API error {resp.status_code}: {resp.text}",
-                provider_key="brevo",
-                transport="rest_api",
-            )
-        except Exception as exc:
-            logger.exception("Brevo send failed")
-            return SendResult(
-                success=False,
-                error=str(exc),
-                provider_key="brevo",
-                transport="rest_api",
-            )
-
-    async def _send_sendgrid(
-        self, msg: EmailMessage, from_name: str, reply_to: str
-    ) -> SendResult:
-        """Send via SendGrid v3 mail/send API."""
-        payload: dict[str, Any] = {
-            "personalizations": [
-                {"to": [{"email": msg.to_email, "name": msg.to_name or msg.to_email}]}
-            ],
-            "from": {"email": self._config.from_email, "name": from_name},
-            "subject": msg.subject,
-            "content": [],
-        }
-        if msg.text_body:
-            payload["content"].append({"type": "text/plain", "value": msg.text_body})
-        if msg.html_body:
-            payload["content"].append({"type": "text/html", "value": msg.html_body})
-        if not payload["content"]:
-            payload["content"].append({"type": "text/plain", "value": ""})
-        if reply_to:
-            payload["reply_to"] = {"email": reply_to}
-        if msg.attachments:
-            import base64
-            payload["attachments"] = [
-                {
-                    "content": base64.b64encode(att.content).decode(),
-                    "filename": att.filename,
-                    "type": att.mime_type,
-                    "disposition": "attachment",
-                }
-                for att in msg.attachments
-            ]
-
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    "https://api.sendgrid.com/v3/mail/send",
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {self._config.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                )
-            if resp.status_code in (200, 202):
-                msg_id = resp.headers.get("X-Message-Id")
-                return SendResult(
-                    success=True,
-                    message_id=msg_id,
-                    provider_key="sendgrid",
-                    transport="rest_api",
-                )
-            return SendResult(
-                success=False,
-                error=f"SendGrid API error {resp.status_code}: {resp.text}",
-                provider_key="sendgrid",
-                transport="rest_api",
-            )
-        except Exception as exc:
-            logger.exception("SendGrid send failed")
-            return SendResult(
-                success=False,
-                error=str(exc),
-                provider_key="sendgrid",
-                transport="rest_api",
-            )
-
-    async def _send_smtp(
-        self, msg: EmailMessage, from_name: str, reply_to: str
-    ) -> SendResult:
-        """Send via generic SMTP relay with STARTTLS."""
-        mime = MIMEMultipart("alternative")
-        mime["From"] = f"{from_name} <{self._config.from_email}>"
-        mime["To"] = msg.to_email
-        mime["Subject"] = msg.subject
-        if reply_to:
-            mime["Reply-To"] = reply_to
-
-        if msg.text_body:
-            mime.attach(MIMEText(msg.text_body, "plain"))
-        if msg.html_body:
-            mime.attach(MIMEText(msg.html_body, "html"))
-        for att in msg.attachments:
-            from email.mime.base import MIMEBase
-            from email import encoders
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(att.content)
-            encoders.encode_base64(part)
-            part.add_header("Content-Disposition", f"attachment; filename={att.filename}")
-            mime.attach(part)
-
-        try:
-            host = self._config.host
-            port = self._config.port
-            context = ssl.create_default_context()
-
-            with smtplib.SMTP(host, port, timeout=30) as server:
-                server.starttls(context=context)
-                username = self._config.username or self._config.api_key
-                password = self._config.password or self._config.api_key
-                if username:
-                    server.login(username, password)
-                server.sendmail(
-                    self._config.from_email, [msg.to_email], mime.as_string()
-                )
-
-            return SendResult(
-                success=True,
-                provider_key="smtp",
-                transport="smtp",
-            )
-        except Exception as exc:
-            logger.exception("SMTP send failed")
-            return SendResult(
-                success=False,
-                error=str(exc),
-                provider_key="smtp",
-                transport="smtp",
-            )
+        Returns a failed ``SendResult`` so any remaining caller fails
+        fast instead of silently appearing to succeed.
+        """
+        del message  # legacy stub — message is intentionally ignored
+        logger.warning(
+            "EmailClient.send is deprecated; use "
+            "app.integrations.email_sender.send_email instead"
+        )
+        return SendResult(
+            success=False,
+            error=(
+                "EmailClient is deprecated; use "
+                "app.integrations.email_sender.send_email"
+            ),
+            provider_key=self._config.provider or None,
+            transport=None,
+        )
 
 
-# ---------------------------------------------------------------------------
-# Helper: load config from integration_configs table
-# ---------------------------------------------------------------------------
+# DEPRECATED — Phase 9 deletes this. See email-provider-unification spec.
+async def load_smtp_config_from_db(db: Any) -> SmtpConfig | None:
+    """Legacy ``integration_configs`` SMTP loader.
 
-
-async def load_smtp_config_from_db(db) -> SmtpConfig | None:
-    """Load the SMTP integration config from the database.
-
-    Returns None if no config is stored.
+    The new send path reads from the ``email_providers`` table directly
+    (see ``app.integrations.email_sender``). The legacy admin endpoint
+    backed by this function returns HTTP 410 Gone in Phase 7. Until then
+    this shim returns ``None`` so any caller falls through to its
+    "config not found" branch.
     """
-    from sqlalchemy import select
-    from app.modules.admin.models import IntegrationConfig
-    from app.core.encryption import envelope_decrypt_str
-
-    result = await db.execute(
-        select(IntegrationConfig).where(IntegrationConfig.name == "smtp")
+    del db
+    logger.warning(
+        "load_smtp_config_from_db is deprecated; "
+        "the email_providers table is now the source of truth"
     )
-    row = result.scalar_one_or_none()
-    if row is None:
-        return None
-
-    try:
-        decrypted = envelope_decrypt_str(row.config_encrypted)
-        data = json.loads(decrypted)
-        return SmtpConfig.from_dict(data)
-    except Exception:
-        logger.exception("Failed to decrypt SMTP config")
-        return None
-
-
-async def get_email_client(db) -> EmailClient | None:
-    """Build an ``EmailClient`` from the stored SMTP config.
-
-    Checks two sources in order:
-    1. ``email_providers`` table — the GUI-configured providers
-       (Admin > Email Providers). Uses the first active provider with
-       credentials set.
-    2. ``integration_configs`` table (legacy) — for backward compat
-       with older deployments that stored SMTP config there.
-
-    Returns None if no config is found in either location.
-    """
-    # Primary: email_providers table (GUI-configured)
-    config = await _load_from_email_providers(db)
-    if config is not None:
-        return EmailClient(config)
-
-    # Legacy fallback: integration_configs table
-    config = await load_smtp_config_from_db(db)
-    if config is not None:
-        return EmailClient(config)
-
     return None
 
 
-async def _load_from_email_providers(db) -> SmtpConfig | None:
-    """Load SMTP config from the email_providers table.
+# DEPRECATED — Phase 9 deletes this. See email-provider-unification spec.
+async def get_email_client(db: Any) -> EmailClient | None:
+    """Legacy ``EmailClient`` builder.
 
-    Picks the first active provider with credentials set, ordered by
-    priority. Decrypts the credentials_encrypted column to get the
-    SMTP host/port/username/password.
-
-    This is the primary path — email providers are configured via the
-    Global Admin GUI (Admin > Email Providers), not via .env files.
+    Phase 2 rewrote ``_send_email_async`` to call
+    ``app.integrations.email_sender.send_email`` directly. The only
+    remaining in-tree caller is the legacy
+    ``app.modules.admin.service.send_test_email`` admin endpoint, which
+    Phase 7 retires (HTTP 410 Gone). Returning ``None`` here makes that
+    endpoint cleanly report "SMTP configuration not found" until the
+    Phase 7 cut-over.
     """
-    from sqlalchemy import text
-    from app.core.encryption import envelope_decrypt_str
-
-    try:
-        result = await db.execute(
-            text(
-                """
-                SELECT provider_key, smtp_host, smtp_port, credentials_encrypted
-                FROM email_providers
-                WHERE is_active = true AND credentials_set = true
-                ORDER BY priority
-                LIMIT 1
-                """
-            )
-        )
-        row = result.first()
-        if row is None:
-            return None
-
-        provider_key = row[0]
-        smtp_host = row[1]
-        smtp_port = row[2]
-        creds_encrypted = row[3]
-
-        if creds_encrypted is None:
-            return None
-
-        decrypted = envelope_decrypt_str(creds_encrypted)
-        data = json.loads(decrypted)
-
-        return SmtpConfig(
-            provider=provider_key if provider_key in ("brevo", "sendgrid", "smtp") else "smtp",
-            api_key=data.get("api_key", ""),
-            host=smtp_host or data.get("host", ""),
-            port=smtp_port or int(data.get("port", 587)),
-            username=data.get("username", ""),
-            password=data.get("password", data.get("api_key", "")),
-            from_email=data.get("from_email", data.get("sender_email", "")),
-            from_name=data.get("from_name", data.get("sender_name", "")),
-            reply_to=data.get("reply_to", ""),
-        )
-    except Exception:
-        logger.exception("Failed to load email config from email_providers")
-        return None
+    del db
+    logger.warning(
+        "get_email_client is deprecated; use "
+        "app.integrations.email_sender.send_email instead"
+    )
+    return None
 
 
+# DEPRECATED — Phase 9 deletes this. See email-provider-unification spec.
 async def send_org_email(
-    db,
+    db: Any,
     *,
     to_email: str,
     to_name: str = "",
@@ -418,29 +186,29 @@ async def send_org_email(
     org_sender_name: str | None = None,
     org_reply_to: str | None = None,
     attachments: list[EmailAttachment] | None = None,
+    **_: Any,
 ) -> SendResult:
-    """Send an email using global infrastructure with org-level overrides.
+    """Legacy org-email entry point — delegates to the unified sender.
 
-    Org emails use the platform SMTP config but display the organisation's
-    sender name and reply-to address (Requirement 33.3).
+    Translates the call to the new ``send_email`` API in
+    ``app.integrations.email_sender``. The returned ``SendResult`` carries
+    ``provider_key``; the old ``provider: str`` shape is preserved by the
+    ``SendResult.provider`` ``@property`` defined in ``email_sender.py``.
+
+    Extra kwargs are accepted (``**_``) so any forgotten caller passing
+    legacy-only arguments doesn't crash on TypeError.
     """
-    client = await get_email_client(db)
-    if client is None:
-        return SendResult(
-            success=False,
-            error="Email infrastructure not configured",
-            provider_key="none",
-            transport=None,
-        )
-
     message = EmailMessage(
         to_email=to_email,
         to_name=to_name,
         subject=subject,
         html_body=html_body,
         text_body=text_body,
-        from_name=org_sender_name,
-        reply_to=org_reply_to,
         attachments=attachments or [],
     )
-    return await client.send(message)
+    return await send_email(
+        db,
+        message,
+        org_sender_name=org_sender_name,
+        org_reply_to=org_reply_to,
+    )
