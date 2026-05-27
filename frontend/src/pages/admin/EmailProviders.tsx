@@ -112,6 +112,7 @@ function SetupGuide({ guide }: { guide: string }) {
 
 function ProviderCard({
   provider,
+  activeProviders,
   onActivate,
   onDeactivate,
   onSaveCredentials,
@@ -121,6 +122,7 @@ function ProviderCard({
   testing,
 }: {
   provider: EmailProvider
+  activeProviders: string[]
   onActivate: (key: string) => void
   onDeactivate: (key: string) => void
   onSaveCredentials: (key: string, data: Record<string, string>) => void
@@ -129,6 +131,10 @@ function ProviderCard({
   saving: boolean
   testing: boolean
 }) {
+  const isLastActive = provider.is_active && activeProviders.length === 1
+  const deactivateTooltip = isLastActive
+    ? 'Activate another provider before deactivating this one — at least one active email provider is required for outbound mail.'
+    : undefined
   const [expanded, setExpanded] = useState(false)
   const [fields, setFields] = useState<Record<string, string>>({})
   const [testEmail, setTestEmail] = useState('')
@@ -235,13 +241,14 @@ function ProviderCard({
               ))}
             </div>
             
-            {/* Priority setting for active providers */}
-            {provider.is_active && (
+            {/* Priority slider — visible whenever credentials are set so admins
+                can configure priority before activation (Phase 6.2). */}
+            {provider.credentials_set && (
               <div className="mt-4 p-3 bg-gray-50 rounded-lg">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Priority (lower = higher priority, used when multiple providers are active)
                 </label>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
                   <input
                     type="number"
                     min="1"
@@ -251,6 +258,9 @@ function ProviderCard({
                     className="h-[42px] w-20 rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:border-blue-500"
                   />
                   <span className="text-xs text-gray-500">1 = Primary, 2 = Fallback, etc.</span>
+                  {provider.credentials_set && !provider.is_active && (
+                    <span className="text-xs text-gray-500 italic">Will apply when activated</span>
+                  )}
                 </div>
               </div>
             )}
@@ -296,7 +306,9 @@ function ProviderCard({
                   onClick={() => onDeactivate(provider.provider_key)}
                   variant="secondary"
                   loading={saving}
-                  className="text-red-600 hover:text-red-700"
+                  disabled={isLastActive}
+                  title={deactivateTooltip}
+                  className="text-red-600 hover:text-red-700 disabled:text-gray-400 disabled:cursor-not-allowed disabled:hover:text-gray-400"
                 >
                   Deactivate
                 </Button>
@@ -311,7 +323,7 @@ function ProviderCard({
 
 export function EmailProviders() {
   const [providers, setProviders] = useState<EmailProvider[]>([])
-  const [activeProvider, setActiveProvider] = useState<string | null>(null)
+  const [activeProviders, setActiveProviders] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -323,8 +335,11 @@ export function EmailProviders() {
     setError(null)
     try {
       const res = await apiClient.get('/api/v2/admin/email-providers')
-      setProviders(res.data.providers)
-      setActiveProvider(res.data.active_provider)
+      setProviders(res.data?.providers ?? [])
+      // Phase 5.3 added the new ``active_providers: list[str]`` field; the
+      // old singular ``active_provider`` is intentionally ignored here —
+      // we render the multi-active banner directly off the new field.
+      setActiveProviders(res.data?.active_providers ?? [])
     } catch {
       setError('Failed to load email providers')
     } finally {
@@ -426,22 +441,69 @@ export function EmailProviders() {
     )
   }
 
-  const activeP = providers.find((p) => p.provider_key === activeProvider)
+  const activeProviderEntries = activeProviders
+    .map((key) => providers.find((p) => p.provider_key === key))
+    .filter((p): p is EmailProvider => Boolean(p))
 
   return (
     <div className="space-y-6">
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-      {/* Active provider banner */}
-      {activeP && (
-        <div className="flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 px-5 py-3">
-          <svg className="h-6 w-6 text-green-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      {/* Active provider banner — multi-active aware (Phase 6.1) */}
+      {activeProviders.length === 0 ? (
+        <div className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 dark:border-red-700 dark:bg-red-900/30 px-5 py-3">
+          <svg className="h-6 w-6 text-red-600 dark:text-red-300 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+          </svg>
+          <span className="text-sm text-gray-700 dark:text-gray-200">
+            <span className="font-semibold">No active email provider</span>{' '}
+            — outbound mail is disabled. Configure one below.
+          </span>
+        </div>
+      ) : activeProviders.length === 1 ? (
+        <div className="flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 dark:border-green-700 dark:bg-green-900/30 px-5 py-3">
+          <svg className="h-6 w-6 text-green-600 dark:text-green-300 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          <span className="text-sm text-gray-700">
+          <span className="text-sm text-gray-700 dark:text-gray-200">
             <span className="font-semibold">Active Provider:</span>{' '}
-            <span className="font-medium text-green-700">{activeP.display_name}</span>
+            <span className="font-medium text-green-700 dark:text-green-300">
+              {activeProviderEntries[0]?.display_name ?? activeProviders[0]}
+            </span>
           </span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 dark:border-green-700 dark:bg-green-900/30 px-5 py-3">
+          <svg className="h-6 w-6 text-green-600 dark:text-green-300 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span className="text-sm text-gray-700 dark:text-gray-200">
+            <span className="font-semibold">
+              Active Providers ({activeProviders.length}):
+            </span>{' '}
+            <span className="font-medium text-green-700 dark:text-green-300">
+              {activeProviderEntries.length > 0
+                ? activeProviderEntries.map((p) => p.display_name).join(', ')
+                : activeProviders.join(', ')}
+            </span>
+          </span>
+        </div>
+      )}
+
+      {/* Failover preview line — only when more than one active provider (Phase 6.3) */}
+      {activeProviders.length > 1 && (
+        <div className="rounded-md bg-blue-50 dark:bg-blue-900/30 p-3 text-sm text-gray-700 dark:text-gray-200">
+          <span className="font-semibold">Send order:</span>{' '}
+          {activeProviders.map((key, i) => {
+            const name =
+              providers.find((p) => p.provider_key === key)?.display_name ?? key
+            return (
+              <span key={key}>
+                {i + 1}. {name}
+                {i < activeProviders.length - 1 ? ' → ' : ''}
+              </span>
+            )
+          })}
         </div>
       )}
 
@@ -460,6 +522,7 @@ export function EmailProviders() {
             <ProviderCard
               key={p.id}
               provider={p}
+              activeProviders={activeProviders}
               onActivate={handleActivate}
               onDeactivate={handleDeactivate}
               onSaveCredentials={handleSaveCredentials}
