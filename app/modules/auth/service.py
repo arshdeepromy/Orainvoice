@@ -2972,19 +2972,47 @@ async def send_verification_email(
     org_name: str,
     verification_token: str,
     base_url: str,
+    org_id: uuid.UUID | None = None,
 ) -> None:
     """Send a welcome/verification email to a newly signed-up user.
 
-    Uses the email_providers table (same as invoice/quote emails).
-    Falls back to logging the verification URL if no provider is configured.
+    Migrated from a hand-rolled ``smtplib`` provider loop in Phase 3
+    task 3.9 (A9) of the email-provider-unification spec. Dispatch
+    goes through :func:`app.integrations.email_sender.send_email`,
+    which owns failover, error classification, and per-attempt + total
+    time budgets.
+
+    Per the per-site variation table in
+    ``.kiro/specs/email-provider-unification/design.md`` row A9
+    ("Same pattern as A8"):
+
+    - ``EmailMessage.org_id`` is the new admin's org id when known
+      (``org_id`` arg). All current callers (public signup paid +
+      trial flows in ``organisations/service.py`` and
+      ``resend_verification_email``) have an org_id available, so this
+      is set in practice. ``None`` is permitted so the function still
+      runs in any future caller that doesn't yet plumb the org id
+      through.
+    - ``org_sender_name`` is set to ``org_name`` so the From header
+      reads as coming from the org rather than the platform default.
+    - **Dev fallback.** When ``result.attempts == []`` (no providers
+      configured) and the environment is development, we log
+      ``DEV VERIFICATION URL: <url>`` at WARNING so the developer can
+      copy the link from the logs. Preserved verbatim from the legacy
+      raw-smtplib version — the dev UX would regress without it. The
+      log line is also fired when every provider fails (mirroring the
+      A8 pattern).
+    - In-app notification on failure is skipped — auth flows run
+      without an org admin context wired up to ``request.state.org``;
+      same gap A7 / A8 have (in-app-notifications design §4.2
+      carve-out).
+
+    Falls back to logging the verification URL if no provider is
+    configured.
+
+    Requirements: 6.1, 6.3, 6.4
     """
-    import smtplib
-    import json as _json
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from sqlalchemy import select as _select
-    from app.modules.admin.models import EmailProvider
-    from app.core.encryption import envelope_decrypt_str
+    from app.integrations.email_sender import EmailMessage, send_email
 
     verify_url = f"{base_url}/verify-email?token={verification_token}&type=signup"
     login_url = f"{base_url}/login"
@@ -3042,15 +3070,38 @@ async def send_verification_email(
         f"This link expires in 48 hours.\n"
     )
 
-    # Find active email providers ordered by priority (same pattern as invoice emails)
-    provider_result = await db.execute(
-        _select(EmailProvider)
-        .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
-        .order_by(EmailProvider.priority)
+    message = EmailMessage(
+        to_email=email,
+        to_name=user_name or "",
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        attachments=[],
+        # Org-scoped verification when we have it; bounce-blocklist
+        # pre-check falls through to platform-wide rows when org_id
+        # is None.
+        org_id=org_id,
     )
-    providers = list(provider_result.scalars().all())
 
-    if not providers:
+    result = await send_email(
+        db,
+        message,
+        org_sender_name=org_name,
+    )
+
+    if result.success:
+        logger.info(
+            "Verification email sent to %s via %s",
+            email,
+            result.provider_key,
+        )
+        return
+
+    # No-providers branch: send_email returns attempts=[] when the
+    # active provider set is empty. Preserve the dev fallback so a
+    # developer running the stack locally without any provider can
+    # still grab the verification URL from the logs.
+    if not result.attempts:
         logger.warning(
             "No active email provider configured — cannot send verification email to %s (token: %s...)",
             email,
@@ -3060,55 +3111,10 @@ async def send_verification_email(
             logger.warning("DEV VERIFICATION URL: %s", verify_url)
         return
 
-    # Try each provider in priority order until one succeeds
-    last_error = None
-    for provider in providers:
-        try:
-            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-            credentials = _json.loads(creds_json)
-
-            smtp_host = provider.smtp_host
-            smtp_port = provider.smtp_port or 587
-            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-            username = credentials.get("username") or credentials.get("api_key", "")
-            password = credentials.get("password") or credentials.get("api_key", "")
-
-            config = provider.config or {}
-            from_email = config.get("from_email") or username
-            from_name = config.get("from_name") or "OraInvoice"
-
-            msg = MIMEMultipart("alternative")
-            msg["From"] = f"{from_name} <{from_email}>"
-            msg["To"] = email
-            msg["Subject"] = subject
-            msg.attach(MIMEText(text_body, "plain"))
-            msg.attach(MIMEText(html_body, "html"))
-
-            if smtp_encryption == "ssl":
-                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-            else:
-                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-                if smtp_encryption == "tls":
-                    server.starttls()
-
-            if username and password:
-                server.login(username, password)
-
-            server.sendmail(from_email, email, msg.as_string())
-            server.quit()
-            logger.info("Verification email sent to %s via %s", email, provider.provider_key)
-            return
-        except Exception as e:
-            last_error = e
-            logger.warning(
-                "Email provider %s failed for verification email to %s: %s",
-                provider.provider_key, email, e,
-            )
-            continue
-
     # NOTE: In-app notification skipped for auth email failures in v1.
     # Auth flows run on sessions without org_id context.
     # Known limitation — see in-app-notifications design §4.2.
+    last_error = result.error or "send failed"
     logger.warning(
         "All email providers failed for verification email to %s: %s (token: %s...)",
         email, last_error, verification_token[:8],
@@ -3161,6 +3167,7 @@ async def resend_verification_email(
         org_name=org_name,
         verification_token=token,
         base_url=base_url,
+        org_id=user.org_id,
     )
 
     return {"message": "If that email is registered, a verification link has been sent."}

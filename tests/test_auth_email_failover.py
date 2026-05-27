@@ -3,8 +3,8 @@
 This file pins the Phase 3 contract for the four Group A auth sites:
 
 - A7 ``_send_permanent_lockout_email``      (task 3.7 — this file)
-- A8 ``_send_invitation_email``             (task 3.8 — appended later)
-- A9 ``send_verification_email``            (task 3.9 — appended later)
+- A8 ``_send_invitation_email``             (task 3.8 — this file)
+- A9 ``send_verification_email``            (task 3.9 — this file)
 - A10 ``send_receipt_email`` (paid signup)  (task 3.10 — appended later)
 
 Each site was migrated from a hand-rolled ``smtplib`` provider loop to a
@@ -1156,3 +1156,553 @@ class TestA8SendInvitationEmailMessage:
         assert message.subject == "Custom: Welcome to Acme!"
         assert "tok_template_ddd" in message.text_body
         assert "tok_template_ddd" in message.html_body
+
+
+# ---------------------------------------------------------------------------
+# A9 — send_verification_email
+# ---------------------------------------------------------------------------
+
+
+class TestA9SendVerificationEmailFailover:
+    """End-to-end failover for ``send_verification_email`` (task 3.9).
+
+    A9 mirrors the A8 pattern (HTML + text bodies, dev-fallback log
+    on no-providers) but with a few site-specific contracts the test
+    set must pin:
+
+    1. The function is **always called with a session** by every
+       production caller (``public_signup`` paid + trial flows in
+       ``organisations/service.py`` and ``resend_verification_email``
+       in this same module). Unlike A8 it does **not** fall back to
+       opening its own session — so the production path uses the
+       caller's session directly.
+    2. ``org_id`` is plumbed through the new keyword arg per the A9
+       row in the per-site variation table (``EmailMessage.org_id =
+       org.id``). All current callers have it; the parameter defaults
+       to ``None`` so a future caller without org context still works.
+    3. The dev-fallback log message is ``"DEV VERIFICATION URL: %s"``
+       (different from A8's ``"DEV INVITE URL"``). This is the
+       message a developer running without any provider configured
+       will copy from the logs.
+
+    With Brevo at priority 1 and SendGrid at priority 2, the function
+    walks past the Brevo 401 (``SOFT_AUTH``), succeeds on SendGrid
+    (202), and returns ``None`` (the function has no return value —
+    it is best-effort).
+
+    Validates: Requirements 6.1, 6.3, 6.4
+    """
+
+    @pytest.mark.asyncio
+    async def test_failover_to_second_provider_with_caller_session(self) -> None:
+        """Brevo 401 → SendGrid 202 with the caller's session.
+
+        Pins:
+
+        1. The function uses the caller's session directly — no call
+           to ``async_session_factory`` (A9 is always called from a
+           live request/transaction context).
+        2. POSTs the Brevo URL first (priority 1) and the SendGrid
+           URL second (priority 2); 401 from Brevo classifies as
+           ``SOFT_AUTH`` and the loop continues.
+        3. Returns ``None`` without raising.
+        4. The bounce-blocklist pre-check uses the org_id passed to
+           the function — so blocks scoped to the inviting org take
+           effect.
+        5. Both REST payloads carry the verification URL with the
+           ``&type=signup`` suffix that the public-signup flow
+           depends on (``verify_signup_email`` reads this token from
+           the same redis key shape).
+        6. The From header reads as the org (Brevo: ``sender.name``;
+           SendGrid: ``from.name``) — driven by
+           ``org_sender_name=org_name``.
+
+        Validates: Requirements 6.1, 6.3, 6.4
+        """
+        import uuid as _uuid
+
+        brevo_provider = _make_provider("brevo", priority=1)
+        sendgrid_provider = _make_provider("sendgrid", priority=2)
+
+        caller_session = AsyncMock()
+        # Sentinel — A9 must NOT open its own session when the caller
+        # passes one. (This is the only execution path in
+        # production — no resend-from-torn-down-session legacy
+        # contract for A9.)
+        factory = MagicMock(side_effect=AssertionError(
+            "async_session_factory must not be called by "
+            "send_verification_email"
+        ))
+
+        load_providers_stub = AsyncMock(
+            return_value=[brevo_provider, sendgrid_provider]
+        )
+        blocklist_stub = AsyncMock(return_value=(False, None))
+
+        # Reset class-level state on the fake client so this test is
+        # order-independent within the suite.
+        _FakeClient.posted_urls = []
+        _FakeClient.posted_payloads = []
+
+        org_id = _uuid.uuid4()
+
+        with patch(
+            "app.core.database.async_session_factory",
+            new=factory,
+        ), patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.integrations.email_sender.envelope_decrypt_str",
+            return_value='{"api_key": "test-api-key"}',
+        ), patch(
+            "app.integrations.email_sender.httpx.AsyncClient",
+            _FakeClient,
+        ):
+            from app.modules.auth.service import send_verification_email
+
+            result = await send_verification_email(
+                caller_session,
+                email="newadmin@example.com",
+                user_name="Admin User",
+                org_name="Acme Workshop",
+                verification_token="tok_verify_caller_123456",
+                base_url="https://app.example.com",
+                org_id=org_id,
+            )
+
+        # 1. Best-effort contract: returns None.
+        assert result is None
+
+        # 2. async_session_factory was NOT called — the caller passed
+        #    a session and the function used it directly.
+        factory.assert_not_called()
+
+        # 3. The provider chain was loaded against the caller's
+        #    session.
+        load_providers_stub.assert_awaited_once()
+        load_providers_stub.assert_awaited_with(caller_session)
+
+        # 4. Both REST endpoints were hit in priority order — Brevo
+        #    first (401 → SOFT_AUTH), then SendGrid (202 → success).
+        assert _FakeClient.posted_urls == [
+            _FakeClient.BREVO_URL,
+            _FakeClient.SENDGRID_URL,
+        ]
+
+        # 5. Bounce-blocklist pre-check used the function's org_id
+        #    (A9 row in the per-site variation table: org.id). Pins
+        #    the org-scoped block-list behaviour against a future
+        #    refactor that drops org_id.
+        blocklist_stub.assert_awaited_once()
+        _bl_args, bl_kwargs = blocklist_stub.await_args
+        assert bl_kwargs.get("org_id") == org_id
+        assert bl_kwargs.get("email_address") == "newadmin@example.com"
+
+        # 6. Recipient on each payload matches the function arg.
+        brevo_payload = _FakeClient.posted_payloads[0]
+        sendgrid_payload = _FakeClient.posted_payloads[1]
+        assert brevo_payload["to"][0]["email"] == "newadmin@example.com"
+        assert (
+            sendgrid_payload["personalizations"][0]["to"][0]["email"]
+            == "newadmin@example.com"
+        )
+
+        # 7. The verification URL (with &type=signup) is on both
+        #    bodies. ``verify_signup_email`` reads the token from
+        #    redis using the same prefix the create_token side
+        #    writes; the URL must include ``type=signup`` so the
+        #    frontend ``/verify-email`` route can dispatch to the
+        #    signup-specific handler.
+        expected_url = (
+            "https://app.example.com/verify-email?"
+            "token=tok_verify_caller_123456&type=signup"
+        )
+        assert expected_url in brevo_payload.get("htmlContent", "")
+        assert expected_url in brevo_payload.get("textContent", "")
+
+        # 8. From-name override flowed through — A9 passes
+        #    ``org_sender_name=org_name`` so the From header reads
+        #    as the org. The Brevo REST payload's sender name
+        #    should be "Acme Workshop", not the provider's static
+        #    "OraInvoice".
+        assert brevo_payload.get("sender", {}).get("name") == "Acme Workshop"
+        # SendGrid puts it under from.name.
+        assert (
+            sendgrid_payload.get("from", {}).get("name") == "Acme Workshop"
+        )
+
+        # 9. No attachments — A9 sends verification link only.
+        assert brevo_payload.get("attachment", []) == []
+        assert sendgrid_payload.get("attachments", []) == []
+
+    @pytest.mark.asyncio
+    async def test_no_providers_logs_dev_verification_url(self) -> None:
+        """No active providers → DEV VERIFICATION URL warning in dev.
+
+        Pins the dev-fallback contract from the A9 row in the
+        per-site variation table: when ``result.attempts == []`` (no
+        providers configured) and the environment is
+        ``development``, the function logs the verification URL at
+        WARNING. Crucially the log message is
+        ``"DEV VERIFICATION URL: %s"`` — different from A8's
+        ``"DEV INVITE URL"`` — so a developer can tell at a glance
+        which token they're picking up.
+
+        Validates: Requirement 6.1 (preserve existing dev UX)
+        """
+        import uuid as _uuid
+
+        caller_session = AsyncMock()
+        load_providers_stub = AsyncMock(return_value=[])
+        blocklist_stub = AsyncMock(return_value=(False, None))
+
+        with patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.integrations.email_sender._maybe_fire_no_providers_alert",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.modules.auth.service.settings.environment",
+            "development",
+        ):
+            from app.modules.auth.service import send_verification_email
+
+            with patch(
+                "app.modules.auth.service.logger.warning"
+            ) as mock_warn:
+                result = await send_verification_email(
+                    caller_session,
+                    email="newadmin@example.com",
+                    user_name="Admin User",
+                    org_name="Acme Workshop",
+                    verification_token="tok_no_provider_dev_789",
+                    base_url="https://app.example.com",
+                    org_id=_uuid.uuid4(),
+                )
+
+        # 1. Best-effort contract: returns None, does NOT raise.
+        assert result is None
+
+        # 2. Provider chain was loaded (so we hit the no-providers
+        #    branch) and the dev URL log fired with the verification
+        #    URL as the second positional arg.
+        load_providers_stub.assert_awaited_once()
+
+        all_calls = [c.args for c in mock_warn.call_args_list]
+        dev_url_calls = [
+            c for c in all_calls
+            if c and "DEV VERIFICATION URL" in str(c[0])
+        ]
+        assert dev_url_calls, (
+            f"expected a DEV VERIFICATION URL warning, got {all_calls!r}"
+        )
+        url_arg = dev_url_calls[0][1]
+        # The URL passed to the log line is the verify-email link
+        # with the raw token AND the &type=signup qualifier — the
+        # signup-flow contract.
+        assert url_arg == (
+            "https://app.example.com/verify-email?"
+            "token=tok_no_provider_dev_789&type=signup"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_providers_in_production_does_not_log_url(self) -> None:
+        """In production, the no-providers branch must NOT log the URL.
+
+        Verification URLs grant immediate email-verification + JWT
+        issuance to the bearer (``verify_signup_email`` issues the
+        access + refresh tokens directly on success — no password
+        re-prompt). Leaking the URL in production logs would let any
+        log-reader claim the verified account. The dev fallback is
+        gated on ``settings.environment == 'development'`` and this
+        test pins that gate.
+
+        Validates: Requirement 6.1 (dev UX preserved without leaking
+        in prod)
+        """
+        import uuid as _uuid
+
+        caller_session = AsyncMock()
+        load_providers_stub = AsyncMock(return_value=[])
+        blocklist_stub = AsyncMock(return_value=(False, None))
+
+        with patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.integrations.email_sender._maybe_fire_no_providers_alert",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.modules.auth.service.settings.environment",
+            "production",
+        ):
+            from app.modules.auth.service import send_verification_email
+
+            with patch(
+                "app.modules.auth.service.logger.warning"
+            ) as mock_warn:
+                await send_verification_email(
+                    caller_session,
+                    email="newadmin@example.com",
+                    user_name="Admin User",
+                    org_name="Acme Workshop",
+                    verification_token="tok_prod_no_provider_aaa",
+                    base_url="https://app.example.com",
+                    org_id=_uuid.uuid4(),
+                )
+
+        all_calls = [c.args for c in mock_warn.call_args_list]
+        dev_url_calls = [
+            c for c in all_calls
+            if c and "DEV VERIFICATION URL" in str(c[0])
+        ]
+        # Crucially: NO DEV VERIFICATION URL log in production.
+        assert not dev_url_calls, (
+            "DEV VERIFICATION URL must not log outside development; "
+            f"got: {dev_url_calls!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_all_providers_fail_does_not_raise(self) -> None:
+        """Every provider returns ``SOFT_AUTH`` → returns ``None``.
+
+        When the loop exhausts and no provider succeeded the function
+        logs the failure and returns ``None``. No
+        ``create_in_app_notification`` is fired (auth-flow carve-out
+        per the per-site variation table for A9 — same gap A7 / A8
+        have). The dev URL log also fires in this branch (mirroring
+        A8) so a developer with broken providers still gets the link.
+
+        Validates: Requirements 6.1, 6.4
+        """
+        import uuid as _uuid
+
+        brevo_provider = _make_provider("brevo", priority=1)
+        sendgrid_provider = _make_provider("sendgrid", priority=2)
+
+        caller_session = AsyncMock()
+        load_providers_stub = AsyncMock(
+            return_value=[brevo_provider, sendgrid_provider]
+        )
+        blocklist_stub = AsyncMock(return_value=(False, None))
+
+        _AllFail401Client.posted_urls = []
+        _AllFail401Client.posted_payloads = []
+
+        with patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.integrations.email_sender._maybe_fire_all_auth_fail_alert",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.integrations.email_sender.envelope_decrypt_str",
+            return_value='{"api_key": "test-api-key"}',
+        ), patch(
+            "app.integrations.email_sender.httpx.AsyncClient",
+            _AllFail401Client,
+        ):
+            from app.modules.auth.service import send_verification_email
+
+            result = await send_verification_email(
+                caller_session,
+                email="newadmin@example.com",
+                user_name="Admin User",
+                org_name="Acme Workshop",
+                verification_token="tok_all_fail_bbb",
+                base_url="https://app.example.com",
+                org_id=_uuid.uuid4(),
+            )
+
+        # 1. Best-effort contract: returns None, does NOT raise.
+        assert result is None
+
+        # 2. Both providers were attempted (chain not short-circuited
+        #    by HARD_RECIPIENT or HARD_PAYLOAD).
+        assert len(_AllFail401Client.posted_urls) == 2
+
+
+class TestA9SendVerificationEmailMessage:
+    """Pin the ``EmailMessage`` shape the migration constructs.
+
+    Validates the per-site variation table entry for A9 in
+    ``design.md``: ``EmailMessage.org_id = org.id``,
+    ``org_sender_name = org.name``, both bodies present, no
+    attachments. Pins the function-local imports so a future refactor
+    can't accidentally re-add a top-level ``smtplib`` import inside
+    this function.
+
+    Validates: Requirements 6.3 (org_id + org_sender_name plumbing)
+    and 6.4 (no manual smtplib loop)
+    """
+
+    @pytest.mark.asyncio
+    async def test_email_message_has_org_id_and_both_bodies(self) -> None:
+        """``send_email`` is called with the right ``EmailMessage``
+        and override args.
+
+        Pins:
+
+        - ``message.org_id`` matches the org_id passed to the
+          function — A9 is org-scoped per the per-site variation
+          table.
+        - ``message.text_body`` carries the verification URL with
+          ``&type=signup``.
+        - ``message.html_body`` carries the verification URL and the
+          OraInvoice envelope.
+        - ``message.attachments`` is empty.
+        - ``org_sender_name`` keyword arg equals the function's
+          ``org_name`` arg — drives the From header.
+        - ``org_reply_to`` is NOT passed (A9 doesn't override
+          reply-to in v1; the provider's static reply_to wins).
+        - The caller's session is forwarded to ``send_email`` —
+          A9 does not open its own session.
+
+        Validates: Requirements 6.1, 6.3
+        """
+        import uuid as _uuid
+
+        caller_session = AsyncMock()
+        send_email_stub = AsyncMock()
+        send_email_stub.return_value = MagicMock(
+            success=True,
+            provider_key="brevo",
+            transport="rest_api",
+            message_id="msg-id-1",
+            error=None,
+            attempts=[MagicMock()],
+        )
+
+        org_id = _uuid.uuid4()
+
+        with patch(
+            "app.integrations.email_sender.send_email",
+            new=send_email_stub,
+        ):
+            from app.modules.auth.service import send_verification_email
+
+            await send_verification_email(
+                caller_session,
+                email="newadmin@example.com",
+                user_name="Admin User",
+                org_name="Acme Workshop",
+                verification_token="tok_msg_shape_ccc",
+                base_url="https://app.example.com",
+                org_id=org_id,
+            )
+
+        send_email_stub.assert_awaited_once()
+        _args, kwargs = send_email_stub.await_args
+        # Positional: db, message
+        assert len(_args) >= 2
+        passed_db = _args[0]
+        message = _args[1]
+
+        # 1. The caller's session was forwarded to send_email — A9
+        #    does NOT swap it for a fresh one.
+        assert passed_db is caller_session
+
+        # 2. org_id flows through unchanged (A9 row in the per-site
+        #    variation table: org.id).
+        assert message.org_id == org_id
+
+        # 3. Recipient on the message matches the function's email
+        #    arg.
+        assert message.to_email == "newadmin@example.com"
+
+        # 4. Subject is the welcome subject (preserved verbatim
+        #    from the legacy hardcoded body).
+        assert "Welcome to OraInvoice" in message.subject
+        assert "Verify your email" in message.subject
+
+        # 5. Both bodies are present and both carry the verification
+        #    URL — including the ``&type=signup`` qualifier the
+        #    public-signup flow depends on.
+        expected_url = (
+            "https://app.example.com/verify-email?"
+            "token=tok_msg_shape_ccc&type=signup"
+        )
+        assert message.html_body and expected_url in message.html_body
+        assert message.text_body and expected_url in message.text_body
+
+        # 6. Body greets the user by name and references the org.
+        assert "Admin User" in message.text_body
+        assert "Acme Workshop" in message.text_body
+
+        # 7. No attachments — A9 sends verification link only.
+        assert message.attachments == []
+
+        # 8. org_sender_name keyword equals org_name — A9 row in the
+        #    per-site variation table: org.name. Drives the From
+        #    header to read as the org.
+        assert kwargs.get("org_sender_name") == "Acme Workshop"
+
+        # 9. org_reply_to is NOT passed (or is explicitly None). A9
+        #    does not override reply-to in v1; a future change that
+        #    wires per-org reply-to through here would need explicit
+        #    review.
+        assert (
+            "org_reply_to" not in kwargs
+            or kwargs["org_reply_to"] is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_default_org_id_none_passes_through(self) -> None:
+        """``org_id`` defaults to ``None`` and flows through cleanly.
+
+        A9 added ``org_id`` as a keyword-only parameter with a default
+        of ``None``. Existing or future callers that don't yet plumb
+        org_id through must still get a working email — the
+        bounce-blocklist pre-check falls back to platform-wide rows
+        when org_id is None. This pins the default-arg behaviour
+        against a future refactor that makes ``org_id`` required.
+
+        Validates: Requirement 6.3
+        """
+        caller_session = AsyncMock()
+        send_email_stub = AsyncMock()
+        send_email_stub.return_value = MagicMock(
+            success=True,
+            provider_key="brevo",
+            transport="rest_api",
+            message_id="msg-id-2",
+            error=None,
+            attempts=[MagicMock()],
+        )
+
+        with patch(
+            "app.integrations.email_sender.send_email",
+            new=send_email_stub,
+        ):
+            from app.modules.auth.service import send_verification_email
+
+            # No org_id kwarg — relies on the default of None.
+            await send_verification_email(
+                caller_session,
+                email="newadmin@example.com",
+                user_name="Admin User",
+                org_name="Acme Workshop",
+                verification_token="tok_default_orgid_eee",
+                base_url="https://app.example.com",
+            )
+
+        send_email_stub.assert_awaited_once()
+        _args, _kwargs = send_email_stub.await_args
+        message = _args[1]
+
+        # org_id defaulted to None — and the message reflects that.
+        assert message.org_id is None

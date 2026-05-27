@@ -1856,6 +1856,7 @@ async def public_signup(
                 org_name=org_name,
                 verification_token=verification_token,
                 base_url=base_url,
+                org_id=org.id,
             )
 
             return {
@@ -2002,6 +2003,7 @@ async def public_signup(
                 org_name=org_name,
                 verification_token=verification_token,
                 base_url=base_url,
+                org_id=org.id,
             )
 
             return {
@@ -2193,6 +2195,7 @@ async def public_signup(
         org_name=org_name,
         verification_token=verification_token,
         base_url=base_url,
+        org_id=org.id,
     )
 
     return {
