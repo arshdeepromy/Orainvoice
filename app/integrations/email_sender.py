@@ -69,6 +69,17 @@ EMAIL_PER_ATTEMPT_TIMEOUT_SECONDS: int = 15
 #: attempt is marked ``FailureKind.BUDGET_EXCEEDED``.
 EMAIL_TOTAL_BUDGET_SECONDS: int = 45
 
+#: Redis dedup TTL for the "no active email providers configured" alert
+#: (``_maybe_fire_no_providers_alert``). One hour: a noisy enough signal
+#: that admins notice promptly, but quiet enough that a flood of sends
+#: while the platform is fully misconfigured doesn't spam the inbox.
+NO_PROVIDERS_DEDUP_SECONDS: int = 60 * 60  # 1 hour
+
+#: Redis dedup TTL for the "every provider returned SOFT_AUTH" alert
+#: (``_maybe_fire_all_auth_fail_alert``). One day: invalid credentials
+#: are usually a single rotation event, so once-per-day is plenty.
+ALL_AUTH_FAIL_DEDUP_SECONDS: int = 24 * 60 * 60  # 1 day
+
 
 #: Default host / port / encryption tuples used when an ``EmailProvider``
 #: row has no explicit ``smtp_host`` configured. Mirrors the fallback
@@ -420,48 +431,138 @@ def _classify_smtp_error(exc: Exception) -> FailureKind:
 
 
 # ---------------------------------------------------------------------------
-# In-app alert stubs (design Components §8 — Phase 4 wires the real calls)
+# In-app alert helpers (design Components §8)
 # ---------------------------------------------------------------------------
 
 
-async def _maybe_fire_no_providers_alert(db: AsyncSession) -> None:
-    """Fire an in-app alert when ``send_email`` is called with no active
-    providers configured.
+async def _alert_dedup_should_fire(redis_key: str, ttl_seconds: int) -> bool:
+    """Redis SETNX-with-TTL guard for in-app alert deduplication.
 
-    Phase 4 (task 4.5) wires the actual ``create_in_app_notification``
-    call with Redis-based once-per-hour deduplication
-    (key: ``email_no_providers_alert``, TTL ``NO_PROVIDERS_DEDUP_SECONDS``).
-    Phase 1 leaves this as a no-op log so the failover loop can still
-    complete cleanly without crashing on an unimplemented helper.
+    Returns ``True`` when the caller should fire its alert (the dedup
+    key was not set, so we just claimed it for ``ttl_seconds``), and
+    ``False`` when an earlier call within the dedup window has already
+    fired. On Redis unavailability the helper **fails open** by
+    returning ``True``: per task 4.5/4.6 spec we'd rather duplicate an
+    alert than silently swallow a real "outbound email is broken"
+    signal.
     """
-    # TODO(4.5): create_in_app_notification(category='email_failure',
-    #            severity='critical', recipient_role='global_admin', ...)
-    #            with Redis dedup key 'email_no_providers_alert'.
-    del db
-    logger.warning(
-        "send_email: no active email providers configured — "
-        "in-app alert deferred to Phase 4"
+    try:
+        from app.core.redis import redis_pool
+
+        # ``set`` with ``nx=True, ex=ttl`` is the atomic SETNX-with-TTL
+        # primitive. Returns truthy only when the key didn't already
+        # exist; subsequent calls within the TTL window return None.
+        was_new = await redis_pool.set(
+            redis_key, "1", nx=True, ex=ttl_seconds
+        )
+        return bool(was_new)
+    except Exception as exc:
+        # Fail open: better duplication than silence.
+        logger.warning(
+            "email alert dedup: Redis unavailable for key=%s — firing anyway: %s",
+            redis_key,
+            exc,
+        )
+        return True
+
+
+async def _maybe_fire_no_providers_alert(db: AsyncSession) -> None:
+    """Fire an in-app alert when ``send_email`` is called with no
+    active providers configured (Requirement 10.1, 10.3, 10.5).
+
+    Deduped via Redis key ``email_no_providers_alert`` with TTL
+    ``NO_PROVIDERS_DEDUP_SECONDS`` (1 hour). On Redis unavailability we
+    fail open and fire anyway — better duplication than silence per
+    the task spec.
+
+    The alert targets ``audience_roles=["global_admin"]`` because the
+    fix lives on the platform-wide Email Providers admin page. The
+    in-app notifications system is org-scoped (``app_notifications.org_id``
+    is NOT NULL) and explicitly rejects ``global_admin`` from the
+    inbox, so the primary alerting channel here is the structured
+    WARNING log line — the ``create_in_app_notification`` call is
+    best-effort and will silently no-op if it can't persist.
+    """
+    if not await _alert_dedup_should_fire(
+        "email_no_providers_alert", NO_PROVIDERS_DEDUP_SECONDS
+    ):
+        return
+
+    # Structured log line is the primary alerting channel for ops /
+    # log aggregation. The tag ``no_active_email_providers`` is grep-
+    # friendly so a single CloudWatch / Loki query counts hits.
+    logger.error(
+        "no_active_email_providers: outbound email is currently disabled — "
+        "configure at least one provider via Admin > Email Providers"
     )
+
+    try:
+        from app.modules.in_app_notifications.service import (
+            create_in_app_notification,
+        )
+
+        await create_in_app_notification(
+            db,
+            org_id=None,  # type: ignore[arg-type]
+            category="email_failure",
+            severity="error",
+            title="No email providers configured",
+            body=(
+                "Outbound email is currently disabled. Configure at "
+                "least one provider in Admin > Email Providers."
+            ),
+            link_url="/admin/email-providers",
+            audience_roles=["global_admin"],
+        )
+    except Exception:  # pragma: no cover — create_in_app_notification swallows
+        # ``create_in_app_notification`` is exception-safe by contract,
+        # but guard anyway: the structured log above is the source of
+        # truth for ops alerting.
+        logger.exception(
+            "failed to fire in-app no-providers notification"
+        )
 
 
 async def _maybe_fire_all_auth_fail_alert(db: AsyncSession) -> None:
     """Fire an in-app alert when every provider attempt failed with
-    ``SOFT_AUTH`` (i.e. all credentials look invalid).
+    ``SOFT_AUTH`` (Requirement 10.2, 10.4, 10.5).
 
-    Phase 4 (task 4.6) wires the actual ``create_in_app_notification``
-    call with Redis-based once-per-day deduplication
-    (key: ``email_all_auth_fail_alert``, TTL ``ALL_AUTH_FAIL_DEDUP_SECONDS``).
-    Phase 1 leaves this as a no-op log so the failover loop can still
-    complete cleanly without crashing on an unimplemented helper.
+    Deduped via Redis key ``email_all_auth_fail_alert`` with TTL
+    ``ALL_AUTH_FAIL_DEDUP_SECONDS`` (1 day). Same fail-open behaviour
+    on Redis unavailability as ``_maybe_fire_no_providers_alert``.
     """
-    # TODO(4.6): create_in_app_notification(category='email_failure',
-    #            severity='critical', recipient_role='global_admin', ...)
-    #            with Redis dedup key 'email_all_auth_fail_alert'.
-    del db
-    logger.warning(
-        "send_email: all provider attempts returned SOFT_AUTH — "
-        "in-app alert deferred to Phase 4"
+    if not await _alert_dedup_should_fire(
+        "email_all_auth_fail_alert", ALL_AUTH_FAIL_DEDUP_SECONDS
+    ):
+        return
+
+    logger.error(
+        "all_email_providers_auth_failed: every active provider returned "
+        "SOFT_AUTH on the most recent send — credentials likely need rotation"
     )
+
+    try:
+        from app.modules.in_app_notifications.service import (
+            create_in_app_notification,
+        )
+
+        await create_in_app_notification(
+            db,
+            org_id=None,  # type: ignore[arg-type]
+            category="email_failure",
+            severity="error",
+            title="All email providers failed authentication",
+            body=(
+                "All providers' credentials appear to be invalid. "
+                "Review Admin > Email Providers and re-test each provider."
+            ),
+            link_url="/admin/email-providers",
+            audience_roles=["global_admin"],
+        )
+    except Exception:  # pragma: no cover — create_in_app_notification swallows
+        logger.exception(
+            "failed to fire in-app all-auth-fail notification"
+        )
 
 
 async def _dispatch_brevo_rest(
