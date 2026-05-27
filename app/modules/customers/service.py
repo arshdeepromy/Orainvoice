@@ -721,27 +721,24 @@ async def notify_customer(
             raise ValueError("Customer has no email address on file")
         recipient = customer.email
 
-        import json as _json
-        import smtplib
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
-
-        from app.core.encryption import envelope_decrypt_str
-        from app.modules.admin.models import EmailProvider
+        # Migrated from a hand-rolled smtplib provider loop in Phase 3
+        # task 3.12 (A12) of the email-provider-unification spec. Dispatch
+        # goes through :func:`app.integrations.email_sender.send_email`,
+        # which owns failover, error classification, and per-attempt +
+        # total time budgets.
+        #
+        # Per the per-site variation table in design.md row A12:
+        # - ``EmailMessage.org_id`` = ``customer.org_id`` (org-scoped send).
+        # - ``org_sender_name=org_name`` so the From header reads as the
+        #   org, not the platform default.
+        # - ``log_email_sent`` is called on both success and failure
+        #   (preserved from the legacy implementation).
+        # - ``create_in_app_notification(category='email_failure', ...)``
+        #   fires on total failure (preserved).
+        # - On total failure, raise ``ValueError`` so the caller (router)
+        #   surfaces the error to the client.
+        from app.integrations.email_sender import EmailMessage, send_email
         from app.modules.notifications.service import log_email_sent
-
-        # Find active email provider
-        provider_result = await db.execute(
-            select(EmailProvider)
-            .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
-            .order_by(EmailProvider.priority)
-        )
-        providers = list(provider_result.scalars().all())
-
-        if not providers:
-            raise ValueError(
-                "No active email provider configured. Set up an email provider in Admin > Email Providers."
-            )
 
         customer_name = f"{customer.first_name or ''} {customer.last_name or ''}".strip()
         email_subject = subject or f"Message from {org_name}"
@@ -752,74 +749,46 @@ async def notify_customer(
             for line in message.split("\n")
         )
 
-        last_error = None
-        for provider in providers:
+        email_message = EmailMessage(
+            to_email=customer.email,
+            to_name=customer_name,
+            subject=email_subject,
+            html_body=html_body,
+            text_body=message,
+            attachments=[],
+            org_id=customer.org_id,
+        )
+
+        result = await send_email(
+            db,
+            email_message,
+            org_sender_name=org_name,
+        )
+
+        if result.success:
+            logger.info(
+                "Email sent to customer %s via %s",
+                customer_id, result.provider_key,
+            )
+
+            # Log the successful email send
             try:
-                creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-                credentials = _json.loads(creds_json)
-
-                smtp_host = provider.smtp_host
-                smtp_port = provider.smtp_port or 587
-                smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-                username = credentials.get("username") or credentials.get("api_key", "")
-                password = credentials.get("password") or credentials.get("api_key", "")
-
-                config = provider.config or {}
-                from_email = config.get("from_email") or username
-                from_name = config.get("from_name") or org_name
-
-                msg = MIMEMultipart("alternative")
-                msg["From"] = f"{from_name} <{from_email}>"
-                msg["To"] = f"{customer_name} <{customer.email}>" if customer_name else customer.email
-                msg["Subject"] = email_subject
-
-                msg.attach(MIMEText(message, "plain"))
-                msg.attach(MIMEText(html_body, "html"))
-
-                if smtp_encryption == "ssl":
-                    server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-                else:
-                    server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-                    if smtp_encryption == "tls":
-                        server.starttls()
-
-                if username and password:
-                    server.login(username, password)
-
-                server.sendmail(from_email, customer.email, msg.as_string())
-                server.quit()
-
-                logger.info(
-                    "Email sent to customer %s via %s",
-                    customer_id, provider.provider_key,
+                await log_email_sent(
+                    db, org_id=org_id, recipient=customer.email,
+                    template_type="customer_notify", subject=email_subject,
+                    status="sent", sent_at=datetime.now(timezone.utc),
                 )
+            except Exception:
+                logger.warning("Failed to log email send for customer %s", customer_id)
+        else:
+            last_error = result.error or "send failed"
 
-                # Log the successful email send
-                try:
-                    await log_email_sent(
-                        db, org_id=org_id, recipient=customer.email,
-                        template_type="customer_notify", subject=email_subject,
-                        status="sent", sent_at=datetime.now(timezone.utc),
-                    )
-                except Exception:
-                    logger.warning("Failed to log email send for customer %s", customer_id)
-
-                last_error = None
-                break
-            except Exception as exc:
-                last_error = str(exc)
-                logger.warning(
-                    "Email provider %s failed for customer %s: %s",
-                    provider.provider_key, customer_id, last_error,
-                )
-
-        if last_error:
             # Log the failed email attempt
             try:
                 await log_email_sent(
                     db, org_id=org_id, recipient=customer.email,
                     template_type="customer_notify", subject=email_subject,
-                    status="failed", error_message=last_error,
+                    status="failed", error_message=str(last_error),
                 )
             except Exception:
                 logger.warning("Failed to log email failure for customer %s", customer_id)
