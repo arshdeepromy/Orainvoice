@@ -186,19 +186,21 @@ def _build_db_execute_side_effect(
 ) -> list:
     """Construct the ordered ``db.execute`` return values.
 
-    Order follows ``email_invoice``'s code path when ``recipient_email``
-    is provided and ``payment_gateway`` is not ``"stripe"`` (so the
-    regen branch is skipped):
+    Order follows ``email_invoice``'s code path **after** the Phase 3
+    Group A migration (task 3.1) when ``recipient_email`` is provided
+    and ``payment_gateway`` is not ``"stripe"`` (so the regen branch is
+    skipped):
 
-      1. ``EmailProvider`` listing (for failover loop).
-      2. ``Organisation`` row (for email-signature settings).
-      3. Latest non-refund ``Payment`` row (partial-receipt detection).
+      1. ``Organisation`` row (for email-signature settings).
+      2. Latest non-refund ``Payment`` row (partial-receipt detection).
+      3. ``EmailProvider`` listing — now done **inside** ``send_email``
+         via ``_load_active_providers(db)``.
       4. ``Invoice`` row (auto-issue check after send).
     """
     return [
-        _scalars_result(providers),
         _scalar_one_or_none_result(org_for_signature),
         _scalar_one_or_none_result(latest_payment),
+        _scalars_result(providers),
         _scalar_one_or_none_result(invoice_obj),
     ]
 
@@ -312,9 +314,9 @@ class TestEmailInvoicePartialReceipt:
             new_callable=AsyncMock,
             return_value=None,
         ), patch(
-            "app.core.encryption.envelope_decrypt_str",
+            "app.integrations.email_sender.envelope_decrypt_str",
             return_value='{"username": "user", "password": "pass"}',
-        ), patch("smtplib.SMTP", _FakeSMTP):
+        ), patch("app.integrations.email_sender.smtplib.SMTP", _FakeSMTP):
             from app.modules.invoices.service import email_invoice
 
             result = await email_invoice(
@@ -378,9 +380,9 @@ class TestEmailInvoicePartialReceipt:
             new_callable=AsyncMock,
             return_value=None,
         ), patch(
-            "app.core.encryption.envelope_decrypt_str",
+            "app.integrations.email_sender.envelope_decrypt_str",
             return_value='{"username": "user", "password": "pass"}',
-        ), patch("smtplib.SMTP", _FakeSMTP):
+        ), patch("app.integrations.email_sender.smtplib.SMTP", _FakeSMTP):
             from app.modules.invoices.service import email_invoice
 
             await email_invoice(
@@ -448,9 +450,9 @@ class TestEmailInvoicePartialReceipt:
             new_callable=AsyncMock,
             return_value=None,
         ), patch(
-            "app.core.encryption.envelope_decrypt_str",
+            "app.integrations.email_sender.envelope_decrypt_str",
             return_value='{"username": "user", "password": "pass"}',
-        ), patch("smtplib.SMTP", _FakeSMTP):
+        ), patch("app.integrations.email_sender.smtplib.SMTP", _FakeSMTP):
             from app.modules.invoices.service import email_invoice
 
             await email_invoice(
@@ -525,9 +527,9 @@ class TestEmailInvoicePartialReceipt:
             new_callable=AsyncMock,
             return_value=rendered,
         ), patch(
-            "app.core.encryption.envelope_decrypt_str",
+            "app.integrations.email_sender.envelope_decrypt_str",
             return_value='{"username": "user", "password": "pass"}',
-        ), patch("smtplib.SMTP", _FakeSMTP):
+        ), patch("app.integrations.email_sender.smtplib.SMTP", _FakeSMTP):
             from app.modules.invoices.service import email_invoice
 
             await email_invoice(

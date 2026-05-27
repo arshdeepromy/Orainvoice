@@ -4301,20 +4301,20 @@ async def email_invoice(
 ) -> dict:
     """Generate the invoice PDF and send an email to the customer.
 
-    Uses the highest-priority active email provider configured in the system.
-    If *recipient_email* is not provided the customer's email on file is used.
-    Returns a summary dict with the recipient and status.
+    Dispatch goes through the unified sender
+    (:mod:`app.integrations.email_sender`), which loads the active
+    ``email_providers`` rows in priority order and falls over on
+    ``SOFT_AUTH`` / ``SOFT_PROVIDER`` failures. If *recipient_email* is
+    not provided the customer's email on file is used. Returns a summary
+    dict with the recipient and status.
 
-    Requirements: 32.3
+    Requirements: 6.1, 6.3, 6.4, 32.3
     """
-    import json as _json
-    import smtplib
-    from email.mime.application import MIMEApplication
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-
-    from app.core.encryption import envelope_decrypt_str
-    from app.modules.admin.models import EmailProvider
+    from app.integrations.email_sender import (
+        EmailAttachment,
+        EmailMessage,
+        send_email,
+    )
 
     # Fetch invoice to get customer email if needed
     invoice_dict = await get_invoice(db, org_id=org_id, invoice_id=invoice_id)
@@ -4388,19 +4388,6 @@ async def email_invoice(
                     "Failed to regenerate payment link for invoice %s on resend",
                     invoice_id,
                 )
-
-    # Find all active email providers ordered by priority (failover)
-    provider_result = await db.execute(
-        select(EmailProvider)
-        .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
-        .order_by(EmailProvider.priority)
-    )
-    providers = list(provider_result.scalars().all())
-
-    if not providers:
-        raise ValueError(
-            "No active email provider configured. Please set up an email provider in Admin > Email Providers."
-        )
 
     # Load invoice attachments for inclusion in the email
     from app.modules.invoices.attachment_service import (
@@ -4565,84 +4552,54 @@ async def email_invoice(
                 "\nNote: Some attachments were too large to include in this email.\n"
             )
 
-    # Build the email message (reusable across provider attempts)
-    def _build_message(from_name: str, from_email: str) -> MIMEMultipart:
-        msg = MIMEMultipart("mixed")
-        msg["From"] = f"{from_name} <{from_email}>"
-        msg["To"] = recipient_email
-        msg["Subject"] = _email_subject
-
-        body = _email_body
-        if _rendered_template is None and attachments_skipped_size:
-            pass  # Already appended above in fallback
-        elif _rendered_template and attachments_skipped_size:
-            body += (
-                "\nNote: Some attachments were too large to include in this email.\n"
-            )
-
-        # Build HTML body with conditional email signature
-        html_body = body.replace("\n", "<br>")
-        if _email_signature_enabled and _email_signature.strip():
-            html_body += "<hr>" + _email_signature
-
-        msg.attach(MIMEText(html_body, "html"))
-
-        pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
-        pdf_attachment.add_header(
-            "Content-Disposition", "attachment", filename=f"{inv_number}.pdf"
+    # Build HTML body with conditional email signature.
+    # The plain-text body is converted to HTML via newline -> <br>
+    # substitution to mirror the prior MIME builder's behaviour.
+    _final_text_body = _email_body
+    if attachments_skipped_size and _rendered_template is not None:
+        # Custom template: append the size-skipped notice (the fallback
+        # already appended it above when rendering its own body).
+        _final_text_body += (
+            "\nNote: Some attachments were too large to include in this email.\n"
         )
-        msg.attach(pdf_attachment)
 
-        # Attach invoice attachments (after the PDF)
-        for fname, mtype, fdata in attachment_data:
-            part = MIMEApplication(fdata, Name=fname)
-            part.add_header(
-                "Content-Disposition", "attachment", filename=fname
+    _html_body = _final_text_body.replace("\n", "<br>")
+    if _email_signature_enabled and _email_signature.strip():
+        _html_body += "<hr>" + _email_signature
+
+    # Build attachments list: invoice PDF first, then any extra files
+    # downloaded above (file_name → filename, mime_type → mime_type).
+    _email_attachments: list[EmailAttachment] = [
+        EmailAttachment(
+            filename=f"{inv_number}.pdf",
+            content=pdf_bytes,
+            mime_type="application/pdf",
+        )
+    ]
+    for fname, mtype, fdata in attachment_data:
+        _email_attachments.append(
+            EmailAttachment(
+                filename=fname,
+                content=fdata,
+                mime_type=mtype or "application/octet-stream",
             )
-            msg.attach(part)
+        )
 
-        return msg
+    # Dispatch via the unified sender. Failover, error classification,
+    # per-attempt + total time budgets are all handled inside.
+    _message = EmailMessage(
+        to_email=recipient_email,
+        to_name="",
+        subject=_email_subject,
+        html_body=_html_body,
+        text_body=_final_text_body,
+        attachments=_email_attachments,
+        org_id=org_id,
+    )
+    result = await send_email(db, _message)
 
-    # Try each provider in priority order until one succeeds
-    last_error = None
-    used_provider = None
-
-    for provider in providers:
-        try:
-            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-            credentials = _json.loads(creds_json)
-
-            smtp_host = provider.smtp_host
-            smtp_port = provider.smtp_port or 587
-            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-            username = credentials.get("username") or credentials.get("api_key", "")
-            password = credentials.get("password") or credentials.get("api_key", "")
-
-            config = provider.config or {}
-            from_email = config.get("from_email") or username
-            from_name = config.get("from_name") or org_name
-
-            msg = _build_message(from_name, from_email)
-
-            if smtp_encryption == "ssl":
-                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-            else:
-                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-                if smtp_encryption == "tls":
-                    server.starttls()
-
-            if username and password:
-                server.login(username, password)
-
-            server.sendmail(from_email, recipient_email, msg.as_string())
-            server.quit()
-            used_provider = provider
-            break
-        except Exception as e:
-            last_error = e
-            continue
-
-    if used_provider is None:
+    if not result.success:
+        last_error = result.error or "send failed"
         error_msg = f"All email providers failed. Last error: {last_error}"
 
         # Log the failed email attempt for parity with customers pattern
@@ -4730,7 +4687,7 @@ async def email_invoice(
             "recipient": recipient_email,
             "invoice_number": inv_number,
             "pdf_size_bytes": len(pdf_bytes),
-            "provider": used_provider.provider_key,
+            "provider": result.provider_key,
         },
     )
     await db.flush()
