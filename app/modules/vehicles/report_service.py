@@ -300,8 +300,11 @@ async def email_service_history_report(
 ) -> dict:
     """Generate the service history PDF and send it via email.
 
-    Uses the highest-priority active email provider (SMTP failover chain),
-    matching the pattern established by ``email_invoice()``.
+    Dispatch goes through the unified sender
+    (:mod:`app.integrations.email_sender`). Failover, error
+    classification, and per-attempt + total time budgets are all
+    handled inside ``send_email``. This was migrated from a hand-rolled
+    ``smtplib`` provider loop in Phase 3 task 3.5 (A5).
 
     Returns a summary dict with vehicle_id, recipient_email, pdf_size_bytes,
     and status.
@@ -309,21 +312,19 @@ async def email_service_history_report(
     Raises:
         HTTPException(422): Invalid recipient email format.
         HTTPException(404): Vehicle not found (propagated from generate fn).
-        ValueError: No email providers configured or all providers failed.
+        ValueError: All active email providers failed to deliver, or no
+            active providers are configured.
 
-    Requirements: 6.2, 7.1, 7.2, 7.3, 7.4, 8.2, 8.4
+    Requirements: 6.1, 6.3, 6.4, 7.1, 7.2, 7.3, 7.4, 8.2, 8.4
     """
-    import json as _json
-    import smtplib
-    from email.mime.application import MIMEApplication
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-
     from jinja2 import Environment, FileSystemLoader
 
     from app.core.audit import write_audit_log
-    from app.core.encryption import envelope_decrypt_str
-    from app.modules.admin.models import EmailProvider
+    from app.integrations.email_sender import (
+        EmailAttachment,
+        EmailMessage,
+        send_email,
+    )
 
     # ------------------------------------------------------------------
     # 1. Validate recipient email
@@ -429,80 +430,32 @@ async def email_service_history_report(
     attachment_filename = f"{rego}_service_history_{date.today().strftime('%Y-%m-%d')}.pdf"
 
     # ------------------------------------------------------------------
-    # 5. Send via SMTP failover chain
+    # 5. Send via the unified email sender
     # ------------------------------------------------------------------
-    provider_result = await db.execute(
-        select(EmailProvider)
-        .where(
-            EmailProvider.is_active == True,
-            EmailProvider.credentials_set == True,
-        )
-        .order_by(EmailProvider.priority)
+    # The unified sender owns provider loading, failover, error
+    # classification, and per-attempt + total time budgets. The legacy
+    # raw-smtplib loop here would manually re-decrypt credentials per
+    # provider and short-circuit on the first success — all of that
+    # now lives behind ``send_email``.
+    _message = EmailMessage(
+        to_email=recipient_email,
+        to_name="",
+        subject=subject,
+        html_body=html_body,
+        text_body=None,
+        attachments=[
+            EmailAttachment(
+                filename=attachment_filename,
+                content=pdf_bytes,
+                mime_type="application/pdf",
+            )
+        ],
+        org_id=org_id,
     )
-    providers = list(provider_result.scalars().all())
+    result = await send_email(db, _message)
 
-    if not providers:
-        raise ValueError(
-            "No active email provider configured. "
-            "Please set up an email provider in Admin > Email Providers."
-        )
-
-    def _build_message(from_name: str, from_email: str) -> MIMEMultipart:
-        msg = MIMEMultipart("mixed")
-        msg["From"] = f"{from_name} <{from_email}>"
-        msg["To"] = recipient_email
-        msg["Subject"] = subject
-
-        msg.attach(MIMEText(html_body, "html"))
-
-        pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
-        pdf_attachment.add_header(
-            "Content-Disposition",
-            "attachment",
-            filename=attachment_filename,
-        )
-        msg.attach(pdf_attachment)
-        return msg
-
-    last_error = None
-    used_provider = None
-
-    for provider in providers:
-        try:
-            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-            credentials = _json.loads(creds_json)
-
-            smtp_host = provider.smtp_host
-            smtp_port = provider.smtp_port or 587
-            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-            username = credentials.get("username") or credentials.get("api_key", "")
-            password = credentials.get("password") or credentials.get("api_key", "")
-
-            config = provider.config or {}
-            from_email = config.get("from_email") or username
-            from_name = config.get("from_name") or org_name
-
-            msg = _build_message(from_name, from_email)
-
-            if smtp_encryption == "ssl":
-                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-            else:
-                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-                if smtp_encryption == "tls":
-                    server.starttls()
-
-            if username and password:
-                server.login(username, password)
-
-            server.sendmail(from_email, recipient_email, msg.as_string())
-            server.quit()
-            used_provider = provider
-            break
-        except Exception as e:
-            last_error = e
-            continue
-
-    if used_provider is None:
+    if not result.success:
+        last_error = result.error or "send failed"
         error_msg = f"All email providers failed. Last error: {last_error}"
 
         # Log the failed email attempt for parity with customers pattern
@@ -515,7 +468,9 @@ async def email_service_history_report(
             )
         except Exception:
             import logging as _logging
-            _logging.getLogger(__name__).warning("Failed to log email failure for vehicle %s", vehicle_id)
+            _logging.getLogger(__name__).warning(
+                "Failed to log email failure for vehicle %s", vehicle_id
+            )
 
         # Create in-app notification for email failure (Req 4.3.1)
         from app.modules.in_app_notifications.service import create_in_app_notification
@@ -551,7 +506,7 @@ async def email_service_history_report(
             "recipient": recipient_email,
             "vehicle_rego": rego,
             "pdf_size_bytes": len(pdf_bytes),
-            "provider": used_provider.provider_key,
+            "provider": result.provider_key,
         },
     )
     await db.flush()
