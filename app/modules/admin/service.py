@@ -195,7 +195,13 @@ async def provision_organisation(
     )
 
     # 7. Send invitation email
-    await _send_org_admin_invitation_email(admin_email, invite_token, name)
+    await _send_org_admin_invitation_email(
+        admin_email,
+        invite_token,
+        name,
+        db=db,
+        org_id=org.id,
+    )
 
     # 8. Audit log — organisation provisioned
     await write_audit_log(
@@ -345,21 +351,137 @@ async def create_global_admin(
 
 
 async def _send_org_admin_invitation_email(
-    email: str, token: str, org_name: str
+    email: str,
+    token: str,
+    org_name: str,
+    *,
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    base_url: str | None = None,
 ) -> None:
     """Send an Org_Admin invitation email with the secure signup link.
 
-    In production this dispatches via the notification infrastructure
-    (Brevo/SendGrid). For now we log the intent.
+    Phase 4 task 4.4 (C4) of the email-provider-unification spec. The
+    legacy ``logger.info(...queued...)`` stub is replaced with a real
+    dispatch through :func:`app.tasks.notifications.send_email_task`,
+    which delegates to the unified sender and therefore inherits
+    provider failover, error classification, time budgets, and the
+    bounce-blocklist pre-check from Phase 2 plumbing — no per-site
+    failover loop required here.
+
+    Per design row C4 in
+    ``.kiro/specs/email-provider-unification/design.md``:
+
+    - ``template_type="org_admin_invitation"`` so the notification log
+      shows the attempt under a stable identifier.
+    - ``org_id`` is the freshly provisioned organisation id (the
+      organisation the new admin will manage). The bounce-blocklist
+      pre-check uses it to scope per-org bounce rows when the
+      recipient has bounced for this org before.
+    - ``org_sender_name="OraInvoice"`` because this is a
+      platform-branded admin invitation — the recipient is being
+      invited to administer a brand-new org and isn't a customer of
+      that org yet, so the From name should read OraInvoice rather
+      than the org's name.
+    - The signup link points at the same ``/verify-email?token=…``
+      route the regular ``_send_invitation_email`` (A8) uses, so the
+      acceptance flow is identical.
+    - The 7-day expiry note matches the existing fleet-portal invite
+      copy. The actual Redis TTL on the invite token is 48h (see
+      ``_INVITE_TOKEN_EXPIRY_SECONDS``); the body intentionally
+      describes the *invitation window* policy, not the cryptographic
+      token TTL.
+    - ``log_email_sent`` writes a ``queued`` row before dispatch so
+      ``send_email_task`` can flip it to ``sent``/``failed`` on
+      completion (per Requirement 8.5).
+
+    Requirements: 8.4, 8.5
     """
-    logger.info(
-        "Org_Admin invitation email queued for %s (org: %s) with token %s...",
-        email,
-        org_name,
-        token[:8],
+    from app.modules.notifications.service import log_email_sent
+    from app.tasks.notifications import send_email_task
+
+    if not base_url:
+        base_url = (
+            getattr(settings, "frontend_base_url", "") or "http://localhost"
+        ).rstrip("/")
+    else:
+        base_url = base_url.rstrip("/")
+
+    invite_url = f"{base_url}/verify-email?token={token}"
+    subject = f"You're invited to administer {org_name} on OraInvoice"
+
+    html_body = f"""
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; margin-bottom: 30px;">
+        <h1 style="color: #1f2937; font-size: 24px; margin: 0;">You're Invited</h1>
+      </div>
+
+      <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+        Hi there,
+      </p>
+
+      <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+        You've been invited to administer <strong>{org_name}</strong> on
+        OraInvoice. Click the button below to set your password and
+        finish setting up your account.
+      </p>
+
+      <div style="text-align: center; margin: 30px 0;">
+        <a href="{invite_url}"
+           style="display: inline-block; padding: 14px 32px; background-color: #2563eb;
+                  color: #ffffff; text-decoration: none; border-radius: 8px;
+                  font-size: 16px; font-weight: 600;">
+          Accept Invitation
+        </a>
+      </div>
+
+      <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+        Or copy and paste this link into your browser:<br/>
+        <a href="{invite_url}" style="color: #2563eb; word-break: break-all;">{invite_url}</a>
+      </p>
+
+      <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+        This invitation expires in 7 days. If you didn't expect this
+        email, you can safely ignore it.
+      </p>
+
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;" />
+
+      <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+        OraInvoice — Invoicing made simple
+      </p>
+    </div>
+    """
+
+    text_body = (
+        f"You've been invited to administer {org_name} on OraInvoice.\n\n"
+        f"Click the link below to set your password and finish setting "
+        f"up your account:\n"
+        f"{invite_url}\n\n"
+        f"This invitation expires in 7 days. If you didn't expect this "
+        f"email, you can safely ignore it.\n"
     )
-    # TODO: Replace with Celery task dispatching a real email via
-    # app.integrations.brevo once the Notification_Module is implemented.
+
+    log_entry = await log_email_sent(
+        db,
+        org_id=org_id,
+        recipient=email,
+        template_type="org_admin_invitation",
+        subject=subject,
+        status="queued",
+    )
+
+    await send_email_task(
+        org_id=str(org_id),
+        log_id=str(log_entry["id"]),
+        to_email=email,
+        to_name="",
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        org_sender_name="OraInvoice",
+        template_type="org_admin_invitation",
+    )
 
 
 # ---------------------------------------------------------------------------
