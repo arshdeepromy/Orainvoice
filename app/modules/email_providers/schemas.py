@@ -25,9 +25,18 @@ class EmailProviderResponse(BaseModel):
 
 
 class EmailProviderListResponse(BaseModel):
-    """GET /api/v2/admin/email-providers response."""
+    """GET /api/v2/admin/email-providers response.
+
+    Phase 5 (task 5.3) extension: ``active_providers`` lists every active
+    provider key in ``priority ASC`` order so the admin UI can render
+    the multi-active failover chain. ``active_provider`` (singular) is
+    retained for one release for backwards compatibility with any
+    pre-Phase-5 frontend build still in the wild — it is the first
+    element of ``active_providers`` (or ``None``).
+    """
     providers: list[EmailProviderResponse]
     active_provider: str | None = None
+    active_providers: list[str] = Field(default_factory=list)
 
 
 class EmailProviderActivateResponse(BaseModel):

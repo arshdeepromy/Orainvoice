@@ -6,7 +6,8 @@ import json
 import logging
 import uuid
 
-from sqlalchemy import select, update
+from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
@@ -22,18 +23,34 @@ logger = logging.getLogger(__name__)
 
 
 async def list_email_providers(db: AsyncSession) -> dict:
-    """Return all email providers and identify the active one."""
+    """Return all email providers, the active set, and the highest-priority active key.
+
+    Phase 5 (task 5.3) extension: the response now exposes
+    ``active_providers: list[str]`` — every active provider key in
+    ``priority ASC`` order — so the admin UI can render a multi-active
+    failover chain. The legacy ``active_provider: str | None`` field is
+    retained for one release as the first element of that list (or
+    ``None`` when no provider is active).
+    """
     result = await db.execute(
         select(EmailProvider).order_by(EmailProvider.display_name)
     )
     providers = result.scalars().all()
-    active_key = None
-    provider_list = []
-    for p in providers:
-        provider_list.append(_provider_to_dict(p))
-        if p.is_active:
-            active_key = p.provider_key
-    return {"providers": provider_list, "active_provider": active_key}
+
+    # Compute the active set ordered by priority ASC (lower priority value =
+    # tried first). ``priority`` is nullable on legacy rows; treat NULL as
+    # the default priority of 1 so failover ordering is deterministic.
+    active_sorted = sorted(
+        (p for p in providers if p.is_active),
+        key=lambda p: getattr(p, "priority", 1) or 1,
+    )
+    active_keys = [p.provider_key for p in active_sorted]
+
+    return {
+        "providers": [_provider_to_dict(p) for p in providers],
+        "active_provider": active_keys[0] if active_keys else None,
+        "active_providers": active_keys,
+    }
 
 
 async def activate_email_provider(
@@ -43,16 +60,35 @@ async def activate_email_provider(
     admin_user_id: uuid.UUID | None = None,
     ip_address: str | None = None,
 ) -> dict | None:
-    """Set a provider as the active email provider (only one at a time)."""
+    """Activate a provider without deactivating any other row.
+
+    Phase 5 (task 5.1) rewrite. Per Requirement 9.1, this endpoint must
+    set ``is_active=True`` on the named row only and must NOT touch any
+    other row's flag — multi-active failover is the whole point of the
+    new sender. The function is idempotent (Req 9.2): if the row is
+    already active, it returns the current state without writing an
+    audit-log entry. The audit action name is ``email_provider_activated``
+    (Req 9.7), replacing the legacy ``set_as_only_active``-style name.
+
+    For defence-in-depth and to mirror :func:`deactivate_email_provider`
+    we acquire ``SELECT ... FOR UPDATE`` on the target row. Activating a
+    single row can never violate the "≥1 active" invariant on its own,
+    but matching the lock pattern keeps the two handlers symmetric and
+    serialises an admin who is hammering both buttons in quick succession.
+    """
     result = await db.execute(
-        select(EmailProvider).where(EmailProvider.provider_key == provider_key)
+        select(EmailProvider)
+        .where(EmailProvider.provider_key == provider_key)
+        .with_for_update()
     )
     provider = result.scalar_one_or_none()
     if provider is None:
         return None
 
-    # Deactivate all others
-    await db.execute(update(EmailProvider).values(is_active=False))
+    if provider.is_active:
+        # Already active — idempotent return, no audit-log entry.
+        return _provider_to_dict(provider)
+
     provider.is_active = True
     await db.flush()
     await db.refresh(provider)
@@ -77,17 +113,66 @@ async def deactivate_email_provider(
     admin_user_id: uuid.UUID | None = None,
     ip_address: str | None = None,
 ) -> dict | None:
-    """Deactivate a provider."""
-    result = await db.execute(
-        select(EmailProvider).where(EmailProvider.provider_key == provider_key)
-    )
-    provider = result.scalar_one_or_none()
-    if provider is None:
-        return None
+    """Deactivate a provider, refusing to leave the platform with zero active senders.
 
-    provider.is_active = False
+    Phase 5 (task 5.2) rewrite. The race we're guarding against is two
+    admin tabs each clicking Deactivate on the last two active providers
+    in the same second: without locking, both reads pass the "≥1 must
+    remain" guard, both writes commit, and outbound email goes dark. The
+    fix (per design Concurrency > Activate / Deactivate, Req 9.3) is to
+    acquire ``SELECT ... FOR UPDATE`` over every row in the
+    Active_Provider_Set so concurrent calls serialise on PG row locks.
+
+    Behaviour:
+
+    1. Lock every active row, look up the target inside that set.
+    2. If the target is not in the active set, fall back to an unlocked
+       lookup. ``None`` returned to the router signals 404; an existing
+       (already-inactive) row is returned idempotently so the UI's retry
+       button is harmless.
+    3. If deactivating the target would leave ``remaining_after`` empty,
+       raise ``HTTPException(409)`` with the exact admin-facing copy
+       from Req 9.4.
+    4. Otherwise flip ``is_active=False``, flush, write the audit log.
+    """
+    locked = await db.execute(
+        select(EmailProvider)
+        .where(EmailProvider.is_active.is_(True))
+        .with_for_update()
+    )
+    active_set = list(locked.scalars().all())
+
+    target = next(
+        (p for p in active_set if p.provider_key == provider_key), None
+    )
+
+    if target is None:
+        # Not in the active set. Re-fetch unlocked to distinguish 404
+        # (no row at all) from idempotent no-op (already inactive).
+        existing_result = await db.execute(
+            select(EmailProvider).where(
+                EmailProvider.provider_key == provider_key
+            )
+        )
+        existing = existing_result.scalar_one_or_none()
+        if existing is None:
+            return None  # router converts to HTTP 404
+        return _provider_to_dict(existing)
+
+    remaining_after = [p for p in active_set if p.provider_key != provider_key]
+    if not remaining_after:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Activate another provider before deactivating this one — "
+                "at least one active email provider is required for "
+                "outbound mail."
+            ),
+        )
+
+    target.is_active = False
     await db.flush()
-    await db.refresh(provider)
+    await db.refresh(target)
 
     await write_audit_log(
         session=db,
@@ -95,11 +180,11 @@ async def deactivate_email_provider(
         user_id=admin_user_id,
         action="admin.email_provider_deactivated",
         entity_type="email_provider",
-        entity_id=provider.id,
+        entity_id=target.id,
         after_value={"provider_key": provider_key},
         ip_address=ip_address,
     )
-    return _provider_to_dict(provider)
+    return _provider_to_dict(target)
 
 
 async def save_email_credentials(
