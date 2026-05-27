@@ -314,7 +314,7 @@ class TestSendOrgEmail:
     async def test_org_overrides_applied(self):
         """Org sender name and reply-to are passed to the email client (Req 33.3)."""
         mock_client = AsyncMock()
-        mock_client.send.return_value = SendResult(success=True, provider="brevo")
+        mock_client.send.return_value = SendResult(success=True, provider_key="brevo", transport="rest_api")
 
         with patch("app.integrations.brevo.get_email_client", return_value=mock_client):
             result = await send_org_email(
@@ -445,7 +445,7 @@ class TestSendTestEmail:
         mock_client = AsyncMock()
         mock_client.config = SmtpConfig(provider="brevo", domain="test.com")
         mock_client.send.return_value = SendResult(
-            success=True, message_id="test-123", provider="brevo"
+            success=True, message_id="test-123", provider_key="brevo", transport="rest_api"
         )
 
         # Mock the config row lookup for marking verified
@@ -472,7 +472,7 @@ class TestSendTestEmail:
         mock_client = AsyncMock()
         mock_client.config = SmtpConfig(provider="smtp", domain="test.com")
         mock_client.send.return_value = SendResult(
-            success=False, error="Connection refused", provider="smtp"
+            success=False, error="Connection refused", provider_key="smtp", transport="smtp"
         )
 
         with patch("app.integrations.brevo.get_email_client", return_value=mock_client):

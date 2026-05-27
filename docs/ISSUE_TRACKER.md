@@ -5064,3 +5064,46 @@ All six sites used `db.add(NotificationLog(... channel="in_app" ...))` which wou
 **Related Issues**: ISSUE-111 (kiosk-qr-payment Stripe webhook plumbing — same module).
 
 **Spec**: `.kiro/specs/qr-partial-payment/`
+
+---
+
+### ISSUE-150: Pre-existing test-suite failures surfaced during email-provider-unification Phase 0 scoped run
+
+- **Date**: 2026-05-27
+- **Severity**: medium
+- **Status**: open (deferred — out of scope for email-provider-unification spec)
+- **Reporter**: spec workflow (email-provider-unification — Phase 0 scoped tests)
+- **Regression of**: N/A (pre-dates the spec)
+
+**Symptoms**: Running the Phase 0 scoped test command `pytest tests/test_email_infrastructure.py tests/test_security_focused.py` produces 7 failing tests on `main` even before any email-provider-unification changes are applied. Verified by stashing the spec changes and re-running a representative subset against a clean checkout — same failures reproduce. With the Phase 0 changes applied, the failure set is identical (no new failures introduced by the spec).
+
+Failing tests:
+
+1. `tests/test_email_infrastructure.py::TestSaveSmtpConfig::test_creates_new_config` — `sqlalchemy.exc.InvalidRequestError: When initializing mapper Mapper[PartSupplier(part_suppliers)], expression 'Supplier' failed to locate a name ('Supplier').`
+2. `tests/test_security_focused.py::TestIntegrationCredentialMasking::test_carjam_api_key_never_returned_raw` — `KeyError: 'config'`
+3. `tests/test_security_focused.py::TestIntegrationCredentialMasking::test_stripe_secrets_never_returned_raw` — `KeyError: 'config'`
+4. `tests/test_security_focused.py::TestIntegrationCredentialMasking::test_smtp_api_key_never_returned_raw` — `KeyError: 'config'`
+5. `tests/test_security_focused.py::TestIntegrationCredentialMasking::test_twilio_auth_token_never_returned_raw` — `KeyError: 'config'`
+6. `tests/test_security_focused.py::TestIntegrationCredentialMasking::test_no_full_secret_keys_in_config_dict` — `KeyError: 'config'`
+7. `tests/test_security_focused.py::TestRLSViolationsReturn404::test_database_rls_set_local_org_id` — `AssertionError: 'SET LOCAL app.current_org_id' in 'RESET app.current_org_id'`
+
+Additional pre-existing collection error not in the Phase 0 scoped set but worth recording for the same reason:
+
+- `tests/integration/test_notifications.py` — `ModuleNotFoundError: No module named 'app.integrations.twilio_sms'` at collection time. Test file imports a module that does not exist in this branch.
+
+**Root Cause**: Three independent pre-existing issues, none related to the email-provider-unification work:
+
+1. The `PartSupplier` ↔ `Supplier` SQLAlchemy mapper resolution drift — the test config does not import the model graph in a way that makes `Supplier` resolvable to the `PartSupplier.supplier` relationship. Root cause is the same class of bug as the older mapper-config issue documented in ISSUE-093 (cross-module relationship strings not resolving without `configure_mappers()`).
+2. The `TestIntegrationCredentialMasking` suite reads `result["config"]` from `list_integrations()` output, but the current shape exposes per-integration keys at the top level (no nested `config` dict). The test expectations have drifted from the API shape.
+3. The RLS test asserts that `set_org_context` issues `SET LOCAL app.current_org_id` but the current implementation issues `RESET app.current_org_id` for the unset path. The test predicate has drifted from the implementation.
+4. `tests/integration/test_notifications.py` references `app.integrations.twilio_sms` — that module does not exist on `main`. The SMS integration is `app/integrations/connexus_sms.py`. Either the test was written against a deleted module or a planned rename that did not land.
+
+**Fix Applied**: None during email-provider-unification Phase 0 — these failures are out of scope per the spec's testing-scope rule (`tasks.md` > "Testing scope (applies to every task)"). Logged here so a future maintenance pass can pick them up.
+
+**Files Changed**: None.
+
+**Similar Bugs Found & Fixed**: ISSUE-093 (PartSupplier/PartsCatalogue cross-module mapper resolution) is the same class of bug as failure #1 above.
+
+**Related Issues**: None.
+
+**Spec**: N/A — pre-existing; deferred. Surfaced during `.kiro/specs/email-provider-unification/` Phase 0.

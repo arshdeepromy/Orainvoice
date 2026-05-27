@@ -21,12 +21,18 @@ import json
 import logging
 import smtplib
 import ssl
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
 
 import httpx
+
+from app.integrations.email_sender import (
+    EmailAttachment,
+    EmailMessage,
+    SendResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,39 +82,6 @@ class SmtpConfig:
         }
 
 
-@dataclass
-class EmailAttachment:
-    """A file attachment for an email."""
-
-    filename: str
-    content: bytes
-    mime_type: str = "application/pdf"
-
-
-@dataclass
-class EmailMessage:
-    """A single outbound email."""
-
-    to_email: str
-    to_name: str = ""
-    subject: str = ""
-    html_body: str = ""
-    text_body: str = ""
-    from_name: str | None = None  # override global from_name
-    reply_to: str | None = None   # override global reply-to
-    attachments: list[EmailAttachment] = field(default_factory=list)
-
-
-@dataclass
-class SendResult:
-    """Result of an email send attempt."""
-
-    success: bool
-    message_id: str | None = None
-    error: str | None = None
-    provider: str = ""
-
-
 class EmailClient:
     """Unified email sending client.
 
@@ -139,7 +112,8 @@ class EmailClient:
             return SendResult(
                 success=False,
                 error=f"Unknown provider: {provider}",
-                provider=provider,
+                provider_key=provider,
+                transport=None,
             )
 
     async def _send_brevo(
@@ -185,16 +159,23 @@ class EmailClient:
                 return SendResult(
                     success=True,
                     message_id=data.get("messageId"),
-                    provider="brevo",
+                    provider_key="brevo",
+                    transport="rest_api",
                 )
             return SendResult(
                 success=False,
                 error=f"Brevo API error {resp.status_code}: {resp.text}",
-                provider="brevo",
+                provider_key="brevo",
+                transport="rest_api",
             )
         except Exception as exc:
             logger.exception("Brevo send failed")
-            return SendResult(success=False, error=str(exc), provider="brevo")
+            return SendResult(
+                success=False,
+                error=str(exc),
+                provider_key="brevo",
+                transport="rest_api",
+            )
 
     async def _send_sendgrid(
         self, msg: EmailMessage, from_name: str, reply_to: str
@@ -241,16 +222,25 @@ class EmailClient:
             if resp.status_code in (200, 202):
                 msg_id = resp.headers.get("X-Message-Id")
                 return SendResult(
-                    success=True, message_id=msg_id, provider="sendgrid"
+                    success=True,
+                    message_id=msg_id,
+                    provider_key="sendgrid",
+                    transport="rest_api",
                 )
             return SendResult(
                 success=False,
                 error=f"SendGrid API error {resp.status_code}: {resp.text}",
-                provider="sendgrid",
+                provider_key="sendgrid",
+                transport="rest_api",
             )
         except Exception as exc:
             logger.exception("SendGrid send failed")
-            return SendResult(success=False, error=str(exc), provider="sendgrid")
+            return SendResult(
+                success=False,
+                error=str(exc),
+                provider_key="sendgrid",
+                transport="rest_api",
+            )
 
     async def _send_smtp(
         self, msg: EmailMessage, from_name: str, reply_to: str
@@ -291,10 +281,19 @@ class EmailClient:
                     self._config.from_email, [msg.to_email], mime.as_string()
                 )
 
-            return SendResult(success=True, provider="smtp")
+            return SendResult(
+                success=True,
+                provider_key="smtp",
+                transport="smtp",
+            )
         except Exception as exc:
             logger.exception("SMTP send failed")
-            return SendResult(success=False, error=str(exc), provider="smtp")
+            return SendResult(
+                success=False,
+                error=str(exc),
+                provider_key="smtp",
+                transport="smtp",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +429,8 @@ async def send_org_email(
         return SendResult(
             success=False,
             error="Email infrastructure not configured",
-            provider="none",
+            provider_key="none",
+            transport=None,
         )
 
     message = EmailMessage(

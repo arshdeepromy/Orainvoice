@@ -577,7 +577,7 @@ class TestOrgLevelEmailSending:
         config = _brevo_config()
         mock_client = AsyncMock()
         mock_client.send = AsyncMock(
-            return_value=SendResult(success=True, message_id="org-msg-001", provider="brevo")
+            return_value=SendResult(success=True, message_id="org-msg-001", provider_key="brevo", transport="rest_api")
         )
 
         with patch(
