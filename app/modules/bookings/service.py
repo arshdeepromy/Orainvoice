@@ -1172,38 +1172,37 @@ async def _send_booking_confirmation_email(
     vehicle_rego: str | None,
     notes: str | None,
 ) -> bool:
-    """Send booking confirmation email via the configured EmailProvider (SMTP).
+    """Send booking confirmation email via the unified sender.
 
-    Uses the same EmailProvider priority-failover pattern as invoice and quote
-    emails. Returns True if the email was sent successfully, False otherwise.
+    Dispatch goes through :mod:`app.integrations.email_sender` —
+    failover, error classification, and per-attempt + total time
+    budgets are all handled inside ``send_email``. Migrated from a
+    hand-rolled ``smtplib`` provider loop in Phase 3 task 3.6 (A6).
+
+    Returns ``True`` on success, ``False`` otherwise. On total failure
+    a ``create_in_app_notification(category="email_failure")`` row is
+    written so admins see the bounce in the in-app notification list
+    (preserving behaviour from the legacy raw-smtplib version).
+
+    Per the per-site variation table in
+    ``.kiro/specs/email-provider-unification/design.md`` row A6: plain
+    text only, no attachment, ``EmailMessage.org_id = booking.org_id``,
+    no ``org_sender_name`` override (provider's configured ``from_name``
+    is used).
+
+    Requirements: 6.1, 6.3, 6.4
     """
-    import json as _json
-    import smtplib
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-
-    from app.core.encryption import envelope_decrypt_str
-    from app.modules.admin.models import EmailProvider, Organisation
+    from app.integrations.email_sender import EmailMessage, send_email
+    from app.modules.admin.models import Organisation
     from app.modules.notifications.service import resolve_template
 
-    # Resolve org name for the From header
+    # Resolve org name for the template context (the new sender owns
+    # the From header so we don't need it for that purpose).
     org_result = await db.execute(
         select(Organisation).where(Organisation.id == org_id)
     )
     org = org_result.scalar_one_or_none()
     org_name = org.name if org else "Workshop"
-
-    # Find active email providers ordered by priority
-    provider_result = await db.execute(
-        select(EmailProvider)
-        .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)
-        .order_by(EmailProvider.priority)
-    )
-    providers = list(provider_result.scalars().all())
-
-    if not providers:
-        logger.warning("No active email provider configured — skipping booking confirmation email")
-        return False
 
     # --- Template resolution ---
     formatted_date = start_time.strftime("%A %d %B %Y at %I:%M %p")
@@ -1250,56 +1249,40 @@ async def _send_booking_confirmation_email(
             f"Kind regards,\n{org_name}\n"
         )
 
-    recipient = customer_email
+    # The unified sender owns provider loading, failover, error
+    # classification, and per-attempt + total time budgets. The legacy
+    # raw-smtplib loop here would manually re-decrypt credentials per
+    # provider and short-circuit on the first success — all of that
+    # now lives behind ``send_email``.
+    #
+    # ``html_body=None`` mirrors the legacy MIME envelope, which only
+    # attached a ``text/plain`` part — there was no HTML alternative.
+    # The per-site variation table in design.md > Per-Site Migration
+    # Patterns > Group A row A6 explicitly calls this out as "Plain
+    # text only, no attachment".
+    _message = EmailMessage(
+        to_email=customer_email,
+        to_name="",
+        subject=subject,
+        html_body=None,
+        text_body=body,
+        attachments=[],
+        org_id=org_id,
+    )
+    result = await send_email(db, _message)
 
-    def _build_message(from_name: str, from_email: str) -> MIMEMultipart:
-        msg = MIMEMultipart("mixed")
-        msg["From"] = f"{from_name} <{from_email}>"
-        msg["To"] = recipient
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain"))
-        return msg
+    if result.success:
+        logger.info(
+            "Booking confirmation email sent: org=%s, booking=%s, to=%s, provider=%s",
+            org_id, booking_id, customer_email, result.provider_key,
+        )
+        return True
 
-    last_error = None
-    for provider in providers:
-        try:
-            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-            credentials = _json.loads(creds_json)
-
-            smtp_host = provider.smtp_host
-            smtp_port = provider.smtp_port or 587
-            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-            username = credentials.get("username") or credentials.get("api_key", "")
-            password = credentials.get("password") or credentials.get("api_key", "")
-
-            config = provider.config or {}
-            from_email = config.get("from_email") or username
-            from_name = config.get("from_name") or org_name
-
-            msg = _build_message(from_name, from_email)
-
-            if smtp_encryption == "ssl":
-                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-            else:
-                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-                if smtp_encryption == "tls":
-                    server.starttls()
-
-            if username and password:
-                server.login(username, password)
-
-            server.sendmail(from_email, recipient, msg.as_string())
-            server.quit()
-            return True
-        except Exception as e:
-            last_error = e
-            logger.warning(
-                "Email provider %s failed for booking confirmation: %s",
-                provider.provider_key, e,
-            )
-            continue
-
-    logger.error("All email providers failed for booking confirmation. Last error: %s", last_error)
+    last_error = result.error or "send failed"
+    logger.error(
+        "All email providers failed for booking confirmation (booking %s): %s",
+        booking_id, last_error,
+    )
     await create_in_app_notification(
         db, org_id=org_id,
         category="email_failure",
