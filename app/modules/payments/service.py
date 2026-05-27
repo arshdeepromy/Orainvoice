@@ -533,31 +533,41 @@ async def _send_receipt_email(
     template_type: str = "payment_received",
     payment_url: str | None = None,
 ) -> None:
-    """Send a payment-related email using the configured SMTP provider.
+    """Send a payment-related email via the unified sender.
 
-    Reuses the org's email provider infrastructure (same as ``email_invoice``)
-    and resolves the customer's active notification template (or default).
+    Dispatch goes through :mod:`app.integrations.email_sender` —
+    failover, error classification, and per-attempt + total time
+    budgets are all handled inside ``send_email``. This was migrated
+    from a hand-rolled ``smtplib`` provider loop in Phase 3 task 3.4
+    (A4).
+
+    Reuses the org's email provider infrastructure (same as
+    ``email_invoice``) and resolves the customer's active notification
+    template (or default).
 
     Two call modes:
 
-    - ``template_type="payment_received"`` (default): post-payment receipt.
-      Body summarises payment details. ``payment_url`` is ignored.
-    - ``template_type="invoice_issued"``: payment-link request. The Stripe
-      payment URL is exposed to the template as the ``{{payment_link}}``
-      variable, so the user's active ``invoice_issued`` template (or the
-      default one with a Pay Now button) renders correctly.
+    - ``template_type="payment_received"`` (default): post-payment
+      receipt. Body summarises payment details. ``payment_url`` is
+      ignored.
+    - ``template_type="invoice_issued"``: payment-link request. The
+      Stripe payment URL is exposed to the template as the
+      ``{{payment_link}}`` variable, so the user's active
+      ``invoice_issued`` template (or the default one with a Pay Now
+      button) renders correctly.
 
     The invoice PDF is attached so the customer always has a copy.
-    Best-effort: logs warnings on failure but does not raise.
-    """
-    import json as _json
-    import smtplib
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from email.mime.application import MIMEApplication
+    Best-effort: logs warnings on failure and surfaces an in-app
+    notification, but does not raise.
 
-    from app.core.encryption import envelope_decrypt_str
-    from app.modules.admin.models import EmailProvider, Organisation
+    Requirements: 6.1, 6.3, 6.4
+    """
+    from app.integrations.email_sender import (
+        EmailAttachment,
+        EmailMessage,
+        send_email,
+    )
+    from app.modules.admin.models import Organisation
 
     # Get org name for the email
     org_result = await db.execute(
@@ -622,17 +632,8 @@ async def _send_receipt_email(
     except Exception as exc:
         logger.warning("Failed to generate PDF for receipt email (invoice %s): %s", invoice.id, exc)
 
-    # Find active email provider
-    provider_result = await db.execute(
-        select(EmailProvider)
-        .where(EmailProvider.is_active == True, EmailProvider.credentials_set == True)  # noqa: E712
-        .order_by(EmailProvider.priority)
-    )
-    providers = list(provider_result.scalars().all())
-    if not providers:
-        logger.warning("No active email provider — cannot send receipt for invoice %s", invoice.id)
-        return
-
+    # Find org name for default subject/body fallbacks (provider lookup
+    # now happens inside send_email).
     if _rendered_template:
         subject = _rendered_template.subject
         body = _rendered_template.body
@@ -681,58 +682,46 @@ async def _send_receipt_email(
                 f"{org_name}\n"
             )
 
-    for provider in providers:
-        try:
-            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-            credentials = _json.loads(creds_json)
-
-            smtp_host = provider.smtp_host
-            smtp_port = provider.smtp_port or 587
-            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-            username = credentials.get("username") or credentials.get("api_key", "")
-            password = credentials.get("password") or credentials.get("api_key", "")
-
-            config = provider.config or {}
-            from_email = config.get("from_email") or username
-            from_name = config.get("from_name") or org_name
-
-            msg = MIMEMultipart("mixed")
-            msg["From"] = f"{from_name} <{from_email}>"
-            msg["To"] = to_email
-            msg["Subject"] = subject
-            msg.attach(MIMEText(body, "plain"))
-
-            # Attach invoice PDF if generated successfully
-            if pdf_bytes:
-                pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
-                pdf_filename = f"{inv_number}.pdf"
-                pdf_attachment.add_header(
-                    "Content-Disposition", "attachment", filename=pdf_filename,
-                )
-                msg.attach(pdf_attachment)
-
-            if smtp_encryption == "ssl":
-                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-            else:
-                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-                if smtp_encryption == "tls":
-                    server.starttls()
-
-            if username and password:
-                server.login(username, password)
-
-            server.sendmail(from_email, to_email, msg.as_string())
-            server.quit()
-            logger.info("Sent payment receipt email for invoice %s to %s", invoice.id, to_email)
-            return
-        except Exception as exc:
-            logger.warning(
-                "Email provider %s failed for receipt (invoice %s): %s",
-                provider.provider_key, invoice.id, exc,
+    # Build attachments list — invoice PDF only when generation
+    # succeeded (best-effort: a missing PDF must not block the email).
+    _email_attachments: list[EmailAttachment] = []
+    if pdf_bytes:
+        _email_attachments.append(
+            EmailAttachment(
+                filename=f"{inv_number}.pdf",
+                content=pdf_bytes,
+                mime_type="application/pdf",
             )
-            continue
+        )
 
-    logger.warning("All email providers failed for receipt email (invoice %s)", invoice.id)
+    # The plain-text body is converted to HTML via newline -> <br>
+    # substitution to mirror the prior MIME builder's behaviour
+    # (which only attached a text/plain part — there was no HTML body).
+    _html_body = body.replace("\n", "<br>")
+
+    _message = EmailMessage(
+        to_email=to_email,
+        to_name="",
+        subject=subject,
+        html_body=_html_body,
+        text_body=body,
+        attachments=_email_attachments,
+        org_id=invoice.org_id,
+    )
+    result = await send_email(db, _message)
+
+    if result.success:
+        logger.info(
+            "Sent payment receipt email for invoice %s to %s via %s",
+            invoice.id, to_email, result.provider_key,
+        )
+        return
+
+    last_error = result.error or "send failed"
+    logger.warning(
+        "All email providers failed for receipt email (invoice %s): %s",
+        invoice.id, last_error,
+    )
     await create_in_app_notification(
         db,
         org_id=invoice.org_id,
@@ -747,7 +736,7 @@ async def _send_receipt_email(
         metadata={
             "recipient_email": to_email,
             "template_type": "payment_receipt",
-            "error_message": "All email providers failed for receipt email",
+            "error_message": str(last_error),
         },
     )
 
