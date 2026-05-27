@@ -2656,13 +2656,41 @@ async def _send_invitation_email(
 ) -> None:
     """Send an invitation email with the secure signup link.
 
-    Uses the active email provider configured by the global admin.
-    Falls back to logging the URL in development if no provider is set.
+    Migrated from a hand-rolled ``smtplib`` provider loop in Phase 3
+    task 3.8 (A8) of the email-provider-unification spec. Dispatch goes
+    through :func:`app.integrations.email_sender.send_email`, which owns
+    failover, error classification, and per-attempt + total time
+    budgets.
+
+    Per the per-site variation table in
+    ``.kiro/specs/email-provider-unification/design.md`` row A8:
+
+    - ``EmailMessage.org_id`` is the inviting org's id when known
+      (``org_id`` arg). ``None`` is allowed for resends from contexts
+      that don't carry the org id, but every current caller passes one.
+    - ``org_sender_name`` is set to ``org_name`` so the From header
+      reads "<org name> <provider-from-email>" — the invite reads as
+      coming from the org, not the platform.
+    - **Caller may pass ``db=None``.** The two production call sites
+      always pass a session, but the legacy contract allows ``None`` so
+      a failed-invite resend from a torn-down session can still go out.
+      We preserve that: when ``db`` is ``None`` we open a dedicated
+      session via ``async_session_factory`` and pass it to
+      ``send_email``. When the caller provides a session we use it
+      directly.
+    - **Dev fallback.** When ``result.attempts == []`` (no providers
+      configured) and the environment is development, we log
+      ``DEV INVITE URL: <url>`` at WARNING so the developer can copy
+      the link from the logs. Preserved verbatim from the legacy
+      raw-smtplib version — the dev UX would regress without it.
+    - In-app notification on failure is skipped — auth flows run
+      without an org admin context wired up; same gap the legacy
+      version had (in-app-notifications design §4.2 carve-out).
+
+    Requirements: 6.1, 6.3, 6.4
     """
-    import smtplib
-    import json as _json
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
+    from app.core.database import async_session_factory
+    from app.integrations.email_sender import EmailMessage, send_email
 
     if not base_url:
         base_url = getattr(settings, "frontend_base_url", "") or "http://localhost"
@@ -2745,15 +2773,50 @@ async def _send_invitation_email(
             f"This invitation expires in 48 hours.\n"
         )
 
-    # Find active email provider
-    if db is None:
-        from app.core.database import async_session_factory
-        async with async_session_factory() as session:
-            providers = await _get_email_providers(session)
-    else:
-        providers = await _get_email_providers(db)
+    message = EmailMessage(
+        to_email=email,
+        to_name="",
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        attachments=[],
+        # Org-scoped invite when we have it; bounce-blocklist pre-check
+        # falls through to platform-wide rows when org_id is None.
+        org_id=org_id,
+    )
 
-    if not providers:
+    # Preserve the legacy db-may-be-None contract: when the caller has
+    # already torn down its session (e.g. resend from a background
+    # task) we open our own. When the caller hands us a live session
+    # we use it directly so the bounce-blocklist pre-check and
+    # provider-load run inside the caller's transaction.
+    if db is None:
+        async with async_session_factory() as session:
+            result = await send_email(
+                session,
+                message,
+                org_sender_name=org_name,
+            )
+    else:
+        result = await send_email(
+            db,
+            message,
+            org_sender_name=org_name,
+        )
+
+    if result.success:
+        logger.info(
+            "Invitation email sent to %s via %s",
+            email,
+            result.provider_key,
+        )
+        return
+
+    # No-providers branch: send_email returns attempts=[] when the
+    # active provider set is empty. Preserve the dev fallback so a
+    # developer running the stack locally without any provider can
+    # still grab the invite URL from the logs.
+    if not result.attempts:
         logger.warning(
             "No active email provider — cannot send invite to %s (token: %s...)",
             email, token[:8],
@@ -2762,56 +2825,10 @@ async def _send_invitation_email(
             logger.warning("DEV INVITE URL: %s", invite_url)
         return
 
-    from app.core.encryption import envelope_decrypt_str
-
-    last_error = None
-    for provider in providers:
-        try:
-            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-            credentials = _json.loads(creds_json)
-
-            smtp_host = provider.smtp_host
-            smtp_port = provider.smtp_port or 587
-            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-            username = credentials.get("username") or credentials.get("api_key", "")
-            password = credentials.get("password") or credentials.get("api_key", "")
-
-            config = provider.config or {}
-            from_email = config.get("from_email") or username
-            from_name = config.get("from_name") or "OraInvoice"
-
-            msg = MIMEMultipart("alternative")
-            msg["From"] = f"{from_name} <{from_email}>"
-            msg["To"] = email
-            msg["Subject"] = subject
-            msg.attach(MIMEText(text_body, "plain"))
-            msg.attach(MIMEText(html_body, "html"))
-
-            if smtp_encryption == "ssl":
-                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-            else:
-                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-                if smtp_encryption == "tls":
-                    server.starttls()
-
-            if username and password:
-                server.login(username, password)
-
-            server.sendmail(from_email, email, msg.as_string())
-            server.quit()
-            logger.info("Invitation email sent to %s via %s", email, provider.provider_key)
-            return
-        except Exception as e:
-            last_error = e
-            logger.warning(
-                "Email provider %s failed for invite to %s: %s",
-                provider.provider_key, email, e,
-            )
-            continue
-
     # NOTE: In-app notification skipped for auth email failures in v1.
     # Auth flows run on sessions without org_id context.
     # Known limitation — see in-app-notifications design §4.2.
+    last_error = result.error or "send failed"
     logger.warning(
         "All email providers failed for invite to %s: %s (token: %s...)",
         email, last_error, token[:8],

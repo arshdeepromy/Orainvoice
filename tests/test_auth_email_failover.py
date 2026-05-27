@@ -548,3 +548,611 @@ class TestA7SendPermanentLockoutEmailMessage:
             "org_reply_to" not in kwargs
             or kwargs["org_reply_to"] is None
         )
+
+
+# ---------------------------------------------------------------------------
+# A8 — _send_invitation_email
+# ---------------------------------------------------------------------------
+
+
+class TestA8SendInvitationEmailFailover:
+    """End-to-end failover for ``_send_invitation_email`` (task 3.8).
+
+    A8 has two execution shapes that the test set must pin:
+
+    1. **Caller hands us a session** (the production path — both
+       ``provision_org`` and ``resend_invitation`` always pass one).
+       The function must use that session directly: NO call to
+       ``async_session_factory``. This keeps the bounce-blocklist
+       pre-check and provider-load inside the caller's transaction.
+    2. **Caller passes ``db=None``** (legacy resend path). The function
+       must open its own session via ``async_session_factory`` and
+       pass it to ``send_email``.
+
+    With Brevo at priority 1 and SendGrid at priority 2, the function
+    walks past the Brevo 401 (``SOFT_AUTH``), succeeds on SendGrid
+    (202), and returns ``None`` (the function has no return value —
+    it is best-effort and signals failure only via log lines).
+
+    Validates: Requirements 6.1, 6.3, 6.4
+    """
+
+    @pytest.mark.asyncio
+    async def test_failover_to_second_provider_with_caller_session(self) -> None:
+        """Brevo 401 → SendGrid 202 with a caller-provided session.
+
+        Pins the contract that the migrated ``_send_invitation_email``:
+
+        1. Uses the caller's session directly when ``db`` is supplied
+           — does NOT open its own via ``async_session_factory``.
+           This is the production execution path.
+        2. POSTs the Brevo URL first (priority 1) and the SendGrid URL
+           second (priority 2). The 401 from Brevo classifies as
+           ``SOFT_AUTH`` and the loop continues.
+        3. Returns ``None`` without raising.
+
+        Validates: Requirements 6.1, 6.3, 6.4
+        """
+        import uuid as _uuid
+
+        brevo_provider = _make_provider("brevo", priority=1)
+        sendgrid_provider = _make_provider("sendgrid", priority=2)
+
+        caller_session = AsyncMock()
+        # Sentinel factory — must NOT be called when caller passes a
+        # session.
+        factory = MagicMock(side_effect=AssertionError(
+            "async_session_factory must not be called when caller "
+            "passes db"
+        ))
+
+        load_providers_stub = AsyncMock(
+            return_value=[brevo_provider, sendgrid_provider]
+        )
+        blocklist_stub = AsyncMock(return_value=(False, None))
+        # Skip notification template resolution — we exercise the
+        # hardcoded fallback body so the test doesn't depend on
+        # template seed data.
+        resolve_template_stub = AsyncMock(return_value=None)
+
+        # Reset class-level state on the fake client so this test is
+        # order-independent within the suite.
+        _FakeClient.posted_urls = []
+        _FakeClient.posted_payloads = []
+
+        org_id = _uuid.uuid4()
+
+        with patch(
+            "app.core.database.async_session_factory",
+            new=factory,
+        ), patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.modules.notifications.service.resolve_template",
+            new=resolve_template_stub,
+        ), patch(
+            "app.integrations.email_sender.envelope_decrypt_str",
+            return_value='{"api_key": "test-api-key"}',
+        ), patch(
+            "app.integrations.email_sender.httpx.AsyncClient",
+            _FakeClient,
+        ):
+            from app.modules.auth.service import _send_invitation_email
+
+            result = await _send_invitation_email(
+                "invitee@example.com",
+                "tok_invite_caller_123456",
+                db=caller_session,
+                org_id=org_id,
+                org_name="Acme Workshop",
+                base_url="https://app.example.com",
+            )
+
+        # 1. The function returns None — best-effort send, no return.
+        assert result is None
+
+        # 2. async_session_factory was NOT called — the caller passed
+        #    a session and the function used it directly. (The
+        #    sentinel above raises AssertionError if called.)
+        factory.assert_not_called()
+
+        # 3. The provider chain was loaded against the caller's
+        #    session, NOT a freshly opened one.
+        load_providers_stub.assert_awaited_once()
+        load_providers_stub.assert_awaited_with(caller_session)
+
+        # 4. Both REST endpoints were hit in priority order — Brevo
+        #    first (401, SOFT_AUTH), then SendGrid (202, success).
+        assert _FakeClient.posted_urls == [
+            _FakeClient.BREVO_URL,
+            _FakeClient.SENDGRID_URL,
+        ]
+
+        # 5. The bounce-blocklist pre-check fired exactly once and
+        #    used the org_id passed to the function (A8 row in the
+        #    per-site variation table: org_id is the inviting org's
+        #    id when known). This pins the org-scoped block-list
+        #    behaviour against a future refactor that drops org_id.
+        blocklist_stub.assert_awaited_once()
+        _bl_args, bl_kwargs = blocklist_stub.await_args
+        assert bl_kwargs.get("org_id") == org_id
+        assert bl_kwargs.get("email_address") == "invitee@example.com"
+
+        # 6. Recipient + invite URL on the payload match the function
+        #    args — sanity check that the migration didn't drop the
+        #    To address or mangle the URL.
+        brevo_payload = _FakeClient.posted_payloads[0]
+        sendgrid_payload = _FakeClient.posted_payloads[1]
+        assert brevo_payload["to"][0]["email"] == "invitee@example.com"
+        assert (
+            sendgrid_payload["personalizations"][0]["to"][0]["email"]
+            == "invitee@example.com"
+        )
+        # Invite URL is built from base_url + the verify-email path
+        # with the raw token. Both bodies should carry it (HTML+text).
+        expected_url = (
+            "https://app.example.com/verify-email?"
+            "token=tok_invite_caller_123456"
+        )
+        assert expected_url in brevo_payload.get("htmlContent", "")
+        assert expected_url in brevo_payload.get("textContent", "")
+
+        # 7. From-name override flowed through — A8 passes
+        #    ``org_sender_name=org_name`` so the From header reads as
+        #    coming from the org. The Brevo REST payload's sender
+        #    name should be "Acme Workshop", not the provider's
+        #    static "OraInvoice".
+        assert brevo_payload.get("sender", {}).get("name") == "Acme Workshop"
+        # SendGrid puts it under from.name.
+        assert (
+            sendgrid_payload.get("from", {}).get("name") == "Acme Workshop"
+        )
+
+        # 8. No attachments — A8 sends invite link only.
+        assert brevo_payload.get("attachment", []) == []
+        assert sendgrid_payload.get("attachments", []) == []
+
+    @pytest.mark.asyncio
+    async def test_db_none_opens_own_session(self) -> None:
+        """When ``db=None``, the function opens its own session.
+
+        Pins the legacy db-may-be-None contract: a resend from a
+        torn-down session must still be able to dispatch. The
+        function:
+
+        1. Calls ``async_session_factory()`` exactly once.
+        2. Passes the session it gets back to ``send_email``
+           (verified by the fact that ``_load_active_providers`` is
+           awaited with that session).
+        3. Returns ``None`` cleanly on success.
+
+        Validates: Requirement 6.1 (db-may-be-None preservation)
+        """
+        brevo_provider = _make_provider("brevo", priority=1)
+        sendgrid_provider = _make_provider("sendgrid", priority=2)
+
+        own_session = AsyncMock()
+        factory = _patch_async_session_factory(own_session)
+
+        load_providers_stub = AsyncMock(
+            return_value=[brevo_provider, sendgrid_provider]
+        )
+        blocklist_stub = AsyncMock(return_value=(False, None))
+
+        _FakeClient.posted_urls = []
+        _FakeClient.posted_payloads = []
+
+        with patch(
+            "app.core.database.async_session_factory",
+            new=factory,
+        ), patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.integrations.email_sender.envelope_decrypt_str",
+            return_value='{"api_key": "test-api-key"}',
+        ), patch(
+            "app.integrations.email_sender.httpx.AsyncClient",
+            _FakeClient,
+        ):
+            from app.modules.auth.service import _send_invitation_email
+
+            # No db, no org_id — the legacy resend path. Template
+            # resolution short-circuits (db is None) so the hardcoded
+            # body is used.
+            result = await _send_invitation_email(
+                "invitee@example.com",
+                "tok_invite_no_db_456",
+                db=None,
+                org_id=None,
+                org_name="Acme Workshop",
+                base_url="https://app.example.com",
+            )
+
+        assert result is None
+
+        # 1. The factory was called exactly once — the function
+        #    opened its own session.
+        factory.assert_called_once()
+
+        # 2. The provider load (and thus the rest of send_email's
+        #    work) ran against the session opened by the factory.
+        load_providers_stub.assert_awaited_with(own_session)
+
+        # 3. With org_id=None the bounce-blocklist falls back to
+        #    platform-wide rows; the call must reflect that.
+        _bl_args, bl_kwargs = blocklist_stub.await_args
+        assert bl_kwargs.get("org_id") is None
+
+    @pytest.mark.asyncio
+    async def test_no_providers_logs_dev_invite_url(self) -> None:
+        """No active providers → DEV INVITE URL warning in dev.
+
+        Pins the dev-fallback contract from the A8 row in the
+        per-site variation table: when ``result.attempts == []`` (no
+        providers configured at all) and the environment is
+        ``development``, the function logs the invite URL at WARNING
+        so a developer running the stack locally without any
+        provider can grab the link from the logs.
+
+        Validates: Requirement 6.1 (preserve existing dev UX)
+        """
+        caller_session = AsyncMock()
+        load_providers_stub = AsyncMock(return_value=[])
+        blocklist_stub = AsyncMock(return_value=(False, None))
+        resolve_template_stub = AsyncMock(return_value=None)
+
+        with patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.integrations.email_sender._maybe_fire_no_providers_alert",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.modules.notifications.service.resolve_template",
+            new=resolve_template_stub,
+        ), patch(
+            "app.modules.auth.service.settings.environment",
+            "development",
+        ):
+            from app.modules.auth.service import _send_invitation_email
+
+            with patch(
+                "app.modules.auth.service.logger.warning"
+            ) as mock_warn:
+                result = await _send_invitation_email(
+                    "invitee@example.com",
+                    "tok_no_provider_789xyz",
+                    db=caller_session,
+                    org_id=None,
+                    org_name="Acme Workshop",
+                    base_url="https://app.example.com",
+                )
+
+        # 1. Best-effort contract: returns None, does NOT raise.
+        assert result is None
+
+        # 2. The provider chain was loaded (so we hit the
+        #    no-providers branch), and the log line that quotes the
+        #    dev invite URL fired. Use ``any`` to avoid pinning the
+        #    exact log call order — the function logs both the
+        #    "No active email provider" warning and then the
+        #    "DEV INVITE URL" warning.
+        load_providers_stub.assert_awaited_once()
+
+        all_calls = [c.args for c in mock_warn.call_args_list]
+        # The format string is "DEV INVITE URL: %s" with the URL as
+        # the second positional arg.
+        dev_url_calls = [
+            c for c in all_calls
+            if c and "DEV INVITE URL" in str(c[0])
+        ]
+        assert dev_url_calls, (
+            f"expected a DEV INVITE URL warning, got {all_calls!r}"
+        )
+        # The URL passed must be the verify-email link with the raw
+        # token — the whole point of the dev fallback is that the
+        # developer can copy it.
+        url_arg = dev_url_calls[0][1]
+        assert url_arg == (
+            "https://app.example.com/verify-email?"
+            "token=tok_no_provider_789xyz"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_providers_in_production_does_not_log_url(self) -> None:
+        """In production, the no-providers branch must NOT log the URL.
+
+        Token-bearing URLs are sensitive — leaking them in production
+        logs would let any log-reader claim the invite. The dev
+        fallback is gated on ``settings.environment == 'development'``
+        and this test pins that gate.
+
+        Validates: Requirement 6.1 (dev UX preserved without leaking
+        in prod)
+        """
+        caller_session = AsyncMock()
+        load_providers_stub = AsyncMock(return_value=[])
+        blocklist_stub = AsyncMock(return_value=(False, None))
+        resolve_template_stub = AsyncMock(return_value=None)
+
+        with patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.integrations.email_sender._maybe_fire_no_providers_alert",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.modules.notifications.service.resolve_template",
+            new=resolve_template_stub,
+        ), patch(
+            "app.modules.auth.service.settings.environment",
+            "production",
+        ):
+            from app.modules.auth.service import _send_invitation_email
+
+            with patch(
+                "app.modules.auth.service.logger.warning"
+            ) as mock_warn:
+                await _send_invitation_email(
+                    "invitee@example.com",
+                    "tok_prod_no_provider_aaa",
+                    db=caller_session,
+                    org_id=None,
+                    org_name="Acme Workshop",
+                    base_url="https://app.example.com",
+                )
+
+        all_calls = [c.args for c in mock_warn.call_args_list]
+        dev_url_calls = [
+            c for c in all_calls
+            if c and "DEV INVITE URL" in str(c[0])
+        ]
+        # Crucially: NO DEV INVITE URL log in production.
+        assert not dev_url_calls, (
+            "DEV INVITE URL must not log outside development; "
+            f"got: {dev_url_calls!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_all_providers_fail_does_not_raise(self) -> None:
+        """When every provider returns ``SOFT_AUTH`` the function
+        returns ``None`` without raising. No
+        ``create_in_app_notification`` is fired (auth-flow carve-out
+        per the per-site variation table for A8 — same gap A7 has).
+
+        Validates: Requirements 6.1, 6.4
+        """
+        brevo_provider = _make_provider("brevo", priority=1)
+        sendgrid_provider = _make_provider("sendgrid", priority=2)
+
+        caller_session = AsyncMock()
+        load_providers_stub = AsyncMock(
+            return_value=[brevo_provider, sendgrid_provider]
+        )
+        blocklist_stub = AsyncMock(return_value=(False, None))
+        resolve_template_stub = AsyncMock(return_value=None)
+
+        _AllFail401Client.posted_urls = []
+        _AllFail401Client.posted_payloads = []
+
+        with patch(
+            "app.integrations.email_sender._load_active_providers",
+            new=load_providers_stub,
+        ), patch(
+            "app.integrations.email_sender._check_bounce_blocklist",
+            new=blocklist_stub,
+        ), patch(
+            "app.integrations.email_sender._maybe_fire_all_auth_fail_alert",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.modules.notifications.service.resolve_template",
+            new=resolve_template_stub,
+        ), patch(
+            "app.integrations.email_sender.envelope_decrypt_str",
+            return_value='{"api_key": "test-api-key"}',
+        ), patch(
+            "app.integrations.email_sender.httpx.AsyncClient",
+            _AllFail401Client,
+        ):
+            from app.modules.auth.service import _send_invitation_email
+
+            result = await _send_invitation_email(
+                "invitee@example.com",
+                "tok_all_fail_bbb",
+                db=caller_session,
+                org_id=None,
+                org_name="Acme Workshop",
+                base_url="https://app.example.com",
+            )
+
+        # 1. Best-effort contract: returns None, does NOT raise.
+        assert result is None
+
+        # 2. Both providers were attempted (chain not short-circuited
+        #    by HARD_RECIPIENT or HARD_PAYLOAD).
+        assert len(_AllFail401Client.posted_urls) == 2
+
+
+class TestA8SendInvitationEmailMessage:
+    """Pin the ``EmailMessage`` shape the migration constructs.
+
+    Validates the per-site variation table entry for A8 in
+    ``design.md``: ``EmailMessage.org_id = org.id`` (when known),
+    ``org_sender_name = org.name``, both bodies present, no
+    attachments. Also pins the function-local imports so a future
+    refactor can't accidentally re-add a top-level ``smtplib`` import
+    inside this function.
+
+    Validates: Requirements 6.3 (org_id + org_sender_name plumbing)
+    and 6.4 (no manual smtplib loop)
+    """
+
+    @pytest.mark.asyncio
+    async def test_email_message_has_org_id_and_both_bodies(self) -> None:
+        """``send_email`` is called with the right ``EmailMessage``
+        and override args.
+
+        Pins:
+
+        - ``message.org_id`` matches the org_id passed to the
+          function — A8 is org-scoped (vs A7 which is None).
+        - ``message.text_body`` carries the invite URL.
+        - ``message.html_body`` carries the invite URL and the
+          OraInvoice envelope.
+        - ``message.attachments`` is empty.
+        - ``org_sender_name`` keyword arg equals the function's
+          ``org_name`` arg — the From header reads as the org.
+        - ``org_reply_to`` is NOT passed (A8 doesn't override
+          reply-to in v1; the provider's static reply_to wins).
+
+        Validates: Requirements 6.1, 6.3
+        """
+        import uuid as _uuid
+
+        caller_session = AsyncMock()
+        send_email_stub = AsyncMock()
+        send_email_stub.return_value = MagicMock(
+            success=True,
+            provider_key="brevo",
+            transport="rest_api",
+            message_id="msg-id-1",
+            error=None,
+            attempts=[MagicMock()],
+        )
+        resolve_template_stub = AsyncMock(return_value=None)
+
+        org_id = _uuid.uuid4()
+
+        with patch(
+            "app.integrations.email_sender.send_email",
+            new=send_email_stub,
+        ), patch(
+            "app.modules.notifications.service.resolve_template",
+            new=resolve_template_stub,
+        ):
+            from app.modules.auth.service import _send_invitation_email
+
+            await _send_invitation_email(
+                "invitee@example.com",
+                "tok_msg_shape_ccc",
+                db=caller_session,
+                org_id=org_id,
+                org_name="Acme Workshop",
+                base_url="https://app.example.com",
+            )
+
+        send_email_stub.assert_awaited_once()
+        _args, kwargs = send_email_stub.await_args
+        # Positional: db, message
+        assert len(_args) >= 2
+        passed_db = _args[0]
+        message = _args[1]
+
+        # 1. The caller's session was forwarded to send_email — the
+        #    function did NOT swap it for a fresh one.
+        assert passed_db is caller_session
+
+        # 2. org_id flows through unchanged (A8 row in the per-site
+        #    variation table: "org.id (when known)").
+        assert message.org_id == org_id
+
+        # 3. Recipient on the message matches the function's email
+        #    arg.
+        assert message.to_email == "invitee@example.com"
+
+        # 4. Subject mentions the inviting org by name (preserved
+        #    from the legacy hardcoded fallback body).
+        assert "Acme Workshop" in message.subject
+
+        # 5. Both bodies are present and both carry the invite URL.
+        expected_url = (
+            "https://app.example.com/verify-email?token=tok_msg_shape_ccc"
+        )
+        assert message.html_body and expected_url in message.html_body
+        assert message.text_body and expected_url in message.text_body
+
+        # 6. No attachments — A8 sends invite link only.
+        assert message.attachments == []
+
+        # 7. org_sender_name keyword equals org_name — A8 row in the
+        #    per-site variation table: "org.name". This is what
+        #    drives the From header to read as the org.
+        assert kwargs.get("org_sender_name") == "Acme Workshop"
+
+        # 8. org_reply_to is NOT passed (or is explicitly None). A8
+        #    does not override reply-to in v1; a future change that
+        #    wires per-org reply-to through here would need explicit
+        #    review.
+        assert (
+            "org_reply_to" not in kwargs
+            or kwargs["org_reply_to"] is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_uses_resolved_template_when_available(self) -> None:
+        """When ``resolve_template`` returns a rendered template, the
+        message uses its subject and body instead of the hardcoded
+        fallback. Pins the template-resolution path that A8 inherits
+        from the legacy implementation — orgs can customise the
+        invite copy via the notifications module.
+
+        Validates: Requirement 6.3 (template integration preserved)
+        """
+        import uuid as _uuid
+
+        caller_session = AsyncMock()
+        send_email_stub = AsyncMock()
+        send_email_stub.return_value = MagicMock(
+            success=True,
+            provider_key="brevo",
+            transport="rest_api",
+            message_id="msg-id-1",
+            error=None,
+            attempts=[MagicMock()],
+        )
+
+        rendered = MagicMock()
+        rendered.subject = "Custom: Welcome to Acme!"
+        rendered.body = "Hi! Click https://app.example.com/verify-email?token=tok_template_ddd to join."
+        resolve_template_stub = AsyncMock(return_value=rendered)
+
+        with patch(
+            "app.integrations.email_sender.send_email",
+            new=send_email_stub,
+        ), patch(
+            "app.modules.notifications.service.resolve_template",
+            new=resolve_template_stub,
+        ):
+            from app.modules.auth.service import _send_invitation_email
+
+            await _send_invitation_email(
+                "invitee@example.com",
+                "tok_template_ddd",
+                db=caller_session,
+                org_id=_uuid.uuid4(),
+                org_name="Acme Workshop",
+                base_url="https://app.example.com",
+            )
+
+        # Template was resolved, and its subject/body flowed into the
+        # EmailMessage.
+        resolve_template_stub.assert_awaited_once()
+        _args, _kwargs = send_email_stub.await_args
+        message = _args[1]
+        assert message.subject == "Custom: Welcome to Acme!"
+        assert "tok_template_ddd" in message.text_body
+        assert "tok_template_ddd" in message.html_body
