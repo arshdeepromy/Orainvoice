@@ -4,6 +4,133 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
+## [1.12.0] — Unreleased
+
+### Added
+
+- **Multi-provider email failover.** The unified email sender at
+  `app/integrations/email_sender.py` reads the `email_providers`
+  table, attempts each active provider in `priority ASC` order,
+  classifies failures as hard or soft, and falls over to the next
+  provider on retryable errors. Replaces 14 hand-rolled `smtplib`
+  loops and 18 `send_email_task` callers that previously had zero
+  failover. Bounded by per-attempt (15s) and total (45s) time budgets.
+- **All scheduled email types now have multi-provider failover** —
+  subscription invoices, dunning, portal links, fleet invites,
+  compliance reminders, scheduled WOF/rego notifications, all 18
+  callers route through the unified sender via the rewritten
+  `_send_email_async` (Phase 2). No per-site code changes required;
+  failover comes for free.
+- **`notification_log` provider columns** — `provider_key`,
+  `provider_message_id`, `bounced_at`, `bounce_reason`, `delivered_at`
+  (all nullable). Populated on every successful send and on bounce
+  webhook events. Migration `0195`. Admin notification log frontend
+  shows a Provider column and distinct status badges (sent / delivered
+  / bounced / failed) with bounce reason as a hover tooltip.
+- **Bounce correlation** — Brevo and SendGrid bounce webhooks now
+  match the originating `notification_log` row by
+  `provider_message_id` and flip its status to `bounced` with the
+  reason. The Brevo `delivered` event sets `delivered_at`. Webhook
+  signature verification reads the secret from
+  `email_providers.config` first, env-var fallback for one release.
+- **`bounced_addresses` blocklist** — recipients with a hard bounce
+  on file are short-circuited before any provider is tried. Soft
+  bounces log a warning and proceed. Daily cleanup task drops expired
+  soft-bounce rows. Admins can clear a bounce row through the new
+  Delivery Health view to retry an address. Migration creates the
+  `bounced_addresses` table with RLS enabled and a functional unique
+  index on `(COALESCE(org_id, ''), LOWER(email_address))`.
+- **Delivery Health admin UI** — new tab inside Admin → Email
+  Providers showing 24h / 7d / 30d bounce stats by provider plus a
+  recent-bounces table with a per-row Clear action. Endpoints:
+  `GET /api/v2/admin/email-providers/delivery-health` and
+  `DELETE /api/v2/admin/email-providers/bounced-addresses/{id}`.
+  Accessible to global_admin and org_admin.
+- **Multi-active provider support on the activate endpoint** —
+  `POST /api/v2/admin/email-providers/{id}/activate` now flips only
+  the named row to `is_active=true` instead of deactivating every
+  other provider. The list endpoint response gains
+  `active_providers: list[str]` (priority order); the singular
+  `active_provider` is preserved for backwards compatibility.
+- **Last-active deactivation guard.** `POST
+  /api/v2/admin/email-providers/{id}/deactivate` acquires a
+  row-level lock on the active set and returns HTTP 409 if
+  deactivating the named row would leave zero active providers,
+  with the message `"Activate another provider before deactivating
+  this one — at least one active email provider is required for
+  outbound mail."`. The Email Providers admin page disables the
+  Deactivate button on the last active row.
+- **Failover preview line** on the Email Providers admin page
+  ("Send order: 1. X → 2. Y → 3. Z") when more than one provider
+  is active. Priority slider visible whenever credentials are saved
+  (with "Will apply when activated" helper text on inactive rows).
+- **No-providers and all-auth-fail in-app alerts** — global admins
+  get a critical-severity in-app notification when an outbound send
+  finds zero active providers (deduped to once per hour) or when
+  every active provider returns `SOFT_AUTH` (deduped once per day).
+  Alerts include a deep link to the admin Email Providers page.
+- **Group C stub emails finally deliver.** `_send_anomalous_login_alert`,
+  `_send_token_reuse_alert`, and `_send_org_admin_invitation_email`
+  previously logged-and-returned without sending. They now build a
+  real message and dispatch through the unified sender. Forgot
+  Password (1.11.1 hotfix) is rewritten to use the unified sender
+  too.
+- **Brevo setup guide on the Email Providers admin page** explains
+  the two key types (REST API key vs SMTP key + SMTP login) and
+  where to find each in the Brevo admin UI.
+
+### Changed
+
+- **Legacy admin SMTP page deprecated.** `PUT
+  /api/v1/admin/integrations/smtp` and `POST
+  /api/v1/admin/integrations/smtp/test` returned HTTP 410 Gone with
+  a `Location` header for one release. Configuration is exclusively
+  through `/api/v2/admin/email-providers`. **Phase 9 has now removed
+  the 410 endpoints entirely** following telemetry-confirmed zero
+  callers across one full release window.
+- **`send_org_email` shim retired.** The `send_org_email` /
+  `get_email_client` / `load_smtp_config_from_db` / `SmtpConfig` /
+  `EmailClient` exports in `app/integrations/brevo.py` were retained
+  as deprecated shims through one release window so existing tests
+  kept passing during the Phase 2 cutover. Phase 9 now deletes them
+  entirely (file kept as an empty deprecation stub). Anything still
+  importing these symbols from `app.integrations.brevo` will fail
+  loudly rather than silently dispatch through a stale path.
+- **Notification retry constants removed.** `RETRY_DELAYS`,
+  `MAX_RETRIES`, and `_get_retry_delay` are gone from
+  `app/tasks/notifications.py` — they were dead code post-Phase 2
+  (provider failover handles transient failures by trying the next
+  provider rather than retrying the same provider after a delay).
+  The DB-backed retry path in `app/tasks/scheduled.py`, which is a
+  separate machine, is unchanged and still live.
+- **Activate audit-log action renamed** from `set_as_only_active` to
+  `email_provider_activated` to reflect the multi-active reality.
+
+### Migrated
+
+- **Legacy `integration_configs[smtp]` row migrated automatically**
+  into the matching `email_providers` row via alembic `0198`. The
+  migration sets `is_active=true`, `priority=1`, `credentials_set=true`,
+  re-encrypts credentials under the same master key, and acquires
+  `pg_advisory_lock(hashtext('email_provider_rotate'))` to serialise
+  with `app/cli/rotate_keys.py`. **No-clobber rule:** rows that an
+  admin has already configured through the new UI are preserved
+  untouched. The legacy `is_verified` flag does NOT carry over —
+  see the post-deploy advisory below.
+
+### Operational
+
+- **Post-deploy advisory (one-shot in-app notification to global
+  admins):** "Your SMTP configuration has been migrated to the new
+  Email Providers page. Please open Admin → Email Providers and
+  click Test on each provider to confirm credentials carried across.
+  The legacy `is_verified` flag is not carried across."
+- See [`docs/RUNBOOKS/email-provider-unification.md`](docs/RUNBOOKS/email-provider-unification.md)
+  for the Phase 8b maintenance-window prerequisites and per-phase
+  rollback steps.
+
+---
+
 ## [1.11.1] — 2026-05-26
 
 ### Fixed

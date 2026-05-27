@@ -225,10 +225,30 @@ If an integration API call returns 401/403 or similar auth errors:
 |---|---|---|
 | Infrastructure | `.env` file | `DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, `LOG_LEVEL`, `FRONTEND_BASE_URL` |
 | Integration API keys | Database (`integration_configs`) | Stripe keys, CarJam API key, Xero OAuth tokens, SMS provider credentials |
-| Email provider SMTP | Database (`email_providers`) | SMTP host, port, username, password |
+| Email provider SMTP | Database (`email_providers`) | SMTP host, port, username, password — see "Email Providers" section below |
 | Feature flags | Database (`feature_flags` or org settings) | Module toggles, trade family gating |
 
 **Rule of thumb:** If a credential is entered by a user through the GUI, it lives in the database. If it's set once during deployment and never changes, it can be in `.env`.
+
+---
+
+## Email Providers — multi-active failover
+
+Email is configured exclusively via the **Email Providers** admin page, which writes to the `email_providers` table. The legacy `IntegrationConfig[smtp]` row is migrated automatically by alembic `0198` and is read by no runtime code path. The unified sender (`app/integrations/email_sender.py::send_email`) attempts every active provider in `priority ASC` order, falls over to the next provider on transient failures, and short-circuits on hard failures (bad recipient, payload-too-large).
+
+| What | Where |
+|---|---|
+| Configuration UI | Admin → Email Providers (multi-active; priority slider; per-provider Test button) |
+| DB table | `email_providers` (one row per supported provider — brevo, sendgrid, mailgun, ses, gmail, outlook, custom_smtp) |
+| Runtime entry point | `from app.integrations.email_sender import send_email` (and `EmailMessage`, `EmailAttachment`) |
+| Legacy `IntegrationConfig[smtp]` | Read by no runtime code path; migrated once into `email_providers` and retained for forensic value only |
+| Bounce correlation | `notification_log.provider_message_id` is matched by Brevo/SendGrid bounce webhooks → flips `status` to `bounced` |
+| Recipient blocklist | `bounced_addresses` table; pre-checked before any provider is tried |
+| Delivery Health | Admin → Email Providers → Delivery Health tab |
+
+**Reference:** [`.kiro/specs/email-provider-unification/`](../../.kiro/specs/email-provider-unification/) (spec); [`docs/RUNBOOKS/email-provider-unification.md`](../../docs/RUNBOOKS/email-provider-unification.md) (operational runbook).
+
+When adding a new email-sending site, **always** call `send_email(db, message, ...)` from the unified sender. Never import `smtplib` or write a per-site provider loop — both patterns are explicitly retired in this codebase, and a CI guard test (`tests/test_no_smtplib_outside_email_sender.py`) fails the build if `smtplib` is imported from any module other than `app/integrations/email_sender.py`.
 
 ---
 
@@ -240,7 +260,7 @@ If an integration API call returns 401/403 or similar auth errors:
 | CarJam | `carjam` | `app/integrations/carjam.py` → `get_carjam_api_key()` | Admin > Integrations > CarJam |
 | Xero | `xero` | `app/integrations/xero.py` → OAuth token management | Admin > Integrations > Xero |
 | SMS (Connexus) | `twilio` | `app/integrations/sms.py` | Admin > Integrations > SMS |
-| Email (SMTP) | `email_providers` table | `app/modules/admin/service.py` | Admin > Email Providers |
+| Email (SMTP) | `email_providers` table (multi-row, multi-active) | `app/integrations/email_sender.py` → `send_email(...)` | Admin > Email Providers |
 
 ---
 

@@ -5117,3 +5117,179 @@ Surfaced again during Phase 4 task 4.1 scoped run (2026-05-27) — one new pre-e
 **Related Issues**: None.
 
 **Spec**: N/A — pre-existing; deferred. Surfaced during `.kiro/specs/email-provider-unification/` Phase 0.
+
+
+---
+
+### ISSUE-151: Group A migrated email sites never write `notification_log` on success — invoices, quotes, vehicle reports, payment receipts, booking confirmations, customer notifications all silent on Delivery Log
+
+- **Date**: 2026-05-27
+- **Severity**: significant
+- **Status**: resolved
+- **Reporter**: spec workflow (email-delivery-visibility-fixes)
+- **Regression of**: N/A — long-standing gap, pre-dates email-provider-unification
+
+**Symptoms**: Org admins issue an invoice via the GUI, the audit log shows `invoice.email_sent` with `provider: brevo`, Brevo accepts the email — but the recipient never receives an in-app notification, never sees a Delivery Log row, and there is no `notification_log` row that the Phase 8c bounce-correlation pipeline can match inbound delivered/bounced webhooks to. `SELECT COUNT(*) FROM notification_log WHERE template_type='invoice_email'` returned 0 across all production data.
+
+**Root Cause**: Six Group A email-send sites called `send_email(...)` and only wrote `audit_log` on success — no `log_email_sent(status="sent", ...)` on the success path. Five of the six sites (`email_invoice`, `send_quote`, `email_service_history_report`, `_send_receipt_email`, `_send_booking_confirmation_email`) never called the function on success at all. The sixth site, `notify_customer`, did call it but omitted `provider_key` and `provider_message_id` from the kwargs — making the resulting row unusable for bounce correlation. The parity-correct site `send_payment_reminder` already did this correctly.
+
+**Fix Applied**: Added a `log_email_sent(status="sent", template_type=..., provider_key=result.provider_key, provider_message_id=result.provider_message_id, ...)` call in each of the six Group A success branches, matching the `send_payment_reminder` pattern. For `notify_customer`, extended the existing call's kwargs to include `provider_key` and `provider_message_id`. Each fix is a function-local import alias `_log_email_sent` wrapped in try/except so logging failures don't break the send path. Failure-path observability (`log_email_sent(status="failed")` + `create_in_app_notification(category="email_failure")`) was preserved unchanged on every site.
+
+**Files Changed**:
+- `app/modules/invoices/service.py` (`email_invoice` success branch)
+- `app/modules/quotes/service.py` (`send_quote` success branch)
+- `app/modules/vehicles/report_service.py` (`email_service_history_report` success branch)
+- `app/modules/payments/service.py` (`_send_receipt_email` success branch)
+- `app/modules/bookings/service.py` (`_send_booking_confirmation_email` success branch)
+- `app/modules/customers/service.py` (`notify_customer` — extended existing call with two correlation kwargs)
+- `tests/test_notification_log_success_path.py` (new — 6 property tests, one per site)
+- `tests/test_notification_log_failure_preservation.py` (new — 6 property tests preserving failure path)
+
+**Similar Bugs Found & Fixed**: N/A — `send_payment_reminder` was the parity reference site already doing it correctly.
+
+**Related Issues**: ISSUE-152, ISSUE-153 (same spec).
+
+**Spec**: `.kiro/specs/email-delivery-visibility-fixes/`
+
+---
+
+### ISSUE-152: Brevo / SendGrid webhook signing secret cannot be stored from admin GUI — every webhook event rejected with HTTP 403
+
+- **Date**: 2026-05-27
+- **Severity**: significant
+- **Status**: resolved
+- **Reporter**: spec workflow (email-delivery-visibility-fixes)
+- **Regression of**: N/A — gap from Phase 8c bounce-correlation feature
+
+**Symptoms**: Brevo POSTs webhook events to `/api/v1/notifications/webhooks/brevo-bounce`, the handler logs `Brevo bounce webhook: no signing secret configured (neither email_providers.config nor app_settings) — rejecting` and returns HTTP 403. The event payload is never parsed, no `bounced_addresses` row is upserted, no `notification_log.delivered_at` updated. Same defect applies to SendGrid via the parallel `/sendgrid-bounce` endpoint.
+
+**Root Cause**: Three coupled gaps in the credentials pipeline:
+1. `EmailProviderCredentialsRequest` schema in `app/modules/email_providers/schemas.py` had no `webhook_secret` field, so Pydantic silently dropped any `webhook_secret` value sent in a `PUT credentials` request.
+2. `save_email_credentials` in `app/modules/email_providers/service.py` had no `webhook_secret` kwarg and could not have persisted the value to `email_providers.config['<provider>_webhook_secret']` even if the schema accepted it.
+3. `frontend/src/pages/admin/EmailProviders.tsx::CREDENTIAL_FIELDS.brevo` (and `.sendgrid`) had no `webhook_secret` input field, so the global admin had no UI to enter the value in the first place.
+
+The webhook handler's secret resolver `_candidate_provider_secrets` already read from this exact `config` key — the storage pipeline never reached it.
+
+**Fix Applied**:
+1. Added `webhook_secret: str | None = None` to `EmailProviderCredentialsRequest` and a `field_serializer` on `EmailProviderResponse.config` that redacts any `*_webhook_secret` value with the literal string `"***"` on read.
+2. Added `webhook_secret` kwarg to `save_email_credentials`. When `provider_key in {"brevo", "sendgrid"}` and the value is non-empty, persists to `config[f"{provider_key}_webhook_secret"]`. Empty / whitespace input leaves any existing value untouched (no clobber on partial save). Non-webhook providers (e.g. `custom_smtp`) silently drop the field with a DEBUG log line.
+3. Threaded `payload.webhook_secret` through `put_credentials` router into the service.
+4. Added `webhook_secret` field to the brevo + sendgrid entries in `CREDENTIAL_FIELDS` (frontend), lifted it out of the `credentials` sub-dict in `handleSaveCredentials` so it reaches the top-level request body, rendered the absolute webhook URL (`window.location.origin/api/v1/notifications/webhooks/<provider>-bounce`) below the input so admins can copy-paste into the provider dashboard, and overrode the placeholder to "Already set — leave blank to keep" when the redacted sentinel `"***"` is present.
+
+**Files Changed**:
+- `app/modules/email_providers/schemas.py`
+- `app/modules/email_providers/service.py`
+- `app/modules/email_providers/router.py`
+- `frontend/src/pages/admin/EmailProviders.tsx`
+- `tests/test_email_providers_webhook_secret.py` (new — 8 tests covering PUT persistence + GET redaction + env-var fallback preservation + custom_smtp drop)
+
+**Similar Bugs Found & Fixed**: N/A — the env-var fallback path (`app_settings.brevo_webhook_secret`) was a separate code path and was preserved unchanged for the legacy one-release deprecation window.
+
+**Related Issues**: ISSUE-151, ISSUE-153 (same spec).
+
+**Spec**: `.kiro/specs/email-delivery-visibility-fixes/`
+
+---
+
+### ISSUE-153: Email-link sites build URLs from `settings.frontend_base_url` (`localhost:5173`) instead of the request `Origin` — invitations, password resets, customer portal links all unreachable from non-dev hosts
+
+- **Date**: 2026-05-27
+- **Severity**: significant
+- **Status**: resolved
+- **Reporter**: spec workflow (email-delivery-visibility-fixes)
+- **Regression of**: N/A — long-standing gap; some sites (fleet portal, signup verification, invoice email, payment link) were already correct and used as the parity reference
+
+**Symptoms**: Org admin accesses the app at `https://devin.oraflows.co.nz`, clicks Settings → Users → Invite User, the recipient receives an email whose `Accept Invitation` link begins with `http://localhost:5173/verify-email?token=…` — unreachable from any host except the developer's own machine. Same defect on the Global Admin org-provisioning email, the password reset email, the customer portal link email, and the auth lockout / token-reuse / sessions-alert helpers.
+
+**Root Cause**: Five defective router → service chains never read `request.headers.get("origin")` and never threaded a `base_url=` kwarg to the service. Affected paths:
+- `POST /api/v1/org/users/invite` → `invite_org_user` → `create_invitation`
+- `POST /api/v1/admin/organisations` → `provision_organisation` → `_send_org_admin_invitation_email`
+- `POST /api/v1/auth/password/reset-request` → `request_password_reset` → `_send_password_reset_email`
+- `POST /api/v1/customers/{id}/send-portal-link` → `send_portal_link`
+- `POST /api/v1/portal/{token}/pay/{invoice_id}` → `create_portal_payment` (Stripe success/cancel URLs)
+- `POST /api/v1/portal/recover` → `recover_portal_link`
+- Auth alert helpers: `_send_permanent_lockout_email`, `_send_token_reuse_alert`, `_send_anomalous_login_alert`
+
+The downstream service functions fell through to `getattr(settings, 'frontend_base_url', '') or 'http://localhost'`, which resolves to `http://localhost:5173` per `app/config.py` L40 (unset in every `.env.*` file).
+
+The reference sites that already worked correctly: `auth/router.py::resend_verification_email_endpoint`, `fleet_portal/admin_router.py::send_fleet_portal_invite`, `invoices/router.py::email_invoice_endpoint`, `payments/router.py::send_payment_link_email_endpoint`, `quotes/router.py::send_quote_endpoint` — all read `request.headers.get("origin")` and threaded it through.
+
+**Fix Applied**:
+1. Created `app/core/request_utils.py::extract_request_base_url(request)` — returns the `Origin` header (rstrip trailing `/`) if set, else falls back to `f"{scheme}://{Host}"` from `request.url.scheme` + the `Host` header, else returns `None` so callers fall back to `settings.frontend_base_url`.
+2. Each defective router now extracts `_origin = extract_request_base_url(request)` and passes `base_url=_origin` to the service. Each service function now accepts `base_url: str | None = None` and uses `(base_url or settings.frontend_base_url or "http://localhost").rstrip("/")` to build the URL.
+3. For the Stripe Checkout site (`create_portal_payment`), added a safety-net helper `_resolve_stripe_redirect_base()` that falls back to the static `frontend_base_url` when the request `Origin` parses as a non-http(s) scheme (`capacitor://`, `file://`) or is bare `localhost` while a real public fallback exists — Stripe rejects redirect URLs that are not publicly reachable.
+4. Auth alert helpers (`_send_permanent_lockout_email`, `_send_token_reuse_alert`, `_send_anomalous_login_alert`) now accept `base_url`. Their request-scoped callers (`authenticate_user`, `rotate_refresh_token`) thread it through; non-request-scope callers (background tasks) keep passing `None` and the fallback chain handles them.
+5. The trust posture of treating the `Origin` header as authoritative is unchanged from existing reference sites — Origin allow-list / `Origin ↔ Host` validation is OUT OF SCOPE for this fix (flagged in `bugfix.md` Req 4.14).
+
+**Files Changed**:
+- `app/core/request_utils.py` (new)
+- `app/modules/organisations/router.py` (`invite_user`)
+- `app/modules/organisations/service.py` (`invite_org_user`)
+- `app/modules/admin/router.py` (`create_organisation`)
+- `app/modules/admin/service.py` (`provision_organisation`)
+- `app/modules/auth/router.py` (`password_reset_request`, `login`, `refresh_token`)
+- `app/modules/auth/service.py` (`request_password_reset`, `_send_password_reset_email`, `_send_permanent_lockout_email`, `_send_token_reuse_alert`, `_send_anomalous_login_alert`, `authenticate_user`, `_check_anomalous_login`, `rotate_refresh_token`)
+- `app/modules/customers/router.py` (`send_portal_link_endpoint`)
+- `app/modules/customers/service.py` (`send_portal_link`)
+- `app/modules/portal/router.py` (`portal_pay`, `portal_recover`)
+- `app/modules/portal/service.py` (`create_portal_payment` + new `_resolve_stripe_redirect_base` helper, `recover_portal_link`)
+- `tests/test_request_utils.py` (new — 10 unit tests for the helper)
+- `tests/test_email_link_origin.py` (new — 4 bug-condition tests + 4 preservation tests)
+
+**Similar Bugs Found & Fixed**: The internal `send_portal_link` caller inside `customers/service.py::update_customer` (auto-send branch when `enable_portal` transitions False→True) is left unchanged for now — it does not pass `base_url`. The fallback chain handles it correctly today; flagged for a future pass if the transition needs to honour the request origin too.
+
+**Related Issues**: ISSUE-151, ISSUE-152 (same spec).
+
+**Spec**: `.kiro/specs/email-delivery-visibility-fixes/`
+
+
+---
+
+### ISSUE-154: Email-provider unification feature ship — 14 raw `smtplib` loops, 18 zero-failover `send_email_task` callers, and 4 stub-only Group C emails replaced with one unified sender; multi-active failover, bounce correlation, and Delivery Health view added
+
+- **Date**: 2026-05-28
+- **Severity**: feature
+- **Status**: shipped
+- **Reporter**: spec workflow (email-provider-unification)
+
+**Symptoms (the long-standing pre-feature gaps this resolves)**:
+
+- One revoked Brevo API key blackholed every email type at once because the Group B path through `send_email_task → send_org_email → IntegrationConfig[smtp]` had no failover.
+- 14 sites duplicated the same hand-rolled `smtplib` provider loop (`email_invoice`, `send_payment_reminder`, quote send, `_send_receipt_email`, `email_service_history_report`, `_send_booking_confirmation_email`, `_send_permanent_lockout_email`, `_send_invitation_email`, `send_verification_email`, `send_receipt_email`, `_send_email_otp`, `notify_customer`, `submit_demo_request`, `send_invoice_payment_link_email`) — about 1500 lines of near-identical code, with `_send_email_otp` carrying its own bug (`.limit(1)` killed failover).
+- Four Group C account-recovery and onboarding emails (`_send_password_reset_email`, `_send_anomalous_login_alert`, `_send_token_reuse_alert`, `_send_org_admin_invitation_email`) only logged-and-returned without sending — silent failures that users only noticed by ticket.
+- The activate endpoint deactivated every other provider on click, making "set up failover" impossible from the GUI without manual SQL.
+- Bounces from Brevo / SendGrid had no correlation back to `notification_log`, so a customer receiving "your invoice was sent" was indistinguishable from a customer whose mailbox bounced the message immediately.
+- The Brevo setup guide on the Email Providers admin page didn't explain that REST API keys and SMTP login keys are different things (a frequent misconfiguration).
+
+**Root Cause**: The `email_providers` table existed (migration 0065) but was only read by the Group A sites' duplicated provider loops. Group B (`send_email_task`) and the per-org services bypassed it entirely and read the platform-wide legacy `IntegrationConfig[smtp]` row, which has no failover support and a different credentials shape. There was no shared "send an email through whatever providers the admin configured" entry point — every site reinvented it, badly, and Group C didn't reinvent it at all.
+
+**Fix Applied**:
+
+Implemented across nine phases per the spec. The user-facing summary lives in `CHANGELOG.md` v1.12.0; the implementation details, per-phase rollback steps, and operational runbook live in `docs/RUNBOOKS/email-provider-unification.md`.
+
+The shape of the fix:
+
+1. **Phase 1 — `app/integrations/email_sender.py::send_email`** is the single outbound entry point. Reads `email_providers` rows where `is_active=true AND credentials_set=true ORDER BY priority ASC`. Attempts each provider, classifies failures as `HARD_RECIPIENT` / `HARD_PAYLOAD` / `SOFT_AUTH` / `SOFT_PROVIDER` / `BUDGET_EXCEEDED`, falls over on soft kinds, short-circuits on hard kinds. Per-attempt timeout 15s; total budget 45s; payload size limit 25 MB.
+2. **Phase 2 + 8a** — `_send_email_async` rewired to the new sender (all 18 Group B sites get failover for free). `notification_log` gains `provider_key`, `provider_message_id`, `bounced_at`, `bounce_reason`, `delivered_at` columns (alembic 0195) and the admin notification log frontend renders them.
+3. **Phase 3** — Each of the 14 Group A sites migrated to `send_email`, one commit per site for bisectability. The `import smtplib` count dropped from 16 to 1 (only `email_sender.py`); a CI guard test (`tests/test_no_smtplib_outside_email_sender.py`) fails the build if anything else imports `smtplib`.
+4. **Phase 4** — Group C stubs implemented for real. Forgot Password (already hotfixed in v1.11.1) rewritten to use the unified sender. No-providers and all-auth-fail in-app alerts wired with Redis dedup (1h / 24h).
+5. **Phase 5** — Activate endpoint flips only the named row (multi-active possible). Deactivate acquires `SELECT … FOR UPDATE` on the active set and returns 409 if it would leave zero active providers, with the documented operator-friendly message.
+6. **Phase 6** — Email Providers admin page shows multiple active providers, the failover preview line, the priority slider whenever credentials are saved, and a disabled Deactivate button on the last active row.
+7. **Phase 7** — Legacy `PUT/POST /api/v1/admin/integrations/smtp` endpoints returned HTTP 410 Gone with a `Location` header and a `legacy_smtp_endpoint_hit` telemetry log line for one release. **Phase 9** has now removed the stubs entirely.
+8. **Phase 8b** — Alembic 0198 migrates the legacy `integration_configs[smtp]` row into `email_providers`. `pg_advisory_lock(hashtext('email_provider_rotate'))` shared with `app/cli/rotate_keys.py`. Recent-write guard, no-clobber rule, soft-skip on decryption failure. Tests cover the lock contention path and the "admin already configured via new UI" preservation case.
+9. **Phase 8c** — Bounce correlation: webhooks match `notification_log` by `provider_message_id` and flip status to `bounced`. New `bounced_addresses` table (RLS, functional unique index on `(COALESCE(org_id), LOWER(email))`). `send_email` pre-checks the blocklist. Per-provider webhook secrets in `email_providers.config`. New Delivery Health admin view.
+10. **Phase 9** — Cleanup. `send_org_email` / `EmailClient` / `SmtpConfig` / `get_email_client` / `load_smtp_config_from_db` shims deleted from `app/integrations/brevo.py` (file kept as an empty deprecation stub). 410 endpoint stubs and `legacy_smtp_endpoint_hit` telemetry removed. `RETRY_DELAYS` / `MAX_RETRIES` / `_get_retry_delay` removed from `app/tasks/notifications.py` (failover replaces application-level retries; the DB-backed retry path in `app/tasks/scheduled.py` is unchanged). Net cleanup: −1251 lines.
+
+The legacy `integration_configs[name='smtp']` row is intentionally retained for forensic value (operator may drop it in a follow-up migration; see Req 23.4).
+
+**Deferred (BUG-7 from the spec; tracked here for visibility)**: `is_verified` parity is **not** carried over from the legacy row to `email_providers`. Operators must re-test each provider through the new admin Test button after the Phase 8b migration applies. Adding `last_test_at` / `last_test_success` columns to `email_providers` is recognised as useful but is deferred to a follow-up spec — it does not block this feature ship.
+
+**Files Changed**: see the per-phase commits on `main`. Spec-internal trace at `.kiro/specs/email-provider-unification/tasks.md` "Requirement → Task Trace" table.
+
+**Migrations**: 0195 (`notification_log` columns), 0196 (Brevo setup guide content), 0197 (`bounced_addresses` table), 0198 (legacy SMTP data migration).
+
+**Spec**: `.kiro/specs/email-provider-unification/`
+
+**Runbook**: `docs/RUNBOOKS/email-provider-unification.md`
+
+**Related Issues**: ISSUE-150, ISSUE-151, ISSUE-152, ISSUE-153 (all part of the same email-delivery work; this feature ship encompasses the systemic gaps those issues addressed point-by-point).
