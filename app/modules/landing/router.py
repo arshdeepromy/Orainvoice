@@ -12,21 +12,17 @@ from __future__ import annotations
 
 import json
 import logging
-import smtplib
 from datetime import datetime, timezone
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text as sa_text
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
-from app.core.encryption import envelope_decrypt_str
 from app.core.redis import get_redis
-from app.modules.admin.models import EmailProvider
+from app.integrations.email_sender import EmailMessage, send_email
 from app.modules.auth.rbac import require_role
 from app.core.audit import write_audit_log
 from app.modules.landing.schemas import (
@@ -66,8 +62,31 @@ async def submit_demo_request(
       sending an email.
     - Rate limiting: max 5 requests per IP per hour via Redis.  If Redis is
       unavailable the request is allowed through (fail-open).
-    - Email: sent via the first active ``EmailProvider`` with credentials,
-      ordered by priority.  Falls over to the next provider on error.
+    - Email: dispatched via the unified
+      :func:`app.integrations.email_sender.send_email` which walks the active
+      provider chain in priority order and owns failover, error classification,
+      and per-attempt + total time budgets.
+
+    Migrated from a hand-rolled ``smtplib`` provider loop in Phase 3 task 3.13
+    (A13) of the email-provider-unification spec. Per the per-site variation
+    table in ``.kiro/specs/email-provider-unification/design.md`` row A13
+    (public form, no org context):
+
+    - ``EmailMessage.org_id`` is ``None`` — the demo request comes from a public
+      landing page, so there is no organisation context to scope the
+      bounce-blocklist by. The pre-check still runs against platform-wide
+      blocklist rows.
+    - ``org_sender_name`` is not passed; the From header reads as the
+      provider's configured name (typically the platform).
+    - **No ``log_email_sent``** — the notification log is org-scoped, and there
+      is no org for a public submission.
+    - **No in-app notification** on failure — there is no org admin to notify
+      and the in-app notifications surface is org-scoped (see
+      in-app-notifications design §4.2). On total failure we surface HTTP 500
+      so the public form caller knows the submission was not delivered
+      (Requirement 6.7).
+
+    Requirements: 6.1, 6.7
     """
     client_ip = request.client.host if request.client else "unknown"
 
@@ -91,31 +110,11 @@ async def submit_demo_request(
         )
 
     # ------------------------------------------------------------------
-    # 3. Query active email providers ordered by priority
-    # ------------------------------------------------------------------
-    provider_result = await db.execute(
-        select(EmailProvider)
-        .where(
-            EmailProvider.is_active == True,  # noqa: E712
-            EmailProvider.credentials_set == True,  # noqa: E712
-        )
-        .order_by(EmailProvider.priority)
-    )
-    providers = list(provider_result.scalars().all())
-
-    if not providers:
-        logger.error("No active email provider configured — cannot send demo request email")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": "Email service not configured"},
-        )
-
-    # ------------------------------------------------------------------
-    # 4. Build MIME email
+    # 3. Build message and dispatch via the unified sender
     # ------------------------------------------------------------------
     now_utc = datetime.now(timezone.utc)
     subject = f"New Demo Request from {payload.full_name} — {payload.business_name}"
-    body = (
+    text_body = (
         "New demo request received:\n"
         "\n"
         f"Name: {payload.full_name}\n"
@@ -132,67 +131,41 @@ async def submit_demo_request(
         f"Timestamp: {now_utc.isoformat()}\n"
     )
 
-    # ------------------------------------------------------------------
-    # 5. Send with failover across providers
-    # ------------------------------------------------------------------
-    last_error: Exception | None = None
-    for provider in providers:
-        try:
-            creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-            credentials = json.loads(creds_json)
+    message = EmailMessage(
+        to_email=DEMO_REQUEST_RECIPIENT,
+        to_name="",
+        subject=subject,
+        html_body="",
+        text_body=text_body,
+        attachments=[],
+        # Public form — no org context. Bounce blocklist falls through
+        # to platform-wide rows (org_id IS NULL) on the pre-check.
+        org_id=None,
+    )
 
-            smtp_host = provider.smtp_host
-            smtp_port = provider.smtp_port or 587
-            smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-            username = credentials.get("username") or credentials.get("api_key", "")
-            password = credentials.get("password") or credentials.get("api_key", "")
+    result = await send_email(db, message)
 
-            config = provider.config or {}
-            from_email = config.get("from_email") or username
-            from_name = config.get("from_name") or "OraInvoice"
+    if result.success:
+        logger.info(
+            "Demo request email sent via %s for %s (%s)",
+            result.provider_key,
+            payload.full_name,
+            payload.email,
+        )
+        return DemoRequestResponse(
+            success=True,
+            message="Thank you! Our team will be in touch within 24 hours to schedule your demo.",
+        )
 
-            msg = MIMEMultipart("mixed")
-            msg["From"] = f"{from_name} <{from_email}>"
-            msg["To"] = DEMO_REQUEST_RECIPIENT
-            msg["Subject"] = subject
-            msg.attach(MIMEText(body, "plain"))
-
-            if smtp_encryption == "ssl":
-                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-            else:
-                server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-                if smtp_encryption == "tls":
-                    server.starttls()
-
-            if username and password:
-                server.login(username, password)
-
-            server.sendmail(from_email, DEMO_REQUEST_RECIPIENT, msg.as_string())
-            server.quit()
-
-            logger.info(
-                "Demo request email sent via %s for %s (%s)",
-                provider.provider_key,
-                payload.full_name,
-                payload.email,
-            )
-            return DemoRequestResponse(
-                success=True,
-                message="Thank you! Our team will be in touch within 24 hours to schedule your demo.",
-            )
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "Email provider %s failed for demo request: %s",
-                provider.provider_key,
-                exc,
-            )
-            continue
-
-    # NOTE: In-app notification skipped for demo request email failures.
-    # No org_id is available (public form) — failures stay in logs only.
-    # See in-app-notifications spec §4.3 / design §4.2.
-    logger.error("All email providers failed for demo request. Last error: %s", last_error)
+    # NOTE: No in-app notification — public form has no org_id, no org
+    # admin to notify. No log_email_sent — notification log is
+    # org-scoped. Failure stays in the application log only and
+    # surfaces HTTP 500 to the caller (Requirement 6.7).
+    logger.error(
+        "Demo request email send failed for %s: %s",
+        payload.email,
+        result.error,
+    )
     return JSONResponse(
         status_code=500,
         content={"success": False, "message": "Failed to send email"},

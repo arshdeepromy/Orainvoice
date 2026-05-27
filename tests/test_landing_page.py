@@ -221,25 +221,30 @@ class TestDemoRequestEndpoint:
     """Test the submit_demo_request endpoint function."""
 
     @pytest.mark.asyncio
-    @patch("app.modules.landing.router.envelope_decrypt_str")
-    @patch("app.modules.landing.router.smtplib")
-    async def test_valid_submission_returns_200(self, mock_smtplib, mock_decrypt):
-        """Valid demo request with active email provider returns 200."""
+    async def test_valid_submission_returns_200(self):
+        """Valid demo request with active email provider returns 200.
+
+        After the A13 migration the smtplib + envelope_decrypt_str
+        imports moved out of ``app.modules.landing.router`` and into
+        ``app.integrations.email_sender``. We patch ``send_email``
+        directly so this test pins the endpoint contract (200 + success
+        message) without re-asserting the unified-sender internals
+        (those are covered in ``tests/test_landing_demo_request_email.py``
+        and ``tests/test_email_infrastructure.py``).
+        """
         from app.modules.landing.router import submit_demo_request
 
-        mock_decrypt.return_value = json.dumps({
-            "username": "user@example.com",
-            "password": "secret",
-        })
-        mock_smtp_instance = MagicMock()
-        mock_smtplib.SMTP.return_value = mock_smtp_instance
+        send_email_stub = AsyncMock()
+        send_email_stub.return_value = MagicMock(
+            success=True,
+            provider_key="brevo",
+            transport="rest_api",
+            message_id="msg-1",
+            error=None,
+            attempts=[],
+        )
 
-        provider = _make_email_provider()
         db = _mock_db()
-        provider_result = _make_execute_result()
-        provider_result.scalars.return_value.all.return_value = [provider]
-        db.execute = AsyncMock(return_value=provider_result)
-
         redis = _mock_redis()
         request = _make_request()
 
@@ -251,12 +256,13 @@ class TestDemoRequestEndpoint:
             message="Interested in a demo.",
         )
 
-        result = await submit_demo_request(payload, request, db, redis)
+        with patch("app.modules.landing.router.send_email", new=send_email_stub):
+            result = await submit_demo_request(payload, request, db, redis)
 
         assert isinstance(result, DemoRequestResponse)
         assert result.success is True
         assert "24 hours" in result.message
-        mock_smtp_instance.sendmail.assert_called_once()
+        send_email_stub.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_honeypot_returns_200_without_email(self):
@@ -952,26 +958,25 @@ class TestProperty4DemoFormSubmissionWithValidData:
             website=None,  # no honeypot — real submission
         )
 
-        # Mock SMTP so no actual emails are sent
-        mock_smtp_instance = MagicMock()
-        mock_decrypt_value = json.dumps({
-            "username": "user@example.com",
-            "password": "secret",
-        })
+        # After the A13 migration the smtplib loop lives behind
+        # ``send_email``; patch it directly to keep this property test
+        # focused on the endpoint contract (any valid payload → 200
+        # success) rather than the unified sender's transport details.
+        send_email_stub = AsyncMock()
+        send_email_stub.return_value = MagicMock(
+            success=True,
+            provider_key="brevo",
+            transport="rest_api",
+            message_id="msg-1",
+            error=None,
+            attempts=[],
+        )
 
-        provider = _make_email_provider()
         db = _mock_db()
-        provider_result = _make_execute_result()
-        provider_result.scalars.return_value.all.return_value = [provider]
-        db.execute = AsyncMock(return_value=provider_result)
-
-        # Mock Redis so rate limiting doesn't interfere
         redis = _mock_redis()
         request = _make_request()
 
-        with patch("app.modules.landing.router.envelope_decrypt_str", return_value=mock_decrypt_value), \
-             patch("app.modules.landing.router.smtplib") as mock_smtplib:
-            mock_smtplib.SMTP.return_value = mock_smtp_instance
+        with patch("app.modules.landing.router.send_email", new=send_email_stub):
             result = await submit_demo_request(payload, request, db, redis)
 
         assert isinstance(result, DemoRequestResponse), (
