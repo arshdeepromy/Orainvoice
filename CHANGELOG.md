@@ -4,6 +4,28 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
+## [1.11.1] — 2026-05-26
+
+### Fixed
+
+- **Forgot Password emails now actually deliver.** The auth service
+  generated and persisted the reset URL and emitted the audit log
+  entry, but ``_send_password_reset_email`` was never implemented, so
+  the message never left the app. Implemented using the same raw
+  ``smtplib`` + ``EmailProvider`` priority loop already used by the
+  lockout and invitation emails (open its own ``async_session_factory``
+  when called outside a request, walk active providers in
+  priority order, fall through on per-provider failure). The API
+  response stays the generic "if your email is registered..." either
+  way, so the contract is unchanged for callers.
+
+### Security
+
+- Closes a security gap where users locked out of their accounts could
+  not actually recover access via the documented Forgot Password flow.
+
+---
+
 ## [1.11.0] — 2026-05-26
 
 ### Added

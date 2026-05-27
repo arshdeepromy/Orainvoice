@@ -1899,52 +1899,187 @@ async def _send_password_reset_email(
 ) -> None:
     """Send a password reset email with the reset link.
 
-    In production this dispatches via the notification infrastructure.
-    For now we log the intent so the flow is wired up.
+    Uses the active email providers configured by the global admin and
+    falls over through them in priority order (mirroring
+    ``_send_invitation_email``). Wrapped in a top-level try/except so a
+    delivery failure never leaks back into the password-reset endpoint —
+    the API surface always returns the generic "if your email is
+    registered…" response either way.
+
+    NOTE (Phase 0.5 hotfix): this uses the same raw ``smtplib`` provider
+    loop pattern as the rest of ``app.modules.auth.service``. Phase 4.1
+    of the email-provider-unification spec replaces this with a single
+    ``send_email`` call once the unified sender lands.
     """
-    reset_url = f"{getattr(settings, 'frontend_base_url', '') or 'http://localhost'}/reset-password?token={token}"
+    try:
+        import smtplib
+        import json as _json
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
 
-    # --- Template resolution for password_reset ---
-    rendered = None
-    if db is not None and org_id is not None:
-        from app.modules.notifications.service import resolve_template
-
-        template_variables = {
-            "user_name": email,
-            "reset_link": reset_url,
-            "org_name": org_name,
-        }
-
-        rendered = await resolve_template(
-            db,
-            org_id=org_id,
-            template_type="password_reset",
-            channel="email",
-            variables=template_variables,
+        reset_url = (
+            f"{getattr(settings, 'frontend_base_url', '') or 'http://localhost'}"
+            f"/reset-password?token={token}"
         )
 
-    if rendered:
-        subject = rendered.subject
-        body = rendered.body
-    else:
-        # Existing hardcoded content (fallback)
-        subject = "Password Reset Request"
-        body = (
-            f"Hi,\n\n"
-            f"We received a request to reset your password for your {org_name} account.\n\n"
-            f"Click the link below to reset your password:\n"
-            f"{reset_url}\n\n"
-            f"This link expires in 1 hour.\n\n"
-            f"If you didn't request this, you can safely ignore this email.\n"
-        )
+        # --- Template resolution for password_reset ---
+        rendered = None
+        if db is not None and org_id is not None:
+            from app.modules.notifications.service import resolve_template
 
-    logger.info(
-        "Password reset email queued for %s with token %s...",
-        email,
-        token[:8],
-    )
-    # TODO: Replace with Celery task dispatching a real email via
-    # app.integrations.brevo once the Notification_Module is implemented.
+            template_variables = {
+                "user_name": email,
+                "reset_link": reset_url,
+                "org_name": org_name,
+            }
+
+            rendered = await resolve_template(
+                db,
+                org_id=org_id,
+                template_type="password_reset",
+                channel="email",
+                variables=template_variables,
+            )
+
+        if rendered:
+            subject = rendered.subject
+            text_body = rendered.body
+            html_body = rendered.body
+        else:
+            # Hardcoded fallback content
+            subject = f"Reset your {org_name} password"
+
+            html_body = f"""
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: #1f2937; font-size: 24px; margin: 0;">Password Reset Request</h1>
+          </div>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+            Hi,
+          </p>
+
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">
+            We received a request to reset the password for your <strong>{org_name}</strong> account.
+            Click the button below to set a new password.
+          </p>
+
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="{reset_url}"
+               style="display: inline-block; padding: 14px 32px; background-color: #2563eb;
+                      color: #ffffff; text-decoration: none; border-radius: 8px;
+                      font-size: 16px; font-weight: 600;">
+              Reset Password
+            </a>
+          </div>
+
+          <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+            Or copy and paste this link into your browser:<br/>
+            <a href="{reset_url}" style="color: #2563eb; word-break: break-all;">{reset_url}</a>
+          </p>
+
+          <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
+            <strong>This link expires in 1 hour.</strong>
+            If you didn't request a password reset, you can safely ignore this email —
+            your password won't change.
+          </p>
+
+          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;" />
+
+          <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+            OraInvoice — Invoicing made simple
+          </p>
+        </div>
+        """
+
+            text_body = (
+                f"Hi,\n\n"
+                f"We received a request to reset the password for your {org_name} account.\n\n"
+                f"Click the link below to set a new password:\n"
+                f"{reset_url}\n\n"
+                f"This link expires in 1 hour.\n\n"
+                f"If you didn't request a password reset, you can safely ignore this email — "
+                f"your password won't change.\n"
+            )
+
+        # Find active email providers (open our own session if the caller
+        # didn't pass one — mirrors _send_permanent_lockout_email).
+        if db is None:
+            from app.core.database import async_session_factory
+            async with async_session_factory() as session:
+                providers = await _get_email_providers(session)
+        else:
+            providers = await _get_email_providers(db)
+
+        if not providers:
+            logger.warning(
+                "No active email provider — cannot send password reset email to %s (token: %s...)",
+                email, token[:8],
+            )
+            return
+
+        from app.core.encryption import envelope_decrypt_str
+
+        last_error = None
+        for provider in providers:
+            try:
+                creds_json = envelope_decrypt_str(provider.credentials_encrypted)
+                credentials = _json.loads(creds_json)
+
+                smtp_host = provider.smtp_host
+                smtp_port = provider.smtp_port or 587
+                smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
+                username = credentials.get("username") or credentials.get("api_key", "")
+                password = credentials.get("password") or credentials.get("api_key", "")
+
+                config = provider.config or {}
+                from_email = config.get("from_email") or username
+                from_name = config.get("from_name") or "OraInvoice"
+
+                msg = MIMEMultipart("alternative")
+                msg["From"] = f"{from_name} <{from_email}>"
+                msg["To"] = email
+                msg["Subject"] = subject
+                msg.attach(MIMEText(text_body, "plain"))
+                msg.attach(MIMEText(html_body, "html"))
+
+                if smtp_encryption == "ssl":
+                    server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+                else:
+                    server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+                    if smtp_encryption == "tls":
+                        server.starttls()
+
+                if username and password:
+                    server.login(username, password)
+
+                server.sendmail(from_email, email, msg.as_string())
+                server.quit()
+                logger.info(
+                    "Password reset email sent to %s via %s",
+                    email, provider.provider_key,
+                )
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Email provider %s failed for password reset to %s: %s",
+                    provider.provider_key, email, e,
+                )
+                continue
+
+        # NOTE: In-app notification skipped for auth email failures in v1.
+        # Auth flows run on sessions without org_id context.
+        # Known limitation — see in-app-notifications design §4.2.
+        logger.warning(
+            "All email providers failed for password reset to %s: %s (token: %s...)",
+            email, last_error, token[:8],
+        )
+    except Exception:
+        # Belt-and-braces: never let a delivery failure crash the
+        # password-reset endpoint. The API returns the generic
+        # "if your email is registered…" response regardless.
+        logger.exception("Failed to send password reset email to %s", email)
 
 
 async def complete_password_reset(

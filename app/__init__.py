@@ -1,11 +1,12 @@
 """OraInvoice / WorkshopPro NZ FastAPI application.
 
-Bumped to 1.11.0 with the QR partial-payment flow: org users can now
-choose between Full and Partial payment when generating a kiosk QR
-session, with proportional Stripe application-fee scaling, partial-
-aware webhook recording, partial-amount-aware receipt emails, and a
-post-payment cleanup that closes a pre-existing reuse-branch
-regression in ``create_qr_session_for_existing_invoice``.
+1.11.1 — security hotfix: the Forgot Password flow previously
+short-circuited at the "send the email" step because the auth service
+had no implementation for ``_send_password_reset_email``. The reset
+URL was generated, persisted, and audit-logged, but never reached the
+user's inbox. Implemented using the same raw ``smtplib`` +
+``EmailProvider`` priority loop already used by the lockout and
+invitation emails, so reset emails now actually deliver.
 """
 
-__version__ = "1.11.0"
+__version__ = "1.11.1"
