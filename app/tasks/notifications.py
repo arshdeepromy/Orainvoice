@@ -1,12 +1,16 @@
-"""Async email/SMS dispatch with retry.
+"""Async email/SMS dispatch.
 
 Provides ``send_email_async``, ``send_sms_async``, and periodic reminder
 processing functions. Called directly from the application layer.
 
-Retry policy (Requirements 37.1, 37.2, 37.3):
-- Up to 3 retries with exponential backoff: 60s → 300s → 900s
-- After 3 retries (4 total attempts), mark as permanently failed and log
-  the failure in the Global Admin error log.
+Email failure handling (per email-provider-unification, Requirement 23.1):
+on transient failure the unified sender's provider failover tries the
+next active provider; there is no application-level retry of a failed
+send. After all providers have been exhausted the notification is
+marked permanently failed and an error is logged. Database-backed
+notification retries (for rows in ``notification_log`` with
+``status='queued'`` and ``retry_count > 0``) are owned by
+``app.tasks.scheduled`` and are a separate machine.
 """
 
 from __future__ import annotations
@@ -16,17 +20,6 @@ import uuid
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
-
-# Exponential backoff delays in seconds: 1min, 5min, 15min
-RETRY_DELAYS = (60, 300, 900)
-MAX_RETRIES = 3
-
-
-def _get_retry_delay(retry_number: int) -> int:
-    """Return the backoff delay for the given retry attempt (0-indexed)."""
-    if retry_number < len(RETRY_DELAYS):
-        return RETRY_DELAYS[retry_number]
-    return RETRY_DELAYS[-1]
 
 
 async def _send_email_async(
@@ -237,8 +230,8 @@ async def _mark_permanently_failed(
                 module="tasks.notifications",
                 function_name=f"send_{channel}_task",
                 message=(
-                    f"{channel.upper()} notification permanently failed after "
-                    f"{MAX_RETRIES} retries: {error_message}"
+                    f"{channel.upper()} notification permanently failed: "
+                    f"{error_message}"
                 ),
                 stack_trace=None,
                 org_id=org_id,

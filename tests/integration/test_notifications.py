@@ -1,9 +1,27 @@
-"""Integration tests for Notifications — email via Brevo/SendGrid, SMS via Twilio, delivery tracking, bounce handling, retry logic.
+"""Integration tests for Notifications — SMS via Twilio, delivery tracking, bounce handling.
 
-Tests the full flow from integration clients and Celery tasks through to mocked API responses.
-All Brevo/SendGrid/Twilio API calls are mocked — no real API calls are made.
+Tests the full flow from integration clients and async dispatch tasks through
+to mocked API responses. All Twilio API calls are mocked — no real API calls
+are made.
 
-Requirements: 33.1-33.3, 36.1-36.6, 37.1-37.3
+The original Brevo/SendGrid email-sending integration tests in this file
+were retired in Phase 9 of the email-provider-unification spec
+(task 10.2 / Requirement 23.2): the legacy ``EmailClient`` /
+``SmtpConfig`` / ``send_org_email`` / ``get_email_client`` shims they
+exercised no longer exist. Equivalent coverage of the unified path
+lives in ``tests/test_email_sender_dispatch.py``,
+``tests/test_email_sender_failover.py`` and
+``tests/test_send_email_task_integration.py``.
+
+The legacy notification-retry integration tests were retired in the same
+spec (task 10.4 / Requirement 23.1): they exercised the dead
+``MAX_RETRIES`` / ``RETRY_DELAYS`` / ``_get_retry_delay`` constants in
+``app/tasks/notifications.py`` (no longer present — provider failover in
+the unified sender replaces application-level retries). The DB-backed
+notification retry path is now exercised in
+``tests/test_scheduled_tasks.py``.
+
+Requirements: 36.1-36.6
 """
 
 from __future__ import annotations
@@ -20,13 +38,6 @@ from app.modules.auth.models import User  # noqa: F401
 from app.modules.organisations.models import Branch  # noqa: F401
 from app.modules.inventory.models import PartSupplier  # noqa: F401
 
-from app.integrations.brevo import (
-    EmailClient,
-    EmailMessage,
-    SendResult,
-    SmtpConfig,
-    send_org_email,
-)
 from app.integrations.twilio_sms import (
     SMS_CHAR_LIMIT,
     SmsClient,
@@ -35,42 +46,11 @@ from app.integrations.twilio_sms import (
     TwilioConfig,
     send_org_sms,
 )
-from app.tasks.notifications import (
-    MAX_RETRIES,
-    RETRY_DELAYS,
-    _get_retry_delay,
-    send_email_task,
-    send_sms_task,
-)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _brevo_config(**overrides) -> SmtpConfig:
-    defaults = dict(
-        provider="brevo",
-        api_key="xkeysib-test-key",
-        from_email="noreply@workshoppro.nz",
-        from_name="WorkshopPro NZ",
-        reply_to="support@workshoppro.nz",
-    )
-    defaults.update(overrides)
-    return SmtpConfig(**defaults)
-
-
-def _sendgrid_config(**overrides) -> SmtpConfig:
-    defaults = dict(
-        provider="sendgrid",
-        api_key="SG.test-key",
-        from_email="noreply@workshoppro.nz",
-        from_name="WorkshopPro NZ",
-        reply_to="support@workshoppro.nz",
-    )
-    defaults.update(overrides)
-    return SmtpConfig(**defaults)
 
 
 def _twilio_config(**overrides) -> TwilioConfig:
@@ -109,193 +89,15 @@ def _mock_db():
 
 
 # ===========================================================================
-# 1. Email Sending via Brevo API (Req 33.1, 33.2, 33.3)
+# 1. (Removed in Phase 9 — task 10.2 / Requirement 23.2)
+#
+# The Brevo and SendGrid email-sending integration tests that lived here
+# exercised the legacy ``EmailClient`` / ``SmtpConfig`` shims in
+# ``app/integrations/brevo.py``. Those shims have been deleted; equivalent
+# coverage of the unified send path now lives in
+# ``tests/test_email_sender_dispatch.py`` (provider dispatch matrix) and
+# ``tests/test_email_sender_failover.py`` (priority-ordered failover).
 # ===========================================================================
-
-
-class TestBrevoEmailSending:
-    """Integration tests for email sending via Brevo transactional API.
-
-    Tests payload construction, API call, response handling, and org-level overrides.
-    Requirements: 33.1, 33.2, 33.3
-    """
-
-    @pytest.mark.asyncio
-    async def test_brevo_send_constructs_correct_payload(self):
-        """Brevo send constructs the correct API payload with sender, recipient, subject, and body."""
-        config = _brevo_config()
-        client = EmailClient(config)
-
-        mock_http, _ = _mock_httpx_client({"messageId": "<brevo-msg-001>"})
-
-        msg = EmailMessage(
-            to_email="customer@example.com",
-            to_name="Jane Doe",
-            subject="Invoice INV-0042",
-            html_body="<h1>Your invoice</h1>",
-            text_body="Your invoice is ready.",
-        )
-
-        with patch("app.integrations.brevo.httpx.AsyncClient", return_value=mock_http):
-            result = await client.send(msg)
-
-        assert result.success is True
-        assert result.message_id == "<brevo-msg-001>"
-        assert result.provider == "brevo"
-
-        # Verify API call details
-        call_kwargs = mock_http.post.call_args
-        assert call_kwargs[0][0] == "https://api.brevo.com/v3/smtp/email"
-        payload = call_kwargs[1]["json"]
-        assert payload["sender"]["email"] == "noreply@workshoppro.nz"
-        assert payload["sender"]["name"] == "WorkshopPro NZ"
-        assert payload["to"][0]["email"] == "customer@example.com"
-        assert payload["subject"] == "Invoice INV-0042"
-        assert payload["htmlContent"] == "<h1>Your invoice</h1>"
-        assert payload["replyTo"]["email"] == "support@workshoppro.nz"
-
-        # Verify API key header
-        headers = call_kwargs[1]["headers"]
-        assert headers["api-key"] == "xkeysib-test-key"
-
-    @pytest.mark.asyncio
-    async def test_brevo_send_with_org_sender_override(self):
-        """Org emails use global infrastructure but display org sender name and reply-to (Req 33.3)."""
-        config = _brevo_config()
-        client = EmailClient(config)
-
-        mock_http, _ = _mock_httpx_client({"messageId": "<brevo-org-001>"})
-
-        msg = EmailMessage(
-            to_email="customer@example.com",
-            subject="Invoice from My Workshop",
-            html_body="<p>Hello</p>",
-            from_name="My Workshop Ltd",
-            reply_to="billing@myworkshop.nz",
-        )
-
-        with patch("app.integrations.brevo.httpx.AsyncClient", return_value=mock_http):
-            result = await client.send(msg)
-
-        assert result.success is True
-        payload = mock_http.post.call_args[1]["json"]
-        assert payload["sender"]["name"] == "My Workshop Ltd"
-        assert payload["replyTo"]["email"] == "billing@myworkshop.nz"
-
-    @pytest.mark.asyncio
-    async def test_brevo_api_error_returns_failure(self):
-        """Brevo API error (non-200) returns SendResult with success=False."""
-        config = _brevo_config()
-        client = EmailClient(config)
-
-        mock_http, mock_resp = _mock_httpx_client({}, status_code=403)
-        mock_resp.text = "Forbidden"
-
-        msg = EmailMessage(to_email="test@example.com", subject="Test")
-
-        with patch("app.integrations.brevo.httpx.AsyncClient", return_value=mock_http):
-            result = await client.send(msg)
-
-        assert result.success is False
-        assert "403" in result.error
-        assert result.provider == "brevo"
-
-    @pytest.mark.asyncio
-    async def test_brevo_network_exception_returns_failure(self):
-        """Network exception during Brevo send returns SendResult with error."""
-        config = _brevo_config()
-        client = EmailClient(config)
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(side_effect=ConnectionError("DNS resolution failed"))
-        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http.__aexit__ = AsyncMock(return_value=False)
-
-        msg = EmailMessage(to_email="test@example.com", subject="Test")
-
-        with patch("app.integrations.brevo.httpx.AsyncClient", return_value=mock_http):
-            result = await client.send(msg)
-
-        assert result.success is False
-        assert "DNS resolution failed" in result.error
-
-
-# ===========================================================================
-# 2. Email Sending via SendGrid API (Req 33.1)
-# ===========================================================================
-
-
-class TestSendGridEmailSending:
-    """Integration tests for email sending via SendGrid v3 API.
-
-    Tests payload construction, API call, and response handling.
-    Requirements: 33.1
-    """
-
-    @pytest.mark.asyncio
-    async def test_sendgrid_send_constructs_correct_payload(self):
-        """SendGrid send constructs the correct v3 mail/send payload."""
-        config = _sendgrid_config()
-        client = EmailClient(config)
-
-        mock_http, mock_resp = _mock_httpx_client({}, status_code=202)
-        mock_resp.headers = {"X-Message-Id": "sg-msg-001"}
-
-        msg = EmailMessage(
-            to_email="customer@example.com",
-            to_name="John Smith",
-            subject="Payment Received",
-            html_body="<p>Thank you for your payment</p>",
-            text_body="Thank you for your payment",
-        )
-
-        with patch("app.integrations.brevo.httpx.AsyncClient", return_value=mock_http):
-            result = await client.send(msg)
-
-        assert result.success is True
-        assert result.message_id == "sg-msg-001"
-        assert result.provider == "sendgrid"
-
-        call_kwargs = mock_http.post.call_args
-        assert call_kwargs[0][0] == "https://api.sendgrid.com/v3/mail/send"
-        payload = call_kwargs[1]["json"]
-        assert payload["from"]["email"] == "noreply@workshoppro.nz"
-        assert payload["personalizations"][0]["to"][0]["email"] == "customer@example.com"
-        assert payload["subject"] == "Payment Received"
-        assert any(c["type"] == "text/html" for c in payload["content"])
-
-        headers = call_kwargs[1]["headers"]
-        assert "Bearer SG.test-key" in headers["Authorization"]
-
-    @pytest.mark.asyncio
-    async def test_sendgrid_api_error_returns_failure(self):
-        """SendGrid API error returns SendResult with success=False."""
-        config = _sendgrid_config()
-        client = EmailClient(config)
-
-        mock_http, mock_resp = _mock_httpx_client({}, status_code=401)
-        mock_resp.text = "Unauthorized"
-
-        msg = EmailMessage(to_email="test@example.com", subject="Test")
-
-        with patch("app.integrations.brevo.httpx.AsyncClient", return_value=mock_http):
-            result = await client.send(msg)
-
-        assert result.success is False
-        assert "401" in result.error
-        assert result.provider == "sendgrid"
-
-    @pytest.mark.asyncio
-    async def test_unknown_provider_returns_failure(self):
-        """Unknown provider returns SendResult with error."""
-        config = SmtpConfig(provider="mailchimp")
-        client = EmailClient(config)
-
-        msg = EmailMessage(to_email="test@example.com", subject="Test")
-        result = await client.send(msg)
-
-        assert result.success is False
-        assert "Unknown provider" in result.error
 
 
 # ===========================================================================
@@ -561,61 +363,14 @@ class TestBounceHandling:
 
 
 # ===========================================================================
-# 6. Org-Level Email Sending (send_org_email) (Req 33.3)
+# 6. (Removed in Phase 9 — task 10.2 / Requirement 23.2)
+#
+# The ``send_org_email`` shim was deleted. The unified send path
+# (``app.integrations.email_sender.send_email``) is exercised end-to-end
+# through ``send_email_task`` in ``tests/test_send_email_task_integration.py``;
+# the per-org-override behaviour the original tests asserted is covered
+# by ``tests/test_email_sender_overrides.py``.
 # ===========================================================================
-
-
-class TestOrgLevelEmailSending:
-    """Integration tests for send_org_email — global infra with org overrides.
-
-    Requirements: 33.3
-    """
-
-    @pytest.mark.asyncio
-    async def test_send_org_email_uses_global_config_with_org_overrides(self):
-        """send_org_email loads global SMTP config and applies org sender/reply-to."""
-        config = _brevo_config()
-        mock_client = AsyncMock()
-        mock_client.send = AsyncMock(
-            return_value=SendResult(success=True, message_id="org-msg-001", provider_key="brevo", transport="rest_api")
-        )
-
-        with patch(
-            "app.integrations.brevo.get_email_client",
-            new_callable=AsyncMock,
-            return_value=mock_client,
-        ):
-            result = await send_org_email(
-                _mock_db(),
-                to_email="customer@example.com",
-                to_name="Jane",
-                subject="Invoice",
-                html_body="<p>Hi</p>",
-                org_sender_name="My Workshop",
-                org_reply_to="info@myworkshop.nz",
-            )
-
-        assert result.success is True
-        sent_msg = mock_client.send.call_args[0][0]
-        assert sent_msg.from_name == "My Workshop"
-        assert sent_msg.reply_to == "info@myworkshop.nz"
-
-    @pytest.mark.asyncio
-    async def test_send_org_email_no_config_returns_failure(self):
-        """send_org_email returns failure when no SMTP config is stored."""
-        with patch(
-            "app.integrations.brevo.get_email_client",
-            new_callable=AsyncMock,
-            return_value=None,
-        ):
-            result = await send_org_email(
-                _mock_db(),
-                to_email="test@example.com",
-                subject="Test",
-            )
-
-        assert result.success is False
-        assert "not configured" in result.error
 
 
 # ===========================================================================
@@ -672,157 +427,19 @@ class TestOrgLevelSmsSending:
 
 
 # ===========================================================================
-# 8. Notification Retry Logic (Req 37.1, 37.2, 37.3)
+# 8. (Removed in Phase 9 — task 10.4 / Requirement 23.1)
+#
+# The legacy notification-retry tests asserted on ``MAX_RETRIES``,
+# ``RETRY_DELAYS`` and ``_get_retry_delay`` from
+# ``app.tasks.notifications``. Those constants were dead code post-
+# Phase 2: the unified email sender's provider failover replaces
+# application-level retries (a transient failure tries the next
+# provider rather than retrying the same provider after a delay).
+# Equivalent coverage of the new failover-based path lives in
+# ``tests/test_email_sender_failover.py`` and
+# ``tests/test_send_email_task_integration.py``. The remaining DB-
+# backed retry path (rows in ``notification_log`` with
+# ``status='queued'`` and ``retry_count > 0``) is owned by
+# ``app.tasks.scheduled`` and is exercised in
+# ``tests/test_scheduled_tasks.py``.
 # ===========================================================================
-
-
-class TestNotificationRetryLogic:
-    """Integration tests for notification retry with exponential backoff.
-
-    Req 37.1: Queue and dispatch all notifications asynchronously.
-    Req 37.2: Retry up to 3 times with exponential backoff.
-    Req 37.3: After 3 retries, mark as failed and log in Global Admin error log.
-    """
-
-    def test_max_retries_is_three(self):
-        """MAX_RETRIES constant is set to 3 (Req 37.2)."""
-        assert MAX_RETRIES == 3
-
-    def test_retry_delays_are_exponential_backoff(self):
-        """Retry delays follow exponential backoff: 60s, 300s, 900s (Req 37.2)."""
-        assert RETRY_DELAYS == (60, 300, 900)
-
-    def test_get_retry_delay_returns_correct_delays(self):
-        """_get_retry_delay returns the correct delay for each retry attempt."""
-        assert _get_retry_delay(0) == 60
-        assert _get_retry_delay(1) == 300
-        assert _get_retry_delay(2) == 900
-        # Beyond configured delays, returns last value
-        assert _get_retry_delay(5) == 900
-
-    def test_email_task_success_returns_result(self):
-        """Successful email send returns success result without retry."""
-        send_result = {"success": True, "message_id": "msg-001"}
-
-        with patch("app.tasks.notifications._run_async", return_value=send_result):
-            # Push a fake request context so self.request.retries works
-            send_email_task.push_request(retries=0)
-            try:
-                result = send_email_task(
-                    org_id=str(uuid.uuid4()),
-                    log_id=str(uuid.uuid4()),
-                    to_email="test@example.com",
-                    to_name="Test",
-                    subject="Test Subject",
-                    html_body="<p>Test</p>",
-                    template_type="invoice_issued",
-                )
-            finally:
-                send_email_task.pop_request()
-
-        assert result["success"] is True
-        assert result["message_id"] == "msg-001"
-
-    def test_email_task_failure_triggers_retry(self):
-        """Failed email send triggers retry with exponential backoff (Req 37.2)."""
-        send_result = {"success": False, "error": "Connection timeout"}
-
-        with patch("app.tasks.notifications._run_async", return_value=send_result):
-            send_email_task.push_request(retries=0)
-            try:
-                with pytest.raises(Exception, match="Connection timeout"):
-                    send_email_task(
-                        org_id=str(uuid.uuid4()),
-                        log_id=str(uuid.uuid4()),
-                        to_email="test@example.com",
-                        template_type="invoice_issued",
-                    )
-            finally:
-                send_email_task.pop_request()
-
-    def test_email_task_max_retries_marks_permanently_failed(self):
-        """After MAX_RETRIES, email is marked as permanently failed (Req 37.3)."""
-        send_result = {"success": False, "error": "Persistent failure"}
-        mark_failed_result = None
-
-        with patch("app.tasks.notifications._run_async", side_effect=[
-            send_result,         # _send_email_async fails
-            mark_failed_result,  # _mark_permanently_failed
-        ]):
-            send_email_task.push_request(retries=MAX_RETRIES)
-            try:
-                result = send_email_task(
-                    org_id=str(uuid.uuid4()),
-                    log_id=str(uuid.uuid4()),
-                    to_email="test@example.com",
-                    template_type="payment_overdue",
-                )
-            finally:
-                send_email_task.pop_request()
-
-        assert result["success"] is False
-        assert result["permanently_failed"] is True
-        assert "Persistent failure" in result["error"]
-
-    def test_sms_task_success_returns_result(self):
-        """Successful SMS send returns success result without retry."""
-        send_result = {"success": True, "message_sid": "SM_001"}
-
-        with patch("app.tasks.notifications._run_async", return_value=send_result):
-            send_sms_task.push_request(retries=0)
-            try:
-                result = send_sms_task(
-                    org_id=str(uuid.uuid4()),
-                    log_id=str(uuid.uuid4()),
-                    to_number="+6421999888",
-                    body="Your invoice is ready",
-                    template_type="invoice_issued",
-                )
-            finally:
-                send_sms_task.pop_request()
-
-        assert result["success"] is True
-        assert result["message_sid"] == "SM_001"
-
-    def test_sms_task_failure_triggers_retry(self):
-        """Failed SMS send triggers retry with exponential backoff (Req 37.2)."""
-        send_result = {"success": False, "error": "Twilio timeout"}
-
-        with patch("app.tasks.notifications._run_async", return_value=send_result):
-            send_sms_task.push_request(retries=0)
-            try:
-                with pytest.raises(Exception, match="Twilio timeout"):
-                    send_sms_task(
-                        org_id=str(uuid.uuid4()),
-                        log_id=str(uuid.uuid4()),
-                        to_number="+6421999888",
-                        body="Test",
-                        template_type="invoice_issued",
-                    )
-            finally:
-                send_sms_task.pop_request()
-
-    def test_sms_task_max_retries_marks_permanently_failed(self):
-        """After MAX_RETRIES, SMS is marked as permanently failed (Req 37.3)."""
-        send_result = {"success": False, "error": "Number unreachable"}
-        mark_failed_result = None
-
-        with patch("app.tasks.notifications._run_async", side_effect=[
-            send_result,
-            mark_failed_result,
-        ]):
-            send_sms_task.push_request(retries=MAX_RETRIES)
-            try:
-                result = send_sms_task(
-                    org_id=str(uuid.uuid4()),
-                    log_id=str(uuid.uuid4()),
-                    to_number="+6421999888",
-                    body="Test",
-                    template_type="wof_expiry",
-                )
-            finally:
-                send_sms_task.pop_request()
-
-        assert result["success"] is False
-        assert result["permanently_failed"] is True
-        assert "Number unreachable" in result["error"]

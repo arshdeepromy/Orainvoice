@@ -1,20 +1,24 @@
-"""Unit tests for legacy email integration shims.
+"""Unit tests for the still-live admin SMTP Pydantic schemas.
 
 Phase 7 of the email-provider-unification spec retired the legacy admin
 ``PUT/POST /api/v1/admin/integrations/smtp`` endpoints (replaced by HTTP
 410 Gone stubs) and removed ``save_smtp_config`` / ``send_test_email``
-from ``app/modules/admin/service.py``. Those service-layer tests have
-been deleted from this file. The remaining tests cover the deprecated
-``brevo.py`` shims (``SmtpConfig`` dataclass, ``send_org_email`` shim
-delegating to the unified sender) and the still-live
-``SmtpConfigRequest`` / ``SmtpConfigResponse`` Pydantic schemas. Phase 9
-deletes these shims and schemas wholesale, at which point this file can
-go too.
+from ``app/modules/admin/service.py``. Phase 9 (task 10.2) then removed
+the ``send_org_email`` / ``EmailClient`` / ``SmtpConfig`` shims that
+used to live in ``app/integrations/brevo.py`` — those tests have been
+deleted. The unified email path is exercised by
+``tests/test_email_sender_*.py``,
+``tests/test_send_email_task_integration.py`` and
+``tests/test_email_provider_*.py``.
+
+What's left here: validation tests for the still-live
+``SmtpConfigRequest`` / ``SmtpConfigResponse`` / ``SmtpTestEmailResponse``
+Pydantic schemas in ``app.modules.admin.schemas``. Those schemas are
+still referenced by the 410-Gone endpoint stubs' OpenAPI surface and by
+the email-providers admin page until they are removed in a follow-up.
 """
 
 from __future__ import annotations
-
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -24,11 +28,6 @@ from app.modules.auth.models import User  # noqa: F401
 import app.modules.inventory.models  # noqa: F401
 import app.modules.catalogue.models  # noqa: F401
 
-from app.integrations.brevo import (
-    SendResult,
-    SmtpConfig,
-    send_org_email,
-)
 from app.modules.admin.schemas import (
     SmtpConfigRequest,
     SmtpConfigResponse,
@@ -37,92 +36,9 @@ from app.modules.admin.schemas import (
 
 
 # ---------------------------------------------------------------------------
-# SmtpConfig tests (legacy dataclass — still re-exported by brevo.py shim)
-# ---------------------------------------------------------------------------
-
-
-class TestSmtpConfig:
-    def test_from_dict_defaults(self):
-        config = SmtpConfig.from_dict({})
-        assert config.provider == "smtp"
-        assert config.port == 587
-        assert config.api_key == ""
-        assert config.from_email == ""
-
-    def test_from_dict_full(self):
-        data = {
-            "provider": "brevo",
-            "api_key": "xkeysib-abc123",
-            "host": "",
-            "port": 587,
-            "domain": "workshoppro.nz",
-            "from_email": "noreply@workshoppro.nz",
-            "from_name": "WorkshopPro NZ",
-            "reply_to": "support@workshoppro.nz",
-        }
-        config = SmtpConfig.from_dict(data)
-        assert config.provider == "brevo"
-        assert config.api_key == "xkeysib-abc123"
-        assert config.domain == "workshoppro.nz"
-        assert config.from_name == "WorkshopPro NZ"
-
-    def test_to_dict_roundtrip(self):
-        original = {
-            "provider": "sendgrid",
-            "api_key": "SG.test",
-            "host": "",
-            "port": 587,
-            "username": "",
-            "password": "",
-            "domain": "example.com",
-            "from_email": "no-reply@example.com",
-            "from_name": "Test",
-            "reply_to": "reply@example.com",
-        }
-        config = SmtpConfig.from_dict(original)
-        result = config.to_dict()
-        assert result == original
-
-
-# ---------------------------------------------------------------------------
-# send_org_email shim test (delegates to the unified sender)
-# ---------------------------------------------------------------------------
-
-
-class TestSendOrgEmail:
-    @pytest.mark.asyncio
-    async def test_org_overrides_forwarded_to_unified_sender(self):
-        """Org sender name and reply-to are forwarded to ``send_email``.
-
-        Phase 2 turned ``send_org_email`` into a thin shim over
-        ``app.integrations.email_sender.send_email``. This test asserts
-        the override args still travel through cleanly so existing
-        callers keep their org-branded From / Reply-To headers.
-        """
-        with patch("app.integrations.brevo.send_email", new_callable=AsyncMock) as send_mock:
-            send_mock.return_value = SendResult(
-                success=True, provider_key="brevo", transport="rest_api"
-            )
-            result = await send_org_email(
-                AsyncMock(),
-                to_email="customer@example.com",
-                subject="Invoice",
-                html_body="<p>Invoice</p>",
-                org_sender_name="Acme Workshop",
-                org_reply_to="acme@workshop.nz",
-            )
-
-        assert result.success is True
-        send_mock.assert_awaited_once()
-        kwargs = send_mock.await_args.kwargs
-        assert kwargs["org_sender_name"] == "Acme Workshop"
-        assert kwargs["org_reply_to"] == "acme@workshop.nz"
-
-
-# ---------------------------------------------------------------------------
 # Schema validation tests (still live — schemas back the 410-Gone stubs'
 # OpenAPI surface and are referenced by the email-providers-page rewrite
-# until Phase 9 deletes them)
+# until a follow-up cleanup deletes them)
 # ---------------------------------------------------------------------------
 
 

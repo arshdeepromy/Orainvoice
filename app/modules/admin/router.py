@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select
 
 from app.core.database import get_db_session
+from app.core.request_utils import extract_request_base_url
 from app.modules.admin.schemas import (
     AdminApplyCouponRequest,
     AdminApplyCouponResponse,
@@ -147,6 +148,7 @@ async def create_organisation(
     Only Global_Admin users can access this endpoint.
     Requirement 8.1.
     """
+    _origin = extract_request_base_url(request)
     user_id = getattr(request.state, "user_id", None)
     ip_address = getattr(request.state, "client_ip", None)
 
@@ -167,6 +169,7 @@ async def create_organisation(
             status=payload.status,
             provisioned_by=uuid.UUID(user_id) if user_id else uuid.uuid4(),
             ip_address=ip_address,
+            base_url=_origin,
         )
     except ValueError as exc:
         return JSONResponse(
@@ -624,81 +627,6 @@ async def get_sms_usage(
     return AdminSmsUsageResponse(
         organisations=[OrgSmsUsageRow(**row) for row in usage_list],
     )
-
-
-# ---------------------------------------------------------------------------
-# SMTP / Email integration configuration — DEPRECATED (Phase 7)
-# ---------------------------------------------------------------------------
-#
-# These endpoints used to write the legacy `integration_configs[smtp]` row.
-# Email configuration now lives in the `email_providers` table and is
-# managed exclusively through `/api/v2/admin/email-providers`. The route
-# stubs are retained so old clients see a clear deprecation signal (HTTP
-# 410 Gone with a `Location` header) rather than a silent 404. Phase 9
-# will remove the route registrations entirely once a full release window
-# passes with zero `legacy_smtp_endpoint_hit` log lines.
-
-
-@router.put(
-    "/integrations/smtp",
-    responses={410: {"description": "Endpoint deprecated — use /api/v2/admin/email-providers"}},
-    summary="DEPRECATED: configure platform-wide email relay (use /api/v2/admin/email-providers)",
-    dependencies=[require_role("global_admin")],
-)
-async def configure_smtp(
-    request: Request,
-    payload: dict | None = None,
-):
-    """Deprecated SMTP configuration endpoint — returns HTTP 410 Gone.
-
-    Phase 9 of the email-provider-unification spec will drop this route
-    entirely. Until then it logs every caller with the structured tag
-    ``legacy_smtp_endpoint_hit`` so we can grep access logs and confirm
-    nothing still depends on it.
-
-    Configure email via ``/api/v2/admin/email-providers`` instead.
-    """
-    del payload  # accepted but discarded; old clients still send a body
-    logger.warning(
-        "legacy_smtp_endpoint_hit path=%s remote=%s",
-        request.url.path,
-        request.client.host if request.client else "?",
-    )
-    return JSONResponse(
-        status_code=410,
-        content={
-            "detail": "This endpoint is deprecated. Configure email via /api/v2/admin/email-providers.",
-        },
-        headers={"Location": "/api/v2/admin/email-providers"},
-    )
-
-
-@router.post(
-    "/integrations/smtp/test",
-    responses={410: {"description": "Endpoint deprecated — use /api/v2/admin/email-providers"}},
-    summary="DEPRECATED: send test email (use /api/v2/admin/email-providers)",
-    dependencies=[require_role("global_admin")],
-)
-async def test_smtp_email(request: Request):
-    """Deprecated test-email endpoint — returns HTTP 410 Gone.
-
-    The unified Email Providers admin page exposes a per-provider Test
-    button that calls ``POST /api/v2/admin/email-providers/{id}/test``;
-    use that instead.
-    """
-    logger.warning(
-        "legacy_smtp_endpoint_hit path=%s remote=%s",
-        request.url.path,
-        request.client.host if request.client else "?",
-    )
-    return JSONResponse(
-        status_code=410,
-        content={
-            "detail": "This endpoint is deprecated. Configure email via /api/v2/admin/email-providers.",
-        },
-        headers={"Location": "/api/v2/admin/email-providers"},
-    )
-
 
 
 # ---------------------------------------------------------------------------

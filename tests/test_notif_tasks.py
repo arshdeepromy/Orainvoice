@@ -3,10 +3,8 @@
 Tests the async functions in ``app/tasks/notifications.py``:
 - send_email_task
 - send_sms_task
-- _get_retry_delay
-- Constants: MAX_RETRIES, RETRY_DELAYS
 
-Requirements: 37.1, 37.2, 37.3
+Requirements: 37.1
 """
 from __future__ import annotations
 
@@ -16,35 +14,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.tasks.notifications import (
-    MAX_RETRIES,
-    RETRY_DELAYS,
-    _get_retry_delay,
     send_email_task,
     send_sms_task,
 )
 
 ORG_ID = str(uuid.uuid4())
 LOG_ID = str(uuid.uuid4())
-
-
-class TestGetRetryDelay:
-    def test_first_retry_60s(self):
-        assert _get_retry_delay(0) == 60
-
-    def test_second_retry_300s(self):
-        assert _get_retry_delay(1) == 300
-
-    def test_third_retry_900s(self):
-        assert _get_retry_delay(2) == 900
-
-    def test_beyond_max_uses_last(self):
-        assert _get_retry_delay(5) == 900
-
-    def test_delays_match_spec(self):
-        assert RETRY_DELAYS == (60, 300, 900)
-
-    def test_max_retries_is_three(self):
-        assert MAX_RETRIES == 3
 
 
 class TestSendEmailTask:
@@ -148,16 +123,10 @@ class TestSendSmsTask:
 
 
 class TestTaskConfiguration:
-    """Verify task functions are callable and constants are correct."""
+    """Verify task functions are callable."""
 
     def test_email_task_callable(self):
         assert callable(send_email_task)
 
     def test_sms_task_callable(self):
         assert callable(send_sms_task)
-
-    def test_max_retries_value(self):
-        assert MAX_RETRIES == 3
-
-    def test_retry_delays_tuple(self):
-        assert RETRY_DELAYS == (60, 300, 900)
