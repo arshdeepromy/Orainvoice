@@ -10,7 +10,12 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
-from app.core.encryption import envelope_encrypt, envelope_decrypt_str
+from app.core.encryption import envelope_encrypt
+from app.integrations.email_sender import (
+    EmailMessage,
+    FailureKind,
+    dispatch_one_provider,
+)
 from app.modules.admin.models import EmailProvider
 
 logger = logging.getLogger(__name__)
@@ -182,187 +187,48 @@ async def test_email_provider(
     admin_user_id: uuid.UUID | None = None,
     ip_address: str | None = None,
 ) -> dict:
-    """Send a test email using the specified provider."""
-    import smtplib
-    from email.mime.text import MIMEText
-    from email.mime.multipart import MIMEMultipart
-    
+    """Send a test email using the specified provider.
+
+    Phase 3 (task 3.15) refactor: delegates to the unified
+    :func:`app.integrations.email_sender.dispatch_one_provider` helper so
+    SMTP and REST transports live in exactly one module
+    (``app/integrations/email_sender.py``). The wire contract of
+    ``POST /api/v2/admin/email-providers/{key}/test`` is unchanged: the
+    ``{success, message, error}`` shape and the
+    ``admin.email_provider_test_sent`` audit-log call are preserved.
+    """
     result = await db.execute(
         select(EmailProvider).where(EmailProvider.provider_key == provider_key)
     )
     provider = result.scalar_one_or_none()
     if provider is None:
         return {"success": False, "message": "Provider not found", "error": "Provider not found"}
-    
+
     if not provider.credentials_set or not provider.credentials_encrypted:
-        return {"success": False, "message": "Credentials not configured", "error": "Please configure credentials first"}
-    
-    # Decrypt credentials
-    try:
-        creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-        credentials = json.loads(creds_json)
-    except Exception as e:
-        logger.error(f"Failed to decrypt credentials for {provider_key}: {e}")
-        return {"success": False, "message": "Failed to decrypt credentials", "error": str(e)}
-    
-    # Get SMTP settings
-    smtp_host = provider.smtp_host
-    smtp_port = provider.smtp_port or 587
-    smtp_encryption = getattr(provider, 'smtp_encryption', 'tls') or 'tls'
-    username = credentials.get('username') or credentials.get('api_key', '')
-    password = credentials.get('password') or credentials.get('api_key', '')
-    
-    config = provider.config or {}
-    from_email = config.get('from_email', 'test@example.com')
-    from_name = config.get('from_name', 'Test')
-    
+        return {
+            "success": False,
+            "message": "Credentials not configured",
+            "error": "Please configure credentials first",
+        }
+
     if not to_email:
         return {"success": False, "message": "No recipient email", "error": "Recipient email required"}
-
-    # Brevo & SendGrid: prefer REST API when only an api_key is set, because the
-    # form only collects one credential field. If the user also supplied an
-    # smtp_login, fall through to the SMTP path (with smtp_login as username and
-    # api_key as password) so SMTP keys keep working.
-    api_key = credentials.get('api_key', '')
-    smtp_login = credentials.get('smtp_login', '')
-    if provider_key in ('brevo', 'sendgrid') and api_key and not smtp_login:
-        return await _send_test_via_rest_api(
-            db=db,
-            provider=provider,
-            provider_key=provider_key,
-            api_key=api_key,
-            to_email=to_email,
-            from_email=from_email,
-            from_name=from_name,
-            admin_user_id=admin_user_id,
-            ip_address=ip_address,
-        )
-    if smtp_login:
-        username = smtp_login
-        password = api_key or password
-
-    if not smtp_host:
-        # Use default hosts for known providers
-        default_hosts = {
-            'gmail': 'smtp.gmail.com',
-            'outlook': 'smtp.office365.com',
-            'brevo': 'smtp-relay.brevo.com',
-            'sendgrid': 'smtp.sendgrid.net',
-            'mailgun': 'smtp.mailgun.org',
-            'ses': 'email-smtp.us-east-1.amazonaws.com',
-        }
-        smtp_host = default_hosts.get(provider_key)
-        if not smtp_host:
-            return {"success": False, "message": "SMTP host not configured", "error": "Please configure SMTP host"}
-    
-    try:
-        # Create message
-        msg = MIMEMultipart()
-        msg['From'] = f"{from_name} <{from_email}>"
-        msg['To'] = to_email
-        msg['Subject'] = f"Test Email from {provider.display_name}"
-        
-        body = f"""
-This is a test email sent from your email provider configuration.
-
-Provider: {provider.display_name}
-SMTP Host: {smtp_host}:{smtp_port}
-Encryption: {smtp_encryption.upper()}
-
-If you received this email, your email provider is configured correctly!
-        """
-        msg.attach(MIMEText(body, 'plain'))
-        
-        # Connect and send
-        if smtp_encryption == 'ssl':
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=10)
-        else:
-            server = smtplib.SMTP(smtp_host, smtp_port, timeout=10)
-            if smtp_encryption == 'tls':
-                server.starttls()
-        
-        if username and password:
-            server.login(username, password)
-        
-        server.sendmail(from_email, to_email, msg.as_string())
-        server.quit()
-        
-        await write_audit_log(
-            session=db,
-            org_id=None,
-            user_id=admin_user_id,
-            action="admin.email_provider_test_sent",
-            entity_type="email_provider",
-            entity_id=provider.id,
-            after_value={"provider_key": provider_key, "to_email": to_email, "success": True},
-            ip_address=ip_address,
-        )
-        
-        return {"success": True, "message": f"Test email sent to {to_email}"}
-        
-    except smtplib.SMTPAuthenticationError as e:
-        logger.error(f"SMTP auth error for {provider_key}: {e}")
-        return {"success": False, "message": "Authentication failed", "error": "Invalid username or password"}
-    except smtplib.SMTPConnectError as e:
-        logger.error(f"SMTP connect error for {provider_key}: {e}")
-        return {"success": False, "message": "Connection failed", "error": f"Could not connect to {smtp_host}:{smtp_port}"}
-    except Exception as e:
-        logger.error(f"SMTP error for {provider_key}: {e}")
-        return {"success": False, "message": "Failed to send test email", "error": str(e)}
-
-
-async def _send_test_via_rest_api(
-    *,
-    db: AsyncSession,
-    provider: EmailProvider,
-    provider_key: str,
-    api_key: str,
-    to_email: str,
-    from_email: str,
-    from_name: str,
-    admin_user_id: uuid.UUID | None,
-    ip_address: str | None,
-) -> dict:
-    """Send a test email via Brevo or SendGrid REST API."""
-    import httpx
 
     subject = f"Test Email from {provider.display_name}"
     text_body = (
         "This is a test email sent from your email provider configuration.\n\n"
-        f"Provider: {provider.display_name}\n"
-        "Transport: REST API\n\n"
+        f"Provider: {provider.display_name}\n\n"
         "If you received this email, your email provider is configured correctly!"
     )
+    message = EmailMessage(
+        to_email=to_email,
+        subject=subject,
+        text_body=text_body,
+    )
 
-    if provider_key == "brevo":
-        url = "https://api.brevo.com/v3/smtp/email"
-        payload = {
-            "sender": {"name": from_name, "email": from_email},
-            "to": [{"email": to_email}],
-            "subject": subject,
-            "textContent": text_body,
-        }
-        headers = {"api-key": api_key, "Content-Type": "application/json"}
-        success_codes = (200, 201)
-    else:  # sendgrid
-        url = "https://api.sendgrid.com/v3/mail/send"
-        payload = {
-            "personalizations": [{"to": [{"email": to_email}]}],
-            "from": {"email": from_email, "name": from_name},
-            "subject": subject,
-            "content": [{"type": "text/plain", "value": text_body}],
-        }
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        success_codes = (200, 202)
+    attempt = await dispatch_one_provider(db, provider, message)
 
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-    except Exception as e:
-        logger.error(f"REST API error for {provider_key}: {e}")
-        return {"success": False, "message": "Failed to send test email", "error": str(e)}
-
-    if resp.status_code in success_codes:
+    if attempt.success:
         await write_audit_log(
             session=db,
             org_id=None,
@@ -370,24 +236,52 @@ async def _send_test_via_rest_api(
             action="admin.email_provider_test_sent",
             entity_type="email_provider",
             entity_id=provider.id,
-            after_value={"provider_key": provider_key, "to_email": to_email, "success": True},
+            after_value={
+                "provider_key": provider_key,
+                "to_email": to_email,
+                "success": True,
+            },
             ip_address=ip_address,
         )
         return {"success": True, "message": f"Test email sent to {to_email}"}
 
-    # 401/403 → auth failure; surface the API's message so the user knows why.
-    body_excerpt = (resp.text or "")[:300]
-    logger.error(f"{provider_key} API {resp.status_code}: {body_excerpt}")
-    if resp.status_code in (401, 403):
+    # Failure path. Map the FailureKind back to the user-facing
+    # message/error pair the legacy implementation produced so the admin
+    # UI's existing copy keeps working.
+    error_text = attempt.error or "Failed to send test email"
+    if attempt.failure_kind == FailureKind.SOFT_AUTH:
+        if "credentials not configured" in error_text or "decrypt credentials" in error_text:
+            # Decryption failures or missing credentials surface as their
+            # own message (mirrors the legacy "Failed to decrypt
+            # credentials" / "Credentials not configured" branches).
+            if "decrypt credentials" in error_text:
+                return {
+                    "success": False,
+                    "message": "Failed to decrypt credentials",
+                    "error": error_text,
+                }
+            return {
+                "success": False,
+                "message": "Credentials not configured",
+                "error": error_text,
+            }
         return {
             "success": False,
             "message": "Authentication failed",
-            "error": f"API key rejected ({resp.status_code}): {body_excerpt}",
+            "error": error_text,
+        }
+    if attempt.failure_kind == FailureKind.SOFT_PROVIDER and attempt.transport == "":
+        # Pre-dispatch config error from dispatch_one_provider (e.g.
+        # "missing from_email"). Surface as a config message.
+        return {
+            "success": False,
+            "message": "Provider configuration error",
+            "error": error_text,
         }
     return {
         "success": False,
         "message": "Failed to send test email",
-        "error": f"{provider.display_name} API error {resp.status_code}: {body_excerpt}",
+        "error": error_text,
     }
 
 
