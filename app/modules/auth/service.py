@@ -1889,23 +1889,44 @@ async def _send_password_reset_email(
 ) -> None:
     """Send a password reset email with the reset link.
 
-    Uses the active email providers configured by the global admin and
-    falls over through them in priority order (mirroring
-    ``_send_invitation_email``). Wrapped in a top-level try/except so a
-    delivery failure never leaks back into the password-reset endpoint —
-    the API surface always returns the generic "if your email is
-    registered…" response either way.
+    Migrated from a hand-rolled ``smtplib`` provider loop in Phase 4
+    task 4.1 (C3) of the email-provider-unification spec. Dispatch goes
+    through :func:`app.integrations.email_sender.send_email`, which owns
+    failover, error classification, and per-attempt + total time
+    budgets.
 
-    NOTE (Phase 0.5 hotfix): this uses the same raw ``smtplib`` provider
-    loop pattern as the rest of ``app.modules.auth.service``. Phase 4.1
-    of the email-provider-unification spec replaces this with a single
-    ``send_email`` call once the unified sender lands.
+    Per the per-site variation table in
+    ``.kiro/specs/email-provider-unification/design.md`` row C3:
+
+    - **No org context.** ``EmailMessage.org_id`` is ``None`` — the
+      password-reset path is account recovery and runs without an org
+      session. The bounce-blocklist pre-check still runs against the
+      platform-wide block list (org_id IS NULL rows).
+    - **No** ``log_email_sent``. The security-critical password-reset
+      email path stays out of org notification logs by design — see
+      the in-app-notifications design §4.2 auth-flow carve-out.
+    - **Caller may pass ``db=None``.** Both production call sites pass
+      a session, but the legacy contract allowed ``None`` so a resend
+      from a torn-down session can still go out. We preserve that:
+      when ``db`` is ``None`` we open a dedicated session via
+      ``async_session_factory`` and pass it to ``send_email``. When
+      the caller provides a session we use it directly so the
+      blocklist pre-check and provider-load run inside the caller's
+      transaction.
+    - On failure we log a warning but DO NOT raise. The
+      ``request_password_reset`` endpoint always returns the same
+      generic "if your email is registered…" response either way, so
+      crashing here would only leak signal to attackers (timing /
+      error-shape) without helping legitimate users.
+    - Wrapped in a top-level ``try`` / ``except`` so any unexpected
+      delivery failure is swallowed at the outermost layer too — the
+      API surface must never crash on a best-effort send.
+
+    Requirements: 8.1, 22.2, 22.3
     """
     try:
-        import smtplib
-        import json as _json
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
+        from app.core.database import async_session_factory
+        from app.integrations.email_sender import EmailMessage, send_email
 
         reset_url = (
             f"{getattr(settings, 'frontend_base_url', '') or 'http://localhost'}"
@@ -1992,75 +2013,56 @@ async def _send_password_reset_email(
                 f"your password won't change.\n"
             )
 
-        # Find active email providers (open our own session if the caller
-        # didn't pass one — mirrors _send_permanent_lockout_email).
-        if db is None:
-            from app.core.database import async_session_factory
-            async with async_session_factory() as session:
-                providers = await _get_email_providers(session)
-        else:
-            providers = await _get_email_providers(db)
+        message = EmailMessage(
+            to_email=email,
+            to_name="",
+            subject=subject,
+            html_body=html_body,
+            text_body=text_body,
+            attachments=[],
+            # Per design row C3: account-recovery path has no org
+            # context. The bounce-blocklist pre-check falls through to
+            # platform-wide rows (org_id IS NULL).
+            org_id=None,
+        )
 
-        if not providers:
+        # Preserve the legacy db-may-be-None contract: when the caller
+        # has already torn down its session we open our own. When the
+        # caller hands us a live session we use it directly so the
+        # bounce-blocklist pre-check and provider-load run inside the
+        # caller's transaction.
+        if db is None:
+            async with async_session_factory() as session:
+                result = await send_email(session, message)
+        else:
+            result = await send_email(db, message)
+
+        if result.success:
+            logger.info(
+                "Password reset email sent to %s via %s",
+                email,
+                result.provider_key,
+            )
+            return
+
+        # No-providers branch: ``send_email`` returns ``attempts=[]``
+        # when the active provider set is empty. Log a warning that
+        # references the recipient (no token leak) so ops can spot
+        # the misconfiguration without changing the API response.
+        if not result.attempts:
             logger.warning(
                 "No active email provider — cannot send password reset email to %s (token: %s...)",
                 email, token[:8],
             )
             return
 
-        from app.core.encryption import envelope_decrypt_str
-
-        last_error = None
-        for provider in providers:
-            try:
-                creds_json = envelope_decrypt_str(provider.credentials_encrypted)
-                credentials = _json.loads(creds_json)
-
-                smtp_host = provider.smtp_host
-                smtp_port = provider.smtp_port or 587
-                smtp_encryption = getattr(provider, "smtp_encryption", "tls") or "tls"
-                username = credentials.get("username") or credentials.get("api_key", "")
-                password = credentials.get("password") or credentials.get("api_key", "")
-
-                config = provider.config or {}
-                from_email = config.get("from_email") or username
-                from_name = config.get("from_name") or "OraInvoice"
-
-                msg = MIMEMultipart("alternative")
-                msg["From"] = f"{from_name} <{from_email}>"
-                msg["To"] = email
-                msg["Subject"] = subject
-                msg.attach(MIMEText(text_body, "plain"))
-                msg.attach(MIMEText(html_body, "html"))
-
-                if smtp_encryption == "ssl":
-                    server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
-                else:
-                    server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-                    if smtp_encryption == "tls":
-                        server.starttls()
-
-                if username and password:
-                    server.login(username, password)
-
-                server.sendmail(from_email, email, msg.as_string())
-                server.quit()
-                logger.info(
-                    "Password reset email sent to %s via %s",
-                    email, provider.provider_key,
-                )
-                return
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    "Email provider %s failed for password reset to %s: %s",
-                    provider.provider_key, email, e,
-                )
-                continue
-
         # NOTE: In-app notification skipped for auth email failures in v1.
         # Auth flows run on sessions without org_id context.
         # Known limitation — see in-app-notifications design §4.2.
+        # The password-reset path is also intentionally kept out of the
+        # org notification log (no log_email_sent call) per the C3 row
+        # in the per-site variation table.
+        last_error = result.error or "send failed"
         logger.warning(
             "All email providers failed for password reset to %s: %s (token: %s...)",
             email, last_error, token[:8],
