@@ -1646,7 +1646,7 @@ def test_receipt_email_contains_payment_summary_and_verification_link(
             pass
 
     with patch(
-        "app.core.encryption.envelope_decrypt_str",
+        "app.integrations.email_sender.envelope_decrypt_str",
         return_value='{"username": "user", "password": "pass"}',
     ), patch(
         "smtplib.SMTP",

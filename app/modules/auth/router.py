@@ -2725,6 +2725,7 @@ async def confirm_signup_payment(
             processing_fee_cents=processing_fee_cents,
             verification_token=verification_token,
             base_url=base_url,
+            org_id=org.id,
         )
     except Exception as exc:
         logger.warning("Failed to send receipt email to %s: %s", admin_email, exc)
