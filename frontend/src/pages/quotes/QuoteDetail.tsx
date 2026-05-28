@@ -115,6 +115,8 @@ interface QuoteData {
   vehicle_model: string | null
   vehicle_year: number | null
   vehicle_odometer?: number | null
+  vehicle_wof_expiry?: string | null
+  vehicle_cof_expiry?: string | null
   project_id: string | null
   status: string
   valid_until: string | null
@@ -167,6 +169,7 @@ interface QuoteDetailProps {
 
 const STATUS_STYLES: Record<string, { bg: string; text: string }> = {
   draft: { bg: 'bg-gray-100', text: 'text-gray-700' },
+  issued: { bg: 'bg-indigo-50', text: 'text-indigo-700' },
   sent: { bg: 'bg-blue-50', text: 'text-blue-700' },
   accepted: { bg: 'bg-emerald-50', text: 'text-emerald-700' },
   declined: { bg: 'bg-red-50', text: 'text-red-700' },
@@ -302,7 +305,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
     setError(null)
     setSuccessMsg(null)
     try {
-      await apiClient.put(`/quotes/${quoteId}`, { status: 'sent' })
+      await apiClient.put(`/quotes/${quoteId}`, { status: 'issued' })
       setSuccessMsg('Quote issued')
       await fetchQuote()
     } catch (err: unknown) {
@@ -384,9 +387,9 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
 
   const statusStyle = STATUS_STYLES[quote.status] || STATUS_STYLES.draft
   const lineItems = quote.line_items ?? []
-  const canSend = quote.status === 'draft'
-  const canConvert = (quote.status === 'sent' || quote.status === 'accepted') && !quote.converted_invoice_id
-  const canRequote = quote.status === 'sent'
+  const canSend = quote.status === 'draft' || quote.status === 'issued' || quote.status === 'sent'
+  const canConvert = (quote.status === 'issued' || quote.status === 'sent' || quote.status === 'accepted') && !quote.converted_invoice_id
+  const canRequote = quote.status === 'sent' || quote.status === 'issued'
   const canDelete = ['draft', 'declined', 'expired'].includes(quote.status)
   const isDraft = quote.status === 'draft'
 
@@ -416,9 +419,11 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
           {canSend && (
             <>
               <Button variant="secondary" onClick={() => navigate(`/quotes/${quoteId}/edit`)}>Edit</Button>
-              <Button variant="secondary" onClick={handleIssueQuote} loading={actionLoading} disabled={actionLoading}>
-                Issue Quote
-              </Button>
+              {isDraft && (
+                <Button variant="secondary" onClick={handleIssueQuote} loading={actionLoading} disabled={actionLoading}>
+                  Issue Quote
+                </Button>
+              )}
               <Button variant="primary" onClick={handleSend} loading={actionLoading} disabled={actionLoading}>
                 Email
               </Button>
@@ -609,6 +614,16 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
                       <span className="text-gray-900">{Number(quote.vehicle_odometer ?? 0).toLocaleString()} km</span>
                     </div>
                   )}
+                  {(quote?.vehicle_cof_expiry || quote?.vehicle_wof_expiry) && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-gray-400 uppercase tracking-wider">
+                        {quote?.vehicle_cof_expiry ? 'COF Expiry' : 'WOF Expiry'}
+                      </span>
+                      <span className="text-gray-900">
+                        {new Date(quote?.vehicle_cof_expiry ?? quote?.vehicle_wof_expiry ?? '').toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -638,10 +653,14 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
                         <span className="text-gray-900">{Number(av.odometer ?? 0).toLocaleString()} km</span>
                       </div>
                     )}
-                    {av.wof_expiry && (
+                    {(av.cof_expiry || av.wof_expiry) && (
                       <div className="flex items-center gap-1.5">
-                        <span className="text-xs text-gray-400 uppercase tracking-wider">WOF Expiry</span>
-                        <span className="text-gray-900">{formatDate(av.wof_expiry)}</span>
+                        <span className="text-xs text-gray-400 uppercase tracking-wider">
+                          {av.cof_expiry ? 'COF Expiry' : 'WOF Expiry'}
+                        </span>
+                        <span className="text-gray-900">
+                          {new Date(av.cof_expiry ?? av.wof_expiry ?? '').toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        </span>
                       </div>
                     )}
                   </div>

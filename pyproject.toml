@@ -31,6 +31,7 @@ dependencies = [
     "python-dateutil>=2.8.0",
     "reportlab>=4.4.10",
     "requests>=2.33.1",
+    "svix>=1.24.0",
 ]
 
 [project.optional-dependencies]

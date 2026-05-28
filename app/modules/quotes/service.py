@@ -27,7 +27,8 @@ GST_DIVISOR = Decimal("1.15")
 
 # Valid status transitions
 VALID_TRANSITIONS: dict[str, set[str]] = {
-    "draft": {"sent", "accepted", "declined"},
+    "draft": {"issued", "sent", "accepted", "declined"},
+    "issued": {"draft", "sent", "accepted", "declined", "expired"},
     "sent": {"draft", "accepted", "declined", "expired"},
     "accepted": set(),
     "declined": set(),
@@ -152,6 +153,9 @@ def _quote_to_dict(quote: Quote, line_items: list[QuoteLineItem]) -> dict:
         "vehicle_make": quote.vehicle_make,
         "vehicle_model": quote.vehicle_model,
         "vehicle_year": quote.vehicle_year,
+        "vehicle_odometer": quote.vehicle_odometer,
+        "vehicle_wof_expiry": quote.vehicle_wof_expiry,
+        "vehicle_cof_expiry": quote.vehicle_cof_expiry,
         "project_id": quote.project_id,
         "status": quote.status,
         "valid_until": quote.valid_until,
@@ -211,6 +215,9 @@ async def create_quote(
     vehicle_make: str | None = None,
     vehicle_model: str | None = None,
     vehicle_year: int | None = None,
+    vehicle_odometer: int | None = None,
+    vehicle_wof_expiry: date | None = None,
+    vehicle_cof_expiry: date | None = None,
     validity_days: int = 30,
     line_items_data: list[dict] | None = None,
     notes: str | None = None,
@@ -294,6 +301,9 @@ async def create_quote(
         vehicle_make=vehicle_make,
         vehicle_model=vehicle_model,
         vehicle_year=vehicle_year,
+        vehicle_odometer=vehicle_odometer,
+        vehicle_wof_expiry=vehicle_wof_expiry,
+        vehicle_cof_expiry=vehicle_cof_expiry,
         project_id=project_id,
         branch_id=branch_id,
         status="draft",
@@ -616,8 +626,9 @@ async def update_quote(
     # Only draft quotes allow structural edits
     if quote.status == "draft":
         for field in ("customer_id", "vehicle_rego", "vehicle_make",
-                       "vehicle_model", "vehicle_year", "notes",
-                       "terms", "subject", "project_id",
+                       "vehicle_model", "vehicle_year", "vehicle_odometer",
+                       "vehicle_wof_expiry", "vehicle_cof_expiry",
+                       "notes", "terms", "subject", "project_id",
                        "discount_type", "discount_value", "shipping_charges", "adjustment",
                        "order_number", "salesperson_id"):
             if field in updates and updates[field] is not None:
@@ -810,7 +821,7 @@ async def expire_quotes(db: AsyncSession) -> int:
     today = date.today()
     result = await db.execute(
         select(Quote).where(
-            Quote.status == "sent",
+            Quote.status.in_(["issued", "sent"]),
             Quote.valid_until < today,
         )
     )
@@ -906,6 +917,19 @@ async def generate_quote_pdf(
     # Render HTML
     template_dir = pathlib.Path(__file__).resolve().parent.parent.parent / "templates" / "pdf"
     env = Environment(loader=FileSystemLoader(str(template_dir)), autoescape=True)
+
+    def _parse_iso_date(value: str | None) -> "date | None":
+        """Parse ISO date string (YYYY-MM-DD) to a date object for Jinja2 templates."""
+        if not value:
+            return None
+        try:
+            from datetime import date as date_cls
+            return date_cls.fromisoformat(value)
+        except (ValueError, TypeError):
+            return None
+
+    env.filters["parse_date"] = _parse_iso_date
+
     template = env.get_template("quote.html")
 
     html_content = template.render(
@@ -946,10 +970,10 @@ async def send_quote(
     quote_dict = await get_quote(db, org_id=org_id, quote_id=quote_id)
 
     # Only draft or sent quotes can be (re-)sent
-    if quote_dict["status"] not in ("draft", "sent"):
+    if quote_dict["status"] not in ("draft", "issued", "sent"):
         raise ValueError(
             f"Cannot send a quote with status '{quote_dict['status']}'. "
-            "Only draft or sent quotes can be sent."
+            "Only draft, issued, or sent quotes can be sent."
         )
 
     # Resolve recipient email
@@ -970,8 +994,8 @@ async def send_quote(
     # Generate PDF
     pdf_bytes = await generate_quote_pdf(db, org_id=org_id, quote_id=quote_id)
 
-    # Transition status to "sent" if currently draft, and generate acceptance token
-    if quote_dict["status"] == "draft":
+    # Transition status to "sent" if currently draft or issued, and generate acceptance token
+    if quote_dict["status"] in ("draft", "issued"):
         result = await db.execute(
             select(Quote).where(
                 Quote.id == quote_id,
@@ -1111,13 +1135,7 @@ async def send_quote(
         subject=_email_subject,
         html_body=_html_body,
         text_body=_email_body,
-        attachments=[
-            EmailAttachment(
-                filename=f"{quote_dict['quote_number']}.pdf",
-                content=pdf_bytes,
-                mime_type="application/pdf",
-            )
-        ],
+        attachments=[],  # No PDF attachment — avoids Gmail content filter
         org_id=org_id,
     )
     result = await send_email(db, _message, org_reply_to=_org_reply_to)
@@ -1227,10 +1245,10 @@ async def convert_quote_to_invoice(
     quote_dict = await get_quote(db, org_id=org_id, quote_id=quote_id)
 
     # Only sent or accepted quotes can be converted
-    if quote_dict["status"] not in ("sent", "accepted"):
+    if quote_dict["status"] not in ("issued", "sent", "accepted"):
         raise ValueError(
             f"Cannot convert a quote with status '{quote_dict['status']}'. "
-            "Only sent or accepted quotes can be converted to invoices."
+            "Only issued, sent, or accepted quotes can be converted to invoices."
         )
 
     # Prevent duplicate conversion
@@ -1297,7 +1315,7 @@ async def convert_quote_to_invoice(
         ip_address=ip_address,
     )
 
-    # Update quote status to accepted if it was sent, and store converted invoice ID
+    # Update quote status to accepted if it was issued or sent, and store converted invoice ID
     result = await db.execute(
         select(Quote).where(
             Quote.id == quote_id,
@@ -1306,7 +1324,7 @@ async def convert_quote_to_invoice(
     )
     quote_obj = result.scalar_one_or_none()
     if quote_obj is not None:
-        if quote_obj.status == "sent":
+        if quote_obj.status in ("issued", "sent"):
             quote_obj.status = "accepted"
         quote_obj.converted_invoice_id = invoice_dict["id"]
         await db.flush()
@@ -1403,7 +1421,7 @@ async def accept_quote_by_token(
     if quote.status == "accepted":
         raise ValueError("This quote has already been accepted")
 
-    if quote.status not in ("sent",):
+    if quote.status not in ("issued", "sent"):
         raise ValueError(f"Quote cannot be accepted in '{quote.status}' status")
 
     # Check expiry

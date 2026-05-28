@@ -634,6 +634,7 @@ async def _send_receipt_email(
 
     # Find org name for default subject/body fallbacks (provider lookup
     # now happens inside send_email).
+    _link_for_body = ""
     if _rendered_template:
         subject = _rendered_template.subject
         body = _rendered_template.body
@@ -645,13 +646,10 @@ async def _send_receipt_email(
         body = (
             f"Hi,\n\n"
             f"Here is the secure online payment link for invoice {inv_number}.\n\n"
-            f"Amount due: {currency} {pay_amount}\n"
-        )
-        if _link_for_body:
-            body += f"\nPay online: {_link_for_body}\n"
-        body += (
-            f"\nIf you have any questions, please don't hesitate to contact us.\n\n"
-            f"Thank you for your business.\n\n"
+            f"Amount due: {currency} {pay_amount}\n\n"
+            f"You can pay securely online using the button below.\n\n"
+            f"If you have any questions, please don't hesitate to contact us.\n\n"
+            f"Kind regards,\n"
             f"{org_name}\n"
         )
     else:
@@ -682,17 +680,10 @@ async def _send_receipt_email(
                 f"{org_name}\n"
             )
 
-    # Build attachments list — invoice PDF only when generation
-    # succeeded (best-effort: a missing PDF must not block the email).
+    # PDF is NOT attached to avoid Gmail's content filter silently
+    # dropping emails with financial PDF attachments. Customers can
+    # view/download the invoice via the payment page link instead.
     _email_attachments: list[EmailAttachment] = []
-    if pdf_bytes:
-        _email_attachments.append(
-            EmailAttachment(
-                filename=f"{inv_number}.pdf",
-                content=pdf_bytes,
-                mime_type="application/pdf",
-            )
-        )
 
     # The plain-text body is converted to HTML via the unified
     # transactional-HTML renderer so receipts carry a well-formed
@@ -700,7 +691,14 @@ async def _send_receipt_email(
     # any embedded URLs) — matches the deliverability fix on A1
     # (email_invoice).
     from app.integrations.email_sender import render_transactional_html
-    _html_body = render_transactional_html(body, subject=subject)
+    _cta_url_for_receipt = (
+        _link_for_body if template_type == "invoice_issued" and _link_for_body else None
+    )
+    _html_body = render_transactional_html(
+        body, subject=subject,
+        cta_url=_cta_url_for_receipt,
+        cta_label="Pay Now" if _cta_url_for_receipt else None,
+    )
 
     _message = EmailMessage(
         to_email=to_email,

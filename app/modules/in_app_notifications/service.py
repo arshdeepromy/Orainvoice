@@ -13,7 +13,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, cast, func, literal, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.in_app_notifications.models import AppNotification, NotificationRead
@@ -53,6 +54,7 @@ def _build_visibility_filter(
     - It targets them specifically (user_id == current user), OR
     - It is org-wide (user_id IS NULL) AND the user's role is in audience_roles
     """
+    role_json = literal(f'["{role}"]')
     return and_(
         AppNotification.org_id == org_id,
         (
@@ -61,7 +63,7 @@ def _build_visibility_filter(
             and_(
                 AppNotification.user_id.is_(None),
                 AppNotification.audience_roles.op("@>")(
-                    func.cast(f'["{role}"]', type_=AppNotification.audience_roles.type)
+                    cast(role_json, JSONB)
                 ),
             )
         ),

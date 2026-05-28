@@ -21,6 +21,7 @@ class QuoteItemType(str, Enum):
 
 class QuoteStatus(str, Enum):
     draft = "draft"
+    issued = "issued"
     sent = "sent"
     accepted = "accepted"
     declined = "declined"
@@ -40,6 +41,8 @@ class VehicleItem(BaseModel):
     model: str | None = None
     year: int | None = None
     odometer: int | None = None
+    wof_expiry: str | None = None
+    cof_expiry: str | None = None
 
 
 class FluidUsageItem(BaseModel):
@@ -80,6 +83,9 @@ class QuoteCreate(BaseModel):
     vehicle_make: str | None = None
     vehicle_model: str | None = None
     vehicle_year: int | None = None
+    vehicle_odometer: int | None = None
+    vehicle_wof_expiry: date | None = None
+    vehicle_cof_expiry: date | None = None
     project_id: uuid.UUID | None = None
     validity_days: int = Field(default=30)
     line_items: list[QuoteLineItemCreate] = Field(default_factory=list)
@@ -113,6 +119,9 @@ class QuoteUpdate(BaseModel):
     vehicle_make: str | None = None
     vehicle_model: str | None = None
     vehicle_year: int | None = None
+    vehicle_odometer: int | None = None
+    vehicle_wof_expiry: date | None = None
+    vehicle_cof_expiry: date | None = None
     project_id: uuid.UUID | None = None
     status: QuoteStatus | None = None
     validity_days: int | None = None
@@ -172,6 +181,9 @@ class QuoteResponse(BaseModel):
     vehicle_make: str | None = None
     vehicle_model: str | None = None
     vehicle_year: int | None = None
+    vehicle_odometer: int | None = None
+    vehicle_wof_expiry: date | None = None
+    vehicle_cof_expiry: date | None = None
     project_id: uuid.UUID | None = None
     status: str
     valid_until: date | None = None

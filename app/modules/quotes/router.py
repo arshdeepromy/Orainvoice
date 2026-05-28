@@ -113,6 +113,9 @@ async def create_quote_endpoint(
             vehicle_make=payload.vehicle_make,
             vehicle_model=payload.vehicle_model,
             vehicle_year=payload.vehicle_year,
+            vehicle_odometer=payload.vehicle_odometer,
+            vehicle_wof_expiry=payload.vehicle_wof_expiry,
+            vehicle_cof_expiry=payload.vehicle_cof_expiry,
             validity_days=payload.validity_days,
             line_items_data=line_items_data,
             notes=payload.notes,
@@ -271,6 +274,12 @@ async def update_quote_endpoint(
         updates["vehicle_model"] = payload.vehicle_model
     if payload.vehicle_year is not None:
         updates["vehicle_year"] = payload.vehicle_year
+    if payload.vehicle_odometer is not None:
+        updates["vehicle_odometer"] = payload.vehicle_odometer
+    if payload.vehicle_wof_expiry is not None:
+        updates["vehicle_wof_expiry"] = payload.vehicle_wof_expiry
+    if payload.vehicle_cof_expiry is not None:
+        updates["vehicle_cof_expiry"] = payload.vehicle_cof_expiry
     if payload.project_id is not None:
         updates["project_id"] = payload.project_id
     if payload.validity_days is not None:

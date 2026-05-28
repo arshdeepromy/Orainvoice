@@ -92,6 +92,9 @@ async def view_shared_quote(
         "vehicle_make": quote.vehicle_make,
         "vehicle_model": quote.vehicle_model,
         "vehicle_year": quote.vehicle_year,
+        "vehicle_odometer": quote.vehicle_odometer,
+        "vehicle_wof_expiry": quote.vehicle_wof_expiry,
+        "vehicle_cof_expiry": quote.vehicle_cof_expiry,
         "created_at": quote.created_at,
         "line_items": [
             {
@@ -112,6 +115,19 @@ async def view_shared_quote(
     # Render HTML
     template_dir = pathlib.Path(__file__).resolve().parent.parent.parent / "templates" / "pdf"
     env = Environment(loader=FileSystemLoader(str(template_dir)), autoescape=True)
+
+    def _parse_iso_date(value: str | None):
+        """Parse ISO date string (YYYY-MM-DD) to a date object for Jinja2 templates."""
+        from datetime import date as date_type
+        if not value:
+            return None
+        try:
+            return date_type.fromisoformat(value)
+        except (ValueError, TypeError):
+            return None
+
+    env.filters["parse_date"] = _parse_iso_date
+
     template = env.get_template("quote_share.html")
 
     # Resolve salesperson name if set
@@ -139,9 +155,41 @@ async def view_shared_quote(
         already_accepted=quote.status == "accepted",
         order_number=quote.order_number,
         salesperson_name=salesperson_name,
+        additional_vehicles=quote.additional_vehicles or [],
     )
 
     return HTMLResponse(content=html_content)
+
+
+@router.get(
+    "/view/{token}/pdf",
+    summary="Download quote as PDF (public, no auth required)",
+)
+async def public_quote_pdf(
+    token: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Generate and return the quote PDF for public download."""
+    from app.modules.quotes.service import generate_quote_pdf
+
+    # Look up quote by acceptance token
+    result = await db.execute(
+        select(Quote).where(Quote.acceptance_token == token)
+    )
+    quote = result.scalar_one_or_none()
+    if quote is None:
+        return JSONResponse(status_code=404, content={"detail": "Quote not found"})
+
+    pdf_bytes = await generate_quote_pdf(db, org_id=quote.org_id, quote_id=quote.id)
+
+    from fastapi.responses import Response
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="Quote-{quote.quote_number}.pdf"',
+        },
+    )
 
 
 @router.post(

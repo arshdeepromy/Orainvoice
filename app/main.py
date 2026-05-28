@@ -6,7 +6,7 @@ import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.config import settings
 from app.middleware.auth import AuthMiddleware
@@ -38,6 +38,79 @@ def create_app() -> FastAPI:
     # Global exception handlers — catch unhandled errors and return JSON
     # instead of bare 500 responses.
     # ------------------------------------------------------------------
+
+    @app.exception_handler(IntegrityError)
+    async def integrity_error_handler(request: Request, exc: IntegrityError):
+        """Translate unique-constraint and FK violations into user-friendly 409 responses.
+
+        Maps known constraint names to clear messages. Unknown constraints
+        get a generic "already exists" message. Never exposes raw DB details.
+        """
+        raw = str(exc.orig) if hasattr(exc, "orig") and exc.orig else str(exc)
+        logger.warning("IntegrityError on %s %s: %s", request.method, request.url.path, raw)
+
+        # Map constraint names → human-readable messages
+        CONSTRAINT_MESSAGES: dict[str, str] = {
+            # Fleet portal
+            "uq_portal_accounts_org_email": "An account with this email address already exists in your organisation",
+            "uq_portal_fleet_accounts_org_customer": "This customer already has a fleet account",
+            "uq_fleet_driver_assignments_driver_vehicle": "This driver is already assigned to this vehicle",
+            "uq_fleet_checklist_templates_default_per_fleet": "A default checklist template already exists for this fleet",
+            "uq_fleet_reminder_preferences_vehicle_type": "A reminder preference for this vehicle and type already exists",
+            # Notifications
+            "uq_notification_templates_org_type_channel": "A notification template for this type and channel already exists",
+            "uq_notification_preferences_org_type": "A notification preference for this type already exists",
+            "uq_notification_reads_notification_user": "This notification has already been marked",
+            # Users / Auth
+            "uq_user_mfa_method": "This MFA method is already configured",
+            "uq_passkey_credential_id": "This passkey is already registered",
+            "users_email_key": "A user with this email address already exists",
+            # Customers
+            "uq_sms_conversations_org_phone": "A conversation for this phone number already exists",
+            # Invoices / Billing
+            "uq_billing_receipts_stripe_pi": "This payment has already been recorded",
+            "uq_pending_qr_sessions_org_id": "A QR payment session is already active for this organisation",
+            # Modules / Settings
+            "uq_org_modules_org_slug": "This module is already enabled for your organisation",
+            "uq_loyalty_config_org": "Loyalty configuration already exists for your organisation",
+            "uq_org_currency": "This currency is already configured",
+            "uq_ecommerce_org": "E-commerce is already configured for your organisation",
+            # Editor / Pages
+            "uq_editor_pages_slug_active": "A page with this URL slug already exists",
+            "uq_editor_revisions_page_version": "This page version already exists",
+            "uq_editor_redirects_from_active": "A redirect from this URL already exists",
+            # Inventory / SKU
+            "uq_sku_mapping_org_sku_platform": "This SKU mapping already exists",
+            # Claims / Projects
+            "uq_progress_claims_org_project_claim": "This claim number already exists for this project",
+            "uq_variation_orders_org_project_number": "This variation number already exists for this project",
+            # Overdue rules
+            "uq_overdue_reminder_rules_org_days": "A reminder rule for this number of days already exists",
+            # Exchange rates
+            "uq_exchange_rate_pair_date": "An exchange rate for this currency pair and date already exists",
+            # Bounced addresses
+            "uq_bounced_addresses_org_email": "This email address is already on the bounce list",
+        }
+
+        # Try to extract the constraint name from the error message
+        detail = "This record already exists"
+        for constraint_name, message in CONSTRAINT_MESSAGES.items():
+            if constraint_name in raw:
+                detail = message
+                break
+
+        # Also handle FK violations
+        if "foreign key" in raw.lower() or "ForeignKeyViolation" in raw:
+            detail = "Cannot complete this action because it references data that no longer exists"
+
+        # Also handle NOT NULL violations
+        if "not-null" in raw.lower() or "NotNullViolation" in raw:
+            detail = "A required field is missing"
+
+        return JSONResponse(
+            status_code=409,
+            content={"detail": detail},
+        )
 
     @app.exception_handler(SQLAlchemyError)
     async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):

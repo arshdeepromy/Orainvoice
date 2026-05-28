@@ -34,6 +34,7 @@ const PAGE_SIZE = 20
 
 const STATUS_COLOR: Record<string, string> = {
   draft: 'text-gray-500',
+  issued: 'text-indigo-600',
   sent: 'text-blue-600',
   accepted: 'text-emerald-600',
   declined: 'text-red-500',
@@ -45,6 +46,7 @@ const STATUS_COLOR: Record<string, string> = {
 const STATUS_OPTIONS = [
   { value: '', label: 'All Quotes' },
   { value: 'draft', label: 'Draft' },
+  { value: 'issued', label: 'Issued' },
   { value: 'sent', label: 'Sent' },
   { value: 'accepted', label: 'Accepted' },
   { value: 'declined', label: 'Declined' },

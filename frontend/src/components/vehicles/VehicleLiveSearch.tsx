@@ -178,6 +178,22 @@ export function VehicleLiveSearch({ vehicle, onVehicleFound, onCustomerAutoSelec
         setShowDropdown(false)
         setSyncMessage(res.data.message)
         
+        // After CarJam sync, check if this vehicle has a linked customer in the local DB
+        if (onCustomerAutoSelect && res.data.vehicle.rego) {
+          try {
+            const searchRes = await apiClient.get<{ results: SearchResult[] }>(
+              `/vehicles/search`,
+              { params: { q: res.data.vehicle.rego } }
+            )
+            const match = (searchRes.data?.results ?? []).find(
+              r => r.rego?.toUpperCase() === res.data.vehicle.rego.toUpperCase()
+            )
+            if (match?.linked_customers && match.linked_customers.length > 0) {
+              onCustomerAutoSelect(match.linked_customers[0])
+            }
+          } catch { /* non-blocking */ }
+        }
+        
         // Clear success message after 3 seconds
         setTimeout(() => setSyncMessage(''), 3000)
       }
@@ -197,9 +213,14 @@ export function VehicleLiveSearch({ vehicle, onVehicleFound, onCustomerAutoSelec
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && results.length === 0 && query.length >= 2) {
+    if (e.key === 'Enter') {
       e.preventDefault()
-      syncWithCarjam()
+      if (results.length > 0) {
+        // Auto-select the first result (triggers linked customer auto-fill)
+        handleSelectResult(results[0])
+      } else if (query.length >= 2) {
+        syncWithCarjam()
+      }
     }
   }
 

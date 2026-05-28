@@ -104,8 +104,10 @@ PUBLIC_PATHS: set[str] = {
     # before processing, so JWT auth would just block delivery.
     "/api/v1/notifications/webhooks/brevo-bounce",
     "/api/v1/notifications/webhooks/sendgrid-bounce",
+    "/api/v1/notifications/webhooks/resend-bounce",
     "/api/v2/notifications/webhooks/brevo-bounce",
     "/api/v2/notifications/webhooks/sendgrid-bounce",
+    "/api/v2/notifications/webhooks/resend-bounce",
     "/api/v1/ha/heartbeat",
     "/api/v1/ha/status",
     "/api/v2/trade-families",

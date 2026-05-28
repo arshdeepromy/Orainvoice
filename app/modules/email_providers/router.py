@@ -216,13 +216,55 @@ async def post_regenerate_webhook_token(
 ):
     """Generate a fresh webhook token for a provider.
 
-    The plaintext token is returned ONLY in this response. The admin
-    must copy it and paste it into the provider's webhook UI under
-    "Token Authentication" with header name X-OraInvoice-Webhook-Token.
-    Subsequent reads of the provider config redact the token to "***".
+    For Brevo/SendGrid: generates a random token that the admin pastes
+    into the provider's webhook UI.
+
+    For Resend: accepts a ``signing_secret`` in the request body (the
+    ``whsec_...`` value from Resend's dashboard) and stores it so the
+    webhook handler can verify Svix signatures.
+
+    The plaintext token is returned ONLY in this response. Subsequent
+    reads of the provider config redact the token to "***".
     """
     user_id = getattr(request.state, "user_id", None)
     ip = getattr(request.state, "client_ip", None)
+
+    # For Resend: accept a signing_secret from the request body
+    signing_secret: str | None = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            signing_secret = body.get("signing_secret")
+    except Exception:
+        pass  # No body or invalid JSON — proceed with normal token generation
+
+    if provider_key == "resend" and signing_secret:
+        # Store the Resend signing secret directly (don't generate a random one)
+        from app.modules.email_providers.service import _token_config_key, _token_set_at_key
+        from app.modules.admin.models import EmailProvider as EP
+        from datetime import datetime, timezone
+        from sqlalchemy import select
+
+        result = await db.execute(
+            select(EP).where(EP.provider_key == provider_key)
+        )
+        provider = result.scalar_one_or_none()
+        if provider is None:
+            return JSONResponse(status_code=404, content={"detail": "Provider not found"})
+
+        set_at = datetime.now(timezone.utc).isoformat()
+        config = dict(provider.config or {})
+        config[_token_config_key(provider_key)] = signing_secret.strip()
+        config[_token_set_at_key(provider_key)] = set_at
+        provider.config = config
+        await db.flush()
+
+        return WebhookTokenRegenerateResponse(
+            token="***",  # Don't echo back the secret
+            header_name="svix-signature (automatic)",
+            set_at=set_at,
+        )
+
     result = await regenerate_webhook_token(
         db,
         provider_key=provider_key,

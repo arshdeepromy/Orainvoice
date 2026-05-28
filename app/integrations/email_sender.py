@@ -202,6 +202,17 @@ class SendResult:
         """
         return self.provider_key or ""
 
+    @property
+    def provider_message_id(self) -> str | None:
+        """Alias so callers can use ``result.provider_message_id``.
+
+        The canonical field is ``message_id`` (matching ``EmailAttempt``),
+        but all notification_log persistence call-sites reference
+        ``provider_message_id`` to match the DB column name. This
+        property bridges the two without breaking existing code.
+        """
+        return self.message_id
+
 
 # ---------------------------------------------------------------------------
 # Transactional HTML rendering (deliverability fix, post-Phase-9)
@@ -293,6 +304,8 @@ def render_transactional_html(
     *,
     subject: str | None = None,
     signature_html: str | None = None,
+    cta_url: str | None = None,
+    cta_label: str | None = None,
 ) -> str:
     """Produce a well-formed HTML document for a transactional email.
 
@@ -316,6 +329,10 @@ def render_transactional_html(
         breaks at blank lines, ``<br>`` only inside paragraphs for
         single-newline soft wraps).
       * URLs in the body wrapped as ``<a href>`` anchors.
+      * Optional CTA button (``cta_url`` + ``cta_label``) rendered as a
+        prominent, styled button — improves deliverability by giving
+        Gmail a clear action element instead of a bare URL next to
+        financial keywords.
       * Optional pre-escaped ``signature_html`` rendered after a thin
         ``<hr>``.
 
@@ -332,6 +349,8 @@ def render_transactional_html(
         signature_html: Optional already-trusted, pre-escaped HTML that
             an admin configured. Rendered verbatim after an ``<hr>`` so
             org-branded sign-offs still work.
+        cta_url: Optional URL for a call-to-action button.
+        cta_label: Label text for the CTA button (default: "Pay Now").
 
     Returns:
         A complete HTML document string.
@@ -339,6 +358,27 @@ def render_transactional_html(
     body_html = _text_to_paragraphs_html(text_body or "")
     sig_html = (signature_html or "").strip()
     sig_block = f'<hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0">{sig_html}' if sig_html else ""
+
+    # CTA button block — styled for maximum email client compatibility
+    cta_block = ""
+    if cta_url and cta_url.strip():
+        _cta_label = _escape_html(cta_label or "Pay Now")
+        _cta_href = _escape_html(cta_url.strip())
+        cta_block = (
+            '<table role="presentation" cellpadding="0" cellspacing="0" '
+            'style="margin:24px 0">'
+            '<tr><td style="border-radius:6px;background:#2563eb" align="center">'
+            f'<a href="{_cta_href}" target="_blank" '
+            'style="display:inline-block;padding:14px 32px;'
+            'font-size:16px;font-weight:600;color:#ffffff;'
+            'text-decoration:none;border-radius:6px;'
+            f'background:#2563eb">{_cta_label}</a>'
+            '</td></tr></table>'
+            f'<p style="margin:8px 0;font-size:12px;color:#6b7280">'
+            f'Or copy this link: '
+            f'<a href="{_cta_href}" style="color:#2563eb;word-break:break-all">'
+            f'{_cta_href}</a></p>'
+        )
 
     title = _escape_html(subject) if subject else "Notification"
     doc = (
@@ -356,6 +396,7 @@ def render_transactional_html(
         '<div style="max-width:640px;margin:0 auto;background:#ffffff;'
         'padding:32px;border-radius:8px">'
         f'{body_html}'
+        f'{cta_block}'
         f'{sig_block}'
         '</div>'
         '</body>'
@@ -1080,6 +1121,167 @@ async def _dispatch_sendgrid_rest(
     )
 
 
+# ---------------------------------------------------------------------------
+# Resend REST API dispatcher
+# ---------------------------------------------------------------------------
+
+
+def _classify_resend_rest_error(
+    response: httpx.Response | None, exc: Exception | None
+) -> FailureKind:
+    """Classify a Resend REST failure into a FailureKind."""
+    if exc is not None:
+        return FailureKind.SOFT_NETWORK
+    if response is None:
+        return FailureKind.SOFT_NETWORK
+    status = response.status_code
+    if status == 401 or status == 403:
+        return FailureKind.SOFT_AUTH
+    if status == 429:
+        return FailureKind.SOFT_RATE
+    if status >= 500:
+        return FailureKind.SOFT_NETWORK
+    return FailureKind.HARD
+
+
+async def _dispatch_resend_rest(
+    provider: EmailProvider,
+    message: EmailMessage,
+    *,
+    from_name: str,
+    from_email: str,
+    reply_to: str | None,
+    timeout_seconds: int,
+) -> EmailAttempt:
+    """Dispatch ``message`` via the Resend REST API.
+
+    POSTs to ``https://api.resend.com/emails`` with the provider's
+    decrypted ``api_key`` in the ``Authorization: Bearer ...`` header.
+    Resend returns 200 with ``{"id": "..."}`` on success.
+
+    Mirrors the structure of ``_dispatch_brevo_rest`` / ``_dispatch_sendgrid_rest``
+    so the failover loop can treat all REST transports uniformly.
+    """
+    started = time.monotonic()
+    transport = "rest_api"
+
+    # Decrypt credentials.
+    if not provider.credentials_set or not provider.credentials_encrypted:
+        return EmailAttempt(
+            provider_key=provider.provider_key,
+            transport=transport,
+            success=False,
+            error="credentials not configured",
+            failure_kind=FailureKind.SOFT_AUTH,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    try:
+        creds_json = envelope_decrypt_str(provider.credentials_encrypted)
+        credentials = json.loads(creds_json)
+    except Exception as exc:
+        logger.error("resend: failed to decrypt credentials: %s", exc)
+        return EmailAttempt(
+            provider_key=provider.provider_key,
+            transport=transport,
+            success=False,
+            error=f"failed to decrypt credentials: {exc}",
+            failure_kind=FailureKind.SOFT_AUTH,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    api_key = credentials.get("api_key") or ""
+    if not api_key:
+        return EmailAttempt(
+            provider_key=provider.provider_key,
+            transport=transport,
+            success=False,
+            error="missing api_key",
+            failure_kind=FailureKind.SOFT_AUTH,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    # Build payload (Resend API shape).
+    sender = f"{from_name} <{from_email}>" if from_name else from_email
+
+    payload: dict = {
+        "from": sender,
+        "to": [message.to_email],
+        "subject": message.subject,
+    }
+    if message.html_body:
+        payload["html"] = message.html_body
+    if message.text_body:
+        payload["text"] = message.text_body
+    if reply_to:
+        payload["reply_to"] = [reply_to]
+    if message.attachments:
+        payload["attachments"] = [
+            {
+                "filename": att.filename,
+                "content": base64.b64encode(att.content).decode("ascii"),
+                "content_type": att.mime_type,
+            }
+            for att in message.attachments
+        ]
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    url = "https://api.resend.com/emails"
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.post(url, json=payload, headers=headers)
+    except Exception as exc:
+        logger.warning("resend REST request raised %s: %s", type(exc).__name__, exc)
+        return EmailAttempt(
+            provider_key=provider.provider_key,
+            transport=transport,
+            success=False,
+            error=str(exc) or type(exc).__name__,
+            failure_kind=_classify_resend_rest_error(None, exc),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+
+    if response.status_code == 200:
+        message_id: str | None = None
+        try:
+            body = response.json()
+        except (ValueError, json.JSONDecodeError):
+            body = None
+        if isinstance(body, dict):
+            # Resend returns {"id": "email-id-here"}
+            raw_id = body.get("id")
+            if isinstance(raw_id, str) and raw_id:
+                message_id = raw_id
+        return EmailAttempt(
+            provider_key=provider.provider_key,
+            transport=transport,
+            success=True,
+            error=None,
+            failure_kind=None,
+            duration_ms=duration_ms,
+            message_id=message_id,
+        )
+
+    body_excerpt = (response.text or "")[:300]
+    logger.warning(
+        "resend REST returned %s: %s", response.status_code, body_excerpt
+    )
+    return EmailAttempt(
+        provider_key=provider.provider_key,
+        transport=transport,
+        success=False,
+        error=f"resend REST {response.status_code}: {body_excerpt}",
+        failure_kind=_classify_resend_rest_error(response, None),
+        duration_ms=duration_ms,
+    )
+
+
 def _build_mime_message(
     message: EmailMessage,
     *,
@@ -1454,6 +1656,15 @@ async def dispatch_one_provider(
         )
     if provider.provider_key == "sendgrid" and api_key:
         return await _dispatch_sendgrid_rest(
+            provider,
+            message,
+            from_name=from_name,
+            from_email=from_email,
+            reply_to=reply_to,
+            timeout_seconds=timeout_seconds,
+        )
+    if provider.provider_key == "resend" and api_key:
+        return await _dispatch_resend_rest(
             provider,
             message,
             from_name=from_name,

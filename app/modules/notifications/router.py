@@ -1158,6 +1158,144 @@ async def sendgrid_bounce_webhook(
     )
 
 
+@router.post("/webhooks/resend-bounce")
+async def resend_bounce_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Receive Resend webhook events (bounce, delivered, etc.).
+
+    Auth: Resend uses Svix for webhook signing. The payload is verified
+    using the signing secret (``whsec_...``) stored in
+    ``email_providers.config['resend_webhook_token']``. Resend sends
+    signature headers: ``svix-id``, ``svix-timestamp``, ``svix-signature``.
+
+    Events handled:
+    - ``email.bounced`` → :func:`flag_bounce`
+    - ``email.delivered`` → update notification_log.delivered_at
+
+    Returns 200 on success, 403 on invalid signature, 400 on malformed JSON.
+    """
+    # Get the raw body for signature verification
+    raw_body = await request.body()
+
+    # Look up the Resend provider's signing secret from config
+    try:
+        from app.modules.admin.models import EmailProvider as EP
+        stmt = (
+            select(EP)
+            .where(EP.provider_key == "resend", EP.is_active.is_(True))
+            .order_by(EP.priority.asc())
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+    except Exception:
+        rows = []
+
+    signing_secret = None
+    for row in rows:
+        secret = (row.config or {}).get("resend_webhook_token")
+        if secret:
+            signing_secret = secret
+            break
+
+    if not signing_secret:
+        logger.warning("Resend webhook: no signing secret configured for any active resend provider")
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Webhook signing secret not configured"},
+        )
+
+    # Verify the Svix signature
+    try:
+        from svix.webhooks import Webhook, WebhookVerificationError
+        wh = Webhook(signing_secret)
+        payload_dict = wh.verify(raw_body, dict(request.headers))
+    except WebhookVerificationError:
+        logger.warning("Resend webhook: signature verification failed")
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Invalid webhook signature"},
+        )
+    except ImportError:
+        # svix not installed — fall back to no verification (log warning)
+        logger.warning("Resend webhook: svix package not installed, skipping verification")
+        try:
+            import json as _json
+            payload_dict = _json.loads(raw_body)
+        except Exception:
+            return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
+    except Exception as exc:
+        logger.warning("Resend webhook: verification error: %s", exc)
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Webhook verification failed"},
+        )
+
+    if not isinstance(payload_dict, dict):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Expected JSON object"},
+        )
+
+    event_type = (payload_dict.get("type") or "").lower()
+    data = payload_dict.get("data") or {}
+    email_id = data.get("email_id") or ""
+    to_list = data.get("to") or []
+    recipient = to_list[0] if isinstance(to_list, list) and to_list else ""
+
+    bounce_count = 0
+    delivered_count = 0
+
+    if event_type == "email.bounced":
+        bounce_info = data.get("bounce") or {}
+        bounce_type = bounce_info.get("type") or "Permanent"
+        bounce_message = bounce_info.get("message") or ""
+        # Map Resend bounce types to our kind vocabulary
+        kind = "hard" if bounce_type == "Permanent" else "soft"
+
+        if recipient:
+            await flag_bounce(
+                db,
+                provider_message_id=email_id,
+                recipient=recipient,
+                kind=kind,
+                reason=bounce_message,
+                provider_key="resend",
+            )
+            bounce_count = 1
+
+    elif event_type == "email.delivered":
+        if email_id:
+            from sqlalchemy import update as sa_update
+            from app.modules.notifications.models import NotificationLog as NL
+
+            result = await db.execute(
+                sa_update(NL)
+                .where(NL.provider_message_id == email_id)
+                .values(delivered_at=func.now())
+            )
+            if (result.rowcount or 0) > 0:
+                delivered_count = result.rowcount or 0
+            await db.flush()
+
+    logger.info(
+        "Resend webhook: type=%s bounces=%d delivered=%d email_id=%s",
+        event_type,
+        bounce_count,
+        delivered_count,
+        email_id,
+    )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "message": "Event processed",
+            "emails_processed": bounce_count,
+            "delivered_processed": delivered_count,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Reminder rules endpoints (Zoho-style configurable reminders)
 # ---------------------------------------------------------------------------

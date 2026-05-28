@@ -23,6 +23,7 @@ interface Customer {
   email: string
   phone: string
   address?: string
+  linked_vehicles?: LinkedVehicle[]
 }
 
 interface Vehicle {
@@ -32,6 +33,23 @@ interface Vehicle {
   model: string
   year: number | null
   colour: string
+  odometer?: number | null
+  wof_expiry?: string | null
+  cof_expiry?: string | null
+  inspection_type?: string | null
+}
+
+interface LinkedVehicle {
+  id: string
+  rego: string
+  make: string | null
+  model: string | null
+  year: number | null
+  colour: string | null
+  odometer?: number | null
+  wof_expiry?: string | null
+  cof_expiry?: string | null
+  inspection_type?: string | null
 }
 
 interface Project {
@@ -143,10 +161,14 @@ function calcLineAmount(item: LineItem): number {
 function CustomerSearch({
   selectedCustomer,
   onSelect,
+  onVehicleAutoSelect,
+  includeVehicles = true,
   error,
 }: {
   selectedCustomer: Customer | null
   onSelect: (c: Customer | null) => void
+  onVehicleAutoSelect?: (v: LinkedVehicle) => void
+  includeVehicles?: boolean
   error?: string
 }) {
   const [query, setQuery] = useState('')
@@ -169,7 +191,7 @@ function CustomerSearch({
     if (q.length < 2) { setResults([]); return }
     setLoading(true)
     try {
-      const res = await apiClient.get('/customers', { params: { q: q } })
+      const res = await apiClient.get('/customers', { params: { q: q, ...(includeVehicles ? { include_vehicles: true } : {}) } })
       const data = res.data as any
       const customers = Array.isArray(data) ? data : (data?.customers ?? [])
       const term = q.toLowerCase()
@@ -186,23 +208,38 @@ function CustomerSearch({
         const lastName = (c.last_name || '').toLowerCase()
         const displayName = (c.display_name || '').toLowerCase()
         const phone = (c.phone || '').toLowerCase()
+        const regoMatch = (c.linked_vehicles || []).some((v: LinkedVehicle) =>
+          matchesSequence(v.rego || '', term)
+        )
         return (
           matchesSequence(firstName, term) ||
           matchesSequence(lastName, term) ||
           matchesSequence(displayName, term) ||
-          matchesSequence(phone, term)
+          matchesSequence(phone, term) ||
+          regoMatch
         )
       })
       setResults(filtered)
     } catch { setResults([]) }
     finally { setLoading(false) }
-  }, [])
+  }, [includeVehicles])
 
   const handleInput = (value: string) => {
     setQuery(value)
     setShowDropdown(true)
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => search(value), 300)
+  }
+
+  const handleSelect = (c: Customer) => {
+    onSelect(c)
+    setQuery(`${c.first_name} ${c.last_name}`)
+    setShowDropdown(false)
+
+    // Auto-select first linked vehicle if available
+    if (onVehicleAutoSelect && c.linked_vehicles && c.linked_vehicles.length > 0) {
+      onVehicleAutoSelect(c.linked_vehicles[0])
+    }
   }
 
   if (selectedCustomer) {
@@ -235,7 +272,7 @@ function CustomerSearch({
           {loading && <div className="px-4 py-3 text-sm text-gray-500">Searching…</div>}
           {!loading && results.map((c) => (
             <button key={c.id} type="button"
-              onClick={() => { onSelect(c); setQuery(`${c.first_name} ${c.last_name}`); setShowDropdown(false) }}
+              onClick={() => handleSelect(c)}
               className="w-full px-4 py-2.5 text-left hover:bg-gray-50 text-sm">
               <span className="font-medium text-gray-900">{c.first_name} {c.last_name}</span>
               {c.email && <span className="ml-2 text-gray-500">{c.email}</span>}
@@ -609,7 +646,7 @@ export default function QuoteCreate() {
   const [orderNumber, setOrderNumber] = useState('')
   const [salespersonId, setSalespersonId] = useState<string | null>(null)
   const [salespersonOptions, setSalespersonOptions] = useState<{ id: string; name: string }[]>([])
-  const [additionalVehicles, setAdditionalVehicles] = useState<{ rego?: string; make?: string; model?: string; year?: number | null }[]>([])
+  const [additionalVehicles, setAdditionalVehicles] = useState<{ rego?: string; make?: string; model?: string; year?: number | null; odometer?: number | null; wof_expiry?: string | null; cof_expiry?: string | null }[]>([])
   const [fluidUsage, setFluidUsage] = useState<FluidUsageItem[]>([])
   const [saveTermsAsDefault, setSaveTermsAsDefault] = useState(false)
 
@@ -673,6 +710,9 @@ export default function QuoteCreate() {
             id: '', rego: q.vehicle_rego,
             make: q.vehicle_make || '', model: q.vehicle_model || '',
             year: q.vehicle_year || null, colour: '',
+            odometer: q.vehicle_odometer ?? null,
+            wof_expiry: q.vehicle_wof_expiry ?? null,
+            cof_expiry: q.vehicle_cof_expiry ?? null,
           })
         }
 
@@ -920,7 +960,17 @@ export default function QuoteCreate() {
   }
 
   // Build payload — sends fields matching backend QuoteCreate/QuoteUpdate schemas
-  const buildPayload = () => ({
+  const buildPayload = () => {
+    // Determine which expiry to send based on inspection_type
+    let wofExpiry: string | null = null
+    let cofExpiry: string | null = null
+    if (vehicle?.inspection_type === 'cof') {
+      cofExpiry = (vehicle?.cof_expiry && vehicle.cof_expiry !== '1970-01-01') ? vehicle.cof_expiry : null
+    } else {
+      wofExpiry = (vehicle?.wof_expiry && vehicle.wof_expiry !== '1970-01-01') ? vehicle.wof_expiry : null
+    }
+
+    return {
     customer_id: customer?.id,
     branch_id: selectedBranchId || undefined,
     ...(isAutomotive ? {
@@ -928,6 +978,9 @@ export default function QuoteCreate() {
       vehicle_make: vehicle?.make ?? undefined,
       vehicle_model: vehicle?.model ?? undefined,
       vehicle_year: vehicle?.year ?? undefined,
+      vehicle_odometer: vehicle?.odometer ?? null,
+      vehicle_wof_expiry: wofExpiry,
+      vehicle_cof_expiry: cofExpiry,
     } : {}),
     project_id: selectedProjectId || undefined,
     validity_days: Number(validityDays),
@@ -940,7 +993,15 @@ export default function QuoteCreate() {
     adjustment: adjustment,
     order_number: orderNumber.trim() || undefined,
     salesperson_id: salespersonId || undefined,
-    vehicles: additionalVehicles.length > 0 ? additionalVehicles : undefined,
+    vehicles: additionalVehicles.length > 0 ? additionalVehicles.map(v => ({
+      rego: v.rego,
+      make: v.make,
+      model: v.model,
+      year: v.year ?? null,
+      odometer: v.odometer ?? null,
+      wof_expiry: v.wof_expiry ?? null,
+      cof_expiry: v.cof_expiry ?? null,
+    })) : undefined,
     fluid_usage: fluidUsage.length > 0 ? fluidUsage : undefined,
     save_terms_as_default: saveTermsAsDefault,
     line_items: lineItems.filter(item => item.description.trim()).map((item, i) => ({
@@ -956,7 +1017,8 @@ export default function QuoteCreate() {
       inclusive_price: item.gst_inclusive ? (item.inclusive_price ?? item.rate) : undefined,
       tax_rate: item.tax_rate,
     })),
-  })
+  }
+  }
 
   // Upload pending attachments after quote is saved (Task 16)
   const uploadPendingFiles = async (quoteId: string) => {
@@ -1021,7 +1083,7 @@ export default function QuoteCreate() {
     } finally { setSendingAndSaving(false) }
   }
 
-  // Issue Quote (save + set status to "sent" without emailing)
+  // Issue Quote (save + set status to "issued" without emailing)
   const handleIssueQuote = async () => {
     if (!validate()) return
     setIssuing(true)
@@ -1036,10 +1098,10 @@ export default function QuoteCreate() {
       }
       if (quoteId) {
         await uploadPendingFiles(quoteId)
-        // Just update status to "sent" without emailing
-        await apiClient.put(`/quotes/${quoteId}`, { status: 'sent' })
+        // Just update status to "issued" without emailing
+        await apiClient.put(`/quotes/${quoteId}`, { status: 'issued' })
       }
-      navigate('/quotes')
+      navigate(`/quotes/${quoteId}`)
     } catch (err: unknown) {
       const detail = (err as any)?.response?.data?.detail
       setErrors({ submit: detail ?? 'Failed to issue quote' })
@@ -1109,25 +1171,97 @@ export default function QuoteCreate() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Left Column — Customer + Vehicle */}
             <div className="space-y-4">
-              <CustomerSearch selectedCustomer={customer} onSelect={setCustomer} error={errors.customer} />
+              <CustomerSearch
+                selectedCustomer={customer}
+                onSelect={setCustomer}
+                onVehicleAutoSelect={(v) => {
+                  if (!vehicle) {
+                    setVehicle({ id: v.id, rego: v.rego, make: v.make || '', model: v.model || '', year: v.year, colour: v.colour || '', odometer: v.odometer ?? null, wof_expiry: v.wof_expiry ?? null, cof_expiry: v.cof_expiry ?? null, inspection_type: v.inspection_type ?? null })
+                    setVehicleRego(v.rego)
+                  }
+                }}
+                error={errors.customer}
+              />
 
               {/* Vehicle (module-gated + trade-family-gated) */}
               {isAutomotive && isEnabled('vehicles') && (
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-gray-700">Vehicle</label>
                   {vehicle ? (
-                    <div className="flex items-center gap-2 rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm">
-                      <span className="font-semibold">{vehicle.rego}</span>
-                      <span className="text-gray-600">{vehicle.year} {vehicle.make} {vehicle.model}</span>
-                      <button type="button" onClick={() => { setVehicle(null); setVehicleRego('') }}
-                        className="ml-auto text-gray-400 hover:text-gray-600" aria-label="Clear vehicle">✕</button>
-                    </div>
+                    <>
+                      <div className="flex items-center gap-2 rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm">
+                        <span className="font-semibold">{vehicle.rego}</span>
+                        <span className="text-gray-600">{vehicle.year} {vehicle.make} {vehicle.model}</span>
+                        <button type="button" onClick={() => { setVehicle(null); setVehicleRego('') }}
+                          className="ml-auto text-gray-400 hover:text-gray-600" aria-label="Clear vehicle">✕</button>
+                      </div>
+                      {/* Editable Odometer & WOF/COF */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-xs font-semibold text-gray-700">Odometer (km)</label>
+                            {(vehicle.odometer ?? 0) > 0 && (
+                              <span className="text-[11px] text-gray-500">
+                                Last: <span className="font-semibold text-gray-900">{(vehicle.odometer ?? 0).toLocaleString()} km</span>
+                              </span>
+                            )}
+                          </div>
+                          <input
+                            type="number"
+                            min="0"
+                            placeholder="Enter reading"
+                            value={vehicle.odometer ?? ''}
+                            onChange={(e) => {
+                              const val = e.target.value ? Number(e.target.value) : null
+                              setVehicle(prev => prev ? { ...prev, odometer: val } : prev)
+                            }}
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-xs font-semibold text-gray-700">
+                              {vehicle.inspection_type === 'cof' ? 'COF Expiry' : 'WOF Expiry'}
+                            </label>
+                            {vehicle.inspection_type === 'cof' ? (
+                              vehicle.cof_expiry && vehicle.cof_expiry !== '1970-01-01' && (
+                                <span className="text-[11px] text-gray-500">
+                                  Last: <span className="font-semibold text-gray-900">{new Date(vehicle.cof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                                </span>
+                              )
+                            ) : (
+                              vehicle.wof_expiry && vehicle.wof_expiry !== '1970-01-01' && (
+                                <span className="text-[11px] text-gray-500">
+                                  Last: <span className="font-semibold text-gray-900">{new Date(vehicle.wof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                                </span>
+                              )
+                            )}
+                          </div>
+                          <input
+                            type="date"
+                            lang="en-NZ"
+                            value={vehicle.inspection_type === 'cof'
+                              ? (vehicle.cof_expiry && vehicle.cof_expiry !== '1970-01-01' ? vehicle.cof_expiry : '')
+                              : (vehicle.wof_expiry && vehicle.wof_expiry !== '1970-01-01' ? vehicle.wof_expiry : '')}
+                            onChange={(e) => {
+                              const val = e.target.value || null
+                              if (vehicle.inspection_type === 'cof') {
+                                setVehicle(prev => prev ? { ...prev, cof_expiry: val } : prev)
+                              } else {
+                                setVehicle(prev => prev ? { ...prev, wof_expiry: val } : prev)
+                              }
+                            }}
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                      </div>
+                    </>
                   ) : (
                     <VehicleLiveSearch
                       vehicle={null}
                       onVehicleFound={(v) => {
                         if (v) {
-                          setVehicle({ id: v.id, rego: v.rego, make: v.make, model: v.model, year: v.year, colour: v.colour || '' })
+                          setVehicle({ id: v.id, rego: v.rego, make: v.make, model: v.model, year: v.year, colour: v.colour || '', odometer: v.odometer ?? null, wof_expiry: v.wof_expiry ?? null, cof_expiry: v.cof_expiry ?? null, inspection_type: (v as any).inspection_type ?? null })
                           setVehicleRego(v.rego)
                         }
                       }}

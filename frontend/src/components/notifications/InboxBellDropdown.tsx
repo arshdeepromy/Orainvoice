@@ -113,7 +113,8 @@ function SeverityIcon({ severity }: { severity: string }) {
 
 /**
  * Bell button with badge + dropdown panel showing the 10 most recent
- * notifications. Uses Headless UI Popover for outside-click dismissal.
+ * notifications. Clicking a notification expands it inline to show full
+ * details rather than navigating away.
  *
  * Validates: Requirements 6.1.3, 6.1.4, 6.1.5, 6.1.6
  */
@@ -122,6 +123,7 @@ export default function InboxBellDropdown() {
   const [items, setItems] = useState<InboxItem[]>([])
   const [loading, setLoading] = useState(false)
   const [markingAll, setMarkingAll] = useState(false)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const fetchInbox = useCallback(async (signal: AbortSignal) => {
     setLoading(true)
@@ -139,18 +141,27 @@ export default function InboxBellDropdown() {
   }, [])
 
   const handleItemClick = useCallback(
-    async (item: InboxItem, close: () => void) => {
-      try {
-        await apiClient.post(`/notifications/inbox/${item.id}/read`)
-      } catch {
-        // Best-effort mark read — don't block navigation.
+    async (item: InboxItem) => {
+      // Toggle expand/collapse
+      if (expandedId === item.id) {
+        setExpandedId(null)
+        return
       }
-      close()
-      if (item.link_url) {
-        navigate(item.link_url)
+      setExpandedId(item.id)
+
+      // Mark as read (best-effort)
+      if (!item.is_read) {
+        try {
+          await apiClient.post(`/notifications/inbox/${item.id}/read`)
+          setItems((prev) =>
+            prev.map((i) => (i.id === item.id ? { ...i, is_read: true } : i)),
+          )
+        } catch {
+          // Best-effort — don't block UI.
+        }
       }
     },
-    [navigate],
+    [expandedId],
   )
 
   const handleMarkAllRead = useCallback(async () => {
@@ -189,7 +200,7 @@ export default function InboxBellDropdown() {
             </PopoverButton>
 
             <PopoverPanel
-              className="absolute right-0 z-50 mt-2 w-80 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800"
+              className="absolute right-0 z-50 mt-2 w-96 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800"
               anchor="bottom end"
             >
               {/* Header */}
@@ -200,7 +211,7 @@ export default function InboxBellDropdown() {
               </div>
 
               {/* Body */}
-              <div className="max-h-[360px] overflow-y-auto">
+              <div className="max-h-[420px] overflow-y-auto">
                 {loading ? (
                   <div className="flex items-center justify-center py-8">
                     <Spinner size="sm" label="Loading notifications" />
@@ -211,32 +222,47 @@ export default function InboxBellDropdown() {
                   </div>
                 ) : (
                   <ul className="divide-y divide-gray-100 dark:divide-gray-700">
-                    {items.map((item) => (
-                      <li key={item.id}>
-                        <button
-                          type="button"
-                          onClick={() => handleItemClick(item, close)}
-                          className={`flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50 ${
-                            !item.is_read ? 'bg-blue-50/50 dark:bg-blue-900/10' : ''
-                          }`}
-                        >
-                          <SeverityIcon severity={item.severity} />
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-medium text-gray-900 dark:text-gray-100">
-                              {item.title}
-                            </p>
-                            {item.body && (
-                              <p className="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400">
-                                {item.body}
+                    {items.map((item) => {
+                      const isExpanded = expandedId === item.id
+                      return (
+                        <li key={item.id}>
+                          <button
+                            type="button"
+                            onClick={() => handleItemClick(item)}
+                            className={`flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50 ${
+                              !item.is_read ? 'bg-blue-50/50 dark:bg-blue-900/10' : ''
+                            }`}
+                          >
+                            <SeverityIcon severity={item.severity} />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                                {item.title}
                               </p>
-                            )}
-                          </div>
-                          <span className="flex-shrink-0 text-xs text-gray-400 dark:text-gray-500">
-                            {formatRelativeTime(item.created_at)}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
+                              {!isExpanded && item.body && (
+                                <p className="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400">
+                                  {item.body}
+                                </p>
+                              )}
+                              {isExpanded && (
+                                <div className="mt-1.5 space-y-1.5">
+                                  {item.body && (
+                                    <p className="text-xs text-gray-600 dark:text-gray-300 whitespace-pre-wrap break-words">
+                                      {item.body}
+                                    </p>
+                                  )}
+                                  <p className="text-[11px] text-gray-400 dark:text-gray-500">
+                                    {new Date(item.created_at).toLocaleString()}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                            <span className="flex-shrink-0 text-xs text-gray-400 dark:text-gray-500">
+                              {formatRelativeTime(item.created_at)}
+                            </span>
+                          </button>
+                        </li>
+                      )
+                    })}
                   </ul>
                 )}
               </div>

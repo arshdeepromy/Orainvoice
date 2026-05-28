@@ -11,6 +11,9 @@ interface VehicleEntry {
   make?: string
   model?: string
   year?: number | null
+  odometer?: number | null
+  wof_expiry?: string | null
+  cof_expiry?: string | null
 }
 
 interface QuoteMultiVehicleSectionProps {

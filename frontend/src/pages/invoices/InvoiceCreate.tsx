@@ -6,6 +6,7 @@ import { CustomerCreateModal } from '../../components/customers/CustomerCreateMo
 import { VehicleLiveSearch } from '../../components/vehicles/VehicleLiveSearch'
 import { AddToStockModal } from '../../components/inventory/AddToStockModal'
 import { QrPaymentWaitingPopup } from './QrPaymentWaitingPopup'
+import { IssueInvoiceModal } from './IssueInvoiceModal'
 import { useTenant } from '../../contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
 import { useAuth } from '../../contexts/AuthContext'
@@ -936,6 +937,8 @@ export default function InvoiceCreate() {
   const [paidModalOpen, setPaidModalOpen] = useState(false)
   const [paidMethod, setPaidMethod] = useState('cash')
   const [paidSaving, setPaidSaving] = useState(false)
+  const [issueModalOpen, setIssueModalOpen] = useState(false)
+  const [issueError, setIssueError] = useState<string | null>(null)
 
   // Ref to store initial loaded state for edit mode dirty comparison
   const initialStateRef = useRef<{
@@ -1251,8 +1254,50 @@ export default function InvoiceCreate() {
                 odometer: matchedVehicle.odometer ?? null,
                 wof_expiry: matchedVehicle.wof_expiry ?? null,
                 cof_expiry: matchedVehicle.cof_expiry ?? null,
+                inspection_type: matchedVehicle.inspection_type ?? null,
+                service_due_date: matchedVehicle.service_due_date ?? null,
               }])
+            } else {
+              // Vehicle rego not in customer's linked vehicles — search globally
+              try {
+                const searchRes = await apiClient.get<{ results: any[] }>('/vehicles/search', { params: { q: prefillVehicleRego } })
+                const found = (searchRes.data?.results ?? []).find((v: any) => v.rego?.toUpperCase() === prefillVehicleRego.toUpperCase())
+                if (found) {
+                  setVehicles([{
+                    id: found.id,
+                    rego: found.rego ?? '',
+                    make: found.make ?? '',
+                    model: found.model ?? '',
+                    year: found.year ?? null,
+                    odometer: found.odometer ?? null,
+                    wof_expiry: found.wof_expiry ?? null,
+                    cof_expiry: found.cof_expiry ?? null,
+                    inspection_type: found.inspection_type ?? null,
+                    service_due_date: found.service_due_date ?? null,
+                  }])
+                }
+              } catch { /* non-blocking */ }
             }
+          } else if (prefillVehicleRego && vehiclesEnabled) {
+            // No linked vehicles on customer but rego was provided — search globally
+            try {
+              const searchRes = await apiClient.get<{ results: any[] }>('/vehicles/search', { params: { q: prefillVehicleRego } })
+              const found = (searchRes.data?.results ?? []).find((v: any) => v.rego?.toUpperCase() === prefillVehicleRego.toUpperCase())
+              if (found) {
+                setVehicles([{
+                  id: found.id,
+                  rego: found.rego ?? '',
+                  make: found.make ?? '',
+                  model: found.model ?? '',
+                  year: found.year ?? null,
+                  odometer: found.odometer ?? null,
+                  wof_expiry: found.wof_expiry ?? null,
+                  cof_expiry: found.cof_expiry ?? null,
+                  inspection_type: found.inspection_type ?? null,
+                  service_due_date: found.service_due_date ?? null,
+                }])
+              }
+            } catch { /* non-blocking */ }
           } else if (vehiclesEnabled && (c.vehicles ?? []).length > 0) {
             // Auto-fill first linked vehicle
             const v = c.vehicles[0]
@@ -1265,6 +1310,8 @@ export default function InvoiceCreate() {
               odometer: v.odometer ?? null,
               wof_expiry: v.wof_expiry ?? null,
               cof_expiry: v.cof_expiry ?? null,
+              inspection_type: v.inspection_type ?? null,
+              service_due_date: v.service_due_date ?? null,
             }])
           }
         }
@@ -1660,20 +1707,29 @@ export default function InvoiceCreate() {
   // Wire up the ref so the navigation guard can call handleSaveDraft (skip internal navigation — OrgLayout handles post-save nav)
   handleSaveDraftRef.current = () => handleSaveDraft({ skipNavigation: true })
 
-  const handleSaveAndSend = async () => {
+  const handleCreateInvoice = () => {
     if (!validate()) return
+    setIssueModalOpen(true)
+  }
+
+  const handleIssueConfirm = async (paymentMethod: string, shouldEmail: boolean) => {
     setSaving(true)
+    setIssueError(null)
+    setPaymentGateway(paymentMethod)
     try {
+      const status = shouldEmail ? 'sent' : 'issued'
+      const payload = { ...buildPayload(status), payment_gateway: paymentMethod }
       if (isEditMode && editId) {
-        const res = await apiClient.put(`/invoices/${editId}`, buildPayload('sent'))
+        await apiClient.put(`/invoices/${editId}`, payload)
         await maybeSaveTermsAsDefault()
         await uploadAttachments(editId)
         // Fetch full detail for instant preview
         const detailRes = await apiClient.get(`/invoices/${editId}`)
         const fullInvoice = (detailRes.data as any)?.invoice || detailRes.data
+        setIssueModalOpen(false)
         navigate(`/invoices/${editId}`, { state: { invoice: fullInvoice } })
       } else {
-        const res = await apiClient.post('/invoices', buildPayload('sent'))
+        const res = await apiClient.post('/invoices', payload)
         await maybeSaveTermsAsDefault()
         const inv = (res.data as any)?.invoice || res.data
         const newId = inv?.id
@@ -1682,14 +1738,16 @@ export default function InvoiceCreate() {
           // Fetch full detail for instant preview (includes org info, customer, line items)
           const detailRes = await apiClient.get(`/invoices/${newId}`)
           const fullInvoice = (detailRes.data as any)?.invoice || detailRes.data
+          setIssueModalOpen(false)
           navigate(`/invoices/${newId}`, { state: { invoice: fullInvoice } })
         } else {
+          setIssueModalOpen(false)
           navigate('/invoices')
         }
       }
     } catch (err: unknown) {
-      const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to send invoice. Please try again.')
-      setErrors({ submit: msg })
+      const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to issue invoice')
+      setIssueError(msg)
     } finally {
       setSaving(false)
     }
@@ -1819,7 +1877,7 @@ export default function InvoiceCreate() {
                 QR Payment
               </button>
             )}
-            <Button size="sm" onClick={handleSaveAndSend} loading={saving}>Create Invoice</Button>
+            <Button size="sm" onClick={handleCreateInvoice} loading={saving}>{isEditMode ? 'Issue Invoice' : 'Create Invoice'}</Button>
           </div>
         </div>
       </div>
@@ -2403,79 +2461,6 @@ export default function InvoiceCreate() {
             )}
           </div>
 
-          {/* Payment Method */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Payment Method</label>
-            <div className="flex flex-wrap items-center gap-4">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="paymentGateway"
-                  value="cash"
-                  checked={paymentGateway === 'cash'}
-                  onChange={(e) => setPaymentGateway(e.target.value)}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700">Cash</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="paymentGateway"
-                  value="eftpos"
-                  checked={paymentGateway === 'eftpos'}
-                  onChange={(e) => setPaymentGateway(e.target.value)}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700">EFTPOS</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="paymentGateway"
-                  value="bank_transfer"
-                  checked={paymentGateway === 'bank_transfer'}
-                  onChange={(e) => setPaymentGateway(e.target.value)}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700">Bank Transfer</span>
-              </label>
-              {stripeConnected ? (
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="paymentGateway"
-                    value="stripe"
-                    checked={paymentGateway === 'stripe'}
-                    onChange={(e) => setPaymentGateway(e.target.value)}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500"
-                  />
-                  <span className="text-sm text-gray-700">Stripe</span>
-                </label>
-              ) : (
-                <label className="flex items-center gap-2 opacity-50">
-                  <input
-                    type="radio"
-                    name="paymentGateway"
-                    value="stripe"
-                    disabled
-                    className="h-4 w-4 text-gray-400"
-                  />
-                  <span className="text-sm text-gray-400">
-                    Stripe —{' '}
-                    <a
-                      href="/settings?tab=online-payments"
-                      className="text-blue-500 underline hover:text-blue-700"
-                      onClick={(e) => { e.preventDefault(); window.location.href = '/settings?tab=online-payments' }}
-                    >
-                      Configure
-                    </a>
-                  </span>
-                </label>
-              )}
-            </div>
-          </div>
-
           {/* Make Recurring */}
           <div className="border-t border-gray-200 pt-4">
             <label className="flex items-center gap-3 cursor-pointer">
@@ -2518,7 +2503,7 @@ export default function InvoiceCreate() {
                 QR Payment
               </button>
             )}
-            <Button size="sm" onClick={handleSaveAndSend} loading={saving}>Create Invoice</Button>
+            <Button size="sm" onClick={handleCreateInvoice} loading={saving}>{isEditMode ? 'Issue Invoice' : 'Create Invoice'}</Button>
           </div>
         </div>
       </div>
@@ -2547,6 +2532,17 @@ export default function InvoiceCreate() {
           <Button onClick={handleMarkPaidAndEmail} loading={paidSaving}>Confirm &amp; Send</Button>
         </div>
       </Modal>
+
+      {/* Issue Invoice Modal */}
+      <IssueInvoiceModal
+        open={issueModalOpen}
+        onClose={() => { setIssueModalOpen(false); setIssueError(null) }}
+        onConfirm={handleIssueConfirm}
+        customerEmail={customer?.email ?? null}
+        loading={saving}
+        stripeConnected={stripeConnected}
+        error={issueError}
+      />
 
       {/* Inventory Stock Picker Modal */}
       <Modal open={stockPickerOpen} onClose={() => setStockPickerOpen(false)} title="Add from Inventory">

@@ -4508,6 +4508,7 @@ async def email_invoice(
         # phrasing, so the partial-vs-full logic does not override it.
         _email_subject = _rendered_template.subject
         _email_body = _rendered_template.body
+        _payment_cta_url = _rendered_template.cta_url or payment_page_url or ""
     else:
         _balance_due_str = (
             f"{_currency_symbol}{balance_due:.2f}"
@@ -4534,23 +4535,54 @@ async def email_invoice(
             _email_subject = f"Invoice {inv_number} from {org_name}"
             _partial_summary = ""
 
-        _email_body = (
-            f"{_partial_summary}"
-            f"Hi,\n\n"
-            f"Please find attached invoice {inv_number} from {org_name}.\n\n"
-            f"Amount Due: {currency} {balance_due}\n\n"
-        )
-        if payment_page_url:
-            _email_body += f"Pay online: {payment_page_url}\n\n"
-        _email_body += (
-            f"If you have any questions, please don't hesitate to contact us.\n\n"
-            f"Thank you for your business.\n\n"
-            f"{org_name}\n"
-        )
+        _payment_cta_url = payment_page_url or ""
+
+        if _payment_cta_url:
+            _email_body = (
+                f"Hi {_customer_first_name or 'there'},\n\n"
+                f"Your invoice is ready. You can view it online using the button below.\n\n"
+                f"If you have any questions, please contact us.\n\n"
+                f"Kind regards,\n"
+                f"{org_name}\n"
+            )
+        else:
+            _email_body = (
+                f"Hi {_customer_first_name or 'there'},\n\n"
+                f"Your invoice is ready. You can view it online using the button below.\n\n"
+                f"If you have any questions, please contact us.\n\n"
+                f"Kind regards,\n"
+                f"{org_name}\n"
+            )
         if attachments_skipped_size:
             _email_body += (
                 "\nNote: Some attachments were too large to include in this email.\n"
             )
+
+    # Universal fallback: if no CTA URL yet (no payment link, no template
+    # button URL), generate a public share link so the customer can always
+    # view the invoice online.
+    if not _payment_cta_url:
+        import secrets as _secrets
+        _inv_data = invoice_dict.get("invoice_data_json") or {}
+        _share_token = _inv_data.get("share_token")
+        if not _share_token:
+            _share_token = _secrets.token_urlsafe(32)
+            # Persist the share token on the invoice
+            _inv_result = await db.execute(
+                select(Invoice).where(Invoice.id == invoice_id)
+            )
+            _inv_obj = _inv_result.scalar_one_or_none()
+            if _inv_obj:
+                _data = _inv_obj.invoice_data_json or {}
+                _data["share_token"] = _share_token
+                _inv_obj.invoice_data_json = _data
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(_inv_obj, "invoice_data_json")
+                await db.flush()
+        # Build the public share URL
+        from app.config import settings as _app_settings
+        _base = (base_url or getattr(_app_settings, "frontend_base_url", "") or "http://localhost").rstrip("/")
+        _payment_cta_url = f"{_base}/api/v1/public/invoice/{_share_token}"
 
     # Build HTML body with conditional email signature.
     # Use the unified transactional-HTML renderer so Gmail / Outlook
@@ -4577,25 +4609,18 @@ async def email_invoice(
         _final_text_body,
         subject=_email_subject,
         signature_html=_signature_html_block,
+        cta_url=_payment_cta_url if _payment_cta_url else None,
+        cta_label="View Invoice",
     )
 
     # Build attachments list: invoice PDF first, then any extra files
     # downloaded above (file_name → filename, mime_type → mime_type).
-    _email_attachments: list[EmailAttachment] = [
-        EmailAttachment(
-            filename=f"{inv_number}.pdf",
-            content=pdf_bytes,
-            mime_type="application/pdf",
-        )
-    ]
-    for fname, mtype, fdata in attachment_data:
-        _email_attachments.append(
-            EmailAttachment(
-                filename=fname,
-                content=fdata,
-                mime_type=mtype or "application/octet-stream",
-            )
-        )
+    # PDF is NOT attached to avoid Gmail's content filter silently
+    # dropping emails with financial PDF attachments from new/low-volume
+    # sending domains. Instead, the "View Invoice" CTA button links to
+    # the payment page where customers can view and download the PDF.
+    # Once domain reputation is established, this can be re-enabled.
+    _email_attachments: list[EmailAttachment] = []
 
     # Dispatch via the unified sender. Failover, error classification,
     # per-attempt + total time budgets are all handled inside.
@@ -4819,8 +4844,9 @@ async def send_payment_reminder(
                 f"Hi {customer_name},\n\n"
                 f"This is a friendly reminder that invoice {inv_number} "
                 f"has an outstanding balance of {currency} {balance_due:.2f}.\n\n"
-                f"Please arrange payment at your earliest convenience.\n\n"
-                f"Thank you,\n{org_name}"
+                f"You can pay this invoice securely online using the button below.\n\n"
+                f"If you have any questions, please don't hesitate to contact us.\n\n"
+                f"Kind regards,\n{org_name}"
             )
 
         # Mirror A1's text→HTML conversion so reminder emails always
@@ -4829,7 +4855,11 @@ async def send_payment_reminder(
         # document (proper <!DOCTYPE>, paragraph structure, <a href>
         # for any payment-link URLs) instead of newline → <br>.
         from app.integrations.email_sender import render_transactional_html
-        _html_body = render_transactional_html(body_text, subject=subject)
+        _html_body = render_transactional_html(
+            body_text, subject=subject,
+            cta_url=_payment_link if _payment_link else None,
+            cta_label="Pay Now",
+        )
 
         _message = EmailMessage(
             to_email=customer.email,

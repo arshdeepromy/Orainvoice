@@ -126,7 +126,34 @@
     .page-wrapper { margin: 0; padding: 0; max-width: 100%; }
     .invoice-card { box-shadow: none; border: none; border-radius: 0; }
     .card-inner { padding: 20px; }
-    @page { margin: 15mm; size: A4; }
+    @page { margin: 10mm; size: A4; }
+  }
+  /* Remove browser headers/footers (URL, date, page title) */
+  @page { margin: 10mm; }
+
+  /* Mobile responsive */
+  @media (max-width: 640px) {
+    .toolbar {
+      padding: 10px 12px;
+      flex-wrap: wrap; gap: 8px;
+    }
+    .toolbar-title { font-size: 13px; width: 100%; }
+    .toolbar-actions { width: 100%; flex-wrap: wrap; }
+    .btn { padding: 10px 12px; font-size: 12px; flex: 1; justify-content: center; min-height: 44px; }
+    .card-inner { padding: 16px; }
+    .header { flex-direction: column; gap: 16px; }
+    .inv-title { text-align: left; font-size: 22px; }
+    .inv-number { text-align: left; }
+    .balance-box { text-align: left; }
+    .bill-meta-row { flex-direction: column; gap: 12px; }
+    .meta-col { width: 100%; }
+    .vehicle-bar { flex-wrap: wrap; gap: 12px; padding: 12px; }
+    .items-table { font-size: 12px; }
+    .items-table thead th { padding: 8px 6px; font-size: 10px; }
+    .items-table tbody td { padding: 8px 6px; font-size: 12px; }
+    .totals-wrapper { justify-content: stretch; }
+    .totals-block { width: 100%; }
+    .balance-bar { font-size: 13px; }
   }
 </style>
 </head>
@@ -136,14 +163,26 @@
 <div class="toolbar">
   <div class="toolbar-title">{{ invoice.invoice_number or 'Draft Invoice' }} — {{ org.name }}</div>
   <div class="toolbar-actions">
+    {% if is_paid %}
+    <span class="btn" style="background:#dcfce7;color:#166534;border-color:#bbf7d0;cursor:default;">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      PAID
+    </span>
+    {% endif %}
+    {% if payment_url %}
+    <a href="{{ payment_url }}" class="btn btn-primary" style="text-decoration:none;">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z"/></svg>
+      Pay Online
+    </a>
+    {% endif %}
     <button class="btn" id="btn-print">
       <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0110.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0l.229 2.523a1.125 1.125 0 01-1.12 1.227H7.231c-.662 0-1.18-.568-1.12-1.227L6.34 18m11.318 0h1.091A2.25 2.25 0 0021 15.75V9.456c0-1.081-.768-2.015-1.837-2.175a48.055 48.055 0 00-1.913-.247M6.34 18H5.25A2.25 2.25 0 013 15.75V9.456c0-1.081.768-2.015 1.837-2.175a48.041 48.041 0 011.913-.247m10.5 0a48.536 48.536 0 00-10.5 0m10.5 0V3.375c0-.621-.504-1.125-1.125-1.125h-8.25c-.621 0-1.125.504-1.125 1.125v3.659M18 10.5h.008v.008H18V10.5zm-3 0h.008v.008H15V10.5z"/></svg>
       Print
     </button>
-    <button class="btn btn-primary" id="btn-pdf">
+    <a href="{{ request_path }}/pdf" class="btn btn-primary" style="text-decoration:none;">
       <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
       Save as PDF
-    </button>
+    </a>
   </div>
 </div>
 
@@ -360,9 +399,6 @@
 
 <script>
   document.getElementById('btn-print').addEventListener('click', function() {
-    window.print();
-  });
-  document.getElementById('btn-pdf').addEventListener('click', function() {
     window.print();
   });
 </script>

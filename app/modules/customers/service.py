@@ -598,6 +598,11 @@ async def get_customer_profile(
                 "model": gv.model if gv else None,
                 "year": gv.year if gv else None,
                 "colour": gv.colour if gv else None,
+                "odometer": gv.odometer_last_recorded if gv else None,
+                "wof_expiry": gv.wof_expiry.isoformat() if gv and gv.wof_expiry else None,
+                "cof_expiry": gv.cof_expiry.isoformat() if gv and gv.cof_expiry else None,
+                "inspection_type": gv.inspection_type if gv else None,
+                "service_due_date": gv.service_due_date.isoformat() if gv and gv.service_due_date else None,
                 "source": "global",
                 # GlobalVehicle records are created exclusively from CarJam
                 # lookups (manual entries land directly in OrgVehicle).
@@ -619,6 +624,11 @@ async def get_customer_profile(
                 "model": ov.model if ov else None,
                 "year": ov.year if ov else None,
                 "colour": ov.colour if ov else None,
+                "odometer": ov.odometer_last_recorded if ov else None,
+                "wof_expiry": ov.wof_expiry.isoformat() if ov and ov.wof_expiry else None,
+                "cof_expiry": ov.cof_expiry.isoformat() if ov and ov.cof_expiry else None,
+                "inspection_type": ov.inspection_type if ov else None,
+                "service_due_date": ov.service_due_date.isoformat() if ov and ov.service_due_date else None,
                 "source": "org",
                 # OrgVehicle.is_manual_entry is set to False when the row was
                 # promoted from a CarJam lookup, True when the user typed

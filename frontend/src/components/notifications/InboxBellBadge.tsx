@@ -5,7 +5,7 @@ interface UnreadCountResponse {
   count: number
 }
 
-const POLL_INTERVAL_MS = 30_000
+const POLL_INTERVAL_MS = 10_000
 
 /**
  * Small red badge showing the unread notification count.

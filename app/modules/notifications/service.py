@@ -43,6 +43,8 @@ class RenderedTemplate:
 
     subject: str
     body: str
+    cta_url: str | None = None
+    cta_label: str | None = None
 
 
 def _render_blocks_to_text(body_blocks: list[dict[str, Any]]) -> str:
@@ -51,7 +53,7 @@ def _render_blocks_to_text(body_blocks: list[dict[str, Any]]) -> str:
     Block type rendering rules:
       - header:  {content}\\n\\n
       - text:    {content}\\n\\n
-      - button:  {content}\\n{url}\\n\\n
+      - button:  (skipped — rendered as CTA button in HTML by the caller)
       - divider: ---\\n\\n
       - footer:  {content}\\n
       - image:   (skipped)
@@ -69,8 +71,9 @@ def _render_blocks_to_text(body_blocks: list[dict[str, Any]]) -> str:
         elif btype in ("text", "body"):
             parts.append(f"{content}\n\n")
         elif btype == "button":
-            url = block.get("url") or ""
-            parts.append(f"{content}\n{url}\n\n")
+            # Button blocks are rendered as styled CTA buttons in HTML
+            # by render_transactional_html — don't dump raw URL in text.
+            pass
         elif btype == "divider":
             parts.append("---\n\n")
         elif btype == "footer":
@@ -78,6 +81,20 @@ def _render_blocks_to_text(body_blocks: list[dict[str, Any]]) -> str:
         # logo, image, and unknown types are skipped in plain text
 
     return "".join(parts)
+
+
+def _extract_button_url(body_blocks: list[dict[str, Any]]) -> tuple[str | None, str | None]:
+    """Extract the first button block's URL and label from body_blocks.
+
+    Returns (url, label) or (None, None) if no button block exists.
+    """
+    for block in body_blocks:
+        if block.get("type") == "button":
+            url = (block.get("url") or "").strip()
+            label = (block.get("content") or "").strip()
+            if url:
+                return url, label or "View"
+    return None, None
 
 
 def _substitute_variables(text: str, variables: dict[str, str]) -> str:
@@ -132,6 +149,7 @@ async def resolve_template(
             # SMS templates store body as a single string in the "body" key
             body_text = template.get("body", "")
             rendered_body = _substitute_variables(body_text, variables)
+            _btn_url, _btn_label = None, None
         else:
             # Email templates use body_blocks JSONB array.
             # Substitute variables per-block so we can skip button blocks
@@ -154,13 +172,19 @@ async def resolve_template(
                     continue
                 resolved_blocks.append(resolved_block)
             rendered_body = _render_blocks_to_text(resolved_blocks)
+            _btn_url, _btn_label = _extract_button_url(resolved_blocks)
 
         subject_text = template.get("subject", "") or ""
 
         # Substitute variables in subject
         rendered_subject = _substitute_variables(subject_text, variables)
 
-        return RenderedTemplate(subject=rendered_subject, body=rendered_body)
+        return RenderedTemplate(
+            subject=rendered_subject,
+            body=rendered_body,
+            cta_url=_btn_url if channel == "email" else None,
+            cta_label=_btn_label if channel == "email" else None,
+        )
 
     except Exception as exc:
         logger.warning(

@@ -34,7 +34,7 @@ WEBHOOK_TOKEN_HEADER: str = "X-OraInvoice-Webhook-Token"
 # providers' bounce webhooks land on a public URL inside this app and
 # must carry the token; SMTP-only providers (mailgun, ses, gmail,
 # outlook, custom_smtp) have no webhook concept.
-WEBHOOK_TOKEN_PROVIDERS: set[str] = {"brevo", "sendgrid"}
+WEBHOOK_TOKEN_PROVIDERS: set[str] = {"brevo", "sendgrid", "resend"}
 
 
 async def list_email_providers(db: AsyncSession) -> dict:

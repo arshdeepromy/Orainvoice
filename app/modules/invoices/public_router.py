@@ -151,7 +151,11 @@ async def view_shared_invoice(
     currency_symbol = get_currency_symbol(invoice_dict.get("currency", "NZD"))
 
     # Build vehicle display fields using the shared utility
-    _issue_date_iso = invoice_dict.get("issue_date") or ""
+    _issue_date_raw = invoice_dict.get("issue_date") or ""
+    if hasattr(_issue_date_raw, "isoformat"):
+        _issue_date_iso = _issue_date_raw.isoformat()
+    else:
+        _issue_date_iso = str(_issue_date_raw) if _issue_date_raw else ""
     vehicle_display_data = invoice_dict.get("vehicle_display")
     fallback_fields = {
         "vehicle_rego": invoice_dict.get("vehicle_rego"),
@@ -167,6 +171,11 @@ async def view_shared_invoice(
         fallback=fallback_fields,
     )
 
+    # Determine if Pay Online button should show
+    _status = invoice.status or ""
+    _payment_url = invoice.payment_page_url or ""
+    _is_payable = _status in ("issued", "overdue", "partially_paid") and _payment_url
+
     # Render the shared invoice HTML template
     template_dir = pathlib.Path(__file__).resolve().parent.parent.parent / "templates" / "pdf"
     env = Environment(loader=FileSystemLoader(str(template_dir)), autoescape=True)
@@ -181,6 +190,9 @@ async def view_shared_invoice(
         payment_terms=payment_terms,
         terms_and_conditions=terms_and_conditions,
         vehicle_display_fields=vehicle_display_fields,
+        payment_url=_payment_url if _is_payable else "",
+        is_paid=_status == "paid",
+        request_path=f"/api/v1/public/invoice/{share_token}",
     )
 
     return HTMLResponse(
@@ -194,5 +206,51 @@ async def view_shared_invoice(
                 "font-src 'self'; "
                 "frame-ancestors 'none'"
             ),
+        },
+    )
+
+
+@router.get(
+    "/{share_token}/pdf",
+    summary="Download shared invoice as PDF (public, no auth required)",
+)
+async def download_shared_invoice_pdf(
+    share_token: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Generate and return the invoice PDF using WeasyPrint for a shared invoice."""
+    from fastapi.responses import Response
+
+    # Find invoice by share token
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.invoice_data_json["share_token"].astext == share_token
+        )
+    )
+    invoice = result.scalar_one_or_none()
+    if invoice is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Invoice not found"},
+        )
+
+    # Use the existing PDF generation service
+    from app.modules.invoices.service import generate_invoice_pdf
+    try:
+        pdf_bytes = await generate_invoice_pdf(
+            db, org_id=invoice.org_id, invoice_id=invoice.id
+        )
+    except Exception:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Failed to generate PDF"},
+        )
+
+    filename = f"{invoice.invoice_number or 'invoice'}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
         },
     )

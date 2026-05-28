@@ -66,6 +66,15 @@ class Quote(Base):
     vehicle_year: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
+    vehicle_odometer: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    vehicle_wof_expiry: Mapped[date | None] = mapped_column(
+        Date, nullable=True
+    )
+    vehicle_cof_expiry: Mapped[date | None] = mapped_column(
+        Date, nullable=True
+    )
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default="draft"
     )

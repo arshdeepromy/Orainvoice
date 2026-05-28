@@ -163,6 +163,7 @@
     <td><span class="vlbl">REGO</span><br><span class="rego-tag">{{ quote.vehicle_rego }}</span></td>
     <td><span class="vlbl">VEHICLE</span><br><span class="vval">{{ quote.vehicle_year or '' }} {{ quote.vehicle_make or '' }} {{ quote.vehicle_model or '' }}</span></td>
     {% if quote.vehicle_odometer %}<td><span class="vlbl">ODOMETER</span><br><span class="vval">{{ "{:,.0f}".format(quote.vehicle_odometer | float) }} km</span></td>{% endif %}
+    {% if quote.vehicle_cof_expiry %}<td><span class="vlbl">COF EXPIRY</span><br><span class="vval">{{ quote.vehicle_cof_expiry.strftime('%d %b %Y') }}</span></td>{% elif quote.vehicle_wof_expiry %}<td><span class="vlbl">WOF EXPIRY</span><br><span class="vval">{{ quote.vehicle_wof_expiry.strftime('%d %b %Y') }}</span></td>{% endif %}
   </tr></table>
 </div>
 {% endif %}
@@ -173,6 +174,7 @@
     {% if av.rego %}<td><span class="vlbl">REGO</span><br><span class="rego-tag">{{ av.rego }}</span></td>{% endif %}
     {% if av.make or av.model %}<td><span class="vlbl">VEHICLE</span><br><span class="vval">{{ av.year or '' }} {{ av.make or '' }} {{ av.model or '' }}</span></td>{% endif %}
     {% if av.odometer %}<td><span class="vlbl">ODOMETER</span><br><span class="vval">{{ "{:,.0f}".format(av.odometer | float) }} km</span></td>{% endif %}
+    {% set av_cof = av.cof_expiry | parse_date %}{% set av_wof = av.wof_expiry | parse_date %}{% if av_cof %}<td><span class="vlbl">COF EXPIRY</span><br><span class="vval">{{ av_cof.strftime('%d %b %Y') }}</span></td>{% elif av_wof %}<td><span class="vlbl">WOF EXPIRY</span><br><span class="vval">{{ av_wof.strftime('%d %b %Y') }}</span></td>{% endif %}
   </tr></table>
 </div>
 {% endfor %}
