@@ -113,14 +113,18 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
             and sms_provider.credentials_encrypted is not None
         )
 
-        # Email provider check
+        # Email provider check — gating only ("is any active provider configured?").
+        # Phase 5 of email-provider-unification enabled multi-active providers,
+        # so this query can now return more than one row. Use .first() (matches
+        # the SMS gating pattern above) instead of .scalar_one_or_none() which
+        # raises MultipleResultsFound on multi-active configs.
         email_prov_result = await db.execute(
             select(EmailProvider).where(
                 EmailProvider.is_active == True,  # noqa: E712
                 EmailProvider.credentials_set == True,  # noqa: E712
             ).order_by(EmailProvider.priority)
         )
-        email_configured = email_prov_result.scalar_one_or_none() is not None
+        email_configured = email_prov_result.scalars().first() is not None
 
         # Country code
         country_row = await db.execute(
