@@ -1079,14 +1079,25 @@ async def send_quote(
             f"Kind regards,\n{org_name}\n"
         )
 
-    # Build HTML body with conditional email signature (mirrors the
-    # previous in-line MIME builder: newline → ``<br>`` plus an
-    # ``<hr>``-separated signature when one is configured on the org).
-    _html_body = _email_body.replace("\n", "<br>")
+    # Build HTML body with conditional email signature, using the
+    # unified transactional-HTML renderer so the message is a
+    # well-formed document (proper <!DOCTYPE>, paragraph structure,
+    # <a href> for any embedded URLs) — matches the parity fix on
+    # A1 (email_invoice). The signature, when enabled, is rendered
+    # inside the document after a thin <hr>.
     _email_signature_enabled = org_settings.get("email_signature_enabled", False)
     _email_signature = org_settings.get("email_signature", "") or ""
-    if _email_signature_enabled and _email_signature.strip():
-        _html_body += "<hr>" + _email_signature
+    _signature_html_block = (
+        _email_signature
+        if _email_signature_enabled and _email_signature.strip()
+        else None
+    )
+    from app.integrations.email_sender import render_transactional_html
+    _html_body = render_transactional_html(
+        _email_body,
+        subject=_email_subject,
+        signature_html=_signature_html_block,
+    )
 
     # The legacy code set ``Reply-To`` to ``org_settings['email']`` when
     # configured. The unified sender's ``org_reply_to`` override drives

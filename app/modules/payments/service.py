@@ -694,10 +694,13 @@ async def _send_receipt_email(
             )
         )
 
-    # The plain-text body is converted to HTML via newline -> <br>
-    # substitution to mirror the prior MIME builder's behaviour
-    # (which only attached a text/plain part — there was no HTML body).
-    _html_body = body.replace("\n", "<br>")
+    # The plain-text body is converted to HTML via the unified
+    # transactional-HTML renderer so receipts carry a well-formed
+    # document (proper <!DOCTYPE>, paragraph structure, <a href> for
+    # any embedded URLs) — matches the deliverability fix on A1
+    # (email_invoice).
+    from app.integrations.email_sender import render_transactional_html
+    _html_body = render_transactional_html(body, subject=subject)
 
     _message = EmailMessage(
         to_email=to_email,

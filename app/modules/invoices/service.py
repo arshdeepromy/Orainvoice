@@ -4553,8 +4553,12 @@ async def email_invoice(
             )
 
     # Build HTML body with conditional email signature.
-    # The plain-text body is converted to HTML via newline -> <br>
-    # substitution to mirror the prior MIME builder's behaviour.
+    # Use the unified transactional-HTML renderer so Gmail / Outlook
+    # see a well-formed HTML document (proper <!DOCTYPE>, charset,
+    # paragraph structure, <a href> for the payment URL) instead of
+    # ``text.replace("\n", "<br>")``. Mailformedness was silently
+    # tipping borderline financial messages into Gmail's content
+    # filter even when SPF/DKIM/DMARC all passed.
     _final_text_body = _email_body
     if attachments_skipped_size and _rendered_template is not None:
         # Custom template: append the size-skipped notice (the fallback
@@ -4563,9 +4567,17 @@ async def email_invoice(
             "\nNote: Some attachments were too large to include in this email.\n"
         )
 
-    _html_body = _final_text_body.replace("\n", "<br>")
-    if _email_signature_enabled and _email_signature.strip():
-        _html_body += "<hr>" + _email_signature
+    from app.integrations.email_sender import render_transactional_html
+    _signature_html_block = (
+        _email_signature
+        if _email_signature_enabled and _email_signature.strip()
+        else None
+    )
+    _html_body = render_transactional_html(
+        _final_text_body,
+        subject=_email_subject,
+        signature_html=_signature_html_block,
+    )
 
     # Build attachments list: invoice PDF first, then any extra files
     # downloaded above (file_name → filename, mime_type → mime_type).
@@ -4812,8 +4824,12 @@ async def send_payment_reminder(
             )
 
         # Mirror A1's text→HTML conversion so reminder emails always
-        # carry a multipart/alternative body (newline → <br>).
-        _html_body = body_text.replace("\n", "<br>")
+        # carry a multipart/alternative body. Use the unified
+        # transactional-HTML renderer so the body is a well-formed
+        # document (proper <!DOCTYPE>, paragraph structure, <a href>
+        # for any payment-link URLs) instead of newline → <br>.
+        from app.integrations.email_sender import render_transactional_html
+        _html_body = render_transactional_html(body_text, subject=subject)
 
         _message = EmailMessage(
             to_email=customer.email,

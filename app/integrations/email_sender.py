@@ -204,6 +204,213 @@ class SendResult:
 
 
 # ---------------------------------------------------------------------------
+# Transactional HTML rendering (deliverability fix, post-Phase-9)
+# ---------------------------------------------------------------------------
+
+
+def _escape_html(text: str) -> str:
+    """Minimal HTML escape — same six chars Python's html.escape covers,
+    inlined so this module stays free of stdlib import surprises in
+    tight tests.
+
+    Only used by ``render_transactional_html``; both REST APIs (Brevo,
+    SendGrid) accept the result verbatim, and the SMTP path wraps it in
+    ``MIMEText("html")`` which sets the right Content-Type.
+    """
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#x27;")
+    )
+
+
+_URL_PATTERN_PREFIXES: tuple[str, ...] = ("https://", "http://")
+
+
+def _linkify_paragraph(line: str) -> str:
+    """Wrap any ``http(s)://...`` URLs in an HTML-escaped line in
+    ``<a href>`` anchors.
+
+    The line is assumed to be already HTML-escaped. We split on
+    whitespace, identify tokens that begin with ``http://`` or
+    ``https://`` (after stripping any trailing punctuation like ``.``,
+    ``,``, ``)``, ``"`` that's part of the surrounding sentence rather
+    than the URL itself), and replace them with anchor tags.
+
+    The point: Gmail's content classifier treats raw URL strings near
+    financial keywords much more aggressively than ``<a href>`` anchors
+    in well-formed transactional HTML.
+    """
+    tokens = line.split(" ")
+    out: list[str] = []
+    for token in tokens:
+        match_url, leading, trailing = _split_url_token(token)
+        if match_url is None:
+            out.append(token)
+            continue
+        # ``href`` value is the un-escaped URL; the visible label is the
+        # escaped form so any & or < in querystrings render correctly.
+        href = match_url.replace('"', "%22")
+        label = match_url
+        out.append(f'{leading}<a href="{href}">{label}</a>{trailing}')
+    return " ".join(out)
+
+
+def _split_url_token(token: str) -> tuple[str | None, str, str]:
+    """Return ``(url, leading_punct, trailing_punct)``.
+
+    ``url`` is ``None`` when the token isn't an HTTP(S) URL. Otherwise
+    ``leading_punct`` and ``trailing_punct`` capture punctuation that
+    sits next to the URL but isn't part of it (e.g. a closing paren or
+    full stop in ``"see (https://example.com).""``).
+    """
+    if not any(p in token for p in _URL_PATTERN_PREFIXES):
+        return None, "", ""
+    # Find where the URL starts.
+    start = -1
+    for prefix in _URL_PATTERN_PREFIXES:
+        idx = token.find(prefix)
+        if idx != -1 and (start == -1 or idx < start):
+            start = idx
+    if start == -1:
+        return None, "", ""
+    leading = token[:start]
+    rest = token[start:]
+    # Strip trailing punctuation off the URL.
+    trailing = ""
+    while rest and rest[-1] in ".,;:!?)]\"'":
+        trailing = rest[-1] + trailing
+        rest = rest[:-1]
+    if not rest or not any(rest.startswith(p) for p in _URL_PATTERN_PREFIXES):
+        return None, "", ""
+    return rest, leading, trailing
+
+
+def render_transactional_html(
+    text_body: str,
+    *,
+    subject: str | None = None,
+    signature_html: str | None = None,
+) -> str:
+    """Produce a well-formed HTML document for a transactional email.
+
+    Why this exists: Gmail's content classifier treats malformed HTML +
+    financial keywords + raw URLs as an aggressive spam signal — even
+    when SPF/DKIM/DMARC all pass and SpamAssassin gives the message a
+    clean score. The previous pattern of ``text.replace("\\n", "<br>")``
+    produced HTML with no ``<!DOCTYPE>``, no ``<html>``, no ``<head>``,
+    no charset declaration, and raw URL strings sitting next to "Amount
+    Due" / "Pay online" — visible to receiving servers as a high-risk
+    pattern that gets silently filtered post-accept.
+
+    What we produce instead:
+      * ``<!DOCTYPE html>`` + ``<html lang>`` + ``<head>`` with charset
+        and viewport meta tags (mobile-friendly).
+      * ``<title>`` from ``subject`` so Gmail's snippet-rendering has
+        something to chew on.
+      * Inline CSS for max-width, font, and link colour. Inline only —
+        no ``<style>`` blocks (Gmail strips those in some contexts).
+      * Plain-text body converted to ``<p>`` paragraphs (paragraph
+        breaks at blank lines, ``<br>`` only inside paragraphs for
+        single-newline soft wraps).
+      * URLs in the body wrapped as ``<a href>`` anchors.
+      * Optional pre-escaped ``signature_html`` rendered after a thin
+        ``<hr>``.
+
+    The output is suitable for both the Brevo REST ``htmlContent`` field
+    and SendGrid REST + SMTP ``MIMEText("html")`` paths — none of them
+    sanitise or rewrite.
+
+    Args:
+        text_body: Plain-text email body. Newlines are interpreted: a
+            blank line starts a new ``<p>``; single newlines within a
+            paragraph become ``<br>``.
+        subject: Optional ``<title>`` for the document head. Falls back
+            to "Notification" when not supplied.
+        signature_html: Optional already-trusted, pre-escaped HTML that
+            an admin configured. Rendered verbatim after an ``<hr>`` so
+            org-branded sign-offs still work.
+
+    Returns:
+        A complete HTML document string.
+    """
+    body_html = _text_to_paragraphs_html(text_body or "")
+    sig_html = (signature_html or "").strip()
+    sig_block = f'<hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0">{sig_html}' if sig_html else ""
+
+    title = _escape_html(subject) if subject else "Notification"
+    doc = (
+        '<!DOCTYPE html>'
+        '<html lang="en">'
+        '<head>'
+        '<meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>{title}</title>'
+        '</head>'
+        '<body style="margin:0;padding:24px;background:#f9fafb;'
+        'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,'
+        'Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;'
+        'color:#111827">'
+        '<div style="max-width:640px;margin:0 auto;background:#ffffff;'
+        'padding:32px;border-radius:8px">'
+        f'{body_html}'
+        f'{sig_block}'
+        '</div>'
+        '</body>'
+        '</html>'
+    )
+    return doc
+
+
+def _text_to_paragraphs_html(text: str) -> str:
+    """Convert a plain-text body to a sequence of ``<p>`` blocks.
+
+    Rules:
+      * Split on runs of blank lines (``\\n\\s*\\n``) into paragraphs.
+      * Within a paragraph, single newlines become ``<br>`` for soft
+        wrapping.
+      * Each line is HTML-escaped first, then linkified — so a literal
+        ``<`` in the input renders as ``&lt;`` and a URL gets wrapped
+        in ``<a href>`` after the escape pass (the URL's own characters
+        like ``&`` in querystrings are escaped before the anchor is
+        built; see ``_linkify_paragraph``).
+
+    Empty input produces an empty string (caller may still wrap it in
+    the document chrome — that's fine, an empty ``<div>`` is harmless
+    and uncommon).
+    """
+    if not text:
+        return ""
+    # Split on one or more blank lines (with optional whitespace).
+    paragraphs: list[str] = []
+    buffer: list[str] = []
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if raw_line.strip() == "":
+            if buffer:
+                paragraphs.append("\n".join(buffer))
+                buffer = []
+            continue
+        buffer.append(raw_line)
+    if buffer:
+        paragraphs.append("\n".join(buffer))
+
+    rendered: list[str] = []
+    for para in paragraphs:
+        # Escape first so our linkifier operates on safe text.
+        lines = [_escape_html(line) for line in para.split("\n")]
+        # Linkify each line individually (URLs don't span lines).
+        linked = [_linkify_paragraph(line) for line in lines]
+        # Soft wrap: join with <br> for newlines inside the paragraph.
+        body = "<br>".join(linked)
+        rendered.append(
+            '<p style="margin:0 0 16px 0">' + body + '</p>'
+        )
+    return "".join(rendered)
+
+
+# ---------------------------------------------------------------------------
 # Private dispatch functions (design Components §4)
 # ---------------------------------------------------------------------------
 
