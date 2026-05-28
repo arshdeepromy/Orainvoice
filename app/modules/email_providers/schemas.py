@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pydantic import BaseModel, Field
+from typing import Any
+from pydantic import BaseModel, Field, field_serializer
 
 
 class EmailProviderResponse(BaseModel):
-    """Single email provider."""
+    """Single email provider.
+
+    Bug 2 fix (email-delivery-visibility-fixes spec, task 14): any
+    ``*_webhook_secret`` key in the ``config`` dict is redacted to the
+    sentinel string ``"***"`` before the payload leaves this process.
+    The raw secret is needed only by the bounce-webhook handler at
+    ``app/modules/notifications/router.py``, which reads it directly
+    from the ORM ``email_providers.config`` column — never via this
+    response shape — so redacting here closes the read-side leak
+    without breaking webhook signature verification.
+    """
     id: str
     provider_key: str
     display_name: str
@@ -22,6 +33,22 @@ class EmailProviderResponse(BaseModel):
     setup_guide: str | None = None
     created_at: datetime
     updated_at: datetime
+
+    @field_serializer("config")
+    def _redact_webhook_secrets(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Replace any ``*_webhook_secret`` value with ``"***"``.
+
+        Per Bug 2 / Req 3.9 + 4.9: redact ``brevo_webhook_secret`` and
+        ``sendgrid_webhook_secret`` (and any future ``<provider>_webhook_secret``
+        key by suffix match) when present; pass other config keys
+        (``from_email``, ``from_name``, ``reply_to``) through unchanged.
+        """
+        if not config:
+            return config
+        return {
+            key: ("***" if key.endswith("_webhook_secret") and value else value)
+            for key, value in config.items()
+        }
 
 
 class EmailProviderListResponse(BaseModel):
@@ -54,6 +81,14 @@ class EmailProviderCredentialsRequest(BaseModel):
     from_email: str | None = Field(None, description="Default from email")
     from_name: str | None = Field(None, description="Default from display name")
     reply_to: str | None = Field(None, description="Reply-to address")
+    webhook_secret: str | None = Field(
+        None,
+        description=(
+            "Webhook signing secret (provider-specific). Persisted "
+            "under config['<provider_key>_webhook_secret']. Empty "
+            "string is treated as 'no change'."
+        ),
+    )
 
 
 class EmailProviderCredentialsResponse(BaseModel):

@@ -1276,6 +1276,23 @@ async def _send_booking_confirmation_email(
             "Booking confirmation email sent: org=%s, booking=%s, to=%s, provider=%s",
             org_id, booking_id, customer_email, result.provider_key,
         )
+        # Success-path notification_log row (Bug 1 / Requirement 3.1).
+        # Best-effort: matches the surrounding site's tolerance to logging
+        # failures (this function does not raise on send failure either).
+        from app.modules.notifications.service import log_email_sent as _log_email_sent
+        try:
+            await _log_email_sent(
+                db, org_id=org_id, recipient=customer_email,
+                template_type="booking_confirmation", subject=subject,
+                status="sent", channel="email",
+                provider_key=result.provider_key,
+                provider_message_id=result.provider_message_id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to log success for booking confirmation email (booking %s)",
+                booking_id,
+            )
         return True
 
     last_error = result.error or "send failed"

@@ -807,3 +807,404 @@ PHASE 9 — Cleanup (next release)
 8. MFA OTP supports failover to a 2nd provider.
 9. The legacy admin `/admin/integrations/smtp` page is gone from the frontend.
 10. All existing tests pass; new failover/dispatch tests pass; manual smoke tests in Section 7.3 all green.
+
+
+---
+
+## 14. Plan Addendum — Gap-Audit Fixes (2026-05-26)
+
+This section captures eight gaps found during a full code re-audit on 2026-05-26 against HEAD. Where this addendum conflicts with earlier sections, **this addendum wins**. The original sections are kept intact so the history of the plan stays legible, but execution must follow the items below.
+
+### 14.1 Inventory updates — newly discovered email-send sites
+
+The original inventory in Section 2 missed two sites. Add them.
+
+#### B18 — Fleet portal invite (Group B — uses `send_email_task`)
+
+| Field | Value |
+|---|---|
+| Location | [`app/modules/fleet_portal/admin_router.py`](app/modules/fleet_portal/admin_router.py) |
+| Function | `_send_fleet_portal_invite_email` (defined ~L1151, dispatches `send_email_task` ~L1231) |
+| Template | `fleet_portal_invite` |
+| Notes | Uses `org_sender_name=org_name`, has `log_email_sent` already wired. Auto-fixed by Phase 2 (no per-site change), but the printable Phase 2 checklist must list it so QA can manually smoke-test fleet invites alongside customer-portal invites. |
+
+#### C4 — Org-admin invitation stub (Group C — TODO that only logs)
+
+| Field | Value |
+|---|---|
+| Location | [`app/modules/admin/service.py:347`](app/modules/admin/service.py#L347) |
+| Function | `_send_org_admin_invitation_email(email, token, org_name)` |
+| Behaviour today | `logger.info("Org_Admin invitation email queued for %s ...", email, ...)` then returns. The "TODO: Replace with Celery task ..." comment confirms this is unfinished. |
+| Risk | Self-serve org provisioning currently emits no email. The org-admin recipient never gets the signup link. Same severity class as the password-reset stub. |
+| Migration | Phase 4 — implement using `send_email_task` (not raw smtplib — Phase 2 will already exist by then, so this is one call, not a copy of A8). |
+
+#### Re-baseline of Group A line numbers (HEAD as of 2026-05-26)
+
+The Section 2 table line numbers have drifted since the 2025-05-25 re-baseline. Function names remain authoritative; the canonical line numbers right now are:
+
+| # | Function | File | New line |
+|---|---|---|---|
+| A1 | `email_invoice` | `app/modules/invoices/service.py` | 4294 |
+| A2 | `send_payment_reminder` | `app/modules/invoices/service.py` | 4747 |
+| A3 | quote email send | `app/modules/quotes/service.py` | 989 |
+| A4 | `_send_receipt_email` | `app/modules/payments/service.py` | 525 |
+| A5 | `email_service_history_report` | `app/modules/vehicles/report_service.py` | 293 |
+| A6 | `_send_booking_confirmation_email` | `app/modules/bookings/service.py` | 1162 |
+| A7 | `_send_permanent_lockout_email` | `app/modules/auth/service.py` | 360 |
+| A8 | `_send_invitation_email` | `app/modules/auth/service.py` | 2523 |
+| A9 | `send_verification_email` | `app/modules/auth/service.py` | 2825 |
+| A10 | `send_receipt_email` | `app/modules/auth/service.py` | 3027 |
+| A11 | `_send_email_otp` | `app/modules/auth/mfa_service.py` | 370 |
+| A12 | `notify_customer` | `app/modules/customers/service.py` | 679 |
+| A13 | `submit_demo_request` | `app/modules/landing/router.py` | 57 |
+| A14 | `send_invoice_payment_link_email` | `app/modules/payments/service.py` | 378 |
+
+Group B `customers/service.py` send-portal-link is now at L2283 / `send_email_task` call at L2346 (was documented as L2087).
+
+Treat all line numbers in this plan as **drift-prone**. The grep-by-function-name patterns in Section 11's checklist remain authoritative.
+
+### 14.2 Phase 3 grep gate — resolve the contradiction with `email_providers/service.py`
+
+The original Phase 3 gate says `grep -r "import smtplib" app/` returns only `app/integrations/email_sender.py`. A side-note then says `email_providers/service.py::test_email_provider`'s inline `smtplib` block "can be done as part of Phase 3 or deferred to Phase 9".
+
+**Resolution:** the refactor of `test_email_provider` to call shared `_dispatch_smtp` / `_dispatch_brevo_rest` helpers is **part of Phase 3, not Phase 9**. It must land before Phase 3's gate is asserted. Update the Phase 3 checklist:
+
+```
+PHASE 3 — Group A migrations (one PR per site)
+[ ] A1–A14 (as listed)
+[ ] email_providers/service.py::test_email_provider — extract inline SMTP block,
+    call shared _dispatch_smtp helper from email_sender.py
+[ ] grep -rn "import smtplib" app/ returns ONLY app/integrations/email_sender.py
+```
+
+The two helpers added in Phase 1 (`_dispatch_smtp`, `_dispatch_brevo_rest`) must be **public** within the `email_sender` module (no leading underscore in the public API surface used by `test_email_provider`) — or expose a thin `dispatch_one_provider(...)` public wrapper that takes a provider row and a message. Choose one; document the choice in Phase 1.
+
+### 14.3 Phase 1 additions — error classification, timeouts, and provider-config reads
+
+Three implementation details were missing from Phase 1 and would cause real production issues if not addressed.
+
+#### 14.3.1 Error classification (hard-fail vs soft-fail)
+
+Today's Group A loops blindly try every provider on every error. After unification this becomes a real waste: a 400 "invalid recipient" from Brevo will burn through SendGrid, Mailgun, Gmail, and custom_smtp before giving up — every provider will report the same error because the recipient address is what's wrong, not the provider.
+
+Classify errors before continuing the loop:
+
+```python
+class FailureKind(str, Enum):
+    HARD_RECIPIENT = "hard_recipient"   # 400 invalid email, hard bounce on send
+    HARD_PAYLOAD   = "hard_payload"     # message too large, malformed MIME
+    SOFT_PROVIDER  = "soft_provider"    # 5xx, network timeout, smtplib connect fail
+    SOFT_AUTH      = "soft_auth"        # 401/403, SMTP auth fail (one provider's keys revoked)
+
+# In the dispatch loop:
+#   FailureKind.HARD_RECIPIENT  → break the loop, return failure (no other provider will accept it)
+#   FailureKind.HARD_PAYLOAD    → break the loop, return failure (same payload everywhere)
+#   FailureKind.SOFT_PROVIDER   → continue to next provider
+#   FailureKind.SOFT_AUTH       → continue to next provider (this provider's creds are bad, others may be fine)
+```
+
+The `EmailAttempt` dataclass must include `failure_kind: FailureKind | None` so the audit trail records why each step happened.
+
+Map the error sources:
+
+| Source | Detection |
+|---|---|
+| Brevo REST | response status 400 with `code='invalid_parameter'` and message containing `email` → HARD_RECIPIENT. 401/403 → SOFT_AUTH. 4xx other / 5xx / network → SOFT_PROVIDER. |
+| SendGrid REST | status 400 with errors list mentioning recipient → HARD_RECIPIENT. 401/403 → SOFT_AUTH. Else → SOFT_PROVIDER. |
+| smtplib | `SMTPRecipientsRefused`, `SMTPNotSupportedError(5xx)` for unrecognised recipient → HARD_RECIPIENT. `SMTPDataError(552)` (message size) → HARD_PAYLOAD. `SMTPAuthenticationError` → SOFT_AUTH. `SMTPConnectError`, `SMTPHeloError`, socket timeout → SOFT_PROVIDER. |
+
+Add unit tests covering all four kinds.
+
+#### 14.3.2 Per-attempt timeout and total time budget
+
+Today's `EmailClient.send` does not bound SMTP connect / HELO / DATA. A slow or dead provider can stall the request for the full TCP timeout (~75s on Linux defaults). Across three providers that's a worst-case ~225s, which exceeds the FastAPI uvicorn worker keepalive and causes 502s upstream of nginx.
+
+- Add a module-level `EMAIL_PER_ATTEMPT_TIMEOUT_SECONDS = 15`
+- Add `EMAIL_TOTAL_BUDGET_SECONDS = 45`
+- Each `_dispatch_*` call must respect the per-attempt timeout (httpx `timeout=`, smtplib `socket.settimeout`)
+- `send_email` short-circuits the loop if the elapsed time exceeds the total budget; remaining providers go un-tried and the result reports `error="time budget exceeded"` with the partial `attempts` list
+
+Surface both constants from `email_sender` so they're tunable from a single place.
+
+#### 14.3.3 `from_email` / `from_name` / `reply_to` — read from `EmailProvider.config`
+
+The plan in 4.2 implies the per-provider `config` JSONB carries `from_email`, `from_name`, `reply_to` but doesn't spell out the precedence chain. State it explicitly:
+
+```
+Effective from_name        = org_sender_name (caller arg)
+                          || provider.config['from_name']
+                          || ""
+
+Effective from_email       = provider.config['from_email']
+                          || (raise: provider misconfigured — no from_email)
+
+Effective reply_to         = org_reply_to (caller arg)
+                          || provider.config['reply_to']
+                          || None  (omit header)
+```
+
+If a provider has no `from_email` in its `config`, treat it as misconfigured and **skip it with `failure_kind=SOFT_PROVIDER, error="missing from_email"`** rather than raising. The next provider may be configured correctly. Surface this through `EmailAttempt` so admins can see the misconfiguration in the failure log.
+
+### 14.4 Phase 5 — race-safe deactivate guard
+
+The "≥ 1 active provider must remain" guard in Phase 5 is racy under concurrent admin actions. Two parallel deactivate calls of the last two providers can both pass the guard check (each sees the other as still active) and end up with zero active providers.
+
+Mitigate inside `deactivate_email_provider`:
+
+```python
+async def deactivate_email_provider(db, *, provider_id, ...):
+    # Acquire row-level lock on ALL active+credentials_set rows so concurrent
+    # deactivate calls serialise behind us.
+    locked = await db.execute(
+        select(EmailProvider)
+        .where(
+            EmailProvider.is_active == True,        # noqa: E712
+            EmailProvider.credentials_set == True,  # noqa: E712
+        )
+        .with_for_update()
+    )
+    rows = list(locked.scalars().all())
+
+    target = next((r for r in rows if r.id == provider_id), None)
+    if target is None:
+        # Already inactive or doesn't have credentials — idempotent return
+        return _provider_to_dict_existing(...)
+
+    remaining_after = [r for r in rows if r.id != provider_id]
+    if len(remaining_after) == 0:
+        raise HTTPException(409, "Activate another provider before deactivating this one — at least one active email provider is required for outbound mail.")
+
+    target.is_active = False
+    await db.flush()
+    return _provider_to_dict(target)
+```
+
+Same pattern for the activate endpoint when validating that the row exists. Add a regression test: spawn two concurrent deactivate coroutines against the last two providers; assert exactly one succeeds and one returns 409, and the count of active providers is 1.
+
+### 14.5 Phase 8b — rotate-keys quiescence requirement
+
+Phase 8b decrypts the legacy `integration_configs[smtp]` blob and re-encrypts into `email_providers.credentials_encrypted`. If `app/cli/rotate_keys.py` is mid-flight against the legacy table, the migration could read a row encrypted under the new master key with the old DEK reference, and decrypt fails.
+
+Add to Phase 8b's operational requirements (5th item):
+
+> **Rotate-keys quiescence.** Before running migration 8b, confirm `rotate_keys.py` is not running and has completed any in-progress rotation. The simplest enforcement: take a PG advisory lock that `rotate_keys.py` also acquires, e.g. `pg_advisory_lock(hashtext('email_provider_rotate'))`. Update `rotate_keys.py` in the same PR to acquire the same advisory lock. If 8b cannot acquire the lock within 60 seconds, abort and reschedule the maintenance window.
+
+Update `app/cli/rotate_keys.py` task in the Phase 8 checklist:
+
+```
+PHASE 8b — Legacy SMTP → email_providers data migration
+[ ] rotate_keys.py acquires pg_advisory_lock(hashtext('email_provider_rotate'))
+    around its EmailProvider re-encrypt loop
+[ ] Migration 8b acquires the same advisory lock as its first step;
+    aborts cleanly with a clear error message if the lock is held
+[ ] Pre-migration check: confirm no rotate_keys process is running
+    (in addition to advisory lock — defence in depth)
+```
+
+### 14.6 No-active-provider in-app alert
+
+Phase 5 protects against deactivating the last provider via the API, but doesn't cover the case where every provider has its credentials cleared, or every provider rotates an expired key on the same day. The unified sender will return `success=False, attempts=[], error="No active email providers configured"` and that's it — silent.
+
+Add to Phase 4 (or the unified sender itself):
+
+- When `send_email` returns with `attempts=[]` (no providers attempted at all — i.e. zero active+credentials_set rows), call `create_in_app_notification(category='email_failure', severity='critical', recipient_role='global_admin', title='No email providers configured', body='Outbound email is currently disabled. Configure at least one provider in Admin > Email Providers.', ...)`. Coalesce so we don't fire one per email send — once per hour, deduped by category.
+- When all attempts in the chain fail with `SOFT_AUTH`, fire the same notification with body explaining "all providers' credentials appear to be invalid". Coalesce per-day.
+- Add `tests/test_email_no_providers_alert.py` and `tests/test_email_all_auth_fail_alert.py`.
+
+### 14.7 New Phase 8c — Bounce correlation, delivery tracking, and recipient blocklist
+
+The original plan mentions bounce webhooks only as an open question (Section 10 §2). With the unified sender in place, the bounce path becomes the right place to extend, because every email now has a known provider attribution.
+
+#### 14.7.1 What exists today
+
+`app/modules/notifications/router.py` has both webhooks:
+
+- `POST /webhooks/brevo-bounce` — handles `hard_bounce`, `soft_bounce`, `blocked`, `invalid_email` events. Sets `Customer.email_bounced = True`.
+- `POST /webhooks/sendgrid-bounce` — handles `bounce`, `dropped`, `deferred`. Same effect.
+
+What today does **not** do:
+
+1. Update the originating `notification_log` row to `status='bounced'`. Bounced invoice emails still show `status='sent'` in the admin UI.
+2. Track bounces for non-customer recipients (org admins, fleet drivers, landing-page demo, password reset, MFA OTP).
+3. Show org admins which addresses have stopped working.
+4. Stop the next outbound to a hard-bounced address — the unified sender will keep trying.
+5. Distinguish hard from soft bounces in the customer record (one boolean today).
+
+#### 14.7.2 Phase 8c work breakdown
+
+**Schema (one migration):**
+```
+ALTER TABLE notification_log
+  ADD COLUMN provider_message_id TEXT NULL,
+  ADD COLUMN bounced_at TIMESTAMPTZ NULL,
+  ADD COLUMN bounce_reason TEXT NULL,
+  ADD COLUMN delivered_at TIMESTAMPTZ NULL;
+CREATE INDEX ix_notification_log_provider_message_id
+  ON notification_log(provider_message_id)
+  WHERE provider_message_id IS NOT NULL;
+
+CREATE TABLE bounced_addresses (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  email_address TEXT NOT NULL,
+  bounce_kind TEXT NOT NULL CHECK (bounce_kind IN ('hard','soft','blocked')),
+  reason TEXT NULL,
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  hit_count INTEGER NOT NULL DEFAULT 1,
+  expires_at TIMESTAMPTZ NULL,  -- NULL = never expires (hard); soft bounces expire in 7d
+  UNIQUE (COALESCE(org_id::text, ''), email_address)
+);
+CREATE INDEX ix_bounced_addresses_email ON bounced_addresses(email_address);
+CREATE INDEX ix_bounced_addresses_expires ON bounced_addresses(expires_at)
+  WHERE expires_at IS NOT NULL;
+```
+
+**Sender changes (`email_sender.py`):**
+- Capture provider message IDs:
+  - Brevo REST: response JSON `messageId`
+  - SendGrid REST: response header `X-Message-Id`
+  - SMTP: synthesise from `Message-ID` header (RFC 5322; we already build the MIME envelope so we control this)
+- After send, persist `provider_message_id` via `update_log_status(..., provider_message_id=...)`.
+- Before send, query `bounced_addresses` for `(org_id, recipient)` with `expires_at > now() OR expires_at IS NULL`. If hit:
+  - Hard bounce → return `success=False, attempts=[], error="recipient is on the bounce list", failure_kind=HARD_RECIPIENT`. Caller decides whether to fire the in-app notification.
+  - Soft bounce → log a warning and proceed. Soft bounces are advisory.
+
+**Webhook changes (`notifications/router.py`):**
+- Brevo / SendGrid bounce webhooks gain a "find the originating notification_log row by provider_message_id" step.
+- When found: set `notification_log.status='bounced'`, `bounced_at=now()`, `bounce_reason=event.reason`. If still in queued/pending, also clear `error_message` and replace with the bounce reason.
+- Always upsert into `bounced_addresses`. Hard bounces: `expires_at=NULL`. Soft bounces: `expires_at = now() + 7 days`. `hit_count` increments on dup.
+- Brevo `delivered` event (currently ignored): set `notification_log.delivered_at = now()` if found by message id. Optional but cheap.
+- For each bounce, if the recipient maps to an active customer or a user, fire `create_in_app_notification(category='email_bounced', recipient_org_admin=True, body='Email to {addr} bounced: {reason}. Please verify the address.')`.
+
+**Per-provider webhook secret:**
+- The current `app_settings.brevo_webhook_secret` env var only supports a single platform-wide secret. Move to `email_providers.config['brevo_webhook_secret']` / `['sendgrid_webhook_secret']`. The webhook handler iterates active providers and tries each secret; first match wins. Keep the env var as a fallback for one release.
+
+**Frontend (admin):**
+- New tab in `EmailProviders.tsx` (or new page `EmailDeliveryHealth.tsx`) showing:
+  - Last 100 bounces with timestamp, recipient, provider, reason
+  - "Clear bounce" button per row (soft-deletes from `bounced_addresses` so the next attempt isn't blocked)
+  - Aggregate stats: bounces in last 24h / 7d / 30d, broken down by provider
+- Notification log table gets a "Status" column that renders bounce state (already partially planned in Phase 8a — this completes it).
+
+**Tests:**
+- `tests/test_email_bounce_correlation.py` — outgoing email gets message_id; bounce webhook hits; notification_log.status='bounced'.
+- `tests/test_bounced_address_blocklist.py` — second send to same hard-bounced address is short-circuited.
+- `tests/test_bounce_per_provider_secret.py` — webhook secret read from email_providers.config; iteration falls through to next provider's secret.
+- `tests/test_email_delivery_event.py` — Brevo `delivered` event sets `delivered_at`.
+- Property test (Hypothesis): no matter what bounce events arrive, `notification_log.status` only transitions through the legal states (`queued → sent → delivered` OR `queued → sent → bounced` OR `queued → failed`).
+
+**Operational notes:**
+- The `bounced_addresses` table is bounded by N×|active customers + active users + last-90-days ad-hoc recipients|. At current Pi-PROD scale (611 customers, 9 users) this is single-digit-MB indefinitely — no archival needed in v1.
+- Hard-bounced address auto-cleanup: a daily task deletes rows where `expires_at < now()` (only soft bounces have `expires_at`); hard bounces stay forever unless an admin clears them.
+
+#### 14.7.3 Acceptance criteria for Phase 8c
+
+11. Every successful email send writes `notification_log.provider_message_id`.
+12. A hard-bounce webhook event for a known message_id flips `notification_log.status='bounced'` within 5 seconds.
+13. A second send to a hard-bounced address is short-circuited with `failure_kind=HARD_RECIPIENT` and does not consume a provider attempt.
+14. Org admins receive an in-app notification within 5 seconds of a hard bounce on a customer or user address.
+15. Brevo and SendGrid webhook secrets are read from `email_providers.config` first, env var second; rotating an env-only deployment keeps working.
+16. Admin UI exposes a Delivery Health view listing recent bounces and supporting "clear bounce" per address.
+
+#### 14.7.4 Phase 8c position in the sequence
+
+Schedule Phase 8c **after** Phase 8a (which adds `provider_key` to `notification_log`) and **alongside or before** Phase 9 cleanup. Phase 8c is independently shippable: even before Phase 8b's data migration, the new bounce correlation works for any email sent via the unified sender.
+
+### 14.8 Updated acceptance criteria (whole project)
+
+Add to Section 13:
+
+11. Every email-sending function in the codebase (Group A14, Group B18, and the C1–C4 stubs) routes through `app/integrations/email_sender.py::send_email`. `_send_org_admin_invitation_email` and `_send_fleet_portal_invite_email` are explicitly verified.
+12. Hard-bounce errors short-circuit the failover chain instead of consuming every provider attempt.
+13. `send_email` honours per-attempt and total time budgets. A frozen provider does not stall the request beyond `EMAIL_PER_ATTEMPT_TIMEOUT_SECONDS`.
+14. Concurrent deactivate calls on the last two active providers serialise: exactly one succeeds, the other returns 409.
+15. If every provider becomes unconfigured at once, an in-app notification fires to global_admin within one send attempt (deduped per hour).
+16. (Phase 8c) Bounces correlate to the originating `notification_log` row via `provider_message_id`; a known-hard-bounced address is refused before any provider is tried.
+
+### 14.9 Updated execution checklist (delta only)
+
+Append to Section 11:
+
+```
+PHASE 1 (additions)
+[ ] Error classification: HARD_RECIPIENT / HARD_PAYLOAD / SOFT_AUTH / SOFT_PROVIDER
+[ ] EmailAttempt.failure_kind populated; loop short-circuits on HARD_*
+[ ] EMAIL_PER_ATTEMPT_TIMEOUT_SECONDS / EMAIL_TOTAL_BUDGET_SECONDS constants
+[ ] Per-provider `config['from_email']` / `from_name` / `reply_to` precedence
+    chain implemented (caller args > provider config > sane defaults)
+[ ] dispatch_one_provider(...) public helper exposed for test_email_provider reuse
+[ ] tests/test_email_sender_error_classification.py
+[ ] tests/test_email_sender_timeouts.py
+
+PHASE 3 (additions)
+[ ] email_providers/service.py::test_email_provider — extract inline SMTP block,
+    call shared dispatch_one_provider helper
+[ ] grep -rn "import smtplib" app/ returns ONLY app/integrations/email_sender.py
+
+PHASE 4 (additions)
+[ ] C4 _send_org_admin_invitation_email — implement using send_email_task
+[ ] No-active-provider in-app notification (deduped hourly)
+[ ] All-providers-auth-fail in-app notification (deduped daily)
+[ ] tests/test_email_no_providers_alert.py
+[ ] tests/test_email_all_auth_fail_alert.py
+
+PHASE 5 (additions)
+[ ] deactivate_email_provider uses with_for_update() row lock
+[ ] Concurrent-deactivate regression test
+[ ] activate_email_provider uses same lock pattern (defence in depth)
+
+PHASE 8b (additions)
+[ ] rotate_keys.py and migration 8b both acquire pg_advisory_lock(hashtext('email_provider_rotate'))
+[ ] Pre-migration check confirms no rotate_keys process active
+
+PHASE 8c — Bounce correlation, delivery tracking, blocklist
+[ ] Migration: notification_log.provider_message_id / bounced_at / bounce_reason / delivered_at
+[ ] Migration: bounced_addresses table with org-scoped uniqueness
+[ ] email_sender.py captures provider_message_id from each transport
+[ ] email_sender.py pre-send check against bounced_addresses; short-circuit on hard hit
+[ ] brevo_bounce_webhook updates notification_log by provider_message_id
+[ ] sendgrid_bounce_webhook updates notification_log by provider_message_id
+[ ] Brevo `delivered` event updates notification_log.delivered_at
+[ ] Per-provider webhook secret read from email_providers.config
+[ ] In-app notification on bounce affecting active customer/user
+[ ] Daily task cleans expired soft-bounce rows
+[ ] Frontend: Delivery Health tab (recent bounces, clear-bounce action, aggregate stats)
+[ ] Tests: bounce correlation, blocklist short-circuit, per-provider secret, delivery event, property test
+```
+
+### 14.10 Files-changed delta
+
+Add to the Section 12 inventory:
+
+**New files (Phase 4 / 8c):**
+- `app/modules/notifications/bounce_correlation.py` — webhook → `notification_log` correlator + `bounced_addresses` upsert
+- `frontend/src/pages/admin/EmailDeliveryHealth.tsx` — new admin tab
+- `tests/test_email_no_providers_alert.py`
+- `tests/test_email_all_auth_fail_alert.py`
+- `tests/test_email_sender_error_classification.py`
+- `tests/test_email_sender_timeouts.py`
+- `tests/test_email_bounce_correlation.py`
+- `tests/test_bounced_address_blocklist.py`
+- `tests/test_bounce_per_provider_secret.py`
+- `tests/test_email_delivery_event.py`
+- `tests/test_email_provider_concurrent_deactivate.py`
+- `alembic/versions/XXXX_add_bounce_correlation_columns.py`
+- `alembic/versions/XXXX_create_bounced_addresses.py`
+
+**Modified — backend (additions):**
+
+| File | Phase | What |
+|---|---|---|
+| `app/modules/admin/service.py` | 4 (C4) | Implement `_send_org_admin_invitation_email` via `send_email_task` |
+| `app/modules/fleet_portal/admin_router.py` | 2 (B18) | Verified, no per-site change required (auto-inherits Phase 2 plumbing) |
+| `app/modules/notifications/router.py` | 8c | Bounce webhooks: correlate to notification_log, upsert bounced_addresses, fire in-app notification |
+| `app/modules/notifications/service.py` | 8c | New `flag_bounce(...)` helper; `update_log_status` accepts `provider_message_id`, `bounced_at`, `delivered_at`, `bounce_reason` |
+| `app/modules/notifications/models.py` | 8c | New columns on `NotificationLog`; new `BouncedAddress` model |
+| `app/cli/rotate_keys.py` | 8b | Acquire pg_advisory_lock around EmailProvider iteration |
+| `app/integrations/email_sender.py` | 1, 8c | Error classification, timeouts, provider-config reads, message-id capture, blocklist precheck |
+| `app/modules/email_providers/service.py` | 5 | with_for_update() lock around deactivate; same defence in activate |
+
+### 14.11 Reading order for execution
+
+When kicking off the work, read this file top-to-bottom **then** read Section 14 — Section 14 supersedes earlier conflicts. Order of phase delivery is unchanged: 0 → 0.5 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8a → 8b → 8c → 9.

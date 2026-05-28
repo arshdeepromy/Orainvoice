@@ -196,7 +196,7 @@ class TestRotateRefreshToken:
             with pytest.raises(ValueError, match="Token has been revoked"):
                 await rotate_refresh_token(db, token, ip_address="10.0.0.1")
 
-        mock_alert.assert_awaited_once_with("test@example.com")
+        mock_alert.assert_awaited_once_with("test@example.com", base_url=None)
 
     @pytest.mark.asyncio
     async def test_unknown_token_raises(self):

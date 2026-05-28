@@ -66,6 +66,8 @@ async def authenticate_user(
     device_type: str | None,
     browser: str | None,
     user_agent: str | None = None,
+    *,
+    base_url: str | None = None,
 ) -> TokenResponse | MFAChallengeResponse:
     """Validate credentials and return tokens or MFA challenge.
 
@@ -159,7 +161,7 @@ async def authenticate_user(
             # Permanent lock — deactivate account and send email
             user.locked_until = None
             user.is_active = False
-            await _send_permanent_lockout_email(user.email)
+            await _send_permanent_lockout_email(user.email, base_url=base_url)
             await _audit_failed_login(
                 db,
                 ip_address=ip_address,
@@ -309,6 +311,7 @@ async def authenticate_user(
         device_type=device_type,
         browser=browser,
         login_time=now,
+        base_url=base_url,
     )
 
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
@@ -357,7 +360,11 @@ async def _audit_failed_login(
 
 
 
-async def _send_permanent_lockout_email(email: str) -> None:
+async def _send_permanent_lockout_email(
+    email: str,
+    *,
+    base_url: str | None = None,
+) -> None:
     """Send an email alert when an account is permanently locked.
 
     Migrated from a hand-rolled ``smtplib`` provider loop in Phase 3
@@ -397,7 +404,12 @@ async def _send_permanent_lockout_email(email: str) -> None:
         from app.core.database import async_session_factory
         from app.integrations.email_sender import EmailMessage, send_email
 
-        support_url = f"{settings.frontend_base_url}/support"
+        _base = (
+            base_url
+            or getattr(settings, "frontend_base_url", "")
+            or "http://localhost"
+        ).rstrip("/")
+        support_url = f"{_base}/support"
         platform_name = "WorkshopPro NZ"
         reason = "Too many failed login attempts (10 consecutive failures)."
 
@@ -556,6 +568,7 @@ async def _check_anomalous_login(
     device_type: str | None,
     browser: str | None,
     login_time: datetime,
+    base_url: str | None = None,
 ) -> None:
     """Detect anomalous login conditions and send an email alert if found.
 
@@ -604,6 +617,7 @@ async def _check_anomalous_login(
             device_type=device_type,
             browser=browser,
             org_id=user.org_id,
+            base_url=base_url,
         )
 
         await write_audit_log(
@@ -632,6 +646,7 @@ async def _send_anomalous_login_alert(
     device_type: str | None,
     browser: str | None,
     org_id: uuid.UUID | None = None,
+    base_url: str | None = None,
 ) -> None:
     """Send a security alert about an anomalous login attempt.
 
@@ -666,14 +681,13 @@ async def _send_anomalous_login_alert(
 
         timestamp = datetime.now(timezone.utc)
         timestamp_str = timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
-        security_url = (
-            f"{getattr(settings, 'frontend_base_url', '') or 'http://localhost'}"
-            f"/account/security"
-        )
-        reset_url = (
-            f"{getattr(settings, 'frontend_base_url', '') or 'http://localhost'}"
-            f"/reset-password"
-        )
+        _base = (
+            base_url
+            or getattr(settings, "frontend_base_url", "")
+            or "http://localhost"
+        ).rstrip("/")
+        security_url = f"{_base}/account/security"
+        reset_url = f"{_base}/reset-password"
 
         # Build a human-readable details block, omitting fields we
         # don't have. The device fingerprint is a composite of
@@ -866,6 +880,8 @@ async def rotate_refresh_token(
     ip_address: str | None = None,
     device_type: str | None = None,
     browser: str | None = None,
+    *,
+    base_url: str | None = None,
 ) -> TokenResponse:
     """Rotate a refresh token and return a new JWT pair.
 
@@ -913,7 +929,7 @@ async def rotate_refresh_token(
         user = user_result.scalar_one_or_none()
 
         if user:
-            await _send_token_reuse_alert(user.email)
+            await _send_token_reuse_alert(user.email, base_url=base_url)
 
             await write_audit_log(
                 session=db,
@@ -1010,7 +1026,11 @@ async def _invalidate_family(db: AsyncSession, family_id: uuid.UUID) -> None:
     )
 
 
-async def _send_token_reuse_alert(email: str) -> None:
+async def _send_token_reuse_alert(
+    email: str,
+    *,
+    base_url: str | None = None,
+) -> None:
     """Send a security alert when a refresh-token replay is detected.
 
     Implemented in Phase 4 task 4.3 (C1) of the
@@ -1043,10 +1063,12 @@ async def _send_token_reuse_alert(email: str) -> None:
         from app.core.database import async_session_factory
         from app.integrations.email_sender import EmailMessage, send_email
 
-        sessions_url = (
-            f"{getattr(settings, 'frontend_base_url', '') or 'http://localhost'}"
-            f"/account/sessions"
-        )
+        _base = (
+            base_url
+            or getattr(settings, "frontend_base_url", "")
+            or "http://localhost"
+        ).rstrip("/")
+        sessions_url = f"{_base}/account/sessions"
 
         subject = "Security alert: refresh token replay detected"
 
@@ -2073,6 +2095,7 @@ async def request_password_reset(
     db: AsyncSession,
     email: str,
     ip_address: str | None = None,
+    base_url: str | None = None,
 ) -> None:
     """Request a password reset link.
 
@@ -2142,6 +2165,7 @@ async def request_password_reset(
         db=db,
         org_id=user.org_id,
         org_name=_reset_org_name,
+        base_url=base_url,
     )
 
 
@@ -2152,6 +2176,7 @@ async def _send_password_reset_email(
     db: AsyncSession | None = None,
     org_id: uuid.UUID | None = None,
     org_name: str = "OraInvoice",
+    base_url: str | None = None,
 ) -> None:
     """Send a password reset email with the reset link.
 
@@ -2194,10 +2219,8 @@ async def _send_password_reset_email(
         from app.core.database import async_session_factory
         from app.integrations.email_sender import EmailMessage, send_email
 
-        reset_url = (
-            f"{getattr(settings, 'frontend_base_url', '') or 'http://localhost'}"
-            f"/reset-password?token={token}"
-        )
+        _base = (base_url or getattr(settings, 'frontend_base_url', '') or 'http://localhost').rstrip("/")
+        reset_url = f"{_base}/reset-password?token={token}"
 
         # --- Template resolution for password_reset ---
         rendered = None

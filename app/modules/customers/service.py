@@ -777,6 +777,8 @@ async def notify_customer(
                     db, org_id=org_id, recipient=customer.email,
                     template_type="customer_notify", subject=email_subject,
                     status="sent", sent_at=datetime.now(timezone.utc),
+                    provider_key=result.provider_key,
+                    provider_message_id=result.provider_message_id,
                 )
             except Exception:
                 logger.warning("Failed to log email send for customer %s", customer_id)
@@ -2238,6 +2240,7 @@ async def send_portal_link(
     user_id: uuid.UUID,
     customer_id: uuid.UUID,
     ip_address: str | None = None,
+    base_url: str | None = None,
 ) -> dict:
     """Send the customer portal link to the customer's email address.
 
@@ -2281,8 +2284,11 @@ async def send_portal_link(
     org = org_result.scalar_one_or_none()
     org_name = org.name if org else "Workshop"
 
-    # Build portal URL
-    portal_url = f"{settings.frontend_base_url}/portal/{customer.portal_token}"
+    # Build portal URL — prefer caller-supplied base_url (from request
+    # Origin header) over the static settings.frontend_base_url default.
+    # See .kiro/specs/email-delivery-visibility-fixes/bugfix.md Bug 3.
+    _base = (base_url or settings.frontend_base_url or "http://localhost").rstrip("/")
+    portal_url = f"{_base}/portal/{customer.portal_token}"
 
     customer_name = f"{customer.first_name or ''} {customer.last_name or ''}".strip()
     email_subject = f"Your Portal Access Link — {org_name}"

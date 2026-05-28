@@ -171,7 +171,7 @@ class TestAccountLockout:
 
         assert user.failed_login_count == PERMANENT_LOCK_THRESHOLD
         assert user.is_active is False
-        mock_email.assert_awaited_once_with("user@example.com")
+        mock_email.assert_awaited_once_with("user@example.com", base_url=None)
 
     @pytest.mark.asyncio
     async def test_locked_account_rejects_login(self):

@@ -114,6 +114,7 @@ async def provision_organisation(
     status: str = "active",
     provisioned_by: uuid.UUID,
     ip_address: str | None = None,
+    base_url: str | None = None,
 ) -> dict:
     """Provision a new organisation, assign a plan, and invite an Org_Admin.
 
@@ -201,6 +202,7 @@ async def provision_organisation(
         name,
         db=db,
         org_id=org.id,
+        base_url=base_url,
     )
 
     # 8. Audit log — organisation provisioned

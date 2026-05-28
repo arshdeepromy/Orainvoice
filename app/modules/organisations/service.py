@@ -1072,6 +1072,7 @@ async def invite_org_user(
     role: str,
     password: str | None = None,
     ip_address: str | None = None,
+    base_url: str | None = None,
 ) -> dict:
     """Invite a new user to the organisation, or create directly with a password.
 
@@ -1142,6 +1143,7 @@ async def invite_org_user(
         email=email,
         role=role,
         ip_address=ip_address,
+        base_url=base_url,
     )
 
     # Fetch the created user for response

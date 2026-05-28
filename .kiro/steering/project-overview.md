@@ -59,16 +59,17 @@ OraInvoice is a multi-tenant SaaS invoicing and business management platform bui
 - The `get_db_session` dependency uses `session.begin()` which auto-commits — use `flush()` not `commit()` in services
 - Integration API keys (Stripe, CarJam, Xero, SMS) are stored encrypted in the DB, configured via Global Admin GUI — never read from `.env` for API calls (see #[[file:.kiro/steering/integration-credentials-architecture.md]])
 
-## Current State (as of 2026-05-08)
+## Current State (as of 2026-05-26)
 
-- Alembic: revision 0182 (head) on all environments
-- 132 tables in the database
-- 106 issues tracked and resolved
-- Prod has 1 org, 1 customer, 2 invoices, 1 user (early production)
+- Alembic: revision 0194 (head) on Dev, Prod Standby (local), Pi Dev Standby. Pi PROD primary still at 0192 pending the next maintenance window.
+- 132+ tables in the database
+- 106 issues tracked and resolved (ISSUE-133 added 2026-05-26 for QR partial payment regression-fixes)
+- Pi PROD has 7 orgs, 611 customers, 72 invoices, 48 payments, 148 line items, 9 users (real production data — handle with care)
 - HA replication configured between Pi primary and local standby nodes
 - Xero accounting integration with webhooks deployed
 - Branch management, claims, scheduling, stock transfers all implemented
 - Customer creation only requires First Name (all other fields optional per user feedback)
 - COF (Certificate of Fitness) expiry support deployed alongside WOF
 - Kiosk vehicle check-in multi-step flow deployed (rego → vehicle summary → customer details)
-- App version: 1.4.0
+- QR partial payment flow shipped (May 2026 cut-over commit `9403258`)
+- App version: 1.11.0

@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.core.request_utils import extract_request_base_url
 from app.modules.auth.rbac import require_role
 from app.modules.customers.schemas import (
     CustomerAnonymiseResponse,
@@ -987,6 +988,8 @@ async def send_portal_link_endpoint(
             content={"detail": "Invalid customer ID format"},
         )
 
+    _origin = extract_request_base_url(request)
+
     try:
         result = await send_portal_link(
             db,
@@ -994,6 +997,7 @@ async def send_portal_link_endpoint(
             user_id=user_uuid or uuid.uuid4(),
             customer_id=cust_uuid,
             ip_address=ip_address,
+            base_url=_origin,
         )
     except ValueError as exc:
         error_msg = str(exc)

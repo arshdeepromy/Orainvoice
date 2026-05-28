@@ -4676,6 +4676,22 @@ async def email_invoice(
         if org_for_pi:
             await _maybe_create_stripe_payment_intent(db, invoice_obj, org_for_pi)
 
+    # Success-path notification_log row (Bug 1 / Requirement 3.1).
+    # Written BEFORE the audit log so the bounce-correlation pipeline
+    # (Phase 8c) can match inbound delivered/bounced webhook events to
+    # this row by ``provider_message_id``.
+    from app.modules.notifications.service import log_email_sent as _log_email_sent
+    try:
+        await _log_email_sent(
+            db, org_id=org_id, recipient=recipient_email,
+            template_type="invoice_send", subject=_email_subject,
+            status="sent", channel="email",
+            provider_key=result.provider_key,
+            provider_message_id=result.provider_message_id,
+        )
+    except Exception:
+        logger.warning("Failed to log success for invoice %s", invoice_id)
+
     # Audit log
     await write_audit_log(
         db,

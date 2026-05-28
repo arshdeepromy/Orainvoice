@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
 from app.core.modules import ModuleService
+from app.core.request_utils import extract_request_base_url
 from app.modules.auth.rbac import require_role
 from app.modules.admin.schemas import SmsPackagePurchaseRequest
 from app.modules.organisations.schemas import (
@@ -930,6 +931,7 @@ async def invite_user(
 
     Requirements: 10.1, 10.2, 10.3, 10.4, 10.5
     """
+    _origin = extract_request_base_url(request)
     user_id = getattr(request.state, "user_id", None)
     org_id = getattr(request.state, "org_id", None)
     ip_address = getattr(request.state, "client_ip", None)
@@ -961,6 +963,7 @@ async def invite_user(
             role=payload.role,
             password=payload.password,
             ip_address=ip_address,
+            base_url=_origin,
         )
     except SeatLimitExceeded as exc:
         return JSONResponse(

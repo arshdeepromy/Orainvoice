@@ -30,11 +30,13 @@ const CREDENTIAL_FIELDS: Record<string, { key: string; label: string; placeholde
     { key: 'smtp_login', label: 'SMTP Login (only if using SMTP key)', placeholder: 'e.g. 9xxxxxx001@smtp-brevo.com — leave blank if using API key' },
     { key: 'from_email', label: 'From Email', placeholder: 'noreply@yourdomain.com' },
     { key: 'from_name', label: 'From Name', placeholder: 'My App' },
+    { key: 'webhook_secret', label: 'Webhook signing secret', placeholder: 'Leave blank to keep existing', type: 'password' },
   ],
   sendgrid: [
     { key: 'api_key', label: 'API Key', placeholder: 'SG.xxxxxxxx...', type: 'password' },
     { key: 'from_email', label: 'From Email', placeholder: 'noreply@yourdomain.com' },
     { key: 'from_name', label: 'From Name', placeholder: 'My App' },
+    { key: 'webhook_secret', label: 'Webhook signing secret', placeholder: 'Leave blank to keep existing', type: 'password' },
   ],
   mailgun: [
     { key: 'username', label: 'SMTP Username', placeholder: 'postmaster@mg.yourdomain.com' },
@@ -215,8 +217,19 @@ function ProviderCard({
           <div>
             <h4 className="text-sm font-medium text-gray-700 mb-3">Configuration</h4>
             <div className="grid gap-3 sm:grid-cols-2">
-              {credFields.map((f) => (
-                f.isSelect ? (
+              {credFields.map((f) => {
+                // For webhook_secret, override placeholder when secret is
+                // already configured server-side (config returns the redacted
+                // sentinel "***"). The admin leaves the field blank to keep
+                // the existing value.
+                const configKey = `${provider.provider_key}_webhook_secret`
+                const webhookConfigured =
+                  f.key === 'webhook_secret' &&
+                  String(provider.config?.[configKey] ?? '') === '***'
+                const placeholder = webhookConfigured
+                  ? 'Already set — leave blank to keep'
+                  : f.placeholder
+                return f.isSelect ? (
                   <div key={f.key} className="flex flex-col gap-1">
                     <label className="text-sm font-medium text-gray-700">{f.label}</label>
                     <select
@@ -230,16 +243,29 @@ function ProviderCard({
                     </select>
                   </div>
                 ) : (
-                  <Input
-                    key={f.key}
-                    label={f.label}
-                    type={f.type ?? 'text'}
-                    placeholder={f.placeholder}
-                    value={fields[f.key] ?? ''}
-                    onChange={(e) => setFields((prev) => ({ ...prev, [f.key]: e.target.value }))}
-                  />
+                  <div key={f.key} className={f.key === 'webhook_secret' ? 'sm:col-span-2' : ''}>
+                    <Input
+                      label={f.label}
+                      type={f.type ?? 'text'}
+                      placeholder={placeholder}
+                      value={fields[f.key] ?? ''}
+                      onChange={(e) => setFields((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                    />
+                    {f.key === 'webhook_secret' &&
+                      (provider.provider_key === 'brevo' || provider.provider_key === 'sendgrid') && (
+                        <p className="mt-1 text-xs text-gray-500 break-all">
+                          <span className="font-medium text-gray-600">Webhook URL:</span>{' '}
+                          <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px] text-gray-700">
+                            {`${window.location.origin}/api/v1/notifications/webhooks/${provider.provider_key}-bounce`}
+                          </code>
+                          <span className="ml-1 text-gray-400">
+                            — paste this into the {provider.display_name} dashboard.
+                          </span>
+                        </p>
+                      )}
+                  </div>
                 )
-              ))}
+              })}
             </div>
             
             {/* Priority slider — visible whenever credentials are set so admins
@@ -391,7 +417,7 @@ export function EmailProviders() {
     }
     setSaving(true)
     try {
-      const { smtp_host, smtp_port, smtp_encryption, from_email, from_name, reply_to, ...credentials } = nonEmpty
+      const { smtp_host, smtp_port, smtp_encryption, from_email, from_name, reply_to, webhook_secret, ...credentials } = nonEmpty
       await apiClient.put(`/api/v2/admin/email-providers/${key}/credentials`, {
         credentials,
         smtp_host: smtp_host || undefined,
@@ -400,6 +426,7 @@ export function EmailProviders() {
         from_email: from_email || undefined,
         from_name: from_name || undefined,
         reply_to: reply_to || undefined,
+        webhook_secret: webhook_secret || undefined,
       })
       addToast('success', 'Configuration saved')
       await fetchProviders()

@@ -198,10 +198,31 @@ async def save_email_credentials(
     from_email: str | None = None,
     from_name: str | None = None,
     reply_to: str | None = None,
+    webhook_secret: str | None = None,
     admin_user_id: uuid.UUID | None = None,
     ip_address: str | None = None,
 ) -> dict | None:
-    """Save encrypted credentials and optional config for a provider."""
+    """Save encrypted credentials and optional config for a provider.
+
+    Bug 2 fix (email-delivery-visibility-fixes spec, task 15): the
+    optional ``webhook_secret`` keyword arg lets the global admin
+    persist a Brevo or SendGrid webhook signing secret from the admin
+    GUI. Per Reqs 3.7, 4.6 and 4.10:
+
+      * For ``provider_key in {"brevo", "sendgrid"}`` AND a non-empty
+        ``webhook_secret``, the trimmed value is written to
+        ``config[f"{provider_key}_webhook_secret"]`` so the bounce
+        webhook handler at ``app/modules/notifications/router.py``
+        picks it up via ``_candidate_provider_secrets``.
+      * When ``webhook_secret`` is ``None`` or whitespace-only, any
+        existing ``*_webhook_secret`` value in ``config`` is left
+        untouched — partial saves don't clobber the secret (matches
+        the empty-fields semantics in
+        ``frontend/src/pages/admin/EmailProviders.tsx::handleSaveCredentials``).
+      * For non-webhook providers (e.g. ``custom_smtp``) the field is
+        silently dropped — custom SMTP has no webhook concept — and a
+        DEBUG log line records that we ignored it.
+    """
     result = await db.execute(
         select(EmailProvider).where(EmailProvider.provider_key == provider_key)
     )
@@ -227,6 +248,20 @@ async def save_email_credentials(
         config["from_name"] = from_name
     if reply_to is not None:
         config["reply_to"] = reply_to
+
+    # Bug 2 fix: persist webhook_secret for brevo/sendgrid only. Empty
+    # / whitespace values are treated as "no change" so partial saves
+    # don't clobber an existing secret.
+    if webhook_secret is not None and webhook_secret.strip():
+        if provider_key in {"brevo", "sendgrid"}:
+            config[f"{provider_key}_webhook_secret"] = webhook_secret.strip()
+        else:
+            logger.debug(
+                "Ignoring webhook_secret for provider_key=%s — "
+                "only brevo/sendgrid have a webhook concept",
+                provider_key,
+            )
+
     provider.config = config
 
     await db.flush()

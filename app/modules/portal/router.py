@@ -21,6 +21,7 @@ from starlette.responses import Response as StarletteResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.core.request_utils import extract_request_base_url
 from app.modules.portal.schemas import (
     PortalAccessResponse,
     PortalInvoicesResponse,
@@ -238,6 +239,7 @@ async def portal_logout(
 )
 async def portal_recover(
     payload: PortalRecoverRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """Look up portal-enabled customers by email and send portal links.
@@ -247,7 +249,8 @@ async def portal_recover(
 
     Requirements: 52.1, 52.2, 52.3, 52.4
     """
-    result = await recover_portal_link(db, payload.email)
+    _origin = extract_request_base_url(request)
+    result = await recover_portal_link(db, payload.email, base_url=_origin)
     return PortalRecoverResponse(message=result["message"])
 
 
@@ -563,9 +566,17 @@ async def portal_pay(
 
     amount = payload.amount if payload else None
     ip_address = get_client_ip(request)
+    _origin = extract_request_base_url(request)
     try:
         validate_portal_csrf(request)
-        return await create_portal_payment(db, token, invoice_id, amount, ip_address=ip_address)
+        return await create_portal_payment(
+            db,
+            token,
+            invoice_id,
+            amount,
+            ip_address=ip_address,
+            base_url=_origin,
+        )
     except CSRFValidationError as exc:
         return JSONResponse(status_code=403, content={"detail": str(exc)})
     except PortalDisabledError as exc:

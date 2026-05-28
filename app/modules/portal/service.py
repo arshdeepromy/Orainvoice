@@ -13,6 +13,7 @@ import secrets
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from urllib.parse import urlparse
 
 from sqlalchemy import select, func as sa_func, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,6 +68,36 @@ from app.modules.portal.schemas import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _resolve_stripe_redirect_base(
+    request_base: str | None, fallback: str | None
+) -> str:
+    """Choose a publicly-reachable base URL for Stripe Checkout redirects.
+
+    Stripe rejects ``success_url`` / ``cancel_url`` that are not publicly
+    reachable HTTPS or ``http://localhost``. If the request Origin parses
+    as a non-http(s) scheme (``capacitor://``, ``file://``) OR is bare
+    ``localhost`` while a real public ``frontend_base_url`` exists, prefer
+    the static fallback.
+    """
+    candidate = (request_base or "").strip().rstrip("/")
+    if candidate:
+        parsed = urlparse(candidate)
+        if parsed.scheme in {"http", "https"}:
+            host = (parsed.hostname or "").lower()
+            # Allow real public hosts always; allow localhost only when
+            # there's no public fallback to use instead.
+            has_public_fallback = (
+                bool(fallback)
+                and "localhost" not in (fallback or "")
+                and "127.0.0.1" not in (fallback or "")
+            )
+            if host and host not in {"localhost", "127.0.0.1"}:
+                return candidate
+            if not has_public_fallback:
+                return candidate
+    return (fallback or "http://localhost:3000").rstrip("/")
 
 
 def _build_branding(org: Organisation, powered_by: PoweredByFooter | None = None) -> PortalBranding:
@@ -1057,6 +1088,8 @@ async def create_portal_payment(
     invoice_id: uuid.UUID,
     amount: Decimal | None = None,
     ip_address: str | None = None,
+    *,
+    base_url: str | None = None,
 ) -> PortalPayResponse:
     """Generate a Stripe payment link for an outstanding invoice.
 
@@ -1106,7 +1139,7 @@ async def create_portal_payment(
     if fee_percent and fee_percent > 0:
         application_fee_amount = int(amount_cents * fee_percent / 100)
 
-    portal_base = app_settings.frontend_base_url or "http://localhost:3000"
+    portal_base = _resolve_stripe_redirect_base(base_url, app_settings.frontend_base_url)
     success_url = f"{portal_base}/portal/{token}/payment-success?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{portal_base}/portal/{token}/invoices"
 
@@ -2151,6 +2184,8 @@ async def _send_dsar_notification(
 async def recover_portal_link(
     db: AsyncSession,
     email: str,
+    *,
+    base_url: str | None = None,
 ) -> dict:
     """Look up all portal-enabled customers with the given email and send
     portal links via email.
@@ -2203,7 +2238,8 @@ async def recover_portal_link(
 
         org_name = org.name or "Your Service Provider"
         customer_name = f"{customer.first_name or ''} {customer.last_name or ''}".strip()
-        portal_url = f"{settings.frontend_base_url}/portal/{customer.portal_token}"
+        _base = (base_url or settings.frontend_base_url or "http://localhost").rstrip("/")
+        portal_url = f"{_base}/portal/{customer.portal_token}"
 
         email_subject = f"Your Portal Access Link — {org_name}"
 

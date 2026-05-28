@@ -121,6 +121,7 @@ async def put_credentials(
         from_email=payload.from_email,
         from_name=payload.from_name,
         reply_to=payload.reply_to,
+        webhook_secret=payload.webhook_secret,
         admin_user_id=uuid.UUID(user_id) if user_id else None,
         ip_address=ip,
     )

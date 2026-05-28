@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.core.request_utils import extract_request_base_url
 from app.modules.auth.schemas import (
     GoogleLoginRequest,
     InvalidateAllSessionsResponse,
@@ -281,6 +282,7 @@ async def login(
             device_type=device_type,
             browser=browser,
             user_agent=user_agent,
+            base_url=extract_request_base_url(request),
         )
         # authenticate_user is async
         result = await result
@@ -368,6 +370,7 @@ async def refresh_token(
             ip_address=ip_address,
             device_type=device_type,
             browser=browser,
+            base_url=extract_request_base_url(request),
         )
     except ValueError as exc:
         response = JSONResponse(
@@ -1634,11 +1637,13 @@ async def password_reset_request(
     The reset link expires after 1 hour (Requirement 4.2).
     """
     ip_address = _get_client_ip(request)
+    _origin = extract_request_base_url(request)
 
     await request_password_reset(
         db=db,
         email=payload.email,
         ip_address=ip_address,
+        base_url=_origin,
     )
 
     return PasswordResetResponse(message=_RESET_UNIFORM_MESSAGE)
