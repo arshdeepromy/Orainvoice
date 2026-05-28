@@ -870,15 +870,31 @@ async def _verify_webhook_token(
 ) -> tuple[bool, str | None]:
     """Verify the incoming webhook carries a valid token.
 
-    Reads the X-OraInvoice-Webhook-Token header from the request and
-    compares it (constant-time) against each active provider's stored
+    Checks two header locations (in order):
+      1. ``Authorization: Bearer <token>`` — this is what Brevo's
+         "Token" auth method actually sends.
+      2. ``X-OraInvoice-Webhook-Token: <token>`` — our custom header,
+         supported as an alternative for providers that allow custom
+         header names (SendGrid, or future providers).
+
+    Compares (constant-time) against each active provider's stored
     token in email_providers.config['{provider_kind}_webhook_token'].
 
     Returns (matched, provider_key) — matched is True when any active
     provider's token matches; provider_key identifies which one.
     """
-    incoming_token = (request.headers.get(WEBHOOK_TOKEN_HEADER) or "").strip()
+    # Try Authorization: Bearer first (Brevo Token auth sends this)
+    incoming_token = ""
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        incoming_token = auth_header[7:].strip()
+
+    # Fall back to our custom header
     if not incoming_token:
+        incoming_token = (request.headers.get(WEBHOOK_TOKEN_HEADER) or "").strip()
+
+    if not incoming_token:
+        return False, None
         return False, None
 
     try:
