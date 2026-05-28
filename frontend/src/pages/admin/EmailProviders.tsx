@@ -30,13 +30,11 @@ const CREDENTIAL_FIELDS: Record<string, { key: string; label: string; placeholde
     { key: 'smtp_login', label: 'SMTP Login (only if using SMTP key)', placeholder: 'e.g. 9xxxxxx001@smtp-brevo.com — leave blank if using API key' },
     { key: 'from_email', label: 'From Email', placeholder: 'noreply@yourdomain.com' },
     { key: 'from_name', label: 'From Name', placeholder: 'My App' },
-    { key: 'webhook_secret', label: 'Webhook signing secret', placeholder: 'Leave blank to keep existing', type: 'password' },
   ],
   sendgrid: [
     { key: 'api_key', label: 'API Key', placeholder: 'SG.xxxxxxxx...', type: 'password' },
     { key: 'from_email', label: 'From Email', placeholder: 'noreply@yourdomain.com' },
     { key: 'from_name', label: 'From Name', placeholder: 'My App' },
-    { key: 'webhook_secret', label: 'Webhook signing secret', placeholder: 'Leave blank to keep existing', type: 'password' },
   ],
   mailgun: [
     { key: 'username', label: 'SMTP Username', placeholder: 'postmaster@mg.yourdomain.com' },
@@ -110,6 +108,192 @@ function SetupGuide({ guide }: { guide: string }) {
         </div>
       )}
     </div>
+  )
+}
+
+interface WebhookConfig {
+  webhook_url: string
+  header_name: string
+  token_configured: boolean
+  token_set_at: string | null
+}
+
+function WebhookConfigPanel({ provider }: { provider: EmailProvider }) {
+  const [config, setConfig] = useState<WebhookConfig | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [regenerating, setRegenerating] = useState(false)
+  const [showTokenModal, setShowTokenModal] = useState(false)
+  const [generatedToken, setGeneratedToken] = useState('')
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchConfig = async () => {
+      try {
+        const res = await apiClient.get<WebhookConfig>(
+          `/api/v2/admin/email-providers/${provider.provider_key}/webhook-config`,
+          { signal: controller.signal },
+        )
+        setConfig(res.data ?? null)
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setConfig(null)
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false)
+        }
+      }
+    }
+    fetchConfig()
+    return () => controller.abort()
+  }, [provider.provider_key])
+
+  async function handleRegenerate() {
+    setRegenerating(true)
+    try {
+      const res = await apiClient.post<{ token: string; header_name: string; set_at: string }>(
+        `/api/v2/admin/email-providers/${provider.provider_key}/webhook-token/regenerate`,
+      )
+      setGeneratedToken(res.data?.token ?? '')
+      setShowTokenModal(true)
+      // Refresh config state
+      setConfig((prev) =>
+        prev
+          ? { ...prev, token_configured: true, token_set_at: res.data?.set_at ?? null }
+          : prev,
+      )
+    } catch {
+      // Error handled silently — modal won't show
+    } finally {
+      setRegenerating(false)
+    }
+  }
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(generatedToken)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Fallback: select the text
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+        <div className="flex items-center gap-2 text-sm text-gray-500">
+          <Spinner size="sm" label="Loading webhook config" />
+          <span>Loading webhook configuration…</span>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+        <h5 className="text-sm font-medium text-gray-700 mb-3">Webhook Configuration</h5>
+
+        {config && (
+          <div className="space-y-2 text-sm">
+            <div>
+              <span className="text-gray-500">Webhook URL:</span>{' '}
+              <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700 break-all">
+                {config.webhook_url ?? ''}
+              </code>
+            </div>
+            <div>
+              <span className="text-gray-500">Header name:</span>{' '}
+              <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">
+                {config.header_name ?? ''}
+              </code>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-gray-500">Status:</span>{' '}
+              {config.token_configured ? (
+                <span className="inline-flex items-center gap-1 text-green-700 font-medium">
+                  <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                    <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
+                  </svg>
+                  Configured
+                </span>
+              ) : (
+                <span className="text-gray-400">Not configured</span>
+              )}
+            </div>
+            {config.token_configured && config.token_set_at && (
+              <div className="text-xs text-gray-400">
+                Token generated at: {new Date(config.token_set_at).toLocaleString()}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="mt-3">
+          <Button
+            onClick={handleRegenerate}
+            loading={regenerating}
+            variant="secondary"
+            className="text-sm"
+          >
+            {config?.token_configured ? 'Regenerate Token' : 'Generate Token'}
+          </Button>
+        </div>
+      </div>
+
+      {/* Token modal */}
+      {showTokenModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Webhook Token Generated</h3>
+
+            <div className="rounded-md bg-yellow-50 border border-yellow-200 p-3 mb-4">
+              <p className="text-sm text-yellow-800 font-medium">
+                This token is shown only once. Copy it now and paste it into your provider's webhook configuration.
+              </p>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Token</label>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 rounded-md bg-gray-100 border border-gray-300 px-3 py-2 text-sm font-mono text-gray-900 break-all select-all">
+                  {generatedToken}
+                </code>
+                <Button onClick={handleCopy} variant="secondary" className="shrink-0 text-sm">
+                  {copied ? 'Copied!' : 'Copy'}
+                </Button>
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Header name to use</label>
+              <code className="rounded-md bg-gray-100 border border-gray-300 px-3 py-2 text-sm font-mono text-gray-900 block">
+                {config?.header_name ?? 'X-OraInvoice-Webhook-Token'}
+              </code>
+            </div>
+
+            <p className="text-xs text-gray-500 mb-4">
+              In your {provider.display_name} webhook settings, set the authentication type to
+              "Token" or "Custom Header" and paste the token above with the header name shown.
+            </p>
+
+            <div className="flex justify-end">
+              <Button
+                onClick={() => {
+                  setShowTokenModal(false)
+                  setGeneratedToken('')
+                }}
+                variant="primary"
+              >
+                I've copied it
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -218,17 +402,6 @@ function ProviderCard({
             <h4 className="text-sm font-medium text-gray-700 mb-3">Configuration</h4>
             <div className="grid gap-3 sm:grid-cols-2">
               {credFields.map((f) => {
-                // For webhook_secret, override placeholder when secret is
-                // already configured server-side (config returns the redacted
-                // sentinel "***"). The admin leaves the field blank to keep
-                // the existing value.
-                const configKey = `${provider.provider_key}_webhook_secret`
-                const webhookConfigured =
-                  f.key === 'webhook_secret' &&
-                  String(provider.config?.[configKey] ?? '') === '***'
-                const placeholder = webhookConfigured
-                  ? 'Already set — leave blank to keep'
-                  : f.placeholder
                 return f.isSelect ? (
                   <div key={f.key} className="flex flex-col gap-1">
                     <label className="text-sm font-medium text-gray-700">{f.label}</label>
@@ -243,30 +416,23 @@ function ProviderCard({
                     </select>
                   </div>
                 ) : (
-                  <div key={f.key} className={f.key === 'webhook_secret' ? 'sm:col-span-2' : ''}>
+                  <div key={f.key}>
                     <Input
                       label={f.label}
                       type={f.type ?? 'text'}
-                      placeholder={placeholder}
+                      placeholder={f.placeholder}
                       value={fields[f.key] ?? ''}
                       onChange={(e) => setFields((prev) => ({ ...prev, [f.key]: e.target.value }))}
                     />
-                    {f.key === 'webhook_secret' &&
-                      (provider.provider_key === 'brevo' || provider.provider_key === 'sendgrid') && (
-                        <p className="mt-1 text-xs text-gray-500 break-all">
-                          <span className="font-medium text-gray-600">Webhook URL:</span>{' '}
-                          <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px] text-gray-700">
-                            {`${window.location.origin}/api/v1/notifications/webhooks/${provider.provider_key}-bounce`}
-                          </code>
-                          <span className="ml-1 text-gray-400">
-                            — paste this into the {provider.display_name} dashboard.
-                          </span>
-                        </p>
-                      )}
                   </div>
                 )
               })}
             </div>
+
+            {/* Webhook configuration panel for brevo/sendgrid */}
+            {(provider.provider_key === 'brevo' || provider.provider_key === 'sendgrid') && (
+              <WebhookConfigPanel provider={provider} />
+            )}
             
             {/* Priority slider — visible whenever credentials are set so admins
                 can configure priority before activation (Phase 6.2). */}
@@ -417,7 +583,7 @@ export function EmailProviders() {
     }
     setSaving(true)
     try {
-      const { smtp_host, smtp_port, smtp_encryption, from_email, from_name, reply_to, webhook_secret, ...credentials } = nonEmpty
+      const { smtp_host, smtp_port, smtp_encryption, from_email, from_name, reply_to, ...credentials } = nonEmpty
       await apiClient.put(`/api/v2/admin/email-providers/${key}/credentials`, {
         credentials,
         smtp_host: smtp_host || undefined,
@@ -426,7 +592,6 @@ export function EmailProviders() {
         from_email: from_email || undefined,
         from_name: from_name || undefined,
         reply_to: reply_to || undefined,
-        webhook_secret: webhook_secret || undefined,
       })
       addToast('success', 'Configuration saved')
       await fetchProviders()

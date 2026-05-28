@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.core.request_utils import extract_request_base_url
 from app.modules.auth.rbac import require_role
 from app.modules.email_providers.schemas import (
     ClearBounceResponse,
@@ -21,13 +22,17 @@ from app.modules.email_providers.schemas import (
     EmailProviderPriorityResponse,
     EmailProviderTestRequest,
     EmailProviderTestResponse,
+    WebhookConfigResponse,
+    WebhookTokenRegenerateResponse,
 )
 from app.modules.email_providers.service import (
     activate_email_provider,
     clear_bounced_address,
     deactivate_email_provider,
     get_delivery_health,
+    get_webhook_config,
     list_email_providers,
+    regenerate_webhook_token,
     save_email_credentials,
     test_email_provider,
     update_email_provider_priority,
@@ -192,6 +197,70 @@ async def put_priority(
         priority=result,
     )
 
+
+# ---------------------------------------------------------------------------
+# Webhook token management (replaces the legacy HMAC webhook_secret flow)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{provider_key}/webhook-token/regenerate",
+    response_model=WebhookTokenRegenerateResponse,
+    summary="Generate a new webhook auth token",
+    dependencies=[require_role("global_admin")],
+)
+async def post_regenerate_webhook_token(
+    provider_key: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Generate a fresh webhook token for a provider.
+
+    The plaintext token is returned ONLY in this response. The admin
+    must copy it and paste it into the provider's webhook UI under
+    "Token Authentication" with header name X-OraInvoice-Webhook-Token.
+    Subsequent reads of the provider config redact the token to "***".
+    """
+    user_id = getattr(request.state, "user_id", None)
+    ip = getattr(request.state, "client_ip", None)
+    result = await regenerate_webhook_token(
+        db,
+        provider_key=provider_key,
+        admin_user_id=uuid.UUID(user_id) if user_id else None,
+        ip_address=ip,
+    )
+    if result is None:
+        return JSONResponse(status_code=404, content={"detail": "Provider not found"})
+    return WebhookTokenRegenerateResponse(**result)
+
+
+@router.get(
+    "/{provider_key}/webhook-config",
+    response_model=WebhookConfigResponse,
+    summary="Get webhook configuration for a provider",
+    dependencies=[require_role("global_admin")],
+)
+async def get_webhook_config_endpoint(
+    provider_key: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the webhook URL, required header name, and token status.
+
+    Never returns the token plaintext — use the regenerate endpoint
+    to mint a new one.
+    """
+    from app.config import settings as app_settings
+
+    base_url = extract_request_base_url(request) or getattr(app_settings, "frontend_base_url", "") or "http://localhost"
+    result = await get_webhook_config(
+        db,
+        provider_key=provider_key,
+        base_url=base_url,
+    )
+    if result is None:
+        return JSONResponse(status_code=404, content={"detail": "Provider not found"})
+    return WebhookConfigResponse(**result)
 
 
 # ---------------------------------------------------------------------------

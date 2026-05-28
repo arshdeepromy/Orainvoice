@@ -846,9 +846,9 @@ async def update_notification_settings(
 # ---------------------------------------------------------------------------
 
 import logging
+import secrets as secrets_mod
 
-from app.config import settings as app_settings
-from app.core.webhook_security import verify_webhook_signature
+from app.modules.email_providers.service import WEBHOOK_TOKEN_HEADER
 from app.modules.notifications.bounce_correlation import flag_bounce
 from app.modules.notifications.schemas import (
     BrevoBounceWebhookRequest,
@@ -862,28 +862,25 @@ SENDGRID_BOUNCE_EVENTS = {"bounce", "dropped", "deferred"}
 BREVO_DELIVERED_EVENTS = {"delivered", "request"}
 
 
-async def _candidate_provider_secrets(
+async def _verify_webhook_token(
     db: AsyncSession,
     *,
+    request: Request,
     provider_kind: str,
-    config_key: str,
-    env_fallback: str | None,
-) -> list[tuple[str, str | None]]:
-    """Return ``(secret, provider_key)`` pairs to try in priority order.
+) -> tuple[bool, str | None]:
+    """Verify the incoming webhook carries a valid token.
 
-    Phase 8c (Req 13.1, 13.2, 13.3, 25.5): the bounce webhook handlers
-    must accept signatures signed with any active provider's
-    ``<kind>_webhook_secret`` from ``email_providers.config``, and fall
-    back to the legacy env-var secret for one release. The fallback
-    secret has ``provider_key=None`` so we can detect it for the
-    deprecation log.
+    Reads the X-OraInvoice-Webhook-Token header from the request and
+    compares it (constant-time) against each active provider's stored
+    token in email_providers.config['{provider_kind}_webhook_token'].
 
-    Active providers are returned first, in priority order, so the
-    expected-common-case secret is tried before the legacy fallback.
+    Returns (matched, provider_key) — matched is True when any active
+    provider's token matches; provider_key identifies which one.
     """
-    candidates: list[tuple[str, str | None]] = []
+    incoming_token = (request.headers.get(WEBHOOK_TOKEN_HEADER) or "").strip()
+    if not incoming_token:
+        return False, None
 
-    # Local import to avoid a circular import at module load.
     try:
         from app.modules.admin.models import EmailProvider
 
@@ -897,41 +894,15 @@ async def _candidate_provider_secrets(
         )
         rows = (await db.execute(stmt)).scalars().all()
         for row in rows:
-            secret = (row.config or {}).get(config_key)
-            if isinstance(secret, str) and secret:
-                candidates.append((secret, row.provider_key))
-    except Exception:  # pragma: no cover — defensive against schema drift
+            stored_token = (row.config or {}).get(f"{provider_kind}_webhook_token")
+            if stored_token and secrets_mod.compare_digest(incoming_token, stored_token):
+                return True, row.provider_key
+    except Exception:
         logger.exception(
-            "bounce webhook: failed to load per-provider secrets for "
-            "%s — falling back to env",
+            "bounce webhook: failed to load per-provider tokens for %s",
             provider_kind,
         )
 
-    if env_fallback:
-        candidates.append((env_fallback, None))
-
-    return candidates
-
-
-def _verify_with_any_secret(
-    *,
-    payload: bytes,
-    signature: str,
-    candidates: list[tuple[str, str | None]],
-) -> tuple[bool, str | None]:
-    """Try each ``(secret, provider_key)`` until one verifies.
-
-    Returns ``(matched, provider_key_or_None)``. The boolean signals
-    whether any candidate matched; the second element is the
-    ``provider_key`` of the matching provider (``None`` when the env-
-    var fallback won, which we record for the one-release deprecation
-    telemetry).
-    """
-    if not signature:
-        return False, None
-    for secret, provider_key in candidates:
-        if verify_webhook_signature(payload, signature, secret):
-            return True, provider_key
     return False, None
 
 
@@ -942,11 +913,8 @@ async def brevo_bounce_webhook(
 ):
     """Receive Brevo bounce + delivered webhook events.
 
-    Phase 8c rewrite (task 9.6). Signature verification accepts any
-    active Brevo provider's ``brevo_webhook_secret`` from
-    ``email_providers.config``; falls back to the legacy
-    ``app_settings.brevo_webhook_secret`` env var for one release per
-    Req 25.5. For each event:
+    Auth: constant-time comparison of the X-OraInvoice-Webhook-Token
+    header against stored per-provider tokens. For each event:
 
     - ``BREVO_BOUNCE_EVENTS`` → :func:`flag_bounce` to flip the
       originating ``notification_log`` row, upsert into
@@ -955,48 +923,20 @@ async def brevo_bounce_webhook(
       SET delivered_at = now()`` for the matching
       ``provider_message_id``.
 
-    Returns 200 on success, 403 on invalid signature, 400 on malformed
-    JSON. Requirements: 11.1, 11.2, 11.3, 11.4, 13.1, 13.3, 13.4, 25.5
+    Returns 200 on success, 403 on invalid/missing token, 400 on
+    malformed JSON.
     """
-    raw_body = await request.body()
-    signature = request.headers.get("X-Brevo-Signature", "")
-
-    candidates = await _candidate_provider_secrets(
-        db,
-        provider_kind="brevo",
-        config_key="brevo_webhook_secret",
-        env_fallback=app_settings.brevo_webhook_secret or None,
-    )
-    if not candidates:
-        logger.warning(
-            "Brevo bounce webhook: no signing secret configured "
-            "(neither email_providers.config nor app_settings) — "
-            "rejecting"
-        )
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "Webhook signature verification unavailable"},
-        )
-
-    matched, matched_provider_key = _verify_with_any_secret(
-        payload=raw_body, signature=signature, candidates=candidates
+    matched, matched_provider_key = await _verify_webhook_token(
+        db, request=request, provider_kind="brevo"
     )
     if not matched:
         logger.warning(
-            "Brevo bounce webhook: signature did not match any of "
-            "%d candidate secrets",
-            len(candidates),
+            "Brevo bounce webhook: token verification failed — "
+            "no matching X-OraInvoice-Webhook-Token for any active brevo provider"
         )
         return JSONResponse(
             status_code=403,
-            content={"detail": "Invalid webhook signature"},
-        )
-
-    if matched_provider_key is None:
-        logger.warning(
-            "Brevo bounce webhook: env-var fallback secret matched — "
-            "rotate and store in email_providers.config "
-            "(legacy_brevo_webhook_secret_env_used)"
+            content={"detail": "Invalid or missing webhook token"},
         )
 
     try:
@@ -1082,7 +1022,7 @@ async def brevo_bounce_webhook(
         "payload_count=%d, parsed_ok=%s)",
         len(bounce_events),
         delivered_count,
-        matched_provider_key or "env_fallback",
+        matched_provider_key or "unknown",
         len(raw_events),
         payload is not None,
     )
@@ -1104,53 +1044,20 @@ async def sendgrid_bounce_webhook(
 ):
     """Receive SendGrid Event Webhook bounce + delivered events.
 
-    Phase 8c rewrite (task 9.7). Signature verification accepts any
-    active SendGrid provider's ``sendgrid_webhook_secret`` from
-    ``email_providers.config``; falls back to the legacy
-    ``app_settings.sendgrid_webhook_secret`` env var for one release.
-
-    Requirements: 11.2, 11.3, 13.2, 13.3, 13.4, 25.5
+    Auth: constant-time comparison of the X-OraInvoice-Webhook-Token
+    header against stored per-provider tokens.
     """
-    raw_body = await request.body()
-    signature = request.headers.get(
-        "X-Twilio-Email-Event-Webhook-Signature", ""
-    )
-
-    candidates = await _candidate_provider_secrets(
-        db,
-        provider_kind="sendgrid",
-        config_key="sendgrid_webhook_secret",
-        env_fallback=app_settings.sendgrid_webhook_secret or None,
-    )
-    if not candidates:
-        logger.warning(
-            "SendGrid bounce webhook: no signing secret configured — "
-            "rejecting"
-        )
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "Webhook signature verification unavailable"},
-        )
-
-    matched, matched_provider_key = _verify_with_any_secret(
-        payload=raw_body, signature=signature, candidates=candidates
+    matched, matched_provider_key = await _verify_webhook_token(
+        db, request=request, provider_kind="sendgrid"
     )
     if not matched:
         logger.warning(
-            "SendGrid bounce webhook: signature did not match any of "
-            "%d candidate secrets",
-            len(candidates),
+            "SendGrid bounce webhook: token verification failed — "
+            "no matching X-OraInvoice-Webhook-Token for any active sendgrid provider"
         )
         return JSONResponse(
             status_code=403,
-            content={"detail": "Invalid webhook signature"},
-        )
-
-    if matched_provider_key is None:
-        logger.warning(
-            "SendGrid bounce webhook: env-var fallback secret matched "
-            "— rotate and store in email_providers.config "
-            "(legacy_sendgrid_webhook_secret_env_used)"
+            content={"detail": "Invalid or missing webhook token"},
         )
 
     try:
@@ -1221,7 +1128,7 @@ async def sendgrid_bounce_webhook(
         "(provider=%s, payload_count=%d)",
         bounce_count,
         delivered_count,
-        matched_provider_key or "env_fallback",
+        matched_provider_key or "unknown",
         len(raw_events),
     )
 

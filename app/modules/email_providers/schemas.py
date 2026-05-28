@@ -36,19 +36,32 @@ class EmailProviderResponse(BaseModel):
 
     @field_serializer("config")
     def _redact_webhook_secrets(self, config: dict[str, Any]) -> dict[str, Any]:
-        """Replace any ``*_webhook_secret`` value with ``"***"``.
+        """Redact any sensitive webhook auth keys before the payload leaves
+        this process.
 
-        Per Bug 2 / Req 3.9 + 4.9: redact ``brevo_webhook_secret`` and
-        ``sendgrid_webhook_secret`` (and any future ``<provider>_webhook_secret``
-        key by suffix match) when present; pass other config keys
-        (``from_email``, ``from_name``, ``reply_to``) through unchanged.
+        Both legacy ``*_webhook_secret`` keys (no longer used by the
+        runtime auth path; left over from the previous HMAC-signature
+        flow) and current ``*_webhook_token`` keys (the static-token
+        Brevo / SendGrid actually accept) are masked to ``"***"``.
+        Pass-through for non-sensitive keys (``from_email``,
+        ``from_name``, ``reply_to``, ``*_webhook_token_set_at``) so
+        the GUI can show "set 5 minutes ago" timestamps.
         """
         if not config:
             return config
-        return {
-            key: ("***" if key.endswith("_webhook_secret") and value else value)
-            for key, value in config.items()
-        }
+        redacted: dict[str, Any] = {}
+        for key, value in config.items():
+            if (
+                value
+                and (
+                    key.endswith("_webhook_secret")
+                    or key.endswith("_webhook_token")
+                )
+            ):
+                redacted[key] = "***"
+            else:
+                redacted[key] = value
+        return redacted
 
 
 class EmailProviderListResponse(BaseModel):
@@ -83,10 +96,14 @@ class EmailProviderCredentialsRequest(BaseModel):
     reply_to: str | None = Field(None, description="Reply-to address")
     webhook_secret: str | None = Field(
         None,
+        deprecated=True,
         description=(
-            "Webhook signing secret (provider-specific). Persisted "
-            "under config['<provider_key>_webhook_secret']. Empty "
-            "string is treated as 'no change'."
+            "DEPRECATED. The HMAC-signed-payload flow this field powered "
+            "is no longer used — Brevo and SendGrid don't sign webhook "
+            "payloads (they only carry static auth headers). Use "
+            "POST /api/v2/admin/email-providers/{key}/webhook-token/regenerate "
+            "to mint a token instead. Values sent in this field are "
+            "ignored with a deprecation log."
         ),
     )
 
@@ -187,3 +204,75 @@ class ClearBounceResponse(BaseModel):
 
     message: str
     cleared: bool
+
+
+# ---------------------------------------------------------------------------
+# Webhook token regenerate / config (replaces the legacy webhook_secret flow)
+# ---------------------------------------------------------------------------
+
+
+class WebhookTokenRegenerateResponse(BaseModel):
+    """Response from ``POST /api/v2/admin/email-providers/{key}/webhook-token/regenerate``.
+
+    The plaintext ``token`` is returned **only** in this response —
+    once. Subsequent reads of the provider's ``config`` redact it to
+    ``"***"``. The admin GUI is expected to display the token in a
+    one-time copy-to-clipboard modal and warn the operator that it
+    won't be shown again.
+    """
+
+    token: str = Field(
+        ...,
+        description=(
+            "Plaintext webhook token (~256 bits of entropy, URL-safe "
+            "base64). Show once, then discard from client state."
+        ),
+    )
+    header_name: str = Field(
+        ...,
+        description=(
+            "HTTP header name the provider's webhook UI must echo "
+            "back on every webhook call (e.g. "
+            "'X-OraInvoice-Webhook-Token')."
+        ),
+    )
+    set_at: datetime = Field(
+        ...,
+        description="UTC timestamp at which the token was generated.",
+    )
+
+
+class WebhookConfigResponse(BaseModel):
+    """Response from ``GET /api/v2/admin/email-providers/{key}/webhook-config``.
+
+    Drives the admin GUI's "Webhook configuration" panel. Never
+    returns the token plaintext — operators must regenerate to see a
+    new value.
+    """
+
+    webhook_url: str = Field(
+        ...,
+        description=(
+            "Full webhook URL the operator must paste into the "
+            "provider's bounce-webhook UI. Computed from the request's "
+            "Origin header (or settings.frontend_base_url fallback)."
+        ),
+    )
+    header_name: str = Field(
+        ...,
+        description="HTTP header name the provider must include.",
+    )
+    token_configured: bool = Field(
+        ...,
+        description=(
+            "True when a webhook token has been generated and stored "
+            "for this provider. The token itself is never returned."
+        ),
+    )
+    token_set_at: datetime | None = Field(
+        None,
+        description=(
+            "UTC timestamp of the most-recent token regeneration. "
+            "Null when no token has been generated yet."
+        ),
+    )

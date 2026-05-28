@@ -374,7 +374,7 @@ Existing behaviour is preserved when `amount` is omitted — every backend path 
     - _Requirements: All frontend test requirements_
 
 - [ ] 16. Manual QA smoke test on dev environment
-  - [~] 16.1 Smoke test partial flow end-to-end on local Ubuntu dev (`devin.oraflows.co.nz`)
+  - [ ] 16.1 Smoke test partial flow end-to-end on local Ubuntu dev (`devin.oraflows.co.nz`)
     - Create test invoice for $300
     - Click QR Payment → modal opens with Full pre-selected
     - Switch to Partial, type "100.00", Continue
@@ -388,7 +388,7 @@ Existing behaviour is preserved when `amount` is omitted — every backend path 
     - Verify Payments tab on InvoiceDetail shows three rows with three different stripe_payment_intent_ids and three correct surcharge amounts
     - Verify audit log shows three `payment.qr_session_created` entries and three `payment.stripe_webhook_received` entries
     - _Requirements: All — end-to-end verification_
-  - [~] 16.2 Smoke test reuse-branch behaviour
+  - [ ] 16.2 Smoke test reuse-branch behaviour
     - Click QR Payment, choose Full, Continue (creates PI for full balance)
     - Cancel modal-popup before customer pays
     - Click QR Payment again, choose Full, Continue
@@ -396,7 +396,7 @@ Existing behaviour is preserved when `amount` is omitted — every backend path 
     - Click QR Payment again, choose Partial $50, Continue
     - Verify new `session_id` returned, old PI cancelled in Stripe Dashboard, audit log shows `payment.qr_session_superseded`
     - _Requirements: 5.1, 5.2, 5.3_
-  - [~] 16.3 Smoke test concurrent-modal behaviour
+  - [ ] 16.3 Smoke test concurrent-modal behaviour
     - Two browser tabs open on the same invoice, both as org_admin
     - Tab A: click QR Payment, choose Partial $100, Continue
     - Tab B: click QR Payment, choose Partial $200, Continue

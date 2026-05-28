@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -20,6 +22,19 @@ from app.integrations.email_sender import (
 from app.modules.admin.models import EmailProvider
 
 logger = logging.getLogger(__name__)
+
+
+# Custom HTTP header that Brevo / SendGrid must echo on every webhook
+# call, carrying the per-provider token an admin generated through the
+# OraInvoice GUI. Same header name across both providers so the admin
+# learns one flow.
+WEBHOOK_TOKEN_HEADER: str = "X-OraInvoice-Webhook-Token"
+
+# Set of provider keys for which webhook auth is supported. Both
+# providers' bounce webhooks land on a public URL inside this app and
+# must carry the token; SMTP-only providers (mailgun, ses, gmail,
+# outlook, custom_smtp) have no webhook concept.
+WEBHOOK_TOKEN_PROVIDERS: set[str] = {"brevo", "sendgrid"}
 
 
 async def list_email_providers(db: AsyncSession) -> dict:
@@ -204,24 +219,15 @@ async def save_email_credentials(
 ) -> dict | None:
     """Save encrypted credentials and optional config for a provider.
 
-    Bug 2 fix (email-delivery-visibility-fixes spec, task 15): the
-    optional ``webhook_secret`` keyword arg lets the global admin
-    persist a Brevo or SendGrid webhook signing secret from the admin
-    GUI. Per Reqs 3.7, 4.6 and 4.10:
-
-      * For ``provider_key in {"brevo", "sendgrid"}`` AND a non-empty
-        ``webhook_secret``, the trimmed value is written to
-        ``config[f"{provider_key}_webhook_secret"]`` so the bounce
-        webhook handler at ``app/modules/notifications/router.py``
-        picks it up via ``_candidate_provider_secrets``.
-      * When ``webhook_secret`` is ``None`` or whitespace-only, any
-        existing ``*_webhook_secret`` value in ``config`` is left
-        untouched — partial saves don't clobber the secret (matches
-        the empty-fields semantics in
-        ``frontend/src/pages/admin/EmailProviders.tsx::handleSaveCredentials``).
-      * For non-webhook providers (e.g. ``custom_smtp``) the field is
-        silently dropped — custom SMTP has no webhook concept — and a
-        DEBUG log line records that we ignored it.
+    The legacy ``webhook_secret`` keyword arg is retained for backwards
+    compatibility but is now a no-op: webhook auth has moved from
+    HMAC-signed payloads (which Brevo doesn't actually support — it
+    only offers Basic Auth or a custom-header static token) to a
+    server-generated per-provider token via
+    :func:`regenerate_webhook_token` and the
+    ``POST /api/v2/admin/email-providers/{key}/webhook-token/regenerate``
+    endpoint. Old API callers that still send ``webhook_secret`` get
+    a 200 + warning log; they should migrate to the regenerate flow.
     """
     result = await db.execute(
         select(EmailProvider).where(EmailProvider.provider_key == provider_key)
@@ -249,18 +255,16 @@ async def save_email_credentials(
     if reply_to is not None:
         config["reply_to"] = reply_to
 
-    # Bug 2 fix: persist webhook_secret for brevo/sendgrid only. Empty
-    # / whitespace values are treated as "no change" so partial saves
-    # don't clobber an existing secret.
+    # Legacy webhook_secret arg is ignored. The new flow generates a
+    # server-side token via regenerate_webhook_token() — Brevo and
+    # SendGrid don't sign payloads, only carry static auth headers,
+    # which made HMAC verification a dead path.
     if webhook_secret is not None and webhook_secret.strip():
-        if provider_key in {"brevo", "sendgrid"}:
-            config[f"{provider_key}_webhook_secret"] = webhook_secret.strip()
-        else:
-            logger.debug(
-                "Ignoring webhook_secret for provider_key=%s — "
-                "only brevo/sendgrid have a webhook concept",
-                provider_key,
-            )
+        logger.warning(
+            "save_email_credentials: ignoring deprecated webhook_secret "
+            "field for provider_key=%s — use POST /webhook-token/regenerate",
+            provider_key,
+        )
 
     provider.config = config
 
@@ -277,6 +281,159 @@ async def save_email_credentials(
         ip_address=ip_address,
     )
     return {"credentials_set": True}
+
+
+# ---------------------------------------------------------------------------
+# Webhook token (Brevo / SendGrid bounce webhook auth)
+# ---------------------------------------------------------------------------
+
+
+def _token_config_key(provider_key: str) -> str:
+    """Return the ``email_providers.config`` JSON key that stores the
+    webhook token for a given provider."""
+    return f"{provider_key}_webhook_token"
+
+
+def _token_set_at_key(provider_key: str) -> str:
+    """JSON key for the timestamp of the most-recent token regeneration.
+    Surfaced in the admin GUI so an operator can sanity-check whether
+    a given provider's token is fresh after a rotation."""
+    return f"{provider_key}_webhook_token_set_at"
+
+
+async def regenerate_webhook_token(
+    db: AsyncSession,
+    *,
+    provider_key: str,
+    admin_user_id: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> dict | None:
+    """Generate a fresh webhook auth token for a provider.
+
+    The token is generated server-side (admins never paste one in;
+    Brevo / SendGrid don't issue one — we issue ours and the admin
+    pastes it into the provider's webhook UI under "Token
+    Authentication" or "Custom Header"). Stored in
+    ``email_providers.config['<provider>_webhook_token']`` plus a
+    ``_webhook_token_set_at`` timestamp for the GUI's freshness
+    indicator.
+
+    Returns:
+        ``{"token": "<plaintext>", "header_name": "X-OraInvoice-...",
+        "set_at": "<ISO-8601>"}`` on success — the **only time** the
+        plaintext token is ever returned. After this single response
+        the GUI is responsible for showing it to the admin and
+        encouraging them to copy it; subsequent reads of the provider
+        config will redact it to ``"***"``.
+
+        ``None`` when the provider row doesn't exist.
+
+    Raises:
+        ``HTTPException(400)`` if the provider isn't one of the
+        webhook-supporting kinds (Brevo / SendGrid). SMTP-only
+        providers have no webhook to authenticate.
+    """
+    if provider_key not in WEBHOOK_TOKEN_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Provider '{provider_key}' has no bounce webhook — "
+                f"webhook tokens are only supported for "
+                f"{sorted(WEBHOOK_TOKEN_PROVIDERS)}."
+            ),
+        )
+
+    result = await db.execute(
+        select(EmailProvider).where(EmailProvider.provider_key == provider_key)
+    )
+    provider = result.scalar_one_or_none()
+    if provider is None:
+        return None
+
+    # 32 random bytes → 43 URL-safe base64 characters → ~256 bits of
+    # entropy. Plenty for a static-token webhook auth header.
+    token = secrets.token_urlsafe(32)
+    set_at = datetime.now(timezone.utc).isoformat()
+
+    config = dict(provider.config or {})
+    config[_token_config_key(provider_key)] = token
+    config[_token_set_at_key(provider_key)] = set_at
+    # Best-effort cleanup of the legacy *_webhook_secret keys so the
+    # GUI's redaction logic never has to display a stale "***" alongside
+    # a fresh token. Safe even if the keys aren't present.
+    config.pop(f"{provider_key}_webhook_secret", None)
+    provider.config = config
+
+    await db.flush()
+    await db.refresh(provider)
+
+    await write_audit_log(
+        session=db,
+        org_id=None,
+        user_id=admin_user_id,
+        action="admin.email_provider_webhook_token_regenerated",
+        entity_type="email_provider",
+        entity_id=provider.id,
+        after_value={"provider_key": provider_key, "set_at": set_at},
+        ip_address=ip_address,
+    )
+
+    return {
+        "token": token,
+        "header_name": WEBHOOK_TOKEN_HEADER,
+        "set_at": set_at,
+    }
+
+
+async def get_webhook_config(
+    db: AsyncSession,
+    *,
+    provider_key: str,
+    base_url: str,
+) -> dict | None:
+    """Return the webhook URL, header name, and configuration status.
+
+    Used by the admin GUI to render the "Webhook configuration" panel.
+    Never returns the token plaintext — callers must regenerate to see
+    a token (intentional: the GUI shows tokens once and only once).
+
+    The webhook URL is computed from ``base_url`` (typically the
+    incoming request's ``Origin`` header per
+    ``extract_request_base_url``, falling back to
+    ``settings.frontend_base_url``) joined with the bounce-webhook
+    path for the provider.
+
+    Returns ``None`` when the provider row doesn't exist; raises
+    ``HTTPException(400)`` for non-webhook-supporting providers.
+    """
+    if provider_key not in WEBHOOK_TOKEN_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Provider '{provider_key}' has no bounce webhook."
+            ),
+        )
+
+    result = await db.execute(
+        select(EmailProvider).where(EmailProvider.provider_key == provider_key)
+    )
+    provider = result.scalar_one_or_none()
+    if provider is None:
+        return None
+
+    config = provider.config or {}
+    token_value = config.get(_token_config_key(provider_key))
+    set_at = config.get(_token_set_at_key(provider_key))
+
+    return {
+        "webhook_url": (
+            f"{base_url.rstrip('/')}"
+            f"/api/v1/notifications/webhooks/{provider_key}-bounce"
+        ),
+        "header_name": WEBHOOK_TOKEN_HEADER,
+        "token_configured": bool(token_value),
+        "token_set_at": set_at,
+    }
 
 
 def _provider_to_dict(p: EmailProvider) -> dict:
