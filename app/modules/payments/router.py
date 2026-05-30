@@ -1602,6 +1602,24 @@ async def stripe_webhook_endpoint(
         return result
     except Exception as exc:
         logger.exception("Error processing Stripe webhook: %s", exc)
+        # Money path failure — store in DLQ so we have a recovery channel.
+        # Stripe retries on non-2xx, but if our handler keeps failing the
+        # event is eventually dropped by Stripe. The DLQ entry captures the
+        # event payload so we can replay it after fixing the underlying bug.
+        # PERFORMANCE_AUDIT.md §I-H3 / §1 quick win #10.
+        try:
+            from app.core.dead_letter import DeadLetterService
+            await DeadLetterService().store_failed_task(
+                task_name="stripe_webhook",
+                task_args={
+                    "event_type": event_type,
+                    "event_id": event.get("id"),
+                    "event_data": event_data,
+                },
+                error_message=str(exc),
+            )
+        except Exception:
+            logger.exception("Failed to write Stripe webhook failure to dead-letter queue")
         return JSONResponse(
             status_code=400,
             content={"detail": f"Webhook processing error: {exc}"},

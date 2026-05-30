@@ -5561,3 +5561,58 @@ The sibling schema `LinkedVehicleSummary` (used by `/customers/search`) already 
 - `frontend/src/pages/public/ManagedPage.tsx`
 
 **Status of remaining audit items**: see updated checklist in `docs/PERFORMANCE_AUDIT.md` Phase 1. Quick wins #1 (lazy-load), #8 (drop console), and §F-M8 (sourcemap) are now ✅. Items #2–#7, #9, #10, off-host backup, and the RLS fix remain pending.
+---
+
+### ISSUE-163: Event-loop stalls on bcrypt/WeasyPrint/Stripe + missing DLQ + gunicorn fork waste
+
+- **Date**: 2026-05-30
+- **Severity**: high (concurrency/throughput)
+- **Status**: resolved
+- **Reporter**: Performance audit (`docs/PERFORMANCE_AUDIT.md` §B-H1, §B-H2, §B-H4, §B-M7, §B-L4, §I-H3)
+- **Regression of**: N/A
+
+**Symptoms**: Logins and password resets capped at single digits per second per worker because bcrypt (~80–300 ms) ran inside the event loop. Generating a single PDF via WeasyPrint froze the whole worker for 200–1500 ms. Each Stripe SDK call consumed 200–800 ms of WAN round-trip on the event loop. A "send all invoices" + one Stripe webhook could lock all 4 workers simultaneously. Stripe webhook failures were dropped after Stripe's retry budget exhausted with no recovery channel. Gunicorn always spawned 4 workers regardless of host (Pi has 4 vCPU; 4× full-app fork = wasted RAM and slow startup).
+
+**Root Cause**:
+
+1. `app/modules/auth/password.py` and `app/modules/fleet_portal/auth.py` exposed sync bcrypt helpers used directly inside async login/register/reset paths.
+2. Four PDF generators (`app/modules/invoices/service.py`, `app/modules/quotes/service.py`, `app/modules/inventory/service.py`, `app/modules/vehicles/report_service.py`) called `HTML(...).write_pdf()` synchronously from `async def` functions.
+3. `app/integrations/stripe_billing.py` called the official `stripe` Python SDK (synchronous) directly across 13 sites — `Customer.create`, three `PaymentIntent.create` blocks, `Subscription.retrieve`, `SubscriptionItem.create_usage_record`, `Invoice.list`, `billing_portal.Session.create`, etc.
+4. Stripe webhook exception paths in both `app/modules/payments/router.py` and `app/modules/portal/router.py` returned 400 and dropped the event without writing to the dead-letter queue. Recurring-invoice generation failures in `app/tasks/scheduled.py` were logged at WARN and forgotten. `DeadLetterService.store_failed_task` had zero callers outside its own module.
+5. `Dockerfile` pinned `--workers 4` and lacked `--preload`. Pi/Pi-standby/standby-prod compose files already used `--workers 2` but none used `--preload`.
+
+**Fix Applied**:
+
+1. **bcrypt async wrap.** Renamed sync helpers to `*_sync`, added new `async hash_password()` / `async verify_password()` that route through `asyncio.to_thread`. Identical change in fleet_portal's auth module. Updated 16+ call sites across `app/modules/auth/{service,router,mfa_service,pending_signup}.py`, `app/modules/admin/{service,router}.py`, `app/modules/staff/router.py`, `app/modules/organisations/service.py`, `app/modules/fleet_portal/{router.py,services/account_service.py}` to `await`.
+2. **WeasyPrint wraps.** All four PDF generators now use `await asyncio.to_thread(lambda: HTML(string=html).write_pdf())`. Render runs on a thread; event loop freed for other handlers during the 200-1500 ms render.
+3. **Stripe SDK wrap.** Added `_stripe_call(fn, *args, **kwargs)` helper at top of `app/integrations/stripe_billing.py`. All 13 sync SDK call sites now go through it.
+4. **DeadLetterService wired**:
+   - `app/modules/payments/router.py` — Stripe platform webhook handler stores full event payload to DLQ on exception.
+   - `app/modules/portal/router.py` — Stripe Connect (portal) webhook handler does the same.
+   - `app/tasks/scheduled.py` — recurring-invoice generation per-schedule failures stored to DLQ so a broken schedule doesn't get silently skipped.
+   - `app/integrations/email_sender.py::send_email()` — added optional `dlq_task_name`/`dlq_task_args` kwargs so callers can opt critical sends (invoices, payment receipts) into DLQ on chain exhaustion.
+5. **Gunicorn**:
+   - `Dockerfile`: replaced pinned `--workers 4` with `${WEB_CONCURRENCY:-2}` and added `--preload`.
+   - `docker-compose.pi.yml`, `docker-compose.pi-standby.yml`, `docker-compose.standby-prod.yml`: added `--preload` to their gunicorn command overrides.
+   - Dev/ha-standby compose files use single-process uvicorn — `--preload` not applicable, untouched.
+
+**Files Modified**:
+
+- `app/modules/auth/password.py`, `app/modules/auth/service.py`, `app/modules/auth/router.py`, `app/modules/auth/mfa_service.py`, `app/modules/auth/pending_signup.py`
+- `app/modules/admin/router.py`, `app/modules/admin/service.py`
+- `app/modules/staff/router.py`
+- `app/modules/organisations/service.py`
+- `app/modules/fleet_portal/auth.py`, `app/modules/fleet_portal/router.py`, `app/modules/fleet_portal/services/account_service.py`
+- `app/modules/invoices/service.py`, `app/modules/quotes/service.py`, `app/modules/inventory/service.py`, `app/modules/vehicles/report_service.py`
+- `app/integrations/stripe_billing.py`, `app/integrations/email_sender.py`
+- `app/modules/payments/router.py`, `app/modules/portal/router.py`
+- `app/tasks/scheduled.py`
+- `Dockerfile`, `docker-compose.pi.yml`, `docker-compose.pi-standby.yml`, `docker-compose.standby-prod.yml`
+
+**Result**:
+
+- Event loop no longer freezes on login, PDF generation, or Stripe API calls. Concurrency on PDF/login paths expected 5–10× higher per worker.
+- Stripe webhook + recurring-invoice failures now have a recovery channel via `dead_letter_tasks` table.
+- Gunicorn forks faster (preload) and Dockerfile no longer pins worker count.
+
+**Status of remaining audit items**: see `docs/PERFORMANCE_AUDIT.md` Phase 1/2 checklist. Pending: scheduler single-worker gate (#7), Redis caches for org settings/modules/flags (#6), service worker (#5), index pack (#3), pool retune (#4), `/readyz` endpoint, off-host backup, RLS rollout.

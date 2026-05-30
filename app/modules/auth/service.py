@@ -153,8 +153,8 @@ async def authenticate_user(
             user.locked_until = None
             user.failed_login_count = 0
 
-    # 3. Verify password
-    if not verify_password(payload.password, user.password_hash):
+    # 3. Verify password (off the event loop — bcrypt is CPU-bound)
+    if not await verify_password(payload.password, user.password_hash):
         user.failed_login_count = (user.failed_login_count or 0) + 1
 
         if user.failed_login_count >= lockout_policy.permanent_lock_threshold:
@@ -1855,8 +1855,8 @@ async def remove_passkey(
     """
     from app.modules.admin.models import Organisation
 
-    # 1. Verify password
-    if not user.password_hash or not verify_password(password, user.password_hash):
+    # 1. Verify password (off the event loop — bcrypt is CPU-bound)
+    if not user.password_hash or not await verify_password(password, user.password_hash):
         raise ValueError("Invalid password")
 
     # 2. Look up the credential
@@ -2430,8 +2430,8 @@ async def complete_password_reset(
                     f"Password was used recently. Choose a password you haven't used in the last {policy.history_count} changes."
                 )
 
-    # 4. Update password
-    new_hash = hash_password(new_password)
+    # 4. Update password (bcrypt off the event loop)
+    new_hash = await hash_password(new_password)
     user.password_hash = new_hash
     user.password_changed_at = datetime.now(timezone.utc)
 
@@ -2560,8 +2560,8 @@ async def reset_via_backup_code(
                     f"Password was used recently. Choose a password you haven't used in the last {policy.history_count} changes."
                 )
 
-    # 4. Update password
-    new_hash = hash_password(new_password)
+    # 4. Update password (bcrypt off the event loop)
+    new_hash = await hash_password(new_password)
     user.password_hash = new_hash
     user.password_changed_at = datetime.now(timezone.utc)
 
@@ -2775,9 +2775,9 @@ async def verify_email_and_set_password(
         if errors:
             raise ValueError("; ".join(errors))
 
-    # 4. Mark email as verified and set password
+    # 4. Mark email as verified and set password (bcrypt off the event loop)
     user.is_email_verified = True
-    new_hash = hash_password(new_password)
+    new_hash = await hash_password(new_password)
     user.password_hash = new_hash
     user.password_changed_at = datetime.now(timezone.utc)
 

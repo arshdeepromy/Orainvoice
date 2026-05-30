@@ -10,16 +10,34 @@ to the ``STRIPE_SECRET_KEY`` env var if no DB config exists.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 from decimal import Decimal
+from typing import Any, Callable, TypeVar
 
 import stripe
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+async def _stripe_call(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
+    """Run a sync Stripe SDK call off the FastAPI event loop.
+
+    The official ``stripe`` Python SDK is synchronous and each call
+    spends 200-800 ms on the WAN round-trip to ``api.stripe.com``.
+    Running these inline freezes the event loop for that duration,
+    starving every other request handled by the same worker.
+
+    PERFORMANCE_AUDIT.md §B-H4 / §1 quick win #2.
+    """
+    return await asyncio.to_thread(fn, *args, **kwargs)
+
 
 # --- Custom exceptions for payment handling --------------------------------
 
@@ -254,7 +272,8 @@ async def create_stripe_customer(
     Raises ``stripe.error.StripeError`` on API failures.
     """
     await _ensure_stripe_key()
-    customer = stripe.Customer.create(
+    customer = await _stripe_call(
+        stripe.Customer.create,
         email=email,
         name=name,
         metadata=metadata or {},
@@ -274,7 +293,8 @@ async def create_setup_intent(
     client_secret is passed to the frontend for Stripe.js confirmation).
     """
     await _ensure_stripe_key()
-    intent = stripe.SetupIntent.create(
+    intent = await _stripe_call(
+        stripe.SetupIntent.create,
         customer=customer_id,
         payment_method_types=["card"],
         usage="off_session",
@@ -303,7 +323,8 @@ async def list_payment_methods(
     Requirements: 5.1
     """
     await _ensure_stripe_key()
-    methods = stripe.PaymentMethod.list(
+    methods = await _stripe_call(
+        stripe.PaymentMethod.list,
         customer=customer_id,
         type=type,
     )
@@ -338,7 +359,8 @@ async def set_default_payment_method(
     Requirements: 5.3
     """
     await _ensure_stripe_key()
-    customer = stripe.Customer.modify(
+    customer = await _stripe_call(
+        stripe.Customer.modify,
         customer_id,
         invoice_settings={"default_payment_method": payment_method_id},
     )
@@ -364,7 +386,7 @@ async def detach_payment_method(
     Requirements: 5.4
     """
     await _ensure_stripe_key()
-    pm = stripe.PaymentMethod.detach(payment_method_id)
+    pm = await _stripe_call(stripe.PaymentMethod.detach, payment_method_id)
     logger.info("Detached payment method %s", payment_method_id)
     return {
         "id": pm["id"],
@@ -388,7 +410,8 @@ async def create_payment_intent_no_customer(
     Returns a dict with ``payment_intent_id`` and ``client_secret``.
     """
     await _ensure_stripe_key()
-    intent = stripe.PaymentIntent.create(
+    intent = await _stripe_call(
+        stripe.PaymentIntent.create,
         amount=amount_cents,
         currency=currency,
         payment_method_types=["card"],
@@ -446,7 +469,7 @@ async def charge_org_payment_method(
     if idempotency_key:
         create_kwargs["idempotency_key"] = idempotency_key
     try:
-        intent = stripe.PaymentIntent.create(**create_kwargs)
+        intent = await _stripe_call(stripe.PaymentIntent.create, **create_kwargs)
     except stripe.error.CardError as e:
         err = e.error
         decline_code = err.decline_code if err else None
@@ -488,7 +511,8 @@ async def create_payment_intent(
     Returns a dict with ``payment_intent_id`` and ``client_secret``.
     """
     await _ensure_stripe_key()
-    intent = stripe.PaymentIntent.create(
+    intent = await _stripe_call(
+        stripe.PaymentIntent.create,
         customer=customer_id,
         amount=amount_cents,
         currency=currency,
@@ -529,7 +553,8 @@ async def create_invoice_item(
     Requirements: 4.2
     """
     await _ensure_stripe_key()
-    item = stripe.InvoiceItem.create(
+    item = await _stripe_call(
+        stripe.InvoiceItem.create,
         customer=customer_id,
         description=description,
         quantity=quantity,
@@ -566,7 +591,7 @@ async def report_metered_usage(
     Requirements: 42.2
     """
     await _ensure_stripe_key()
-    subscription = stripe.Subscription.retrieve(subscription_id)
+    subscription = await _stripe_call(stripe.Subscription.retrieve, subscription_id)
     metered_item = None
     _items = getattr(subscription, "items", None)
     _items_data = getattr(_items, "data", []) if _items else []
@@ -591,7 +616,8 @@ async def report_metered_usage(
     if timestamp:
         params["timestamp"] = timestamp
 
-    usage_record = stripe.SubscriptionItem.create_usage_record(
+    usage_record = await _stripe_call(
+        stripe.SubscriptionItem.create_usage_record,
         metered_item.id,
         **params,
     )
@@ -622,7 +648,8 @@ async def get_subscription_invoices(
     Requirements: 42.3
     """
     await _ensure_stripe_key()
-    invoices = stripe.Invoice.list(
+    invoices = await _stripe_call(
+        stripe.Invoice.list,
         customer=customer_id,
         limit=limit,
         status="paid",
@@ -685,7 +712,8 @@ async def create_billing_portal_session(
     https://dashboard.stripe.com/settings/billing/portal
     """
     await _ensure_stripe_key()
-    session = stripe.billing_portal.Session.create(
+    session = await _stripe_call(
+        stripe.billing_portal.Session.create,
         customer=customer_id,
         return_url=return_url,
     )

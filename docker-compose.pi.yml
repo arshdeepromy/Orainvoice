@@ -103,6 +103,7 @@ services:
     command: >
       gunicorn app.main:app
       -k uvicorn.workers.UvicornWorker
+      --preload
       --workers 2
       --bind 0.0.0.0:8000
       --timeout 120

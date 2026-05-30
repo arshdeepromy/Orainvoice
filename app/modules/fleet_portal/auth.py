@@ -71,27 +71,16 @@ _MIN_PASSWORD_LENGTH = 8
 # ---------------------------------------------------------------------------
 
 
-def hash_password(plaintext: str) -> str:
-    """Return a bcrypt hash (cost 12) of ``plaintext``.
-
-    Returns a UTF-8 decoded string suitable for direct storage in the
-    ``portal_accounts.password_hash`` ``VARCHAR(255)`` column. The
-    salt is generated with the configured cost factor on every call,
-    so two hashes of the same plaintext are always different.
-    """
+def hash_password_sync(plaintext: str) -> str:
+    """Sync bcrypt hash (cost 12). Prefer :func:`hash_password` in async code."""
     return bcrypt.hashpw(
         plaintext.encode("utf-8"),
         bcrypt.gensalt(rounds=_BCRYPT_COST),
     ).decode("utf-8")
 
 
-def verify_password(plaintext: str, hashed: str) -> bool:
-    """Return ``True`` if ``plaintext`` matches the stored bcrypt ``hashed``.
-
-    Returns ``False`` for any input shape that bcrypt cannot verify
-    (empty plaintext, malformed hash, non-bcrypt format) without
-    raising — callers can rely on the boolean return alone.
-    """
+def verify_password_sync(plaintext: str, hashed: str) -> bool:
+    """Sync bcrypt verify. Prefer :func:`verify_password` in async code."""
     if not plaintext or not hashed:
         return False
     try:
@@ -99,6 +88,33 @@ def verify_password(plaintext: str, hashed: str) -> bool:
     except (ValueError, TypeError):
         # bcrypt raises ValueError on a malformed hash. Treat as "no match".
         return False
+
+
+async def hash_password(plaintext: str) -> str:
+    """Return a bcrypt hash (cost 12) of ``plaintext``, off the event loop.
+
+    Returns a UTF-8 decoded string suitable for direct storage in the
+    ``portal_accounts.password_hash`` ``VARCHAR(255)`` column. The
+    salt is generated with the configured cost factor on every call,
+    so two hashes of the same plaintext are always different.
+
+    Bcrypt is intentionally CPU-expensive (~80–300 ms); running it
+    inside the FastAPI event loop caps logins-per-second to single
+    digits. PERFORMANCE_AUDIT.md §B-H2.
+    """
+    import asyncio
+    return await asyncio.to_thread(hash_password_sync, plaintext)
+
+
+async def verify_password(plaintext: str, hashed: str) -> bool:
+    """Return ``True`` if ``plaintext`` matches ``hashed``, off the event loop.
+
+    Returns ``False`` for any input shape that bcrypt cannot verify
+    (empty plaintext, malformed hash, non-bcrypt format) without
+    raising — callers can rely on the boolean return alone.
+    """
+    import asyncio
+    return await asyncio.to_thread(verify_password_sync, plaintext, hashed)
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +316,8 @@ __all__ = [
     "RESET_TOKEN_MAX_AGE",
     "hash_password",
     "verify_password",
+    "hash_password_sync",
+    "verify_password_sync",
     "validate_password_rules",
     "generate_invite_token",
     "generate_reset_token",

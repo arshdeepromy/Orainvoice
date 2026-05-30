@@ -1156,8 +1156,12 @@ async def generate_quote_pdf(
         fluid_usage=quote_dict.get("fluid_usage") or [],
     )
 
-    # Generate PDF (in-memory only)
-    pdf_bytes: bytes = HTML(string=html_content).write_pdf()
+    # Generate PDF (in-memory only) — off the event loop because WeasyPrint
+    # is CPU-heavy (200-1500 ms per page). PERFORMANCE_AUDIT.md §B-H1.
+    import asyncio
+    pdf_bytes: bytes = await asyncio.to_thread(
+        lambda: HTML(string=html_content).write_pdf()
+    )
     return pdf_bytes
 
 

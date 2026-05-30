@@ -301,12 +301,12 @@ async def create_staff_account(
     if existing is not None:
         raise HTTPException(status_code=400, detail="A user with this email already exists")
 
-    # Create user with password
+    # Create user with password (bcrypt off the event loop)
     from app.modules.auth.password import hash_password
     new_user = User(
         org_id=org_id,
         email=staff.email,
-        password_hash=hash_password(payload.password),
+        password_hash=await hash_password(payload.password),
         role="org_admin",
         is_active=True,
         is_email_verified=True,

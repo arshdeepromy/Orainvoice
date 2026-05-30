@@ -324,7 +324,7 @@ async def accept_invite(
 
     fp_auth.validate_password_rules(new_password, account.email)
 
-    account.password_hash = fp_auth.hash_password(new_password)
+    account.password_hash = await fp_auth.hash_password(new_password)
     account.password_changed_at = datetime.now(timezone.utc)
     account.invite_token = None
     account.invite_accepted_at = datetime.now(timezone.utc)
@@ -387,7 +387,7 @@ async def reset_password(
 
     fp_auth.validate_password_rules(new_password, account.email)
 
-    account.password_hash = fp_auth.hash_password(new_password)
+    account.password_hash = await fp_auth.hash_password(new_password)
     account.password_changed_at = datetime.now(timezone.utc)
     account.reset_token = None
     account.reset_token_expires_at = None

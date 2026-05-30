@@ -180,6 +180,20 @@ async def portal_stripe_webhook(
         return result
     except Exception as exc:
         logger.exception("Error processing Stripe Connect webhook: %s", exc)
+        # Money path failure — store in DLQ for replay. PERFORMANCE_AUDIT.md §I-H3.
+        try:
+            from app.core.dead_letter import DeadLetterService
+            await DeadLetterService().store_failed_task(
+                task_name="stripe_connect_webhook",
+                task_args={
+                    "event_type": event_type,
+                    "event_id": event.get("id"),
+                    "event_data": event_data,
+                },
+                error_message=str(exc),
+            )
+        except Exception:
+            logger.exception("Failed to write Stripe Connect webhook failure to DLQ")
         return JSONResponse(
             status_code=400,
             content={"detail": f"Webhook processing error: {exc}"},

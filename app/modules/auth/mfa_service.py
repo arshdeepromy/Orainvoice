@@ -871,8 +871,8 @@ async def disable_mfa_method(
     from app.modules.auth.models import UserMfaMethod
     from app.modules.auth.password import verify_password
 
-    # 1. Verify password
-    if not user.password_hash or not verify_password(password, user.password_hash):
+    # 1. Verify password (off the event loop — bcrypt is CPU-bound)
+    if not user.password_hash or not await verify_password(password, user.password_hash):
         raise ValueError("Invalid password")
 
     # 2. Look up the verified method record

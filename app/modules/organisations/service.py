@@ -1108,7 +1108,7 @@ async def invite_org_user(
             role=role,
             is_active=True,
             is_email_verified=True,
-            password_hash=hash_password(password),
+            password_hash=await hash_password(password),
         )
         db.add(new_user)
         await db.flush()
@@ -1423,8 +1423,8 @@ async def reset_kiosk_user_password(
     if not user.is_active:
         raise ValueError("Cannot reset password for inactive user")
 
-    # Hash new password and update
-    user.password_hash = hash_password(new_password)
+    # Hash new password and update (off the event loop)
+    user.password_hash = await hash_password(new_password)
     await db.flush()
 
     # Invalidate all sessions for target user
@@ -1801,7 +1801,7 @@ async def public_signup(
                 role="org_admin",
                 is_active=True,
                 is_email_verified=False,
-                password_hash=_hash_pw(password),
+                password_hash=await _hash_pw(password),
             )
             db.add(admin_user)
             await db.flush()
@@ -1941,7 +1941,7 @@ async def public_signup(
                 role="org_admin",
                 is_active=True,
                 is_email_verified=False,
-                password_hash=_hash_pw(password),
+                password_hash=await _hash_pw(password),
             )
             db.add(admin_user)
             await db.flush()
@@ -2122,10 +2122,10 @@ async def public_signup(
     # Auto-create default "Main" branch (Req 14.1, 14.2)
     await create_default_main_branch(db, org_id=org.id)
 
-    # Create Org_Admin user with hashed password
+    # Create Org_Admin user with hashed password (bcrypt off the event loop)
     from app.modules.auth.password import hash_password
 
-    password_hash = hash_password(password)
+    password_hash = await hash_password(password)
     admin_user = User(
         org_id=org.id,
         email=admin_email,

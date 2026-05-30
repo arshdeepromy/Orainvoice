@@ -4442,8 +4442,13 @@ async def generate_invoice_pdf(
         **i18n_ctx,
     )
 
-    # Generate PDF (in-memory only) ----------------------------------------
-    pdf_bytes: bytes = HTML(string=html_content).write_pdf()
+    # Generate PDF (in-memory only) — off the event loop because WeasyPrint
+    # is CPU-heavy (200-1500 ms per page) and would freeze the entire async
+    # process for every PDF generated. PERFORMANCE_AUDIT.md §B-H1.
+    import asyncio
+    pdf_bytes: bytes = await asyncio.to_thread(
+        lambda: HTML(string=html_content).write_pdf()
+    )
     return pdf_bytes
 
 

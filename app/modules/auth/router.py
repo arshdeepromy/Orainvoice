@@ -2565,10 +2565,10 @@ async def confirm_signup_payment(
     from app.modules.organisations.service import create_default_main_branch
     await create_default_main_branch(db, org_id=org.id)
 
-    # Hash the raw password from the pending signup data
+    # Hash the raw password from the pending signup data (off the event loop)
     from app.modules.auth.password import hash_password as _hash_pw
     raw_password = pending.get("password", "")
-    password_hash = _hash_pw(raw_password) if raw_password else pending.get("password_hash")
+    password_hash = await _hash_pw(raw_password) if raw_password else pending.get("password_hash")
 
     admin_user = User(
         org_id=org.id,
@@ -2974,7 +2974,7 @@ async def change_password(
             content={"detail": "Account does not have a password set. Use password reset instead."},
         )
 
-    if not verify_password(payload.current_password, user.password_hash):
+    if not await verify_password(payload.current_password, user.password_hash):
         return JSONResponse(
             status_code=400,
             content={"detail": "Current password is incorrect."},
@@ -3022,7 +3022,7 @@ async def change_password(
                 content={"detail": "Password does not meet strength requirements."},
             )
 
-    new_hash = hash_password(payload.new_password)
+    new_hash = await hash_password(payload.new_password)
     user.password_hash = new_hash
 
     # Update password_changed_at timestamp

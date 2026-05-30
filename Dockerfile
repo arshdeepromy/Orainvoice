@@ -34,5 +34,14 @@ RUN chmod +x /docker-entrypoint.sh
 
 EXPOSE 8000
 
+# Default web-process concurrency. Override per environment via the
+# WEB_CONCURRENCY env var (compose files set this for Pi/standby).
+# PERFORMANCE_AUDIT.md §1 quick win #9 / §B-M7 / §B-L4.
+ENV WEB_CONCURRENCY=2
+
 ENTRYPOINT ["/docker-entrypoint.sh"]
-CMD ["gunicorn", "app.main:app", "-k", "uvicorn.workers.UvicornWorker", "--workers", "4", "--bind", "0.0.0.0:8000", "--timeout", "120", "--graceful-timeout", "30", "--keep-alive", "5", "--max-requests", "10000", "--max-requests-jitter", "1000", "--access-logfile", "-", "--error-logfile", "-"]
+# --preload: import the app once in the master process, then fork workers.
+#   3x faster startup and shared in-memory state across forks. Safe because
+#   redis_pool, the SQLAlchemy engine, and config are fork-safe.
+# --workers $(WEB_CONCURRENCY): controlled per environment, no longer pinned at 4.
+CMD ["sh", "-c", "exec gunicorn app.main:app -k uvicorn.workers.UvicornWorker --preload --workers ${WEB_CONCURRENCY:-2} --bind 0.0.0.0:8000 --timeout 120 --graceful-timeout 30 --keep-alive 5 --max-requests 10000 --max-requests-jitter 1000 --access-logfile - --error-logfile -"]

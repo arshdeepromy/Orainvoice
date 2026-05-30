@@ -696,5 +696,9 @@ async def generate_purchase_order_pdf(
         generated_at=datetime.now(timezone.utc),
     )
 
-    pdf_bytes = HTML(string=html_content).write_pdf()
+    # Off the event loop because WeasyPrint is CPU-heavy. PERFORMANCE_AUDIT.md §B-H1.
+    import asyncio
+    pdf_bytes = await asyncio.to_thread(
+        lambda: HTML(string=html_content).write_pdf()
+    )
     return pdf_bytes

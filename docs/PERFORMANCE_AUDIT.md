@@ -43,15 +43,15 @@ Each item is independent, backward-compatible, and reversible. Order is by lever
 | # | Change | Effort | Expected impact | Rollout risk | Status |
 |---|---|---|---|---|---|
 | 1 | Lazy-load admin routes + Puck editor in `App.tsx`; add Vite `manualChunks` | 0.5 d | Main bundle 1.38 MB → ~450 KB. First paint ~3× faster on tablets. | None — old bundles still cached until browser refreshes. | ✅ DONE 2026-05-30 — main chunk now 283 KB (gzip 54 KB), ~5× reduction. Puck/recharts/react-vendor/firebase/dnd/headlessui/axios all in own chunks. Dashboard + 20 admin pages + ManagedPage now lazy-loaded. |
-| 2 | Wrap WeasyPrint, bcrypt, sync Stripe SDK with `asyncio.to_thread(...)` | 0.5 d | Eliminates event-loop stalls. 5–10× concurrency on PDF/login paths. | None — semantics identical. Roll worker-by-worker. | ⏳ pending |
+| 2 | Wrap WeasyPrint, bcrypt, sync Stripe SDK with `asyncio.to_thread(...)` | 0.5 d | Eliminates event-loop stalls. 5–10× concurrency on PDF/login paths. | None — semantics identical. Roll worker-by-worker. | ✅ DONE 2026-05-30 — bcrypt (`hash_password`/`verify_password`) made async; 16+ call sites updated. WeasyPrint wrapped in 4 PDF generators (invoice, quote, vehicle service report, purchase order). All 13 sync Stripe SDK calls in `stripe_billing.py` routed through new `_stripe_call()` helper. |
 | 3 | Add the index pack in [Appendix A](#appendix-a) via `CREATE INDEX CONCURRENTLY` | 1 d | Customer search and invoice list go from seq-scan to index-scan. | None — `CONCURRENTLY` takes only SHARE UPDATE EXCLUSIVE lock. Run after-hours. | ⏳ pending |
 | 4 | Reduce DB pool: `pool_size=15`, `max_overflow=10` × 4 workers = 100 conns. Drop Postgres `max_connections` to 80, `work_mem` to 8 MB | 0.5 d | Eliminates connection-storm risk; ~30 GB of theoretical work-mem reclaimed. | Requires PG restart + app restart. Roll during low-traffic window. Reversible by reverting compose values. | ⏳ pending |
 | 5 | Enable service worker (currently a no-op stub in `frontend/src/registerSW.ts`) | 0.5 d | Repeat visits become instant. Kiosk reboots no longer redownload 5 MB. | Low — bake `__APP_VERSION__` into `CACHE_NAME` so deploys cleanly invalidate. Test in staging first. | ⏳ pending |
 | 6 | Cache org settings / module enablement / terminology / feature flags in Redis | 0.5 d | Removes 3–5 DB hits from every request. | Low — pick conservative TTLs (60 s settings, 5 min modules). Add invalidation on writes for org-settings PATCH. | ⏳ pending |
 | 7 | Gate the scheduler behind a single-worker flag (Redis SETNX or env-gated worker 0) | 0.5 d | Stops 4× duplicate billing / Stripe charges / emails on every restart. | **Verify before merge.** Audit logs after rollout to confirm no scheduled task is missed. | ⏳ pending |
 | 8 | Drop `console.log`s in production via Vite `esbuild.drop: ['console','debugger']`; explicit `build.sourcemap: false` | 0.1 d | Smaller bundles + no info leak on payment/portal pages. | None. | ✅ DONE 2026-05-30 — implemented as `stripConsoleInProduction()` plugin in `vite.config.ts` (Vite 8 / rolldown ignores esbuild.drop config; plugin does the same job at build time). `build.sourcemap: false` codified. |
-| 9 | Gunicorn `--preload`, env-driven worker count (`WEB_CONCURRENCY=2` on the Pi) | 0.2 d | 3× faster startup; CPU oversubscription resolved. | Low — verify worker-startup modules are fork-safe (current code is; `redis_pool` is created at import). | ⏳ pending |
-| 10 | Wire `DeadLetterService` into Stripe webhook + email failover + recurring-invoice failure | 0.5 d | Money paths gain a recovery channel. | None — purely additive. | ⏳ pending |
+| 9 | Gunicorn `--preload`, env-driven worker count (`WEB_CONCURRENCY=2` on the Pi) | 0.2 d | 3× faster startup; CPU oversubscription resolved. | Low — verify worker-startup modules are fork-safe (current code is; `redis_pool` is created at import). | ✅ DONE 2026-05-30 — Dockerfile defaults to `WEB_CONCURRENCY=2` env var, drops the pinned `--workers 4`. `--preload` added to Dockerfile + Pi + Pi-standby + standby-prod compose files. Dev/ha-standby use single-process uvicorn — `--preload` not applicable. |
+| 10 | Wire `DeadLetterService` into Stripe webhook + email failover + recurring-invoice failure | 0.5 d | Money paths gain a recovery channel. | None — purely additive. | ✅ DONE 2026-05-30 — Stripe platform webhook + Stripe Connect (portal) webhook now write to DLQ on exception with full event payload. Recurring-invoice generation failures stored per-schedule. `send_email()` accepts new `dlq_task_name` / `dlq_task_args` kwargs so callers opt critical sends (invoices, receipts) into DLQ on chain exhaustion. |
 
 Total: ~5 dev-days. Items 1, 8, 9, 10 are zero-risk; 3, 6, 7 are low-risk with verification; 2, 4, 5 deserve staging soak.
 
@@ -134,11 +134,13 @@ At 200 req/s that's ~1 200 Redis ops/s + ~600 DB ops/s just for middleware befor
 ### HIGH
 
 #### B-H1. WeasyPrint blocks the event loop on every PDF
+- **Status:** ✅ DONE 2026-05-30 — wrapped via `asyncio.to_thread(lambda: HTML(string=html_content).write_pdf())` in `app/modules/invoices/service.py`, `app/modules/quotes/service.py`, `app/modules/inventory/service.py` (purchase order PDFs), and `app/modules/vehicles/report_service.py` (service-history reports). PDF rendering now runs on a thread, freeing the event loop for other request handlers during the 200-1500 ms render.
 - **Where:** [app/modules/invoices/service.py:4446](app/modules/invoices/service.py#L4446), [app/modules/quotes/service.py:1160](app/modules/quotes/service.py#L1160).
 - **Fix:** `pdf_bytes = await asyncio.to_thread(lambda: HTML(string=html_content).write_pdf())`.
 - **Medium-term:** Move PDFs behind a job queue (Theme D) and cache rendered PDFs at `/app/uploads/_cache/pdf/<invoice_id>.pdf` keyed by `invoice.version`.
 
 #### B-H2. `bcrypt` is synchronous in async login/refresh/password-reset
+- **Status:** ✅ DONE 2026-05-30 — `app/modules/auth/password.py` now exposes `hash_password`/`verify_password` as `async` wrappers around `asyncio.to_thread`, with `*_sync` escape hatches for non-async contexts. Same change applied to `app/modules/fleet_portal/auth.py`. All call sites updated to `await`: auth/service, auth/router, auth/mfa_service, auth/pending_signup, admin/service, admin/router (demo seed), staff/router, organisations/service, fleet_portal/router, fleet_portal/services/account_service.
 - **Where:** [app/modules/auth/password.py:12,17](app/modules/auth/password.py#L12-L17); callers at [auth/service.py:157, 1859, 2506](app/modules/auth/service.py).
 - **Fix:** `verify_password` → `async def`, `await asyncio.to_thread(bcrypt.checkpw, ...)`. Same for `hash_password`. Update 6 call sites to `await`.
 
@@ -148,6 +150,7 @@ At 200 req/s that's ~1 200 Redis ops/s + ~600 DB ops/s just for middleware befor
 - **Fix (medium-term):** Move to `arq` in a dedicated worker container.
 
 #### B-H4. Synchronous Stripe SDK calls inside `async def`
+- **Status:** ✅ DONE 2026-05-30 — added `_stripe_call(fn, *args, **kwargs)` helper at top of `app/integrations/stripe_billing.py` that runs SDK calls through `asyncio.to_thread`. All 13 documented sync sites now go through it: `Customer.create`, `Customer.modify`, `SetupIntent.create`, `PaymentMethod.list`, `PaymentMethod.detach`, three `PaymentIntent.create` blocks, `InvoiceItem.create`, `Subscription.retrieve`, `SubscriptionItem.create_usage_record`, `Invoice.list`, `billing_portal.Session.create`. Migrating to `httpx.AsyncClient` against `api.stripe.com` directly remains a separate option for the future.
 - **Where:** [app/integrations/stripe_billing.py](app/integrations/stripe_billing.py) — 13 call sites listed in Theme B.
 - **Fix:** `await asyncio.to_thread(stripe.X.create, ...)`. Or migrate to `httpx.AsyncClient` against `api.stripe.com` directly — the pattern already exists in [payments/service.py:1522, 2077, 2120, 2215](app/modules/payments/service.py).
 
@@ -178,7 +181,7 @@ At 200 req/s that's ~1 200 Redis ops/s + ~600 DB ops/s just for middleware befor
 - **B-M4.** Feature-flag + module middlewares cold-start storm at deploy time. Warm both in `cache_warming.py`. Merge the two middlewares (identical path-prefix logic).
 - **B-M5.** CORS uses `allow_methods=["*"]`, `allow_headers=["*"]` ([main.py:244-250](app/main.py#L244-L250)). Tighten.
 - **B-M6.** No `orjson`. Switch to `FastAPI(default_response_class=ORJSONResponse, ...)`; 3–5× faster JSON for large list responses.
-- **B-M7.** Gunicorn missing `--preload`. With 30+ imports + `configure_mappers()` per worker, startup time is 4× the necessary. Add `--preload` in [Dockerfile:38](Dockerfile#L38).
+- **B-M7.** Gunicorn missing `--preload`. With 30+ imports + `configure_mappers()` per worker, startup time is 4× the necessary. Add `--preload` in [Dockerfile:38](Dockerfile#L38). ✅ DONE 2026-05-30 — added to Dockerfile CMD + the three compose files that override the gunicorn command (Pi, Pi-standby, standby-prod).
 - **B-M8.** `pool_pre_ping=True` adds a `SELECT 1` per checkout. Consider disabling and relying on `pool_recycle=1800`.
 - **B-M9.** Replace `@app.on_event` (deprecated) with `lifespan` context manager. Run independent startup tasks via `asyncio.gather(...)`.
 
@@ -187,7 +190,7 @@ At 200 req/s that's ~1 200 Redis ops/s + ~600 DB ops/s just for middleware befor
 - **B-L1.** `/health` reads VERSION file from disk on every poll. Read at startup.
 - **B-L2.** `email_sender.py` constructs a new `httpx.AsyncClient` per send. Reuse a module-level client; close in shutdown.
 - **B-L3.** `IntegrityError` handler iterates a 38-entry dict per error. Compile a single regex at module load.
-- **B-L4.** `--workers 4` is pinned in the Dockerfile. Make it `${GUNICORN_WORKERS:-2}`.
+- **B-L4.** `--workers 4` is pinned in the Dockerfile. Make it `${GUNICORN_WORKERS:-2}`. ✅ DONE 2026-05-30 — Dockerfile now uses `${WEB_CONCURRENCY:-2}` (matching gunicorn's documented env var). Pi/Pi-standby/standby-prod compose files already explicit-set `--workers 2`.
 
 ---
 
@@ -356,6 +359,12 @@ Built `dist/assets` directory measured at audit time: 5.0 MB across ~250 chunks;
 - See Theme D.
 
 #### I-H3. Dead-letter queue never written to
+- **Status:** ✅ DONE 2026-05-30 — three highest-impact sites wired:
+  - Stripe platform webhook (`app/modules/payments/router.py`) — DLQ entry on `handle_stripe_webhook` exception with full event payload.
+  - Stripe Connect portal webhook (`app/modules/portal/router.py`) — same pattern.
+  - Recurring invoice generation (`app/tasks/scheduled.py`) — per-schedule DLQ entry on failure so a broken org doesn't get silently skipped on every cycle.
+  - Email exhaustion path now optional via new `dlq_task_name` / `dlq_task_args` kwargs on `send_email()` (callers opt in for invoice emails, payment receipts, etc.).
+  - `alert_if_stale` cron remains pending — wire as a small follow-up.
 - **Where:** [app/core/dead_letter.py](app/core/dead_letter.py), [app/models/dead_letter.py](app/models/dead_letter.py). Zero callers of `DeadLetterService.store_failed_task` outside the module itself.
 - **Fix:** Wire into (1) Stripe webhook processing failures, (2) `send_email_task` exhausted retries, (3) recurring-invoice generation per-schedule failures. Add a daily cron that runs `alert_if_stale(60)`.
 
@@ -422,15 +431,15 @@ Four phases, ordered by urgency × safety. Nothing here is breaking; nothing req
 
 Plan a single low-traffic window. Bring everything below in one PR per area, ship sequentially.
 
-- [ ] **`asyncio.to_thread` wraps on bcrypt, WeasyPrint, Stripe SDK** (B-H1, B-H2, B-H4). Roll worker-by-worker via gunicorn graceful restart.
-- [ ] **Gunicorn `--preload`; `WEB_CONCURRENCY=${WEB_CONCURRENCY:-2}`** (B-M7, B-L4, I-M8).
+- [x] **`asyncio.to_thread` wraps on bcrypt, WeasyPrint, Stripe SDK** (B-H1, B-H2, B-H4). Roll worker-by-worker via gunicorn graceful restart. ✅ DONE 2026-05-30.
+- [x] **Gunicorn `--preload`; `WEB_CONCURRENCY=${WEB_CONCURRENCY:-2}`** (B-M7, B-L4, I-M8). ✅ DONE 2026-05-30 (I-M8 cpus limit not changed in this batch).
 - [ ] **Gate the scheduler behind Redis SETNX or single-worker env flag** (B-H3). Watch logs for 24 h to confirm no scheduled task is missed.
 - [ ] **Index pack from [Appendix A](#appendix-a)** via `CREATE INDEX CONCURRENTLY`. Budget ~5 min per index on 5 M-row tables. Live-safe.
 - [ ] **Pool size 15 + overflow 10 × 4 workers; PG `max_connections=80`, `work_mem=8MB`.** (C / §1 item 4.) Requires PG restart + app restart — this is the one maintenance window in the plan. Take a `pg_dump` immediately before, even with backups in place.
 - [ ] **`lock_timeout=5000` in Postgres command** (D-M7) — ship alongside the PG restart above.
 - [ ] **Service worker actually registers** (F-H5). Bake `__APP_VERSION__` into `CACHE_NAME`. Test in staging first; broken SW caching is the one frontend item that can damage UX persistently.
 - [ ] **Cache org settings / module enablement / terminology / feature flags in Redis** (D-H10, I-M1, I-M2). Conservative TTLs; add invalidation on writes.
-- [ ] **Wire `DeadLetterService` into Stripe webhook + email failover + recurring-invoice** (I-H3). Purely additive.
+- [x] **Wire `DeadLetterService` into Stripe webhook + email failover + recurring-invoice** (I-H3). Purely additive. ✅ DONE 2026-05-30 — three sites + opt-in email DLQ kwargs.
 - [ ] **`/readyz` endpoint + Docker `healthcheck:` + nginx `proxy_next_upstream`** (I-H8). Purely additive.
 
 ### Phase 3 — Next month (the RLS fix, sequenced carefully)

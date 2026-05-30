@@ -231,7 +231,7 @@ async def login(
             detail="Account temporarily locked. Please try again later.",
         )
 
-    if not account.password_hash or not fp_auth.verify_password(
+    if not account.password_hash or not await fp_auth.verify_password(
         body.password, account.password_hash
     ):
         fp_auth.record_failed_attempt(account)
@@ -2401,7 +2401,7 @@ async def change_password(
     if account is None or not account.password_hash:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    if not fp_auth.verify_password(body.current_password, account.password_hash):
+    if not await fp_auth.verify_password(body.current_password, account.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
     if body.new_password == body.current_password:
@@ -2416,7 +2416,7 @@ async def change_password(
         raise HTTPException(status_code=400, detail=str(exc))
 
     from datetime import datetime as _dt, timezone as _tz
-    account.password_hash = fp_auth.hash_password(body.new_password)
+    account.password_hash = await fp_auth.hash_password(body.new_password)
     account.password_changed_at = _dt.now(_tz.utc)
     account.must_change_password = False
     await db.flush()

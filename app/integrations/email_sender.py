@@ -1765,6 +1765,8 @@ async def send_email(
     *,
     org_sender_name: str | None = None,
     org_reply_to: str | None = None,
+    dlq_task_name: str | None = None,
+    dlq_task_args: dict | None = None,
 ) -> SendResult:
     """Send an email through the active provider chain.
 
@@ -1921,8 +1923,29 @@ async def send_email(
         await _maybe_fire_all_auth_fail_alert(db)
 
     last = attempts[-1] if attempts else None
+    last_error = (last.error if last else "unknown")
+
+    # When the caller flagged this send as critical (invoice email,
+    # payment receipt, etc.), record the failure in the dead-letter
+    # queue so it can be replayed after we fix the underlying cause.
+    # PERFORMANCE_AUDIT.md §I-H3 / §1 quick win #10.
+    if dlq_task_name:
+        try:
+            from app.core.dead_letter import DeadLetterService
+            await DeadLetterService().store_failed_task(
+                task_name=dlq_task_name,
+                task_args=dlq_task_args or {
+                    "to_email": message.to_email,
+                    "subject": message.subject,
+                },
+                error_message=f"email chain exhausted: {last_error}",
+                org_id=getattr(message, "org_id", None),
+            )
+        except Exception:
+            logger.exception("Failed to write email-exhausted to dead-letter queue")
+
     return SendResult(
         success=False,
-        error=(last.error if last else "unknown"),
+        error=last_error,
         attempts=attempts,
     )

@@ -213,6 +213,22 @@ async def generate_recurring_invoices_task() -> dict:
             except Exception as exc:
                 logger.warning("Failed to generate recurring invoice for schedule %s: %s", schedule.id, exc)
                 errors += 1
+                # Record in DLQ so failed schedules don't silently get
+                # skipped on every cycle. PERFORMANCE_AUDIT.md §I-H3 / §1
+                # quick win #10.
+                try:
+                    from app.core.dead_letter import DeadLetterService
+                    await DeadLetterService().store_failed_task(
+                        task_name="generate_recurring_invoice",
+                        task_args={
+                            "schedule_id": str(schedule.id),
+                            "org_id": str(schedule.org_id),
+                        },
+                        error_message=str(exc),
+                        org_id=schedule.org_id,
+                    )
+                except Exception:
+                    logger.exception("Failed to write recurring-invoice failure to DLQ")
 
         if generated > 0 or errors > 0:
             logger.info("Recurring invoices: %d generated, %d errors", generated, errors)

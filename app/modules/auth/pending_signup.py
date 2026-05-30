@@ -50,10 +50,10 @@ async def create_pending_signup(data: dict, *, billing_interval: str = "monthly"
     """
     pending_id = str(uuid.uuid4())
 
-    # Hash password before storing
+    # Hash password before storing (off the event loop)
     stored = dict(data)
     if "password" in stored:
-        stored["password_hash"] = hash_password(stored.pop("password"))
+        stored["password_hash"] = await hash_password(stored.pop("password"))
 
     # Ensure billing_interval is always present in the stored blob
     stored.setdefault("billing_interval", billing_interval)

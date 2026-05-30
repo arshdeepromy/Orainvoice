@@ -321,7 +321,7 @@ async def create_global_admin(
 
     user = User(
         email=email,
-        password_hash=hash_password(password),
+        password_hash=await hash_password(password),
         role="global_admin",
         org_id=None,
         first_name=first_name,

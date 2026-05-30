@@ -1340,7 +1340,7 @@ async def backup_integration_settings(
     user_id = getattr(request.state, "user_id", None)
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
-    if not user or not verify_password(confirm_password, user.password_hash):
+    if not user or not await verify_password(confirm_password, user.password_hash):
         return JSONResponse(status_code=400, content={"detail": "Invalid password"})
 
     data = await export_integration_settings(db)
@@ -3285,9 +3285,9 @@ async def reset_demo_account(
                 "DELETE FROM users WHERE org_id = $1 AND id != $2", org_id, user_id
             )
 
-            # 5. Reset demo user password and clear lockout
+            # 5. Reset demo user password and clear lockout (bcrypt off the event loop)
             from app.modules.auth.password import hash_password
-            pw_hash = hash_password("Demo123!")
+            pw_hash = await hash_password("Demo123!")
             await conn.execute(
                 """UPDATE users SET password_hash = $1, last_login_at = NULL,
                    failed_login_count = 0, locked_until = NULL, branch_ids = '[]'::jsonb

@@ -278,7 +278,11 @@ async def generate_service_history_pdf(
 
     html_content = template.render(**report_context)
 
-    pdf_bytes: bytes = HTML(string=html_content).write_pdf()
+    # Off the event loop because WeasyPrint is CPU-heavy. PERFORMANCE_AUDIT.md §B-H1.
+    import asyncio
+    pdf_bytes: bytes = await asyncio.to_thread(
+        lambda: HTML(string=html_content).write_pdf()
+    )
     return pdf_bytes
 
 # ---------------------------------------------------------------------------
