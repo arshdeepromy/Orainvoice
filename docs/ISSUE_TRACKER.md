@@ -5293,3 +5293,230 @@ The legacy `integration_configs[name='smtp']` row is intentionally retained for 
 **Runbook**: `docs/RUNBOOKS/email-provider-unification.md`
 
 **Related Issues**: ISSUE-150, ISSUE-151, ISSUE-152, ISSUE-153 (all part of the same email-delivery work; this feature ship encompasses the systemic gaps those issues addressed point-by-point).
+
+
+---
+
+### ISSUE-155: Quote → Invoice convert drops vehicle odometer / WOF / COF / additional-vehicle metadata
+
+- **Date**: 2026-05-30
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Converting a sent or accepted quote to a draft invoice produced an invoice with empty Odometer, WOF Expiry, COF Expiry on the InvoiceDetail vehicle tile and on the rendered PDF, even when the source quote had those values populated. Additional-vehicle WOF / COF / inspection_type also vanished. The DB confirmed `quotes.vehicle_odometer = 46127` and `quotes.vehicle_wof_expiry = '2025-12-09'` while the resulting `invoices.vehicle_odometer` was NULL and `invoices.invoice_data_json.vehicle_display.wof_expiry` was NULL.
+
+**Root Cause**: `convert_quote_to_invoice` in `app/modules/quotes/service.py` only forwarded `vehicle_rego/make/model/year` to `create_invoice`. It dropped:
+
+- `vehicle_odometer`
+- `vehicle_wof_expiry` → `vehicle_wof_expiry_date`
+- `vehicle_cof_expiry` → `vehicle_cof_expiry_date`
+
+The `additional_vehicles` mapping also stripped `id`, `wof_expiry`, `cof_expiry`, and `inspection_type` even though `create_invoice` knows how to persist all of them.
+
+**Fix Applied**:
+
+1. Extended the `vehicles_data` list-comprehension in `convert_quote_to_invoice` to preserve `id`, `wof_expiry`, `cof_expiry`, `inspection_type` per additional vehicle.
+2. Pulled `quote.vehicle_wof_expiry` / `quote.vehicle_cof_expiry` from `quote_dict` and passed them as `vehicle_wof_expiry_date` / `vehicle_cof_expiry_date` to `create_invoice`.
+3. Added `vehicle_odometer=quote_dict.get("vehicle_odometer")` to the `create_invoice` call.
+
+**Files Changed**:
+- `app/modules/quotes/service.py`
+
+**Similar Bugs Found & Fixed**: This is the same pattern as ISSUE-156 / ISSUE-157 / ISSUE-159 — a downstream caller dropping fields that the receiving function and DB both support. Searched the convert path for any other field-passthrough gaps; none found.
+
+**Related Issues**: ISSUE-156, ISSUE-157, ISSUE-159, ISSUE-160
+
+**Spec**: Direct fix (extension to the existing convert flow; no new spec).
+
+---
+
+### ISSUE-156: InvoiceDetail vehicle tile hides WOF / COF when no global vehicle is linked
+
+- **Date**: 2026-05-30
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Opening the detail page of a converted (or kiosk-driven, or manual-rego) invoice rendered the Vehicle tile with Registration / Vehicle / Odometer rows but no WOF Expiry or COF Expiry row, even though `invoices.invoice_data_json.vehicle_display.wof_expiry` was populated correctly in the DB. The same data showed correctly on invoices created via the rego search dropdown (which links a global vehicle).
+
+**Root Cause**: `InvoiceDetail.tsx` had two render branches for the Vehicle tile:
+
+- `invoice.vehicle ? (...)` — full tile, reads `getInspectionExpiry(invoice.vehicle)` from the global / org vehicle record.
+- `invoice.vehicle_rego ? (...)` — fallback, rendered Registration + make/model + odometer **but no WOF/COF row**.
+
+Quote-converted invoices (and any path that doesn't supply `global_vehicle_id`) fall into the second branch because the rego doesn't resolve to an OrgVehicle/GlobalVehicle, so the JSONB `vehicle_display` snapshot was effectively invisible to the UI.
+
+**Fix Applied**:
+
+1. Extended the `InvoiceData` interface with a typed `vehicle_display` field that mirrors `invoice_data_json.vehicle_display`.
+2. Extended the second render branch (rego-only) to read `invoice.vehicle_display.wof_expiry / cof_expiry` and infer the inspection type via the same logic as `vehicleHelpers.getInspectionLabel/Expiry` (COF when `inspection_type === 'cof'` or only `cof_expiry` set; WOF otherwise).
+
+**Files Changed**:
+- `frontend/src/pages/invoices/InvoiceDetail.tsx`
+
+**Similar Bugs Found & Fixed**: PDF render path was already correct (it consumes `vehicle_display` directly via `build_vehicle_display_fields`). Only the on-screen detail page was missing the fallback. Same display-path miss class as ISSUE-159 (schema-side).
+
+**Related Issues**: ISSUE-155, ISSUE-157, ISSUE-159
+
+**Spec**: Direct fix.
+
+---
+
+### ISSUE-157: Invoice edit silently drops WOF / COF / odometer / service-due changes when caller did not supply global_vehicle_id
+
+- **Date**: 2026-05-30
+- **Severity**: critical
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: User opened an issued invoice in edit mode (specifically a quote-converted invoice), changed the WOF Expiry date, clicked "Save as Draft" or "Issue Invoice". Backend logged `PUT /api/v1/invoices/{id} 200 OK` but neither the OrgVehicle row nor the invoice's `invoice_data_json.vehicle_display` reflected the new date. The detail page kept showing the old WOF.
+
+**Root Cause**: Two separate gates in `update_invoice` (`app/modules/invoices/service.py`) both required `global_vehicle_id` to be supplied by the caller:
+
+1. **OrgVehicle writeback gate** (line ~2701): `if vehicle_wof_expiry_date and global_vehicle_id and vehicle_type == "org" and vehicle_record is not None`. With `global_vehicle_id is None`, the WOF was never written to the OrgVehicle.
+2. **`vehicle_display` snapshot refresh**: didn't exist at all in `update_invoice`. Only `create_invoice` wrote that snapshot.
+
+Compounding both, `get_invoice`'s response shape did not include `vehicle.id`, so the InvoiceCreate edit form's `loadInvoice` couldn't seed `global_vehicle_id` for the round-trip — the form sent the PUT without it.
+
+**Fix Applied**: Three-part fix.
+
+1. **Backend `get_invoice`** (`app/modules/invoices/service.py:1830-1880`): added `id` and `inspection_type` to all three branches of `result["vehicle"]`. The last-resort flat fallback also surfaces WOF / COF / service-due from the invoice's own `vehicle_display` snapshot so the round-trip works without a vehicle record.
+2. **Backend `update_invoice` rego fallback** (~lines 2645-2670): when the caller doesn't supply `global_vehicle_id` but the invoice has a `vehicle_rego` and the update touches a vehicle Customer Driven Field, resolve `global_vehicle_id` from `org_vehicles` by rego scoped to `org_id`. Same pattern `create_invoice` uses for backfill.
+3. **Backend `update_invoice` vehicle_display refresh** (~lines 2778-2880): after the OrgVehicle writebacks, overlay the new vehicle field values onto `invoice.invoice_data_json["vehicle_display"]`, re-deriving `inspection_type` (resolved-record-first, then COF/WOF dates) and propagating `wof_updated/cof_updated/service_due_updated` flags. Only runs when the update payload actually touches a vehicle field.
+
+**Files Changed**:
+- `app/modules/invoices/service.py`
+- `frontend/src/pages/invoices/InvoiceCreate.tsx` (loadInvoice now hydrates `inspection_type` and `cof_expiry`)
+- `tests/quotes/test_invoice_edit_vehicle_display_refresh.py` (new: 3 regression tests)
+
+**Similar Bugs Found & Fixed**: This is the parent of a broader edit-pattern class. Same fix simultaneously resolves:
+
+- WOF edit on draft invoice
+- COF edit on draft / issued invoice
+- Odometer edit on issued invoice for converted / kiosk / manual invoices
+- Service-due edit
+- Switching inspection type WOF↔COF
+
+**Related Issues**: ISSUE-155, ISSUE-156, ISSUE-158, ISSUE-159
+
+**Spec**: Direct fix (no new spec; the fix is documented in `CHANGELOG.md` v1.13.0).
+
+---
+
+### ISSUE-158: get_invoice response missing vehicle.id and vehicle.inspection_type
+
+- **Date**: 2026-05-30
+- **Severity**: high (breaks ISSUE-157 round-trip)
+- **Status**: resolved (folded into ISSUE-157)
+- **Reporter**: user (surfaced while diagnosing ISSUE-157)
+- **Regression of**: N/A
+
+**Symptoms**: InvoiceCreate's edit-mode `loadInvoice` reads `inv.vehicle?.id` and `inv.vehicle?.inspection_type` to seed the form's primary vehicle, then forwards `global_vehicle_id` and the inspection-type radio selection through the PUT save. Both fields were always `undefined` in the API response, so:
+
+- `global_vehicle_id` was never sent → ISSUE-157 OrgVehicle writeback gate skipped silently.
+- The form couldn't render the WOF↔COF radio in the right state, defaulting to WOF every time even on COF vehicles.
+
+**Root Cause**: All three branches of the `result["vehicle"]` dict construction in `get_invoice` (OrgVehicle branch, GlobalVehicle branch, last-resort flat-fields branch) omitted both fields. `vehicle.id` was always `undefined` in the JSON response.
+
+**Fix Applied**: Added `id` (str) and `inspection_type` to the OrgVehicle and GlobalVehicle branches. The last-resort branch additionally surfaces WOF / COF / service-due from the invoice's own `vehicle_display` snapshot when no vehicle record exists.
+
+**Files Changed**:
+- `app/modules/invoices/service.py:1830-1880`
+
+**Similar Bugs Found & Fixed**: Same schema-omission class as ISSUE-159. Both were caught in the same investigation pass.
+
+**Related Issues**: ISSUE-157, ISSUE-159
+
+**Spec**: Direct fix.
+
+---
+
+### ISSUE-159: LinkedVehicleResponse schema strips Customer Driven Fields, breaks customer-profile "Issue Invoice" prefill
+
+- **Date**: 2026-05-30
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: Clicking "Issue Invoice" on a customer profile took the user to `/invoices/new?customer_id=...&vehicle_rego=...` and the form populated customer + rego + make/model only. WOF Expiry, COF Expiry, Odometer, Service Due, Inspection Type fields were all empty even though those values were stored on the linked OrgVehicle / GlobalVehicle record. The frontend prefill code reads `customer.vehicles[i].wof_expiry` etc., but those keys arrived `undefined` from the API.
+
+**Root Cause**: `LinkedVehicleResponse` in `app/modules/customers/schemas.py` only declared `id / rego / make / model / year / colour / source / origin / linked_at`. Pydantic silently dropped every other key on serialisation. The `get_customer_profile` service was building dicts with `odometer`, `wof_expiry`, `cof_expiry`, `inspection_type`, `service_due_date` — but Pydantic stripped them at the response boundary.
+
+The sibling schema `LinkedVehicleSummary` (used by `/customers/search`) already declared all five — so the same data was present on the search-results path but missing on the profile path.
+
+**Fix Applied**: Extended `LinkedVehicleResponse` to declare the five missing fields with `Optional[...]` defaults, mirroring `LinkedVehicleSummary` exactly. All optional with `None` defaults so existing callers that don't supply them keep working.
+
+**Files Changed**:
+- `app/modules/customers/schemas.py`
+- `tests/quotes/test_customer_profile_vehicle_fields.py` (new: 2 regression tests pinning the new field surface)
+
+**Similar Bugs Found & Fixed**: Same backend-schema-not-declaring-fields-the-service-produces class as ISSUE-158, ISSUE-160, and the original ISSUE-???-quote-settings-parity (`QuoteResponse` missing `payment_terms_text` / `terms_and_conditions` / `terms_and_conditions_enabled`). Audited every Pydantic response model in `app/modules/customers/schemas.py` for similar drift; no others found.
+
+**Related Issues**: ISSUE-157, ISSUE-158, ISSUE-160
+
+**Spec**: Direct fix.
+
+---
+
+### ISSUE-160: QuoteCreate "Auto-fill linked vehicle on customer select" effect hits non-existent endpoint, silently no-ops
+
+- **Date**: 2026-05-30
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user (caught while implementing ISSUE-161)
+- **Regression of**: N/A
+
+**Symptoms**: After selecting a customer on the QuoteCreate form (via search dropdown or any other mechanism), the linked vehicle never auto-filled, even when the customer had a single linked vehicle. The form left the vehicle empty.
+
+**Root Cause**: The "Auto-fill linked vehicle when customer is selected" effect in `QuoteCreate.tsx` called `apiClient.get('/customers/${customerId}/vehicles')`. No such endpoint exists in `app/modules/customers/router.py` — only `POST /customers/{id}/vehicles` (tag a vehicle) is registered. The GET returned 404, the catch block swallowed the error, and the auto-fill never ran. Same effect in `InvoiceCreate.tsx` had been silently broken too (likely from a refactor that removed the GET endpoint), but masked because most invoice flows pre-fill via URL params before the customer-select effect runs.
+
+**Fix Applied**: Redirected the fetch to `apiClient.get('/customers/${customerId}')` (the existing profile endpoint that returns `vehicles[]` as part of the response). Extended the `vehicles[i]` typing to include the Customer Driven Fields and propagated them onto the form's primary vehicle so the auto-fill carries the same data the URL-prefill path does (post-ISSUE-159).
+
+**Files Changed**:
+- `frontend/src/pages/quotes/QuoteCreate.tsx`
+
+**Similar Bugs Found & Fixed**: Audited `apiClient.get('/customers/${...}/...')` calls across the frontend; no other phantom endpoints found.
+
+**Related Issues**: ISSUE-159, ISSUE-161
+
+**Spec**: Direct fix.
+
+---
+
+### ISSUE-161: QuoteCreate Notes / Terms & Conditions fields leak HTML when org default is rich text
+
+- **Date**: 2026-05-30
+- **Severity**: medium
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A
+
+**Symptoms**: When the org-level Terms & Conditions setting was edited in OrgSettings (which uses a contentEditable rich-text editor), the saved value contained HTML tags like `<div>second row now</div>`. Pre-filling that value into QuoteCreate's Notes / T&C textareas rendered the raw tags as plain text in the textarea, the QuoteDetail page, and the PDF. The on-screen output read literally "Terms & Conditions bank details<div>second row now</div>".
+
+**Root Cause**: Three-layer mismatch — OrgSettings stores Notes (legacy `\n` plain text) and T&C (rich-text HTML). InvoiceCreate already used a contentEditable editor for T&C and `dangerouslySetInnerHTML` on InvoiceDetail; the invoice PDF used Jinja's `| safe` filter on `terms_and_conditions`. QuoteCreate and the quote pipeline used plain `<textarea>` + `whitespace-pre-wrap` + autoescape everywhere — so HTML round-tripped as visible literal tags.
+
+**Fix Applied**:
+
+1. **QuoteCreate.tsx**: replaced the Notes and T&C `<textarea>` elements with contentEditable `<div>` editors mirroring InvoiceCreate's existing T&C pattern. Both editors sync via a `prev || ...` setter and a per-state `useEffect` that respects user-editing flags. Added a `toHtml()` helper that converts legacy plain-text `\n` defaults to `<br>` so multi-line legacy notes pre-fill correctly.
+2. **QuoteDetail.tsx**: rendered `quote.notes` and `quote.terms_and_conditions` through `dangerouslySetInnerHTML` (mirror of `InvoiceDetail.tsx`).
+3. **`app/templates/pdf/quote.html`**: added Jinja's `| safe` filter to the Notes and T&C blocks so saved HTML renders correctly in the PDF.
+4. **`tests/quotes/test_quote_pdf_render.py`**: aligned the existing PDF render assertions for T&C body to expect unescaped output post-`| safe`.
+
+**Files Changed**:
+- `frontend/src/pages/quotes/QuoteCreate.tsx`
+- `frontend/src/pages/quotes/QuoteDetail.tsx`
+- `app/templates/pdf/quote.html`
+- `tests/quotes/test_quote_pdf_render.py`
+- `frontend/src/pages/quotes/__tests__/QuoteCreate.notes-prefill.test.tsx` (rewrote to assert against the contentEditable's `innerHTML` round-tripped through the browser's normalisation)
+
+**Similar Bugs Found & Fixed**: Audited every consumer of `settings.invoice.terms_and_conditions` and `settings.invoice.default_notes` for HTML leakage; QuoteList.tsx meta-panel "Terms : <first line>" summary still uses `quote.terms` (the per-quote raw string), which is correct — that's a single-line preview, no rich-text needed there.
+
+**Related Issues**: ISSUE-160 (both surfaced during the quote-settings parity feature ship)
+
+**Spec**: `.kiro/specs/quote-settings-parity/`
+
