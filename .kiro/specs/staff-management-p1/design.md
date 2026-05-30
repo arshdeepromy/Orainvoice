@@ -25,9 +25,13 @@ Frontend touches:
 
 ## 2. Navigation & Access
 
-- **Route:** existing `/staff/:id` route stays unchanged (registered in `App.tsx`). Tabs are sub-routes via URL hash (`/staff/:id#overview`).
-- **Guard:** `RequireOrgAdmin` (existing). Role gate uses existing `org_admin`, `branch_admin`, `location_manager` (no new role introduced — see §4).
-- **Module gate:** the tabbed UI conditionally renders only when `useModuleEnabled('staff_management')` returns true. When disabled, the legacy single-form view renders (back-compat).
+- **Route:** existing `/staff/:id` route stays unchanged (registered in `App.tsx:575`). Route-level gate is `<ModuleRoute moduleSlug="staff">` — that's the **existing legacy `staff` module**, which controls whether `/staff/*` routes are reachable at all. Phase 1 does not change this gate.
+- **Two separate module gates co-exist:**
+  - **`staff` (legacy module, route gate):** if disabled, all `/staff/*` routes return the FeatureNotAvailable page. Pre-existing behaviour, untouched by Phase 1.
+  - **`staff_management` (new module, feature gate, introduced in Phase 1):** if disabled (but `staff` enabled), the page renders the legacy single-form `LegacyStaffDetail` view. If enabled, the tabbed shell renders. The Payroll module's dependency chain points at `staff_management` (NOT the legacy `staff` slug), so enabling Payroll auto-enables `staff_management`.
+- **Tabs are sub-routes via URL hash** (`/staff/:id#overview`).
+- **Role guard:** existing roles (`org_admin`, `branch_admin`, `location_manager`) — no new role introduced (§4).
+- **Module-gate hook usage:** `const { isEnabled } = useModules(); const moduleEnabled = isEnabled('staff_management')`. The hook is `useModules()` (returns `{ isEnabled, enabledModules, ... }`), not `useModuleEnabled()`.
 - **Sidebar item:** existing "Staff" sidebar entry already exists. No nav changes in Phase 1.
 - **Lazy imports:** `OverviewTab`, `RosterTab`, `DocumentsTab` lazy-loaded via `React.lazy()` so the staff list page doesn't pull the calendar bundle.
 
@@ -69,6 +73,7 @@ def upgrade() -> None:
             ADD COLUMN IF NOT EXISTS kiwisaver_employer_rate numeric(4,2) NOT NULL DEFAULT 3.00,
             ADD COLUMN IF NOT EXISTS bank_account_number_encrypted bytea,
             ADD COLUMN IF NOT EXISTS probation_end_date date,
+            ADD COLUMN IF NOT EXISTS residency_type text NOT NULL DEFAULT 'citizen',
             ADD COLUMN IF NOT EXISTS visa_expiry_date date,
             ADD COLUMN IF NOT EXISTS self_service_clock_enabled boolean NOT NULL DEFAULT false,
             ADD COLUMN IF NOT EXISTS on_file_photo_url text,
@@ -90,6 +95,12 @@ def upgrade() -> None:
         ALTER TABLE staff_members DROP CONSTRAINT IF EXISTS ck_staff_tax_code;
         ALTER TABLE staff_members ADD CONSTRAINT ck_staff_tax_code
             CHECK (tax_code IS NULL OR tax_code IN ('M','ME','S','SH','ST','SB','CAE','NSW','ND'));
+    """)
+    # G2 — residency_type drives visa_expiry_date visibility + compliance counter.
+    op.execute("""
+        ALTER TABLE staff_members DROP CONSTRAINT IF EXISTS ck_staff_residency_type;
+        ALTER TABLE staff_members ADD CONSTRAINT ck_staff_residency_type
+            CHECK (residency_type IN ('citizen','permanent_resident','work_visa','student_visa','other'));
     """)
 
     # ------------------------------------------------------------------
@@ -185,6 +196,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("DROP TABLE IF EXISTS staff_roster_view_tokens;")
     op.execute("DROP TABLE IF EXISTS staff_pay_rates;")
     op.execute("""
         ALTER TABLE staff_members
@@ -200,6 +212,7 @@ def downgrade() -> None:
             DROP COLUMN IF EXISTS kiwisaver_employer_rate,
             DROP COLUMN IF EXISTS bank_account_number_encrypted,
             DROP COLUMN IF EXISTS probation_end_date,
+            DROP COLUMN IF EXISTS residency_type,
             DROP COLUMN IF EXISTS visa_expiry_date,
             DROP COLUMN IF EXISTS self_service_clock_enabled,
             DROP COLUMN IF EXISTS on_file_photo_url,
@@ -211,10 +224,33 @@ def downgrade() -> None:
             DROP COLUMN IF EXISTS employment_agreement_upload_id;
         ALTER TABLE staff_members DROP CONSTRAINT IF EXISTS ck_staff_employment_type;
         ALTER TABLE staff_members DROP CONSTRAINT IF EXISTS ck_staff_tax_code;
+        ALTER TABLE staff_members DROP CONSTRAINT IF EXISTS ck_staff_residency_type;
     """)
     op.execute("DELETE FROM module_registry WHERE slug IN ('staff_management', 'payroll');")
     op.execute("DELETE FROM feature_flags WHERE key IN ('staff_management', 'payroll');")
 ```
+
+### 3.1.1 `staff_roster_view_tokens` table (added inside the same migration, G8)
+
+```sql
+CREATE TABLE IF NOT EXISTS staff_roster_view_tokens (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id      uuid NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+    staff_id    uuid NOT NULL REFERENCES staff_members(id) ON DELETE CASCADE,
+    token       text NOT NULL,
+    week_start  date NOT NULL,
+    expires_at  timestamptz NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (staff_id, week_start)
+);
+ALTER TABLE staff_roster_view_tokens ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON staff_roster_view_tokens
+    USING (org_id = current_setting('app.current_org_id', true)::uuid);
+```
+
+`ON DELETE CASCADE` on both FKs is the G8 fix — when a staff is hard-deleted via `DELETE /staff/:id/permanent`, all of their tokens go with them; same when an org is deleted. The unique `(staff_id, week_start)` index is the upsert key for `get_or_create_viewer_token` (resending the same week reuses the existing token, doesn't proliferate rows).
+
+The unique index on `token` itself is created in migration `0204` (the CONCURRENTLY pack) since it's queried on every public viewer hit and must be fast.
 
 ### 3.2 Migration `0204_staff_phase1_indexes.py` (CONCURRENTLY pack)
 
@@ -387,7 +423,40 @@ POST /api/v2/staff/:id/email-roster {week_start}
     → return {ok: true, message_id: result.provider_message_id}
 ```
 
-SMS path mirrors but composes a 160-char body and uses `connexus_sms`. The viewer-token URL is generated with the same `secrets.token_urlsafe(32)` pattern used in `app/modules/portal/service.py`. Tokens stored in a new lightweight table `staff_roster_view_tokens (id, org_id, staff_id, token, week_start, expires_at)` with idempotent upsert per (staff_id, week_start) so re-sending the same week reuses the same link.
+SMS path mirrors but composes a 160-char body (downgrading to UCS-2 multi-part when the staff `first_name` contains Māori macrons or other non-GSM-7 characters per R9.3) and uses `connexus_sms`. The viewer-token URL is generated with the same `secrets.token_urlsafe(32)` pattern used in `app/modules/portal/service.py`. Tokens stored in `staff_roster_view_tokens` (DDL in §3.1.1) with idempotent upsert per `(staff_id, week_start)` so re-sending the same week reuses the same link.
+
+**Rate limit on public viewer (G5):** the unauthenticated `GET /api/v2/public/staff-roster/:token` endpoint inherits the existing per-IP rate limiter at a tightened threshold: **30 requests per minute per IP**. Configured by adding a new rule to `app/middleware/rate_limit.py`'s policy map under key `public_staff_roster`. The 32-byte token's entropy makes brute-force impractical, but the limit defends against accidental scraping (e.g., a token leaked into a public Slack channel, scraped by web crawlers).
+
+### 5.5 Token revocation on staff deactivation/termination (G4)
+
+When a staff is deactivated (`PUT /staff/:id/deactivate` or sets `is_active=false`) or terminated (sets `employment_end_date`), the service-layer flow runs the following SQL inside the same transaction:
+
+```python
+# In StaffService.deactivate_staff / terminate_staff, after setting is_active=false:
+result = await db.execute(
+    update(StaffRosterViewToken)
+    .where(
+        StaffRosterViewToken.staff_id == staff_id,
+        StaffRosterViewToken.org_id == org_id,
+        StaffRosterViewToken.expires_at > func.now(),
+    )
+    .values(expires_at=func.now())
+    .returning(StaffRosterViewToken.id)
+)
+revoked = result.rowcount or 0
+if revoked > 0:
+    await write_audit_log(
+        session=db,
+        org_id=org_id, user_id=current_user.id,
+        action='roster.tokens_revoked',
+        entity_type='staff_member', entity_id=staff_id,
+        before_value=None, after_value={'tokens_revoked_count': revoked},
+    )
+```
+
+The public viewer endpoint `GET /api/v2/public/staff-roster/:token` then checks `expires_at > now()` and returns **HTTP 410 Gone** with `{ "detail": "token_expired_staff_deactivated" }` for any revoked token. (Distinct from 404 — "this token did exist but is no longer valid", helps the legitimate recipient understand what happened without leaking which staff was deactivated.)
+
+A reactivation flow (`POST /staff/:id/activate`) does **not** automatically un-revoke tokens — the staff would need a fresh roster email/SMS to get a new link. This is the safer default; we accept the minor inconvenience to avoid resurrecting stale tokens.
 
 ### 5.4 Scheduled task `weekly_roster_broadcast`
 
@@ -405,7 +474,8 @@ Becomes a thin shell:
 
 ```tsx
 export default function StaffDetail({ staffId }: Props) {
-  const moduleEnabled = useModuleEnabled('staff_management')
+  const { isEnabled } = useModules()
+  const moduleEnabled = isEnabled('staff_management')
   const [activeTab, setActiveTab] = useTabHash('overview', ['overview', 'roster', 'documents'])
   const { staff, refresh, isLoading, error } = useStaffDetail(staffId)
 
@@ -439,11 +509,17 @@ export default function StaffDetail({ staffId }: Props) {
 
 Sections:
 1. **Personal info** — first/last name, email, phone, emergency contact (new)
-2. **Employment** — type, start/end date, std hours/week, position, reporting_to, probation_end_date (auto-computed indicator), visa_expiry_date
+2. **Employment** — type, start/end date, std hours/week, position, reporting_to, probation_end_date (auto-computed indicator), `residency_type` select (citizen / permanent resident / work visa / student visa / other), `visa_expiry_date` date input — **conditionally rendered (G2)**: only visible when `residency_type IN ('work_visa', 'student_visa', 'other')`. Switching residency_type back to citizen/resident hides the field but does NOT clear the existing value (the admin may need to set residency back temporarily without losing the data).
 3. **Tax & Pay** — tax_code (select), IRD (masked input — type to overwrite), KiwiSaver enrolled + rates, student_loan, hourly_rate, overtime_rate, bank_account_number (masked), Pay Rate History panel (collapsible)
 4. **Schedule** — existing `WorkSchedule` weekly grid (`shift_start` / `shift_end` fields + `availability_schedule` JSONB)
 5. **Clock-in & roster delivery** — `self_service_clock_enabled` toggle, `weekly_roster_email_enabled` toggle, `weekly_roster_sms_enabled` toggle, on-file photo upload
 6. **Skills** — existing comma-separated input
+
+**Inline warnings on the Overview tab** (G1, G3):
+- Above the Employment section, if `employee_id IS NULL` → amber inline banner *"This staff has no employee code. Kiosk clock-in (Phase 3) won't work until you set one. Tip: use the format `EMP-001` or `JD-2024`."* with a quick-set input.
+- Above the Employment section, if `employment_start_date IS NULL` → amber inline banner *"Employment start date is required for Phase 2 leave accrual. Please set it before Phase 2 ships."*
+
+Both inline banners disappear once the field is set + saved.
 
 Modal triggers:
 - Below-minimum-wage save → `MinimumWageWarningModal`
@@ -452,6 +528,10 @@ Modal triggers:
 State management: local `useState` for form fields, `useDirty()` hook for unsaved-state tracking, `useNavigationGuard()` for tab/route changes.
 
 ### 6.3 `RosterTab.tsx`
+
+The Roster tab fetches scheduling entries from `GET /api/v2/schedule?staff_id=:id&start=:weekStartIso&end=:weekEndIso` (verified path per `app/main.py:516`; the endpoint accepts `start`, `end`, `staff_id`, `location_id`). Response shape is `{ entries: [...], total: N }` — note the key is `entries`, not `items`. The frontend MUST consume it as `res.data?.entries ?? []` per `safe-api-consumption.md`.
+
+`ScheduleCalendar` today is a self-contained `export default function ScheduleCalendar()` with no props; Phase 1 task E4 extends its signature to accept an optional `focusStaffId?: string` and threads that into the existing internal `selectedStaffId` state used by `MobileDayView`. When `focusStaffId` is set, only that staff's entries render, hiding the multi-column staff grid.
 
 ```tsx
 export default function RosterTab({ staffId }: { staffId: string }) {
@@ -484,13 +564,66 @@ export default function RosterTab({ staffId }: { staffId: string }) {
 }
 ```
 
+`useStaffRoster` hook implementation:
+
+```tsx
+export function useStaffRoster(staffId: string, weekStart: Date) {
+  const [entries, setEntries] = useState<ScheduleEntry[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const refreshRef = useRef<() => Promise<void>>()
+  useEffect(() => {
+    const controller = new AbortController()
+    refreshRef.current = async () => {
+      setIsLoading(true)
+      try {
+        const res = await apiClient.get('/schedule', {
+          baseURL: '/api/v2',
+          signal: controller.signal,
+          params: {
+            staff_id: staffId,
+            start: weekStart.toISOString(),
+            end: addDays(weekStart, 7).toISOString(),
+          },
+        })
+        setEntries(res.data?.entries ?? [])
+      } catch (err) {
+        if (!controller.signal.aborted) console.error('roster fetch failed', err)
+      } finally {
+        setIsLoading(false)
+      }
+    }
+    refreshRef.current()
+    return () => controller.abort()
+  }, [staffId, weekStart])
+  return { entries, refresh: () => refreshRef.current?.(), isLoading }
+}
+```
+
 ### 6.4 `DocumentsTab.tsx`
 
 Single section: "Employment agreement". Renders an upload slot (drag-drop + file picker). On select → POST to `/api/v2/uploads` (existing endpoint) → on success POST `/api/v2/staff/:id/employment-agreement` with the returned `upload_id`. Shows current file name + "View" link + "Replace" button if already uploaded.
 
 ### 6.5 `StaffList.tsx` additions
 
-Above the existing search bar, render a `<ComplianceBanner>` showing the four counters from the new `compliance_summary` API response. Each counter is a clickable badge that adds a filter chip (URL-param) to the list. Below-minimum-wage staff get a red dot in the row.
+Above the existing search bar, render a `<ComplianceBanner>` showing the **seven counters** from the new `compliance_summary` API response (R6.1). Each counter is a clickable badge that adds a filter chip (URL query param) to the list:
+
+| Counter | API key | Filter chip query param | Row indicator |
+|---|---|---|---|
+| Probation ending in 14 days | `probation_ending_soon` | `?filter=probation_ending` | — |
+| Visa expiring in 60 days (visa-holders only) | `visa_expiring_soon` | `?filter=visa_expiring` | — |
+| Pay review due this month | `pay_review_due` | `?filter=pay_review_due` | — |
+| Below NZ minimum wage | `below_minimum_wage` | `?filter=below_minimum_wage` | 🔴 red dot in row |
+| Missing employment agreement | `missing_agreement` | `?filter=missing_agreement` | — |
+| **Missing employee code (G1)** | `missing_employee_id` | `?filter=missing_employee_id` | 🟠 amber dot |
+| **Missing employment start date (G3)** | `missing_start_date` | `?filter=missing_start_date` | 🟠 amber dot |
+
+Multiple amber dots stack horizontally on the row (small chip cluster) so admins can see at a glance which fields a particular staff is missing. Hovering any dot shows a tooltip naming the missing field(s).
+
+The "Missing employment start date" counter gets a **persistent banner** above the list when count > 0 reading:
+
+> *"Phase 2 leave accrual will skip these staff until you backfill `employment_start_date`. Set start dates now to avoid disruption when Phase 2 ships."*
+
+This banner stays visible (not dismissible) for the duration of Phase 1 lifecycle, dismissed only when the counter drops to zero. Rationale: the Phase 2 dependency is severe enough that admins should be nagged every time they hit the staff list, not just once.
 
 ## 7. User Workflow Traces
 
@@ -578,6 +711,8 @@ Same as 7.3 but uses `connexus_sms` provider. Body composed by helper `compose_r
 | 404 staff not found | Redirect to /staff with toast |
 | 403 (org_admin only) | Toast: "You don't have permission" |
 | 409 (duplicate IRD or employee_id) | Inline red text under the offending field |
+| 410 token_expired_staff_deactivated (G4, public viewer) | Standalone error page: "This roster link is no longer valid — the staff member has been deactivated. Contact the workshop for the latest schedule." |
+| 429 rate_limited (G5, public viewer) | Standalone error page: "Too many requests. Please try again in a minute." Reads `Retry-After` header. |
 | 500 / network | Banner across top: "Save failed. Try again?" with retry button |
 | Empty pay rate history | "No pay rate changes yet." |
 | No on-file photo | Placeholder silhouette + "Upload photo" button |
@@ -602,7 +737,7 @@ Same as 7.3 but uses `connexus_sms` provider. Body composed by helper `compose_r
 ## 11. Integration Points
 
 - **Setup wizard:** `staff_management` module's `setup_question` is automatically rendered by the existing `SetupGuide.tsx` flow once the module-registry insert lands. No frontend changes needed in setup-wizard.
-- **Module gates:** the existing `useModuleEnabled('staff_management')` hook just works once the migration runs. Phase 1 doesn't need to touch `app/core/modules.py`.
+- **Module gates:** the existing `useModules().isEnabled('staff_management')` API just works once the migration runs. Phase 1 doesn't need to touch `app/core/modules.py`.
 - **Audit log viewer:** existing `AuditLog.tsx` admin screen will surface new actions automatically since it's slug-agnostic.
 - **Subscription plan UI:** existing `SubscriptionPlans.tsx` global-admin screen will list `staff_management` and `payroll` in the modules picker without changes.
 - **Email provider:** routes through unified `send_email` — no provider config changes needed.
@@ -673,5 +808,18 @@ Per `.kiro/steering/spec-completeness-checklist.md`:
 - ✅ §4 Modal/Panel Inventory — §8.
 - ✅ §5 Toolbar/Action Bar — §6.3 RosterTab toolbar, §6.4 DocumentsTab.
 - ✅ §6 List/Table Spec — §10.
-- ✅ §7 Error & Edge Case UI — §9.
+- ✅ §7 Error & Edge Case UI — §9 (incl. new 410 + 429 cases for the public viewer endpoint).
 - ✅ §8 Integration Points — §11.
+
+## 18. Gap-analysis closure addendum
+
+Tracking which gaps from the spec-vs-master-plan review (recorded in conversation history) are closed in this revision:
+
+- ✅ **G1** — Missing-employee_id counter added to R6.1 + `compliance_summary` in §5.1 + `ComplianceBanner` in §6.5 + inline OverviewTab warning in §6.2.
+- ✅ **G2** — `residency_type` column added to staff_members migration §3.1; CHECK constraint enforced; conditional rendering of `visa_expiry_date` in §6.2; visa-expiry compliance counter filtered to visa-holders only in R6.1.
+- ✅ **G3** — Missing-employment_start_date counter added to R6.1 + `compliance_summary` + persistent banner above the Staff List (not dismissible until count drops to zero) + inline OverviewTab warning + explicit Non-Goal stating that admins must backfill before Phase 2.
+- ✅ **G4** — Token revocation flow specified in §5.5; deactivation/termination writes `expires_at=now()` to all of a staff's active tokens + emits `roster.tokens_revoked` audit row; public viewer returns 410 Gone for revoked tokens.
+- ✅ **G5** — Per-IP rate limit of 30 req/min applied to `GET /api/v2/public/staff-roster/:token` per §5.3.
+- ✅ **G6** — Mobile-app changes explicitly listed as a Non-Goal for Phase 1.
+- ✅ **G7** — UCS-2 multi-part SMS fallback documented in R9.3 — Māori macrons trigger UCS-2 encoding, multi-part SMS billing accepted, no transliteration.
+- ✅ **G8** — `ON DELETE CASCADE` on both `staff_roster_view_tokens.org_id` and `staff_roster_view_tokens.staff_id` specified in §3.1.1.

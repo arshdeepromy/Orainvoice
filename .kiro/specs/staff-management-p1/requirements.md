@@ -14,7 +14,7 @@ This phase delivers visible UX immediately and unblocks every later phase. No le
 
 ## Steering compliance
 
-- All API list responses wrap in `{ items: [...], total: N }` per `project-overview.md`.
+- All API list responses wrap arrays in objects per `project-overview.md`. New endpoints introduced by Phase 1 use `{ items: [...], total: N }`. The pre-existing `GET /api/v2/staff` list endpoint already returns `{ staff: [...], total, page, page_size }` — Phase 1 does NOT rename `staff` to `items`; the new `compliance_summary` field is added as a parallel top-level key.
 - All `db.flush()` followed by `await db.refresh(obj)` before Pydantic serialization.
 - Every migration uses `IF NOT EXISTS` for `CREATE TABLE` and `ALTER TABLE ADD COLUMN`.
 - All index migrations use `CREATE INDEX CONCURRENTLY ... IF NOT EXISTS` inside `op.get_context().autocommit_block()` per `database-migration-checklist.md` (canonical template `alembic/versions/2026_05_30_2300-0202_add_perf_indexes.py`). Zero `op.create_index(...)` calls.
@@ -65,7 +65,8 @@ This phase delivers visible UX immediately and unblocks every later phase. No le
    - `kiwisaver_employer_rate` (numeric(4,2), default 3.00)
    - `bank_account_number_encrypted` (bytea)
    - `probation_end_date` (date) — auto-set to `start_date + 90 days` on creation, editable
-   - `visa_expiry_date` (date) — only displayed for non-NZ residents (UI flag)
+   - `residency_type` (text, NOT NULL, default `'citizen'`) — values `citizen | permanent_resident | work_visa | student_visa | other`; drives whether `visa_expiry_date` is rendered + counted in compliance reports. CHECK enforces enum.
+   - `visa_expiry_date` (date) — only rendered + counted when `residency_type IN ('work_visa', 'student_visa', 'other')`. Nullable in all cases.
    - `self_service_clock_enabled` (boolean, NOT NULL, default false)
    - `on_file_photo_url` (text)
    - `emergency_contact_name` (text)
@@ -121,11 +122,14 @@ This phase delivers visible UX immediately and unblocks every later phase. No le
 **Acceptance criteria:**
 
 1. WHEN viewing the Staff List THE SYSTEM SHALL render a banner at the top showing counters:
-   - "N staff have probation ending in next 14 days"
-   - "N staff have visa expiring in next 60 days"
-   - "N staff are due a pay review this month" (computed: `last_pay_review_date IS NULL OR last_pay_review_date < (now() - interval '12 months')`)
-2. WHEN the counter is non-zero THE SYSTEM SHALL render a clickable badge that filters the staff list to that subset.
+   - "N staff have probation ending in next 14 days" — `probation_end_date BETWEEN now() AND now() + interval '14 days' AND is_active=true`.
+   - "N staff have visa expiring in next 60 days" — `visa_expiry_date BETWEEN now() AND now() + interval '60 days' AND is_active=true AND residency_type IN ('work_visa','student_visa','other')`. Citizens and permanent residents are excluded from the count.
+   - "N staff are due a pay review this month" — `last_pay_review_date IS NULL OR last_pay_review_date < (now() - interval '12 months')` AND `is_active=true`.
+   - **"N staff are missing an employee code" (G1)** — `employee_id IS NULL AND is_active=true`. Tooltip on the counter: *"Staff without an employee code cannot clock in or out at the kiosk in Phase 3. Set one now."*
+   - **"N staff are missing an employment start date" (G3)** — `employment_start_date IS NULL AND is_active=true`. Tooltip: *"Phase 2 leave accrual requires every active staff to have an employment start date. Backfill before Phase 2 ships."*
+2. WHEN the counter is non-zero THE SYSTEM SHALL render a clickable badge that filters the staff list to that subset. Each filter is independent and persists in the URL query string.
 3. THE SYSTEM SHALL add a `last_pay_review_date` column (date, nullable) to `staff_members`. Populated whenever a pay-rate change is saved with `change_reason = 'rate_change'`.
+4. THE SYSTEM SHALL show a red dot indicator on each staff row that is missing `employee_id` OR `employment_start_date` (both indicators visible if both are missing). Hovering the dot shows a tooltip listing which fields are missing.
 
 ### R7. Roster Tab — Per-Staff Calendar
 
@@ -133,7 +137,7 @@ This phase delivers visible UX immediately and unblocks every later phase. No le
 
 **Acceptance criteria:**
 
-1. WHEN a user opens the Roster tab THE SYSTEM SHALL fetch `GET /api/v2/scheduling/entries?staff_id=:id&from=:weekStart&to=:weekEnd`.
+1. WHEN a user opens the Roster tab THE SYSTEM SHALL fetch `GET /api/v2/schedule?staff_id=:id&start=:weekStartIso&end=:weekEndIso` (verified path per `app/main.py:516`; query keys are `start` / `end`, not `from` / `to`). Response shape is `{ entries: [...], total: N }` — frontend consumes `res.data?.entries ?? []`.
 2. THE SYSTEM SHALL render a week view (Mon–Sun) with this-week/prev/next buttons.
 3. WHEN the user clicks "Add shift" THE SYSTEM SHALL open a drawer to create a new `schedule_entries` row for this staff with `entry_type='other'`, default times from `staff.shift_start`/`shift_end`.
 4. WHEN the user clicks "Apply template" THE SYSTEM SHALL open a picker of `shift_templates` and create entries based on the chosen template.
@@ -160,10 +164,18 @@ This phase delivers visible UX immediately and unblocks every later phase. No le
 
 1. THE SYSTEM SHALL add `POST /api/v2/staff/:id/sms-roster` accepting body `{ week_start: 'YYYY-MM-DD' }` and returning `{ ok: true, message_id: '...' }` or `{ ok: false, reason: '...' }`.
 2. THE SYSTEM SHALL refuse with HTTP 422 if `staff.phone` is null/blank or `weekly_roster_sms_enabled` is false.
-3. THE SYSTEM SHALL compose a 160-character body: `"Kia ora {first_name}, your {week_label} roster: {N} shifts, {first_shift_summary}. Full schedule: {tokenised_link}"`.
+3. THE SYSTEM SHALL compose a body using the template `"Kia ora {first_name}, your {week_label} roster: {N} shifts, {first_shift_summary}. Full schedule: {tokenised_link}"`.
+   - **GSM-7 vs UCS-2 (G7):** the template above uses pure ASCII so it fits a single 160-character GSM-7 segment. However, a staff member's `first_name` may contain Māori macrons (`ā ē ī ō ū`) or other non-GSM-7 characters, which downgrades the entire SMS to UCS-2 (70 chars per segment).
+   - THE SYSTEM SHALL detect non-GSM-7 characters in the composed body and:
+     - If the body fits within UCS-2's 70-char limit → send as a single UCS-2 message.
+     - If the body exceeds 70 chars in UCS-2 mode → send as a concatenated multi-part SMS (the `connexus_sms` provider already supports this; the spec just acknowledges the cost implication).
+   - THE SYSTEM SHALL **never transliterate** Māori macrons to ASCII vowels — that's culturally inappropriate. Accept the multi-part billing.
+   - THE SYSTEM SHALL log the segment count in the audit row's `metadata` (e.g., `{ "segments": 2, "encoding": "ucs2" }`) for ops visibility.
 4. THE SYSTEM SHALL generate a tokenised viewer link (similar pattern to `app/modules/portal/service.py` portal tokens) that expires 30 days after issue and renders a read-only HTML schedule. No login required.
 5. THE SYSTEM SHALL route the SMS through the existing `connexus_sms` provider via the configured fallback chain.
 6. THE SYSTEM SHALL write an `audit_logs` row with `action='roster.sms_sent'`.
+7. **Token lifecycle (G4):** WHEN a staff member is deactivated (R12 `staff.deactivated`) OR terminated (R12 `staff.terminated`) THE SYSTEM SHALL immediately expire all of that staff's `staff_roster_view_tokens` rows by setting `expires_at = now()`. Any subsequent GET to a previously-valid token returns HTTP 410 Gone with body `{ "detail": "token_expired_staff_deactivated" }`. Audit row `roster.tokens_revoked` is written with `{ staff_id, tokens_revoked_count }` in `after_value`.
+8. **Rate limit on public viewer (G5):** the unauthenticated `GET /api/v2/public/staff-roster/:token` endpoint SHALL be subject to a per-IP rate limit of **30 requests per minute**, configured via the existing rate-limit middleware policy file. On 429, the standard `Retry-After` header is returned.
 
 ### R10. Auto Friday-Afternoon Roster Broadcast (Scheduled Task)
 
@@ -202,6 +214,7 @@ THE SYSTEM SHALL call `app/core/audit.py::write_audit_log(session, action=..., e
 - `staff.employment_agreement_uploaded`
 - `roster.emailed`
 - `roster.sms_sent`
+- `roster.tokens_revoked` (G4 — written by the deactivation/termination flow with `{ staff_id, tokens_revoked_count }` in `after_value`)
 
 ### R13. End-to-End Test Script
 
@@ -230,6 +243,8 @@ THE SYSTEM SHALL call `app/core/audit.py::write_audit_log(session, action=..., e
 - Payslips — Phase 4.
 - Bank-file export, IRD export, dashboard widgets — Phase 5.
 - The "Documents" tab UI is implemented as a single upload slot for the employment agreement only. Multi-document categories are out of scope.
+- **Mobile-app changes (G6).** Phase 1 ships **no changes** to `mobile/src/`. The mobile staff list + detail screens continue to render their current fieldset; the new Phase 1 fields (tax_code, IRD, KiwiSaver, bank, residency_type, etc.) are visible on web only. The mobile API client will still parse responses correctly because all new fields are nullable. A future Phase 1.5 follow-up will add mobile rendering for the new fields and the compliance counters. Verified post-merge: load `/mobile` staff list and detail with a Phase 1-enabled org → no crash, existing fields still show.
+- **Phase 2 prerequisite for existing staff (G3).** Phase 1 leaves `employment_start_date` NULL for all currently-existing staff records. **Org admins MUST backfill this column before Phase 2 ships** — the leave-accrual engine in Phase 2 will skip any staff with a NULL start date (no annual-leave accrual, no sick-leave 6-month gate, no anniversary). The Phase 1 compliance banner counter "N staff are missing an employment start date" surfaces this gap. We deliberately do NOT auto-populate with a default value (e.g. "today") because that would silently grant fictitious tenure and skew leave entitlements. Phase 2's release notes will reiterate the backfill requirement.
 
 ## Open Questions Carried Forward
 
