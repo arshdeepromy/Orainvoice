@@ -28,29 +28,35 @@ const LazySignup = lazy(() =>
 )
 import { AdminLayout } from '@/layouts/AdminLayout'
 import { OrgLayout } from '@/layouts/OrgLayout'
-import { Dashboard } from '@/pages/dashboard'
 import { NoIndexRoute } from '@/components/common/NoIndexRoute'
 
-/* ── Admin pages (eagerly loaded — small set) ── */
-import { Organisations } from '@/pages/admin/Organisations'
-import { AnalyticsDashboard } from '@/pages/admin/AnalyticsDashboard'
-import { Settings as AdminSettings } from '@/pages/admin/Settings'
-import { ErrorLog } from '@/pages/admin/ErrorLog'
-import NotificationManager from '@/pages/admin/NotificationManager'
-import { BrandingConfig } from '@/pages/admin/BrandingConfig'
-import { MigrationTool } from '@/pages/admin/MigrationTool'
-import { LiveMigrationTool } from '@/pages/admin/LiveMigrationTool'
-import { HAReplication } from '@/pages/admin/HAReplication'
-import { AuditLog } from '@/pages/admin/AuditLog'
-import { Reports as AdminReports } from '@/pages/admin/Reports'
-import { Integrations } from '@/pages/admin/Integrations'
-import { UserManagement } from '@/pages/admin/UserManagement'
-import { SubscriptionPlans } from '@/pages/admin/SubscriptionPlans'
-import { FeatureFlags } from '@/pages/admin/FeatureFlags'
-import { GlobalAdminProfile } from '@/pages/admin/GlobalAdminProfile'
-import TradeFamilies from '@/pages/admin/TradeFamilies'
-import { AdminSecurityPage } from '@/pages/admin/AdminSecurityPage'
-import { OrganisationDetail } from '@/pages/admin/OrganisationDetail'
+/* ── Dashboard (lazy — Dashboard transitively imports recharts via
+   CashFlowChartWidget, ~274 KB. Lazy-loading keeps it out of the main
+   chunk so unauthenticated landing-page visitors do not pay for it.
+   PERFORMANCE_AUDIT.md §F-H3.) ── */
+const Dashboard = lazy(() => import('@/pages/dashboard').then(m => ({ default: m.Dashboard })))
+
+/* ── Admin pages (lazy — touched by ~5 of 2500 users.
+   PERFORMANCE_AUDIT.md §F-H4. Expected main-chunk reduction: 250–400 KB.) ── */
+const Organisations = lazy(() => import('@/pages/admin/Organisations').then(m => ({ default: m.Organisations })))
+const AnalyticsDashboard = lazy(() => import('@/pages/admin/AnalyticsDashboard').then(m => ({ default: m.AnalyticsDashboard })))
+const AdminSettings = lazy(() => import('@/pages/admin/Settings').then(m => ({ default: m.Settings })))
+const ErrorLog = lazy(() => import('@/pages/admin/ErrorLog').then(m => ({ default: m.ErrorLog })))
+const NotificationManager = lazy(() => import('@/pages/admin/NotificationManager'))
+const BrandingConfig = lazy(() => import('@/pages/admin/BrandingConfig').then(m => ({ default: m.BrandingConfig })))
+const MigrationTool = lazy(() => import('@/pages/admin/MigrationTool').then(m => ({ default: m.MigrationTool })))
+const LiveMigrationTool = lazy(() => import('@/pages/admin/LiveMigrationTool').then(m => ({ default: m.LiveMigrationTool })))
+const HAReplication = lazy(() => import('@/pages/admin/HAReplication').then(m => ({ default: m.HAReplication })))
+const AuditLog = lazy(() => import('@/pages/admin/AuditLog').then(m => ({ default: m.AuditLog })))
+const AdminReports = lazy(() => import('@/pages/admin/Reports').then(m => ({ default: m.Reports })))
+const Integrations = lazy(() => import('@/pages/admin/Integrations').then(m => ({ default: m.Integrations })))
+const UserManagement = lazy(() => import('@/pages/admin/UserManagement').then(m => ({ default: m.UserManagement })))
+const SubscriptionPlans = lazy(() => import('@/pages/admin/SubscriptionPlans').then(m => ({ default: m.SubscriptionPlans })))
+const FeatureFlags = lazy(() => import('@/pages/admin/FeatureFlags').then(m => ({ default: m.FeatureFlags })))
+const GlobalAdminProfile = lazy(() => import('@/pages/admin/GlobalAdminProfile').then(m => ({ default: m.GlobalAdminProfile })))
+const TradeFamilies = lazy(() => import('@/pages/admin/TradeFamilies'))
+const AdminSecurityPage = lazy(() => import('@/pages/admin/AdminSecurityPage').then(m => ({ default: m.AdminSecurityPage })))
+const OrganisationDetail = lazy(() => import('@/pages/admin/OrganisationDetail').then(m => ({ default: m.OrganisationDetail })))
 
 /* ── Org pages (lazy loaded) ── */
 const CustomerList = lazy(() => import('@/pages/customers/CustomerList'))
@@ -141,8 +147,11 @@ const PageEditorRedirects = lazy(() => import('@/admin/page-editor/pages/PageEdi
 /* Public catch-all renderer (resolves slugs against the editor backend) */
 const PublicPageRenderer = lazy(() => import('@/pages/public/PublicPageRenderer').then(m => ({ default: m.PublicPageRenderer })))
 
-/* ManagedPage wrapper — swaps in published Puck content when present, otherwise renders the React fallback */
-import { ManagedPage } from '@/pages/public/ManagedPage'
+/* ManagedPage wrapper — swaps in published Puck content when present, otherwise
+   renders the React fallback. Lazy-loaded to keep the resolve-fetch logic and
+   its (lazy) Puck dependency out of the initial chunk for routes that don't
+   render published content. PERFORMANCE_AUDIT.md §F-H2. */
+const ManagedPage = lazy(() => import('@/pages/public/ManagedPage').then(m => ({ default: m.ManagedPage })))
 
 /* Catalogue pages */
 const CataloguePage = lazy(() => import('@/pages/catalogue/CataloguePage'))

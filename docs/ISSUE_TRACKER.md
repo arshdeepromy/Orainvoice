@@ -5520,3 +5520,44 @@ The sibling schema `LinkedVehicleSummary` (used by `/customers/search`) already 
 
 **Spec**: `.kiro/specs/quote-settings-parity/`
 
+---
+
+### ISSUE-162: Frontend main bundle 1.38 MB — admin/Puck/recharts loaded for every visitor
+
+- **Date**: 2026-05-30
+- **Severity**: medium (performance)
+- **Status**: resolved
+- **Reporter**: Performance audit (`docs/PERFORMANCE_AUDIT.md` §F-H1, §F-H2, §F-H3, §F-H4, §F-H6, §F-M8)
+- **Regression of**: N/A
+
+**Symptoms**: Initial JS payload was 1.38 MB uncompressed (~330–400 KB gzipped). Public landing page and login fetched the full Puck visual editor runtime (~311 KB), recharts (~274 KB), and all 20 global-admin pages even though only ~5 of 2500 users would ever open them. First paint on tablets noticeably slow. Production builds also shipped `console.log` calls leaking search queries and response bodies on portal/payment pages.
+
+**Root Cause**:
+
+1. `frontend/vite.config.ts` had no `manualChunks` strategy and no `build.sourcemap: false`.
+2. `frontend/src/App.tsx` eagerly imported all 20 admin pages, the Dashboard (which transitively imports recharts), and `ManagedPage`.
+3. `frontend/src/pages/public/ManagedPage.tsx` top-level imported `@puckeditor/core` and `puckConfig`, so every public-page visitor downloaded the editor runtime.
+4. Vite 8 / rolldown ignores the legacy `esbuild.drop: ['console','debugger']` config, so console statements survived production builds.
+
+**Fix Applied**:
+
+1. `frontend/vite.config.ts`:
+   - Added a function-form `manualChunks` classifier splitting puck, stripe, recharts, dnd, firebase-auth, headlessui, qrcode, axios, react-vendor each into their own chunks.
+   - Added a custom `stripConsoleInProduction()` transform plugin that rewrites statement-position `console.*` and `debugger` calls in our `.ts/.tsx/.js/.jsx` source files during `NODE_ENV=production` builds (skipping `node_modules` so third-party warning paths stay intact). Replaces the unsupported `esbuild.drop` config under Vite 8.
+   - Codified `build.sourcemap: false` and bumped `chunkSizeWarningLimit` to 600.
+2. `frontend/src/App.tsx`: Converted `Dashboard`, `ManagedPage`, and 20 admin pages (Organisations, AnalyticsDashboard, AdminSettings, ErrorLog, NotificationManager, BrandingConfig, MigrationTool, LiveMigrationTool, HAReplication, AuditLog, AdminReports, Integrations, UserManagement, SubscriptionPlans, FeatureFlags, GlobalAdminProfile, TradeFamilies, AdminSecurityPage, OrganisationDetail) from eager `import` statements to `lazy(() => import(...))`.
+3. `frontend/src/pages/public/ManagedPage.tsx`: Refactored to dynamic-import `@puckeditor/core` and `puckConfig` only when the resolve endpoint returns published Puck content. Public-page visitors who only ever see hand-coded fallback (the dominant case) never download Puck.
+
+**Result**:
+
+- Main `index-*.js` chunk: **1.38 MB → 283 KB** (gzip 54 KB) — ~5× reduction.
+- Puck (628 KB), recharts (346 KB), react-vendor (220 KB), dnd (158 KB), firebase-auth (118 KB), headlessui (83 KB) all isolated and lazy-loaded.
+- Verified: zero `console.*` calls in our app's emitted production chunks.
+
+**Files Modified**:
+
+- `frontend/vite.config.ts`
+- `frontend/src/App.tsx`
+- `frontend/src/pages/public/ManagedPage.tsx`
+
+**Status of remaining audit items**: see updated checklist in `docs/PERFORMANCE_AUDIT.md` Phase 1. Quick wins #1 (lazy-load), #8 (drop console), and §F-M8 (sourcemap) are now ✅. Items #2–#7, #9, #10, off-host backup, and the RLS fix remain pending.

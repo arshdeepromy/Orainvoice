@@ -6,8 +6,8 @@
  * Flow per Requirement 7.3, 14.4, 14.5, 14.7:
  *   1. On mount, call GET /api/v2/public/pages/resolve?slug=...
  *   2. If response is `{ type: 'page', data: { published_content, ... } }`
- *      with non-null `published_content` → render via Puck `<Render>` in
- *      PageShell, applying SEO via usePageMeta.
+ *      with non-null `published_content` → dynamic-import Puck + puckConfig
+ *      then render via `<Render>` in PageShell, applying SEO via usePageMeta.
  *   3. Otherwise → render the FallbackPage immediately (no spinner).
  *   4. ErrorBoundary catches any Puck render failure and falls back too.
  *
@@ -16,23 +16,43 @@
  *     <WorkshopPage />
  *   </ManagedPage>
  *
+ * Performance: Puck is dynamic-imported here rather than top-level so that
+ * public-page visitors who never see published content (the dominant case)
+ * don't pay for the ~311 KB Puck runtime. PERFORMANCE_AUDIT.md §F-H2.
+ *
  * Requirements: 7.1, 7.2, 7.3, 14.4, 14.5, 14.7
  */
-import { useEffect, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
 import axios from 'axios'
-import { Render } from '@puckeditor/core'
-import type { Data as PuckData } from '@puckeditor/core'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { usePageMeta } from '@/hooks/usePageMeta'
-import { puckConfig } from '@/admin/page-editor/puckConfig'
 import { getRegistrationByKey } from './_registry'
 import { PageShell } from './PageShell'
+
+/**
+ * Lazy chunk that pulls in Puck + puckConfig together. Both are needed to
+ * render published content; pairing them keeps a single network round-trip.
+ */
+const PuckRenderer = lazy(async () => {
+  const [{ Render }, { puckConfig }] = await Promise.all([
+    import('@puckeditor/core'),
+    import('@/admin/page-editor/puckConfig'),
+  ])
+  return {
+    default: ({ data }: { data: unknown }) => (
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      <Render config={puckConfig} data={data as any} />
+    ),
+  }
+})
 
 interface PublishedPageData {
   page_key: string
   page_slug: string
   title: string
-  published_content: PuckData | null
+  // Loose type here so we don't need to import Puck's `Data` type at module
+  // top level (which would defeat the lazy split).
+  published_content: Record<string, unknown> | null
   seo: Record<string, unknown> | null
   noindex: boolean
   page_origin: 'hand-coded' | 'editor-created'
@@ -84,7 +104,9 @@ function PublishedRenderer({ data }: { data: PublishedPageData }) {
 
   return (
     <PageShell>
-      <Render config={puckConfig} data={data.published_content as PuckData} />
+      <Suspense fallback={null}>
+        <PuckRenderer data={data.published_content} />
+      </Suspense>
     </PageShell>
   )
 }
