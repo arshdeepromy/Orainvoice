@@ -91,6 +91,8 @@ CREATE TABLE IF NOT EXISTS leave_requests (
     hours_requested numeric(6,2) NOT NULL,
     status text NOT NULL DEFAULT 'pending',
     reason text,
+    relationship_to_subject text,                  -- required when leave_type.code='bereavement': 'close_family' | 'other'
+    partial_day_start_time time,                   -- populated when hours_requested < standard_daily_hours AND start_date = end_date
     attachment_upload_id uuid,
     requested_by uuid NOT NULL REFERENCES users(id),
     decided_by uuid REFERENCES users(id),
@@ -98,8 +100,13 @@ CREATE TABLE IF NOT EXISTS leave_requests (
     decision_notes text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CHECK (status IN ('pending','approved','rejected','cancelled'))
+    CHECK (status IN ('pending','approved','rejected','cancelled')),
+    CHECK (relationship_to_subject IS NULL OR relationship_to_subject IN ('close_family','other'))
 );
+-- Application-level guard (cannot do via DB CHECK because the bereavement
+-- code lives on leave_types, not leave_requests):
+--   if leave_type.code = 'bereavement' then relationship_to_subject IS NOT NULL.
+-- Enforced in leave_service.submit_request.
 
 CREATE TABLE IF NOT EXISTS leave_ledger (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -216,6 +223,40 @@ Idempotency: each `_process_*` does `SELECT 1 FROM leave_ledger WHERE staff_id=?
 
 Casual filter: `staff.employment_type == 'casual'` skips the annual-leave anniversary path entirely; sick + family_violence still apply pro-rata.
 
+#### 4.1.1 Days-to-hours conversion (G9)
+
+When `leave_type.accrual_unit == 'days'` (used only by custom org-defined types — the 6 statutory ones all use `'hours'`), the engine converts `accrual_amount` to balance hours using the staff's standard working day:
+
+```python
+def days_to_hours(accrual_amount_days: Decimal, staff: StaffMember) -> Decimal:
+    """Convert a days-based accrual amount into balance hours.
+
+    Working day = staff.standard_hours_per_week / 5, rounded to 2dp.
+    Fallback when standard_hours_per_week is NULL: 8h/day (industry default).
+    """
+    if staff.standard_hours_per_week:
+        std_day = Decimal(staff.standard_hours_per_week) / Decimal(5)
+        return (Decimal(accrual_amount_days) * std_day).quantize(Decimal("0.01"))
+    return Decimal(accrual_amount_days) * Decimal(8)
+```
+
+Apply at every grant site in `_process_anniversary`, `_process_sick_yearly`, `_process_family_violence_yearly`, and the `adjust_balance` admin path.
+
+#### 4.1.2 Leap-year anniversary edge (STAFF-010)
+
+For staff with `employment_start_date = Feb 29 of a leap year`, anniversaries in non-leap years fall on **Feb 28** (the last day of February). Helper:
+
+```python
+from calendar import isleap
+
+def anniversary_in_year(start_date: date, year: int) -> date:
+    if start_date.month == 2 and start_date.day == 29 and not isleap(year):
+        return date(year, 2, 28)
+    return start_date.replace(year=year)
+```
+
+Use everywhere the anniversary date is computed.
+
 ### 4.2 Public holiday engine `app/modules/leave/public_holidays.py`
 
 ```python
@@ -274,24 +315,91 @@ async def s40a_extension(db, request: LeaveRequest):
 `leave_service.submit_request`:
 1. Load staff + leave_type + balance.
 2. Compute `available = accrued - used - pending`.
-3. If `lt.accrual_method` not in `('event_based','unaccrued')` and `hours_requested > available` → raise `InsufficientLeaveError`.
-4. Insert leave_request row (pending).
-5. Increment `pending_hours` on balance.
-6. Audit row.
-7. Return.
+3. **Bereavement gate (G1 / R4.7):** if `lt.code == 'bereavement'`:
+   - Require `relationship_to_subject IN ('close_family','other')`. Raise `ValidationError('relationship_required')` if NULL or invalid.
+   - Compute per-event cap:
+     ```python
+     std_day = (staff.standard_hours_per_week or 40) / 5      # hours per working day
+     cap = (3 if relationship == 'close_family' else 1) * std_day
+     ```
+   - If `hours_requested > cap`, raise `BereavementCapExceededError(cap)` (returned as HTTP 422 with `{ reason: 'bereavement_cap_exceeded', cap_hours }`).
+   - Skip the balance check at step 4 (bereavement is event_based, balance is always 0).
+4. If `lt.accrual_method` not in `('event_based','unaccrued')` and `hours_requested > available` → raise `InsufficientLeaveError`.
+5. **TOIL Phase 2 guard (G6):** if `lt.code == 'toil'`, additionally require `available >= hours_requested` even though accrual_method is event_based (prevents negative TOIL balance before Phase 3 actually accrues hours). Return HTTP 422 `{ reason: 'insufficient_toil_balance', available }` if not.
+6. **Partial-day capture:** if `start_date == end_date` AND `hours_requested < (staff.standard_hours_per_week or 40) / 5`, the caller may supply `partial_day_start_time`. If omitted, default to `staff.shift_start` (the `availability_schedule` weekday entry's start time) at approval time.
+7. Insert `leave_request` row (status='pending') with `relationship_to_subject`, `partial_day_start_time` if applicable.
+8. Increment `pending_hours` on balance (skipped for `event_based`/`unaccrued`).
+9. Audit `leave_request.submitted` with redacted PII (no free-text reason in audit row for `confidential_visibility=true` types).
+10. Return.
 
 `leave_service.approve_request`:
 1. Load request (FOR UPDATE).
 2. Validate state == pending.
-3. Set status=approved, decided_by, decided_at.
-4. Decrement `pending_hours`, increment `used_hours` on balance.
-5. Insert leave_ledger row `reason='request_approved'` `delta_hours=-hours_requested` `request_id`.
-6. Iterate working days in [start_date, end_date], create `schedule_entries` row with `entry_type='leave'` per day.
-7. Run `s40a_extension` if leave_type=annual.
-8. Send approval email + SMS (async).
-9. Audit.
+3. **Permission check for confidential leave (G2 / R4.6 / R4.9):** if `leave_type.confidential_visibility == true`:
+   - Verify the current user (the approver) has the `leave:family_violence:view` permission via `user_permission_overrides`. Otherwise return HTTP 403 `{ reason: 'fv_leave_no_approval_permission' }`.
+4. Set status=approved, decided_by, decided_at.
+5. Decrement `pending_hours`, increment `used_hours` on balance.
+6. Insert leave_ledger row `reason='request_approved'` `delta_hours=-hours_requested` `request_id`.
+7. Iterate working days in `[start_date, end_date]`, create `schedule_entries` row with `entry_type='leave'` per day. For partial-day requests, the single schedule_entries row uses `partial_day_start_time` as start and `partial_day_start_time + hours_requested` as end (otherwise full-day from `shift_start` to `shift_end`).
+8. Run `s40a_extension` if leave_type.code == 'annual'.
+9. Send approval email + SMS (async). For confidential types, email body redacts the leave type name → "Your approved leave request" (full details visible only on login).
+10. Audit `leave_request.approved` (redacted for confidential types).
 
-`reject_request`, `cancel_request` — symmetric.
+`reject_request`, `cancel_request` — symmetric. Both honour the same R4.6 permission check.
+
+### 4.4 Confidential-leave visibility filter (G2)
+
+Implemented as a reusable query helper applied to every endpoint that returns `leave_requests` rows. **Important:** this uses the existing synchronous `app/modules/auth/rbac.py::has_permission(role, permission_key, overrides=...)` helper — the spec does NOT introduce a new async DB-querying helper. The user's permission overrides are already loaded by `RBACMiddleware` into `request.state.permission_overrides` (60s Redis cache at `app/middleware/rbac.py:_load_permission_overrides_cached`), so the filter just consumes that list.
+
+```python
+from app.modules.auth.rbac import has_permission
+from app.modules.leave.visibility import FV_LEAVE_VIEW_PERMISSION
+
+def _apply_confidential_filter(query: Select, request: Request, user_id: UUID, user_role: str) -> Select:
+    """Restrict confidential-leave-type rows to:
+       (a) the staff member who submitted the request, OR
+       (b) users holding the leave.fv_view permission via user_permission_overrides.
+
+    Non-confidential leave types pass through unchanged.
+
+    Synchronous — reads from request.state.permission_overrides (already cached
+    by RBACMiddleware on the way in).
+    """
+    overrides = getattr(request.state, "permission_overrides", []) or []
+    has_fv_view = has_permission(user_role, FV_LEAVE_VIEW_PERMISSION, overrides=overrides)
+    if has_fv_view:
+        return query  # no restriction
+
+    # Filter: exclude requests whose leave_type has confidential_visibility=true
+    # UNLESS the request was submitted by the current user (their own data).
+    confidential_type_ids = (
+        select(LeaveType.id).where(
+            LeaveType.org_id == request.state.org_id,
+            LeaveType.confidential_visibility == True,
+        )
+    )
+    return query.where(
+        or_(
+            LeaveRequest.leave_type_id.notin_(confidential_type_ids),
+            LeaveRequest.requested_by == user_id,
+        )
+    )
+```
+
+Apply at:
+- `GET /api/v2/leave/requests` (approval queue) — every list query.
+- `GET /api/v2/staff/:id/leave/requests` — when `:id != current_staff_id` (own requests always visible to self).
+- `GET /api/v2/staff/:id/leave/ledger` — same filter on the underlying `leave_requests` join when surfacing request-linked ledger rows.
+
+Cache implication: `request.state.permission_overrides` is already populated by `RBACMiddleware` from the existing 60s Redis cache. No additional DB query per filter call. Revocation effective within 60s — acceptable per R4.9.
+
+Permission key constant lives in `app/modules/leave/visibility.py`:
+
+```python
+# Dot-separated to match the existing rbac convention
+# (matches role wildcard 'leave.*'; verified against ROLE_PERMISSIONS in rbac.py).
+FV_LEAVE_VIEW_PERMISSION = 'leave.fv_view'
+```
 
 ## 5. API endpoints
 
@@ -347,8 +455,20 @@ Table: Order, Name, Code, Method, Amount, Carry-over, Statutory badge, Actions (
 
 ### 6.4 RequestLeaveModal
 
-Fields: leave_type select, start_date, end_date, hours_requested (auto-computed from start/end × std hours, editable), reason, attachment (drag-drop, only shown when leave_type.requires_doctor_note).
-Validation: shows balance preview; refuses submit if insufficient unless event_based/unaccrued.
+Fields:
+- `leave_type` select
+- `start_date`, `end_date`
+- `hours_requested` (auto-computed from start/end × std hours, editable)
+- `reason` text
+- `relationship_to_subject` select — **only renders when `leave_type.code == 'bereavement'`**. Options: "Close family (spouse, child, parent, sibling, grandparent, grandchild, in-law)" → `close_family`; "Other person" → `other`. Required.
+- `partial_day_start_time` time input — **only renders when `start_date == end_date` AND `hours_requested < std_daily_hours`**. Defaults to staff's `shift_start`.
+- `attachment` (drag-drop) — only shown when `leave_type.requires_doctor_note == true`.
+
+Validation:
+- Bereavement cap preview: when leave_type=bereavement and relationship is selected, show banner "Maximum: {cap}h ({3 or 1} working days × {std_day}h)".
+- Balance preview: shows `available → available - hours_requested` for accruing types.
+- Refuses submit if insufficient (R4.4 / R4.7 / R4.5 violations).
+- Confidential leave types: the modal renders a one-line banner "This leave type is confidential — only you and your designated approver will see this request."
 
 ### 6.5 AdjustBalanceModal (admin only)
 
@@ -412,9 +532,30 @@ Daily task accrue_leave runs at 00:30 UTC
 ## 9. Error UI
 
 - 422 `insufficient_balance`: red inline below hours_requested with available figure.
+- 422 `relationship_required` (bereavement without relationship): red inline below the relationship select.
+- 422 `bereavement_cap_exceeded`: red inline below hours_requested with the cap figure and the relationship-tier explanation.
+- 422 `insufficient_toil_balance` (Phase 2 only): yellow banner "TOIL accrual starts in Phase 3 — no hours available yet. Contact your manager if this is urgent."
 - 422 `requires_doctor_note_warning`: yellow banner on approver UI (not blocking).
+- 403 `fv_leave_no_approval_permission` (confidential leave): toast "You don't have permission to approve family-violence-leave requests. Contact your org owner."
 - 403 statutory delete: toast.
 - 404 module disabled: graceful — Leave tab simply doesn't render.
+
+## 9.1 Settings → People → Permissions → Family-Violence Leave Visibility (R4.9)
+
+**Routing model.** The `frontend/src/pages/settings/Settings.tsx` shell uses tab-based navigation via the `?tab=...` query param (verified at `Settings.tsx:74-130`), NOT URL sub-routes. Phase 2 adds a new `NAV_ITEMS` entry `{ id: 'people-permissions', label: 'People Permissions', icon: '👥', adminOnly: true, module: 'staff_management' }` plus a matching `'people-permissions': PermissionsPage` entry in `SECTION_COMPONENTS`. The deep-link path is `/settings?tab=people-permissions` (NOT `/settings/people/permissions`).
+
+The page lists all org users with on/off checkbox for the `leave.fv_view` permission (note: dot-separated, matches existing rbac.py convention — see design §4.4 for rationale). Sourced from existing `user_permission_overrides` table. Read pattern uses the existing `permission_key` column (NOT `permission`) and `is_granted=true` to mean "explicitly granted".
+
+UI:
+- Table: User, Role, Has FV-leave-view permission (checkbox), Last reviewed.
+- Top banner during the first 30 days after Phase 2 migration: "We've granted family-violence-leave visibility to all current org admins. Please review and revoke from anyone who shouldn't see these confidential requests."
+- Toggling a checkbox calls `create_or_update_permission_override` (existing helper at `app/modules/auth/permission_overrides.py`) which handles the SELECT-then-INSERT-or-UPDATE idempotency and writes the audit row automatically. Revoke calls `delete_permission_override`.
+
+Backend:
+- `GET /api/v2/permissions/fv-leave-view` — returns `{ items: [{ user_id, email, name, role, has_permission, granted_at }], total }`. JOIN against `user_permission_overrides upo ON upo.user_id = u.id AND upo.permission_key = 'leave.fv_view' AND upo.is_granted = true`.
+- `POST /api/v2/permissions/fv-leave-view/{user_id}/grant` — calls `create_or_update_permission_override(session, user_id=..., permission_key='leave.fv_view', is_granted=true, granted_by=current_user.id, org_id=current_user.org_id)`. The helper writes the audit row.
+- `POST /api/v2/permissions/fv-leave-view/{user_id}/revoke` — calls `delete_permission_override(session, user_id=..., permission_key='leave.fv_view', deleted_by=current_user.id, org_id=current_user.org_id)`.
+- All three are org_admin-only (existing RBAC).
 
 ## 10. Performance
 
@@ -443,10 +584,15 @@ Daily task accrue_leave runs at 00:30 UTC
 
 ## 13. Spec completeness self-check
 
-- ✅ Navigation §2 / §6.
+- ✅ Navigation §2 / §6 (incl. new Permissions sub-route §9.1).
 - ✅ Component tree §6.
 - ✅ User workflow §7.
 - ✅ Modal inventory §8.
 - ✅ Toolbar/list §6.
-- ✅ Error UI §9.
-- ✅ Integration points §11 (existing send_email, sms_sender, scheduler lock, audit_logs).
+- ✅ Error UI §9 (incl. new 422/403 codes for bereavement + FV permission).
+- ✅ Integration points §11 (existing send_email, sms_sender, scheduler lock, audit_logs, user_permission_overrides).
+- ✅ Bereavement per-event cap §4.3 step 3 (G1 closed).
+- ✅ Family-violence visibility mechanism §4.4 + §9.1 (G2 closed).
+- ✅ Sick + family-violence 6-month gate §4.1 (G3 closed via R6 rename).
+- ✅ Days-to-hours conversion §4.1.1 (G9 closed).
+- ✅ Leap-year anniversary helper §4.1.2 (STAFF-010 closed).

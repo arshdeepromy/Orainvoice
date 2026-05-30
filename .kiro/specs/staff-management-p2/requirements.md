@@ -34,9 +34,9 @@ Inherits all Phase 1 steering compliance bullets. Additions specific to this pha
 2. THE SYSTEM SHALL enable RLS + tenant_isolation policy.
 3. THE SYSTEM SHALL ship a one-off backfill migration that inserts 6 statutory types per existing org with `is_statutory=true`:
    - `annual` — anniversary, 4 weeks/year (= `standard_hours_per_week × 4` granted on each anniversary).
-   - `sick` — per_period, 80 hours/year (10 days × 8 hours by default; pro-rata for variable hours), gated to first accrual after 6 months.
-   - `bereavement` — event_based, balance always 0; service computes per-event allowance (3 days for close family, 1 day for others) at request time.
-   - `family_violence` — per_period, 80 hours/year, gated to 6 months. `confidential_visibility=true`.
+   - `sick` — per_period, 80 hours/year (10 days × 8 hours by default; pro-rata for variable hours), gated to first accrual after 6 months. `requires_doctor_note=true`.
+   - `bereavement` — event_based, balance always 0; per-event cap (3 days for close family, 1 day for others) enforced server-side via `leave_requests.relationship_to_subject` field — see R4.7.
+   - `family_violence` — per_period, 80 hours/year, gated to 6 months. `confidential_visibility=true` — see R4.6 for the visibility-permission mechanism.
    - `public_holiday_alt` — event_based; balance grows when staff actually works an OWD public holiday.
    - `unpaid` — unaccrued, balance always 0; requests don't decrement anything.
 4. THE SYSTEM SHALL allow `is_statutory=true` rows to be edited (rates can go ABOVE the legal floor) but not deleted; DELETE returns HTTP 403 with reason.
@@ -65,7 +65,7 @@ Inherits all Phase 1 steering compliance bullets. Additions specific to this pha
 
 **Acceptance criteria:**
 
-1. THE SYSTEM SHALL create a `leave_requests` table: `id, org_id, staff_id, leave_type_id, start_date date, end_date date, hours_requested numeric(6,2), status text default 'pending' (CHECK in `'pending','approved','rejected','cancelled'`), reason text, attachment_upload_id uuid, requested_by uuid, decided_by uuid, decided_at timestamptz, decision_notes text, created_at, updated_at`.
+1. THE SYSTEM SHALL create a `leave_requests` table: `id, org_id, staff_id, leave_type_id, start_date date, end_date date, hours_requested numeric(6,2), status text default 'pending' (CHECK in `'pending','approved','rejected','cancelled'`), reason text, relationship_to_subject text (CHECK in `'close_family','other'` when set; nullable for non-bereavement), partial_day_start_time time (nullable; populated when `hours_requested < standard_daily_hours` AND `start_date == end_date` — see G5/G7 future enhancements), attachment_upload_id uuid, requested_by uuid, decided_by uuid, decided_at timestamptz, decision_notes text, created_at, updated_at`.
 2. RLS + tenant_isolation policy.
 3. THE SYSTEM SHALL expose endpoints:
    - `POST /api/v2/staff/:id/leave/requests` — submit request (writes pending; increments `pending_hours` on balance).
@@ -76,7 +76,27 @@ Inherits all Phase 1 steering compliance bullets. Additions specific to this pha
    - `POST /api/v2/leave/requests/:request_id/cancel` — staff cancels own pending; or admin cancels approved (writes inverse ledger row).
 4. THE SYSTEM SHALL refuse submissions where `hours_requested > balance.accrued_hours - balance.used_hours - balance.pending_hours` UNLESS the leave type is `event_based` or `unaccrued`. Returns HTTP 422 with reason `insufficient_balance` and the available figure.
 5. WHEN approval succeeds for a leave type with `requires_doctor_note=true` (sick) AND `attachment_upload_id IS NULL` AND request is more than 3 consecutive working days THE SYSTEM SHALL show a warning to the approver (not a block) — Holidays Act s68.
-6. WHEN a leave_type has `confidential_visibility=true` (family_violence) THE SYSTEM SHALL only return the request to the requesting staff and the approver, hiding it from other org admins via a `Settings → People → Permissions → "Family violence leave visibility"` toggle list.
+6. WHEN a leave_type has `confidential_visibility=true` (family_violence) THE SYSTEM SHALL only return the request to (a) the requesting staff member, OR (b) users who hold the `leave.fv_view` permission via the existing `user_permission_overrides` table. See R4.9 for the mechanism.
+
+7. **Bereavement per-event cap (Holidays Act s70).** WHEN `leave_type.code='bereavement'`:
+   - THE SYSTEM SHALL require `leave_requests.relationship_to_subject IN ('close_family','other')` at submission. Server returns HTTP 422 with reason `relationship_required` if missing.
+   - THE SYSTEM SHALL enforce the per-event cap at `submit_request` time:
+     - `close_family` → cap at `3 × standard_daily_hours` (typically 24h)
+     - `other` → cap at `1 × standard_daily_hours` (typically 8h)
+   - Where `standard_daily_hours = staff.standard_hours_per_week / 5` (rounded to 2dp).
+   - If `hours_requested > cap`, return HTTP 422 with reason `bereavement_cap_exceeded` and the cap figure in the error body.
+   - No running balance is held; each new bereavement request is independent (the cap applies per request, not per year).
+   - Approval writes a `leave_ledger` row with `reason='request_approved'`, `delta_hours = -hours_requested`. The ledger remains the audit trail for who took how much per-event.
+
+8. **Leave in advance (informational).** Phase 2 does NOT support "in advance" annual-leave requests directly. Admins who wish to grant leave before anniversary use the `Adjust balance` workflow (R12.5) to pre-fund the staff's annual-leave `accrued_hours`. The resulting `leave_ledger` row carries `reason='manual_adjustment'` with the admin's explanatory text. This is a deliberate Phase 2 simplification; a first-class in-advance flow is reserved for a Phase 2.5 enhancement if customer feedback demands it.
+
+9. **Confidential-leave visibility mechanism.** THE SYSTEM SHALL:
+   - Reuse the existing `user_permission_overrides` table (already wired through `app/middleware/rbac.py:_load_permission_overrides_cached`). The table's actual columns (verified at `app/modules/auth/permission_overrides.py`) are: `id, user_id, permission_key, is_granted, granted_by, created_at`. There is NO `org_id` column — tenant scoping comes from joining `users.org_id`.
+   - Introduce a permission key `leave.fv_view` (dot-separated to match the existing `module.action` convention used throughout `app/modules/auth/rbac.py::ROLE_PERMISSIONS`; the `leave.*` wildcard at the role level then automatically grants this permission to roles configured for full leave-module access).
+   - On the Phase 2 migration backfill, grant `leave.fv_view` to every user with role `org_admin` at the moment of migration by inserting `user_permission_overrides` rows with `permission_key='leave.fv_view'` and `is_granted=true` (with a Settings nag banner asking the org owner to review and revoke from anyone who shouldn't have it).
+   - Provide a Settings UI at `Settings?tab=people-permissions` listing org users with on/off checkboxes; toggling calls `create_or_update_permission_override` / `delete_permission_override` (existing helpers at `app/modules/auth/permission_overrides.py`) which handle audit logging automatically.
+   - At the API layer, every endpoint that returns `leave_requests` for any leave_type with `confidential_visibility=true` SHALL filter to rows where `requested_by = current_user` OR the current user holds the permission. The check uses the synchronous `app/modules/auth/rbac.py::has_permission(role, permission_key, overrides=request.state.permission_overrides)` helper — the overrides list is already loaded by `RBACMiddleware`, so no additional DB call is needed.
+   - The RBAC middleware cache TTL (currently 60s per [security-hardening-checklist.md §1](../../.kiro/steering/security-hardening-checklist.md)) is acceptable for this permission; revocation takes effect within one minute.
 
 ### R5. Anniversary Annual-Leave Accrual
 
@@ -95,15 +115,30 @@ Inherits all Phase 1 steering compliance bullets. Additions specific to this pha
 5. Each per-staff iteration wraps in `db.begin_nested()` SAVEPOINT; one staff's failure does not abort the batch.
 6. Logs per-staff outcome.
 
-### R6. Sick Leave 6-Month Gate
+### R6. Sick + Family-Violence 6-Month Gate
+
+**Statutory basis:** Holidays Act 2003 s63 (sick leave) + Domestic Violence — Victims' Protection Act 2018 (family violence leave). Both unlock after 6 months of continuous employment.
 
 **Acceptance criteria:**
 
-1. THE SYSTEM SHALL add a per_period accrual job (sub-task of `accrue_annual_leave` or its own daily task) that for each staff with sick leave:
+1. THE SYSTEM SHALL add per_period accrual jobs (sub-tasks of `accrue_annual_leave` or their own daily task) — **one for sick leave, one for family-violence leave**. Both share the same 6-month gate and pro-rata logic.
+
+2. **Sick leave** (Holidays Act s63):
    - Skip until `now() - employment_start_date >= 6 months`.
    - On first day past the 6-month mark, grant the full 80 hours (10 days × 8h) for permanent employees, OR pro-rata for variable-hours staff (`standard_hours_per_week × 2 weeks`).
-   - On each subsequent anniversary (yearly) grant the same again, with 160-hour `carry_over_max` cap (Holidays Act s67).
-2. Idempotency same as R5.
+   - On each subsequent anniversary (yearly) grant the same again, with 160-hour `carry_over_max` cap (Holidays Act s67 — max 20 days at any one time).
+
+3. **Family-violence leave** (Domestic Violence — Victims' Protection Act 2018):
+   - Same 6-month gate as sick leave.
+   - On first day past the 6-month mark, grant 80 hours (10 days × 8h) for permanent employees, pro-rata for variable hours.
+   - On each subsequent anniversary, grant the same.
+   - `carry_over_max=80` (statute does not allow carry-over of family-violence leave; unused hours expire at anniversary).
+
+4. **Idempotency:** Same guard as R5.4 — each `_process_*_yearly` function does `SELECT 1 FROM leave_ledger WHERE staff_id=? AND leave_type_id=? AND reason='accrual' AND occurred_at=?` before insert; skips on existing row.
+
+5. **Casual employees** (cross-reference R7): sick + family_violence still accrue, pro-rata by `standard_hours_per_week`.
+
+6. Each per-staff iteration wraps in `db.begin_nested()` SAVEPOINT.
 
 ### R7. Casual Employees + 8% Holiday Pay-as-you-go
 
@@ -227,8 +262,10 @@ THE SYSTEM SHALL bump 1.14.0 → 1.15.0 across `pyproject.toml`, `frontend/packa
 
 ## Open Questions
 
-- **STAFF-002:** Whether family-violence-leave visibility needs a dedicated RBAC permission or the existing role hierarchy + per-org toggle is sufficient. Phase 2 ships per-org toggle; if real customer feedback requires it, upgrade to RBAC permission post-launch.
-- **STAFF-003:** Confirm Nager.Date NZ public-holiday observed dates match Holidays Act observed dates (Monday-isation). Settle before R8 lands in production.
+- **STAFF-002 (resolved):** Family-violence-leave visibility uses the existing `user_permission_overrides` table with permission key `leave:family_violence:view` — see R4.9. Backfill grants the permission to current org_admins; ongoing administration via Settings → People → Permissions. Decision based on: (a) reuses existing RBAC infrastructure already cached by [`app/middleware/rbac.py`](../../app/middleware/rbac.py), (b) scales to N approvers without schema change, (c) audit trail comes for free.
+- **STAFF-003:** Confirm Nager.Date NZ public-holiday observed dates match Holidays Act observed dates (Monday-isation of public holidays falling on Saturday/Sunday). Settle before R8 lands in production. Suggested check: pull 2024+2025 NZ public-holiday list from Nager.Date and compare against [employment.govt.nz/public-holidays](https://employment.govt.nz/leave-and-holidays/public-holidays/public-holidays-and-anniversary-dates/) — line up dates including any Monday-ised observances.
+- **STAFF-009 (new, deferrable):** Half-day / partial-day leave UX. Phase 2 schema supports `leave_requests.partial_day_start_time` but the frontend doesn't expose a partial-day toggle. Resolution deferred to Phase 2.5 — see Non-Goals.
+- **STAFF-010 (new, deferrable):** Leap-year anniversary edge case (employees with `employment_start_date = Feb 29`). Use the helper rule "same `MMDD` or last day of February in non-leap years". Phase 2 ships the rule in `accrue_for_staff` per design §4.1.
 
 ## Verification Gates
 
