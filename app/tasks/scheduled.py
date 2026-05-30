@@ -9,6 +9,7 @@ Requirements: 19.6, 37.2, 38.2, 39.3, 49.7, 60.2, 60.4
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -881,6 +882,104 @@ _DAILY_TASKS: list[tuple] = [
 _stop_event: asyncio.Event | None = None
 _task_handle: asyncio.Task | None = None
 
+# --- Single-worker scheduler lock (Redis SETNX with TTL renewal) ---
+#
+# Without this lock, every gunicorn worker would run the scheduler
+# independently. With --workers 2 (Pi) or --workers 4 (Docker default)
+# that means each daily task fires 2-4× simultaneously, multiplying:
+#
+#   - DB queries (e.g. `find_due_schedules`)
+#   - Outbound email/SMS sends (each worker re-sends the same notifications)
+#   - Stripe API calls (mitigated by idempotency_key on the billing path,
+#     but still wasteful)
+#
+# The HA heartbeat in app/main.py uses the same SETNX pattern; we follow it
+# verbatim. The lock is renewed every loop tick (30s) with a 60s TTL so a
+# crashed worker's lock self-expires and another worker takes over within
+# one tick. PERFORMANCE_AUDIT.md §B-H3 / §1 quick win #7.
+_SCHED_LOCK_KEY = "scheduler:loop_lock"
+_SCHED_LOCK_TTL = 60  # seconds — must exceed the 30s loop tick
+
+
+async def _try_acquire_scheduler_lock() -> bool:
+    """Try to claim the cluster-wide scheduler lock for this worker.
+
+    Returns True if the lock was acquired (or successfully renewed by a
+    previous owner — see ``_renew_scheduler_lock``). Returns False if
+    another worker already holds the lock.
+
+    On Redis errors, returns True with a warning logged: failing safe by
+    running the scheduler is preferable to silently skipping all tasks
+    when Redis is briefly unavailable. This matches the HA heartbeat
+    behaviour (see app/main.py).
+    """
+    try:
+        from app.core.redis import redis_pool
+        worker_id = str(os.getpid())
+        # Atomic SET with NX + EX. Returns truthy only when the key didn't
+        # exist before. Subsequent calls within the TTL window return None.
+        was_new = await redis_pool.set(
+            _SCHED_LOCK_KEY, worker_id, nx=True, ex=_SCHED_LOCK_TTL,
+        )
+        return bool(was_new)
+    except Exception as exc:
+        logger.warning(
+            "Redis unavailable for scheduler lock — running scheduler in PID %s: %s",
+            os.getpid(), exc,
+        )
+        return True
+
+
+async def _renew_scheduler_lock() -> bool:
+    """Renew the lock TTL if this worker still owns it.
+
+    Uses a get-then-expire to confirm ownership rather than a blind
+    EXPIRE. If we don't own the key (e.g. our entry expired and another
+    worker took over), returns False and the loop should stop running
+    tasks until it re-acquires.
+
+    On Redis errors, returns True (fail-safe) for the same reason as
+    ``_try_acquire_scheduler_lock``.
+    """
+    try:
+        from app.core.redis import redis_pool
+        worker_id = str(os.getpid())
+        current = await redis_pool.get(_SCHED_LOCK_KEY)
+        if current is None:
+            # Lock expired between our last tick and now. Re-acquire.
+            return bool(await redis_pool.set(
+                _SCHED_LOCK_KEY, worker_id, nx=True, ex=_SCHED_LOCK_TTL,
+            ))
+        if current != worker_id:
+            # Another worker owns it. We must stop running tasks.
+            return False
+        # We own it. Bump the TTL.
+        await redis_pool.expire(_SCHED_LOCK_KEY, _SCHED_LOCK_TTL)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Redis unavailable during scheduler lock renewal in PID %s: %s",
+            os.getpid(), exc,
+        )
+        return True
+
+
+async def _release_scheduler_lock() -> None:
+    """Best-effort lock release on graceful shutdown.
+
+    Only deletes the key if we still own it (avoids stealing a successor's
+    lock during a stagger restart). Errors are swallowed — at worst the
+    lock self-expires within 60s.
+    """
+    try:
+        from app.core.redis import redis_pool
+        worker_id = str(os.getpid())
+        current = await redis_pool.get(_SCHED_LOCK_KEY)
+        if current == worker_id:
+            await redis_pool.delete(_SCHED_LOCK_KEY)
+    except Exception:
+        pass
+
 
 async def _run_task_safe(fn, name: str) -> None:
     try:
@@ -891,7 +990,14 @@ async def _run_task_safe(fn, name: str) -> None:
 
 
 async def _scheduler_loop() -> None:
-    """Run all scheduled tasks at their configured intervals."""
+    """Run all scheduled tasks at their configured intervals.
+
+    Acquires a Redis SETNX lock so only one worker (across all gunicorn
+    forks) runs tasks at any given moment. Re-attempts acquisition every
+    tick if we don't currently hold it — this handles the case where the
+    lock-holder crashed and its TTL expired, or where the holder's process
+    is being restarted by gunicorn's --max-requests recycling.
+    """
     global _stop_event
     _stop_event = asyncio.Event()
 
@@ -899,20 +1005,60 @@ async def _scheduler_loop() -> None:
     last_run: dict[str, float] = {}
     import time
 
-    # Run an initial pass for daily tasks on startup
-    for fn, interval, name in _DAILY_TASKS:
-        last_run[name] = 0.0  # force first run
+    holds_lock = await _try_acquire_scheduler_lock()
+    if holds_lock:
+        logger.info("Scheduler lock acquired by PID %s — running tasks", os.getpid())
+        # First-acquire: force every task to run at its first eligible tick.
+        for _fn, _interval, name in _DAILY_TASKS:
+            last_run[name] = 0.0
+    else:
+        logger.info(
+            "Scheduler lock held by another worker — PID %s standing by", os.getpid(),
+        )
+        # We're standing by. Pretend tasks ran "now" so that if we later
+        # take over, we wait a full interval before firing — preventing
+        # duplicate runs when the original holder did its job and then
+        # got recycled by gunicorn's --max-requests.
+        _t0 = time.time()
+        for _fn, _interval, name in _DAILY_TASKS:
+            last_run[name] = _t0
 
     while not _stop_event.is_set():
-        now = time.time()
-        role = get_node_role()
-        for fn, interval, name in _DAILY_TASKS:
-            if now - last_run.get(name, 0) >= interval:
-                if role == "standby" and name in WRITE_TASKS:
-                    logger.debug("Skipping task %s on standby node", name)
-                    continue
-                last_run[name] = now
-                asyncio.create_task(_run_task_safe(fn, name))
+        # Renew or re-acquire the lock each tick. If neither succeeds,
+        # skip the task pass entirely (another worker is running them).
+        if holds_lock:
+            holds_lock = await _renew_scheduler_lock()
+            if not holds_lock:
+                logger.info(
+                    "Scheduler lock taken over by another worker — PID %s yielding",
+                    os.getpid(),
+                )
+        else:
+            holds_lock = await _try_acquire_scheduler_lock()
+            if holds_lock:
+                logger.info(
+                    "Scheduler lock acquired by PID %s after takeover", os.getpid(),
+                )
+                # Reset last_run to "now" on takeover so we don't fire
+                # tasks that the predecessor likely just ran. They will
+                # still fire on their next configured interval.
+                _t = time.time()
+                for _fn, _interval, name in _DAILY_TASKS:
+                    last_run[name] = _t
+
+        if holds_lock:
+            now = time.time()
+            role = get_node_role()
+            for fn, interval, name in _DAILY_TASKS:
+                if now - last_run.get(name, 0) >= interval:
+                    if role == "standby" and name in WRITE_TASKS:
+                        logger.debug("Skipping task %s on standby node", name)
+                        continue
+                    last_run[name] = now
+                    asyncio.create_task(_run_task_safe(fn, name))
+
+        # Quiet `was_holding` linter warning — kept for log-readability.
+        del was_holding
 
         # Check every 30 seconds
         try:
@@ -941,4 +1087,7 @@ async def stop_scheduler() -> None:
         except (asyncio.TimeoutError, asyncio.CancelledError):
             _task_handle.cancel()
         _task_handle = None
+    # Best-effort lock release so a successor worker can pick up immediately
+    # (rather than waiting for the 60s TTL).
+    await _release_scheduler_lock()
     logger.info("Background task scheduler stopped")

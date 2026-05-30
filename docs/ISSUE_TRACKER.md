@@ -5616,3 +5616,51 @@ The sibling schema `LinkedVehicleSummary` (used by `/customers/search`) already 
 - Gunicorn forks faster (preload) and Dockerfile no longer pins worker count.
 
 **Status of remaining audit items**: see `docs/PERFORMANCE_AUDIT.md` Phase 1/2 checklist. Pending: scheduler single-worker gate (#7), Redis caches for org settings/modules/flags (#6), service worker (#5), index pack (#3), pool retune (#4), `/readyz` endpoint, off-host backup, RLS rollout.
+---
+
+### ISSUE-164: Scheduler fired tasks 2-4× simultaneously across gunicorn workers
+
+- **Date**: 2026-05-30
+- **Severity**: medium-high (correctness + waste)
+- **Status**: resolved
+- **Reporter**: Performance audit (`docs/PERFORMANCE_AUDIT.md` §B-H3 / §1 quick win #7)
+- **Regression of**: N/A
+
+**Symptoms**: Every gunicorn worker independently ran the in-process scheduler. With `--workers 2` (Pi PROD) or `--workers 4` (Docker default), every daily task fired 2-4× concurrently:
+
+- `process_recurring_billing_task` ran 2-4× every 15 min — protected from duplicate Stripe charges only by a stable `idempotency_key`, but still wasted DB queries and Stripe round-trips.
+- `publish_scheduled_notifications` ran 2-4× every minute — could publish the same notification multiple times depending on race timing.
+- `retry_failed_notifications_task` ran 2-4× every 5 min — could attempt the same retry multiple times.
+- 16 other tasks similarly multiplied.
+
+The HA heartbeat (`app/main.py`) was the only task that already had a Redis SETNX lock to prevent multi-worker duplication.
+
+**Root Cause**: `_start_task_scheduler` is registered as a FastAPI `@app.on_event("startup")` hook. Even with `--preload`, FastAPI startup events fire post-fork in each worker process, so every worker's startup hook called `start_scheduler()` and span its own `_scheduler_loop` task.
+
+**Fix Applied**:
+
+Added a Redis SETNX cluster-wide lock to `_scheduler_loop` in `app/tasks/scheduled.py`:
+
+- `_SCHED_LOCK_KEY = "scheduler:loop_lock"`, `_SCHED_LOCK_TTL = 60` seconds (longer than the 30s loop tick).
+- `_try_acquire_scheduler_lock()` uses `redis_pool.set(KEY, pid, nx=True, ex=TTL)` — atomic SETNX.
+- `_renew_scheduler_lock()` does GET-then-EXPIRE to confirm ownership before renewing TTL. Non-owners return False (and the loop yields).
+- `_release_scheduler_lock()` deletes the key on graceful shutdown only if we still own it.
+- The `_scheduler_loop` checks `holds_lock` each tick:
+  - On takeover (we just acquired the lock from a crashed/recycled predecessor) → reset `last_run[name] = now()` for every task so we don't re-fire tasks the predecessor likely just ran. They will fire again on their next configured interval.
+  - On loss (another worker took over) → log and stand by; re-attempt acquisition next tick.
+- Redis-down fail-safe: if Redis is unreachable during acquire/renew, the function returns True with a WARN log — running the scheduler is preferable to silently skipping all 19 tasks. Matches the HA heartbeat's behaviour.
+
+**Files Modified**:
+
+- `app/tasks/scheduled.py` — added `os` import, the three lock helpers, and the lock-aware `_scheduler_loop` body. `stop_scheduler()` now calls `_release_scheduler_lock()`.
+- `tests/test_scheduled_tasks.py` — new `TestSchedulerLock` class with 7 unit tests covering acquire / renew (own/foreign/expired) / release / Redis-down fail-safe.
+
+**Test Results**: 7/7 lock tests pass (`pytest tests/test_scheduled_tasks.py::TestSchedulerLock`).
+
+**Operational Notes**:
+
+- Logs to watch after deploy: `Scheduler lock acquired by PID X` (every fresh start, every successful takeover) and `Scheduler lock held by another worker — PID X standing by` (every other worker).
+- A worker that starts after another has the lock will log "standing by" and not run any tasks until the holder dies and its TTL expires (within 60s).
+- `--max-requests 10000 --max-requests-jitter 1000` recycles workers periodically. When the scheduler-holding worker recycles, another worker picks up the lock within one tick (≤30s).
+
+**Status of remaining audit items**: see `docs/PERFORMANCE_AUDIT.md` Phase 1/2 checklist. Pending: Redis caches for org settings/modules/flags (#6), service worker (#5), index pack (#3), pool retune (#4), `/readyz` endpoint, off-host backup, RLS rollout.

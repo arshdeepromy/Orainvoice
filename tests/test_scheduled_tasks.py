@@ -387,3 +387,97 @@ class TestPromotionResumesAllTasks:
 
         # Reset to standalone for other tests
         set_node_role("standalone")
+
+
+class TestSchedulerLock:
+    """Single-worker scheduler lock (PERFORMANCE_AUDIT.md §B-H3 / §1 quick win #7).
+
+    The lock prevents 2-4× duplicate task firing across gunicorn workers.
+    Verifies acquire/renew/release semantics + Redis-down fail-safe.
+    """
+
+    @pytest.mark.asyncio
+    async def test_first_worker_acquires_lock(self):
+        from app.tasks.scheduled import _try_acquire_scheduler_lock
+
+        with patch("app.core.redis.redis_pool") as mock_redis:
+            # SETNX returns truthy when the key is new
+            mock_redis.set = AsyncMock(return_value=True)
+            assert await _try_acquire_scheduler_lock() is True
+            # Lock command must be SET ... NX EX <ttl>
+            args, kwargs = mock_redis.set.call_args
+            assert kwargs.get("nx") is True
+            assert kwargs.get("ex") == 60  # _SCHED_LOCK_TTL
+
+    @pytest.mark.asyncio
+    async def test_second_worker_fails_to_acquire(self):
+        from app.tasks.scheduled import _try_acquire_scheduler_lock
+
+        with patch("app.core.redis.redis_pool") as mock_redis:
+            # SETNX returns None when the key already exists
+            mock_redis.set = AsyncMock(return_value=None)
+            assert await _try_acquire_scheduler_lock() is False
+
+    @pytest.mark.asyncio
+    async def test_acquire_fails_safe_when_redis_down(self):
+        """Redis unavailable → run scheduler anyway (better than skipping all tasks)."""
+        from app.tasks.scheduled import _try_acquire_scheduler_lock
+
+        with patch("app.core.redis.redis_pool") as mock_redis:
+            mock_redis.set = AsyncMock(side_effect=ConnectionError("redis down"))
+            assert await _try_acquire_scheduler_lock() is True
+
+    @pytest.mark.asyncio
+    async def test_renew_succeeds_when_we_own_the_lock(self):
+        from app.tasks.scheduled import _renew_scheduler_lock
+
+        with patch("app.core.redis.redis_pool") as mock_redis, \
+             patch("app.tasks.scheduled.os") as mock_os:
+            mock_os.getpid.return_value = 12345
+            mock_redis.get = AsyncMock(return_value="12345")
+            mock_redis.expire = AsyncMock(return_value=True)
+            assert await _renew_scheduler_lock() is True
+            mock_redis.expire.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_renew_fails_when_another_worker_owns_lock(self):
+        from app.tasks.scheduled import _renew_scheduler_lock
+
+        with patch("app.core.redis.redis_pool") as mock_redis, \
+             patch("app.tasks.scheduled.os") as mock_os:
+            mock_os.getpid.return_value = 12345
+            mock_redis.get = AsyncMock(return_value="99999")
+            mock_redis.expire = AsyncMock()
+            assert await _renew_scheduler_lock() is False
+            # Must not bump TTL on a lock we don't own
+            mock_redis.expire.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_renew_re_acquires_when_lock_expired(self):
+        """If our lock TTL'd out, try to grab it again on the next renew tick."""
+        from app.tasks.scheduled import _renew_scheduler_lock
+
+        with patch("app.core.redis.redis_pool") as mock_redis, \
+             patch("app.tasks.scheduled.os") as mock_os:
+            mock_os.getpid.return_value = 12345
+            mock_redis.get = AsyncMock(return_value=None)  # lock gone
+            mock_redis.set = AsyncMock(return_value=True)  # we re-acquire
+            assert await _renew_scheduler_lock() is True
+
+    @pytest.mark.asyncio
+    async def test_release_only_deletes_lock_we_own(self):
+        from app.tasks.scheduled import _release_scheduler_lock
+
+        with patch("app.core.redis.redis_pool") as mock_redis, \
+             patch("app.tasks.scheduled.os") as mock_os:
+            mock_os.getpid.return_value = 12345
+            # Case 1: we own it → DEL
+            mock_redis.get = AsyncMock(return_value="12345")
+            mock_redis.delete = AsyncMock()
+            await _release_scheduler_lock()
+            mock_redis.delete.assert_awaited_once()
+            # Case 2: another worker owns it → no DEL
+            mock_redis.delete.reset_mock()
+            mock_redis.get = AsyncMock(return_value="99999")
+            await _release_scheduler_lock()
+            mock_redis.delete.assert_not_awaited()
