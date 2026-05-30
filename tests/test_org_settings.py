@@ -757,3 +757,159 @@ class TestInvoiceTemplateValidation:
             )
 
         assert "invoice_template_colours" in result["updated_fields"]
+
+
+
+class TestOrgSettingsCache:
+    """Read-through Redis cache for get_org_settings (PERFORMANCE_AUDIT.md §1 quick win #6 / §D-H10).
+
+    The cache should:
+    - Return the cached payload on hit without touching the DB.
+    - Fall through to DB on cache miss + write the result back.
+    - Survive Redis errors (fail-open + WARN log).
+    - Be invalidated by ``invalidate_org_settings_cache`` and indirectly by
+      ``update_org_settings`` after a successful write.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_skips_db(self):
+        from app.modules.organisations.service import get_org_settings
+
+        cached_payload = {
+            "org_name": "Cached Workshop",
+            "country_code": "NZ",
+            "trade_family": None,
+            "trade_category": None,
+            "logo_url": None,
+        }
+        db = _mock_db_session()
+
+        with patch(
+            "app.modules.organisations.service._get_cached_org_settings",
+            new_callable=AsyncMock, return_value=cached_payload,
+        ):
+            with patch(
+                "app.modules.organisations.service._load_org_settings_from_db",
+                new_callable=AsyncMock,
+            ) as mock_load:
+                result = await get_org_settings(db, org_id=uuid.uuid4())
+                assert result == cached_payload
+                # DB-load helper must NOT have been called on a cache hit.
+                mock_load.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_loads_from_db_and_writes_through(self):
+        from app.modules.organisations.service import get_org_settings
+
+        db_payload = {
+            "org_name": "Fresh Workshop",
+            "country_code": "NZ",
+            "trade_family": None,
+            "trade_category": None,
+        }
+        db = _mock_db_session()
+
+        with patch(
+            "app.modules.organisations.service._get_cached_org_settings",
+            new_callable=AsyncMock, return_value=None,
+        ):
+            with patch(
+                "app.modules.organisations.service._load_org_settings_from_db",
+                new_callable=AsyncMock, return_value=db_payload,
+            ) as mock_load:
+                with patch(
+                    "app.modules.organisations.service._set_cached_org_settings",
+                    new_callable=AsyncMock,
+                ) as mock_set:
+                    result = await get_org_settings(db, org_id=uuid.uuid4())
+                    assert result == db_payload
+                    mock_load.assert_awaited_once()
+                    mock_set.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_redis_get_failure_falls_through_to_db(self):
+        """Redis errors during reads must not break the read path."""
+        from app.modules.organisations.service import get_org_settings
+
+        db_payload = {"org_name": "Resilient Workshop"}
+        db = _mock_db_session()
+
+        with patch(
+            "app.modules.organisations.service._get_cached_org_settings",
+            new_callable=AsyncMock, side_effect=ConnectionError("redis down"),
+        ):
+            with patch(
+                "app.modules.organisations.service._load_org_settings_from_db",
+                new_callable=AsyncMock, return_value=db_payload,
+            ) as mock_load:
+                # The set call may also raise; it's OK — we just want
+                # the read path to deliver the DB value.
+                with patch(
+                    "app.modules.organisations.service._set_cached_org_settings",
+                    new_callable=AsyncMock,
+                ):
+                    result = await get_org_settings(db, org_id=uuid.uuid4())
+                    assert result == db_payload
+                    mock_load.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_invalidate_cache_helper_deletes_redis_key(self):
+        from app.modules.organisations.service import (
+            invalidate_org_settings_cache,
+            _org_settings_cache_key,
+        )
+
+        target_org = uuid.uuid4()
+        with patch("app.core.redis.redis_pool") as mock_redis:
+            mock_redis.delete = AsyncMock()
+            await invalidate_org_settings_cache(target_org)
+            mock_redis.delete.assert_awaited_once_with(
+                _org_settings_cache_key(target_org)
+            )
+
+    @pytest.mark.asyncio
+    async def test_invalidate_cache_swallows_redis_errors(self):
+        """Cache invalidation must never break the calling write path."""
+        from app.modules.organisations.service import invalidate_org_settings_cache
+
+        with patch("app.core.redis.redis_pool") as mock_redis:
+            mock_redis.delete = AsyncMock(side_effect=ConnectionError("redis down"))
+            # Should not raise.
+            await invalidate_org_settings_cache(uuid.uuid4())
+
+    @pytest.mark.asyncio
+    async def test_update_org_settings_invalidates_cache(self):
+        """The PATCH path must drop the cached entry so reads see new values."""
+        from app.modules.organisations.service import update_org_settings
+
+        org = _make_org(name="Before", settings={})
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        with patch(
+            "app.modules.organisations.service.invalidate_org_settings_cache",
+            new_callable=AsyncMock,
+        ) as mock_invalidate:
+            with patch("app.modules.organisations.service.write_audit_log", new_callable=AsyncMock):
+                await update_org_settings(
+                    db, org_id=org.id, user_id=uuid.uuid4(), org_name="After",
+                )
+                mock_invalidate.assert_awaited_once_with(org.id)
+
+    @pytest.mark.asyncio
+    async def test_update_org_settings_skips_invalidation_on_no_op(self):
+        """When no fields are provided the function returns early — no cache write needed."""
+        from app.modules.organisations.service import update_org_settings
+
+        org = _make_org(settings={})
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        with patch(
+            "app.modules.organisations.service.invalidate_org_settings_cache",
+            new_callable=AsyncMock,
+        ) as mock_invalidate:
+            result = await update_org_settings(db, org_id=org.id, user_id=uuid.uuid4())
+            assert result == {"updated_fields": []}
+            # Empty update path returns before reaching the invalidation hook.
+            mock_invalidate.assert_not_awaited()

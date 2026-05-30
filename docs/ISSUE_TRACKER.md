@@ -5664,3 +5664,46 @@ Added a Redis SETNX cluster-wide lock to `_scheduler_loop` in `app/tasks/schedul
 - `--max-requests 10000 --max-requests-jitter 1000` recycles workers periodically. When the scheduler-holding worker recycles, another worker picks up the lock within one tick (≤30s).
 
 **Status of remaining audit items**: see `docs/PERFORMANCE_AUDIT.md` Phase 1/2 checklist. Pending: Redis caches for org settings/modules/flags (#6), service worker (#5), index pack (#3), pool retune (#4), `/readyz` endpoint, off-host backup, RLS rollout.
+---
+
+### ISSUE-165: get_org_settings hit DB on every authenticated request
+
+- **Date**: 2026-05-30
+- **Severity**: medium (perf headroom)
+- **Status**: resolved
+- **Reporter**: Performance audit (`docs/PERFORMANCE_AUDIT.md` §D-H10 / §1 quick win #6)
+- **Regression of**: N/A
+
+**Symptoms**: Every call to `get_org_settings(db, org_id=...)` issued two SQL statements: a `SELECT * FROM organisations WHERE id = ?` and (when trade_category_id was set) a join across `trade_categories` and `trade_families` to resolve the org's trade family slug. The function is called inside `get_invoice()` (the audit's named hot path), customer search, inventory stock-items service, and the tax-wallets module. At 200 req/s sustained the audit estimated 600+ wasted DB lookups per second.
+
+`ModuleService.is_enabled` (60s Redis cache + invalidation) and the feature-flag middleware (30s cache + two-layer invalidation on writes) were already done — only this third hot path was missing.
+
+**Root Cause**: Direct DB hit each time. `app/core/cache.py` provides a generic helper but `grep -rln "from app.core.cache" app/` returned only `app/main.py`.
+
+**Fix Applied**:
+
+1. Added a read-through Redis cache to `app/modules/organisations/service.py::get_org_settings`:
+   - Key: `org:settings:{org_id}` (matches the namespacing convention in `app/middleware/feature_flags.py` and `app/core/modules.py`).
+   - TTL: 60 seconds (conservative — short enough that out-of-band writers self-heal; long enough to cover bursts).
+   - Read-through: cache hit returns the JSON-decoded dict directly; cache miss loads from DB and writes back. Redis errors during read or write are logged at WARN and the function falls through to DB (fail-open, matching existing patterns).
+2. Refactored the DB-loading logic into a private `_load_org_settings_from_db` helper so the cache layer wraps a single function (also makes mocking easy in tests).
+3. Public helper `invalidate_org_settings_cache(org_id)` deletes the key, swallowing Redis errors.
+4. Wrote-through invalidation hooks added at:
+   - `update_org_settings` (the explicit settings PATCH endpoint).
+   - `save_onboarding_step` (writes overlapping JSONB keys during signup wizard).
+5. Other writers — billing webhooks, payment surcharge, retention warnings, recurring billing retry — were left to self-heal within the 60s TTL. They mutate keys not in `SETTINGS_JSONB_KEYS` (status, payment_failure_count, etc.) and are out of the read-path's interest.
+
+**Files Modified**:
+
+- `app/modules/organisations/service.py` — refactored `get_org_settings`, added 4 cache helpers + invalidation hooks.
+- `tests/test_org_settings.py` — new `TestOrgSettingsCache` class with 7 unit tests covering: cache hit, cache miss + write-through, Redis-down fail-through, invalidation helper, invalidation error swallowing, update-flow invalidation, and no-op-update no-invalidation.
+
+**Test Results**: 52/52 in `tests/test_org_settings.py` (45 pre-existing + 7 new).
+
+**Live Smoke Test on Dev**:
+
+- Cleared `org:settings:{org_id}` → 5 sequential `get_org_settings()` calls → counted DB loads via instrumentation: **1 load total** (first miss, 4 hits).
+- Cache value visible in `redis-cli GET org:settings:{org_id}` after first call, TTL ~60 ticking down.
+- Triggered `update_org_settings` → cache key gone (`EXISTS = 0`) immediately.
+
+**Status of remaining audit items**: see `docs/PERFORMANCE_AUDIT.md` Phase 2 checklist. Pending: service worker (#5), index pack (#3), pool retune (#4), `/readyz` endpoint, off-host backup, RLS rollout.

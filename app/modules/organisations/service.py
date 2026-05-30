@@ -145,6 +145,10 @@ async def save_onboarding_step(
         org.settings = new_settings
         await db.flush()
 
+        # Invalidate read-through cache so subsequent reads see new values
+        # immediately. PERFORMANCE_AUDIT.md §1 quick win #6.
+        await invalidate_org_settings_cache(org_id)
+
         # Audit log
         after_value = {
             "updated_fields": updated_fields,
@@ -241,7 +245,94 @@ async def get_org_settings(
     Returns a flat dict with org_name (from the name column) and all
     settings keys from the JSONB column. Includes trade_family and
     trade_category for trade-specific UI gating.
+
+    Caching: read-through Redis cache with 60s TTL.
+    PERFORMANCE_AUDIT.md §D-H10 / §1 quick win #6 — every authenticated
+    request that hits an invoice list / detail / customer search path
+    used to issue this 2-table SELECT (orgs + trade_categories+trade_families
+    join). Cache key ``org:settings:{org_id}`` short-circuits the DB
+    round-trip until the next write or 60-second TTL expiry.
+
+    The 60s TTL also bounds the staleness when other code paths mutate
+    ``Organisation.settings`` directly (payment surcharge, billing
+    webhooks, retention warnings) — those paths don't invalidate the
+    cache but the data self-heals within a minute.
     """
+    # Read-through cache check.
+    try:
+        cached = await _get_cached_org_settings(org_id)
+        if cached is not None:
+            return cached
+    except Exception:
+        logger.warning("Redis read failed for org settings cache, falling through")
+
+    settings_dict = await _load_org_settings_from_db(db, org_id=org_id)
+
+    # Best-effort cache write — failures are non-fatal.
+    try:
+        await _set_cached_org_settings(org_id, settings_dict)
+    except Exception:
+        logger.warning("Redis write failed for org settings cache")
+
+    return settings_dict
+
+
+# ---------------------------------------------------------------------------
+# Org-settings cache helpers (PERFORMANCE_AUDIT.md §D-H10, §I-M1).
+# ---------------------------------------------------------------------------
+
+_ORG_SETTINGS_CACHE_KEY_PREFIX = "org:settings:"
+_ORG_SETTINGS_CACHE_TTL = 60  # seconds — short enough that direct
+                              # ``Organisation.settings`` writes from
+                              # other modules self-heal quickly.
+
+
+def _org_settings_cache_key(org_id: uuid.UUID) -> str:
+    return f"{_ORG_SETTINGS_CACHE_KEY_PREFIX}{org_id}"
+
+
+async def _get_cached_org_settings(org_id: uuid.UUID) -> dict | None:
+    """Return the cached org-settings dict, or ``None`` on miss / Redis error."""
+    import json
+    from app.core.redis import redis_pool
+
+    raw = await redis_pool.get(_org_settings_cache_key(org_id))
+    if raw is None:
+        return None
+    return json.loads(raw)
+
+
+async def _set_cached_org_settings(org_id: uuid.UUID, data: dict) -> None:
+    """Store the org-settings dict in Redis with a 60s TTL."""
+    import json
+    from app.core.redis import redis_pool
+
+    await redis_pool.set(
+        _org_settings_cache_key(org_id),
+        json.dumps(data, default=str),
+        ex=_ORG_SETTINGS_CACHE_TTL,
+    )
+
+
+async def invalidate_org_settings_cache(org_id: uuid.UUID) -> None:
+    """Drop the cached org-settings entry for *org_id*.
+
+    Public helper so non-CRUD writers (e.g. branding, billing) can opt in
+    to immediate invalidation when they update settings out-of-band.
+    """
+    try:
+        from app.core.redis import redis_pool
+        await redis_pool.delete(_org_settings_cache_key(org_id))
+    except Exception:
+        logger.warning("Redis cache invalidation failed for org settings %s", org_id)
+
+
+async def _load_org_settings_from_db(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+) -> dict:
+    """Load and shape org settings from the database. No cache."""
     from sqlalchemy import text
 
     result = await db.execute(
@@ -375,6 +466,11 @@ async def update_org_settings(
 
     org.settings = new_settings
     await db.flush()
+
+    # Invalidate the read-through cache so subsequent reads pick up the
+    # new values within milliseconds rather than waiting up to 60s for
+    # the TTL to expire. PERFORMANCE_AUDIT.md §1 quick win #6.
+    await invalidate_org_settings_cache(org_id)
 
     # Audit log
     after_value = {k: kwargs[k] for k in updated_fields if k in kwargs}
