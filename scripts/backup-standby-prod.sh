@@ -10,11 +10,11 @@
 #   replica is a byte-identical copy receiving WAL streaming so dumping
 #   it is free as far as production traffic is concerned.
 #
-# Schedule: every 15 minutes via user cron — see crontab entry installed
-# alongside this script (`scripts/install-backup-cron.sh`).
+# Schedule: every 4 hours via user cron — see crontab entry installed
+# alongside this script (`scripts/install-orabck-cron.sh`).
 #
 # Retention:
-#   - All backups from the last 24 hours kept (96 dumps at 15-min cadence).
+#   - All backups from the last 24 hours kept (6 dumps at 4-hour cadence).
 #   - One backup per day kept for the last 7 days (the daily snapshot is
 #     simply the most recent file from each calendar day; older intra-day
 #     dumps are pruned).
