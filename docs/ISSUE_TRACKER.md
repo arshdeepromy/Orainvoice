@@ -5769,3 +5769,57 @@ Added a Redis SETNX cluster-wide lock to `_scheduler_loop` in `app/tasks/schedul
 - For the kiosk specifically: kiosks restart daily but the SW survives reboot, so the "5 MB redownload on reboot" pain identified in the audit goes away after the first install.
 
 **Status of remaining audit items**: see `docs/PERFORMANCE_AUDIT.md` Phase 2 checklist. Pending: index pack (#3, after-hours), pool retune (#4, PG restart window), `/readyz` endpoint, off-host backup, RLS rollout.
+---
+
+### ISSUE-167: No off-host database backup — Pi SD card failure = total data loss
+
+- **Date**: 2026-05-30
+- **Severity**: high (data durability)
+- **Status**: partially-resolved (DB done; uploads volume + remote off-site pending)
+- **Reporter**: Performance audit (`docs/PERFORMANCE_AUDIT.md` §I-M4 / §I-H5)
+- **Regression of**: N/A
+
+**Symptoms**: Production database backups existed only on the Pi via `scripts/update.sh` and `scripts/deploy-prod.sh` (which dump on demand at deploy time). No periodic backup schedule, no copy on a different physical machine, no off-site copy. A Pi SD-card failure between deploys would cause complete data loss. HA replication covered hardware failure but not logical corruption (bad migration, accidental DELETE, ransomware) and did not constitute a true backup.
+
+**Root Cause**: The original deploy-time dump captured a pre-migration snapshot but never repeated. The replica on the local box (`invoicing-standby-prod-postgres-1`) received a continuous WAL stream but no snapshots were taken from it.
+
+**Fix Applied (Phase 1 — DB only)**:
+
+Added a 4-hourly cron job on the local box that pulls `pg_dump` from the Prod-Standby replica:
+
+- **Schedule**: `0 */4 * * *` — six dumps per day at 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 NZST.
+- **Source**: `invoicing-standby-prod-postgres-1` (the local replica, byte-identical to Pi PROD via logical replication). Dumping the replica means zero load on Pi PROD's primary postgres.
+- **Destination**: `/home/romy/OraBck/` on the local Ubuntu box — different physical machine than Pi, so a Pi-side disaster (SD card, theft, fire of just the Pi) no longer means data loss.
+- **Retention**: every dump from the last 24 h kept (6 files at 4-hour cadence) plus one dump per calendar day for 7 days; older deleted.
+- **Pre-flight**: script verifies docker-on-PATH, container running, postgres accepting connections; logs every step to `OraBck/backup.log`.
+- **Idempotent installer**: `scripts/install-orabck-cron.sh` with `uninstall` flag. Strips legacy 15-min markers when re-running so cadence changes are clean.
+
+**Files Added**:
+
+- `scripts/backup-standby-prod.sh` — the actual backup runner (pg_dump | gzip | retention prune).
+- `scripts/install-orabck-cron.sh` — idempotent crontab installer.
+- `/home/romy/OraBck/README.md` — folder-level docs covering manual run, restore, and the future Drive hook.
+
+**Verification**:
+
+- One manual run produced a 6.4 MB dump with 374 SQL statements (verified via `gunzip -c | head` and statement count).
+- Cron entry installed `*/15` originally, then changed to `0 */4` per request; both transitions verified by inspecting `crontab -l` and watching `~/OraBck/` populate at the next tick.
+
+**What's Still Pending** (intentional — deferred to BYO Drive feature):
+
+1. **Uploads volume backup**. `app_uploads` (compliance docs, branding files, attachments) is still on Pi only. Will be tarred + uploaded by the BYO Drive worker per `.kiro/specs/byo-drive-backup/`.
+2. **Remote off-site**. Local box and Pi are at the same physical site. Fire/flood/theft of both = data loss. The `ORACLOUD_HOOK` block in `scripts/backup-standby-prod.sh` is the planned upload point — uncomment + configure `ORABCK_RCLONE_REMOTE` once Drive credentials are wired.
+3. **Verified restore drill**. The audit recommends a quarterly drill into the standby stack. Not yet scheduled.
+
+**Threat Model After Fix**:
+
+| Failure | Covered? |
+|---|---|
+| Pi SD card fails | ✅ Replica + 4-hourly local dump |
+| Bad migration drops a column | ✅ Roll back to pre-event dump (max 4 h staleness) |
+| Accidental DELETE / corrupted JSONB | ✅ Same |
+| Ransomware on Pi | ✅ Local dumps not on Pi's filesystem |
+| Both Pi AND local box compromised at same site | ❌ Still pending — needs BYO Drive |
+| User: "I needed last Tuesday's data" | ⚠️ Have it for ≤7 days then gone |
+
+**Refs**: PERFORMANCE_AUDIT.md §I-M4, §I-H5, Phase 1 checklist.

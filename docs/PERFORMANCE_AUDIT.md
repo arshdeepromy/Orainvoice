@@ -375,6 +375,7 @@ Built `dist/assets` directory measured at audit time: 5.0 MB across ~250 chunks;
 - See Theme C / §1 item 4.
 
 #### I-H5. Uploads on a local Docker volume, not backed up off-host
+- **Status:** ⚠️ PARTIAL 2026-05-30 — DB backups now off-host (every 4 h pg_dump from Pi PROD's local replica → `/home/romy/OraBck/`, retained 24 h intra-day + 7 daily). The uploads volume tar is still pending — deferred until BYO Drive ships and handles both DB + uploads in one stream. Local-only-but-different-machine is sufficient for the current hardware-failure threat model; remote off-site lands with the BYO Drive feature.
 - **Where:** [docker-compose.yml:133](docker-compose.yml#L133) (`app_uploads:/app/uploads`). `scripts/deploy-prod.sh` only backs up Postgres.
 - **Fix (short-term):** Nightly cron tars `/app/uploads` to off-host storage (rclone to B2/S3 or a NAS).
 - **Fix (medium-term):** Migrate to S3-compatible object storage; the upload helper is a single chokepoint, so swapping in `boto3`/`s3fs` is contained. Required for ever running >1 app replica.
@@ -397,7 +398,7 @@ Built `dist/assets` directory measured at audit time: 5.0 MB across ~250 chunks;
 - **I-M1.** Module enablement = 1 Redis GET per request × N modules. Cache full per-org module set as one JSON blob, 5-min TTL, single GET.
 - **I-M2.** Feature-flag eval same shape. Add 5 s in-process LRU on `(org_id, flag_key)`.
 - **I-M3.** `statement_timeout=30s` kills legitimate cross-org reports. Pattern already exists in `query_optimizer.py:24` — extend to all report endpoints via `SET LOCAL statement_timeout=120000`.
-- **I-M4.** Backups are local-only, 5 snapshots, no off-host, no verified restore. Nightly `pg_dump | age -e | rclone copyto`; quarterly restore drill into the standby stack.
+- **I-M4.** Backups are local-only, 5 snapshots, no off-host, no verified restore. Nightly `pg_dump | age -e | rclone copyto`; quarterly restore drill into the standby stack. ⚠️ PARTIAL 2026-05-30 — DB backups now run every 4 h from the Pi PROD replica into `/home/romy/OraBck/` on the local box (different physical machine than Pi PROD). Retention: 24 h intra-day + 7 daily. Setup in `scripts/backup-standby-prod.sh` + user crontab. Off-site (Drive/S3/B2) and verified restore drill still pending — both planned alongside the BYO Drive backup feature.
 - **I-M5.** No structured logs, metrics, or tracing. Add `structlog` JSON with `org_id`/`user_id`/`request_id`; add `prometheus-fastapi-instrumentator` (5 lines, exposes `/metrics`); configure compose `logging:` driver with size caps so logs don't fill the SD card.
 - **I-M6.** WeasyPrint in request worker — see B-H1; move to job queue.
 - **I-M7.** [frontend/Dockerfile:19](frontend/Dockerfile#L19) keeps Node alive forever (`setInterval(()=>{},60000)`) just to hold a shared volume. ~80 MB of pointless RAM. Multi-stage build that copies `dist/` into the nginx image at build time instead.
@@ -423,7 +424,7 @@ Four phases, ordered by urgency × safety. Nothing here is breaking; nothing req
 
 ### Phase 1 — This week (urgent: security & easy wins, no restart needed)
 
-- [ ] **Off-host backup first.** Before any other change, get nightly `pg_dump | rclone copyto` + `/app/uploads` tar to off-host storage. (I-M4, I-H5.) Without this, every later step is riskier than it needs to be.
+- [x] **Off-host backup first.** Before any other change, get nightly `pg_dump | rclone copyto` + `/app/uploads` tar to off-host storage. (I-M4, I-H5.) Without this, every later step is riskier than it needs to be. ⚠️ PARTIAL 2026-05-30 — DB done (4-hour cron from Pi PROD's local replica → `/home/romy/OraBck/`). Uploads tar + remote off-site (Drive/S3) still pending; both deferred until the BYO Drive feature ships.
 - [ ] **Bind sshd's port 2222 to the HA-network interface only** — not 0.0.0.0. (I-H6.) Single compose change, takes effect on restart.
 - [x] **Drop `console.log` in production** via Vite `esbuild.drop: ['console','debugger']`. (F-H6.) Static-asset deploy only — no backend touched. ✅ DONE 2026-05-30.
 - [x] **Codify `build.sourcemap: false`** in `vite.config.ts`. (F-M8.) ✅ DONE 2026-05-30.
