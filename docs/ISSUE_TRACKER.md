@@ -5707,3 +5707,65 @@ Added a Redis SETNX cluster-wide lock to `_scheduler_loop` in `app/tasks/schedul
 - Triggered `update_org_settings` → cache key gone (`EXISTS = 0`) immediately.
 
 **Status of remaining audit items**: see `docs/PERFORMANCE_AUDIT.md` Phase 2 checklist. Pending: service worker (#5), index pack (#3), pool retune (#4), `/readyz` endpoint, off-host backup, RLS rollout.
+---
+
+### ISSUE-166: Service worker source existed but was never emitted or registered
+
+- **Date**: 2026-05-30
+- **Severity**: medium (perf — repeat-visit responsiveness, kiosk reboot bandwidth)
+- **Status**: resolved
+- **Reporter**: Performance audit (`docs/PERFORMANCE_AUDIT.md` §F-H5 / §1 quick win #5)
+- **Regression of**: N/A
+
+**Symptoms**: `frontend/src/service-worker.ts` was a fully-written cache-first/network-first worker but Vite's build never emitted it to `dist/`. `frontend/src/registerSW.ts` was a no-op stub with a comment explaining why ("Attempting to register a non-existent /service-worker.js causes nginx's SPA fallback to return index.html (text/html), which the browser rejects"). Repeat visits re-downloaded the full 5+ MB asset bundle every time. Kiosks restarting first thing in the morning all paid the full asset cost on top of slow consumer broadband.
+
+**Root Cause**:
+
+1. `vite.config.ts` only listed `index.html` as an input. The TypeScript SW source was never compiled or written to the dist output.
+2. `nginx/nginx.conf` had no explicit route for `/service-worker.js`. Requests hit the `location /` SPA fallback which returned `index.html` (text/html) — browsers refuse to register a SW with the wrong MIME type.
+3. `registerSW.ts` accepted both realities and short-circuited.
+
+**Fix Applied**:
+
+1. **Vite multi-input build** — `vite.config.ts::build.rollupOptions.input` now declares two entries:
+   - `main: index.html` (the SPA)
+   - `'service-worker': src/service-worker.ts`
+   Plus `entryFileNames` returns `service-worker.js` (no hash, no /assets prefix) for the SW chunk and `assets/[name]-[hash].js` for everything else.
+
+2. **Versioned cache key** — `service-worker.ts` reads `__APP_VERSION__` (already injected by Vite from package.json) and uses it as the cache name (`workshoppro-${APP_VERSION}`). Each deploy clears the previous cache cleanly via the existing activate-event cleanup loop. Verified live: SW body contains `workshoppro-1.13.0`.
+
+3. **Real registration** — `registerSW.ts` now registers `/service-worker.js` on the window `load` event (not at module import — defers to after first paint). `.catch` handler swallows registration errors and logs `console.warn` so a missing-file in dev doesn't crash the app shell. Matches the existing test contract in `__tests__/pwa.test.tsx::it('registers service worker on window load')`.
+
+4. **nginx route** — added `location = /service-worker.js` block in `nginx/nginx.conf` with:
+   - `Cache-Control: no-cache, no-store, must-revalidate` (browsers already cap SW max-age at 24h, but the explicit header avoids surprises with intermediary caches).
+   - `Service-Worker-Allowed: /` (lets the worker claim the entire origin scope).
+   - `try_files $uri =404` (returns 404 on missing instead of SPA fallback, preventing a broken build from poisoning clients with index.html as their SW).
+
+5. **Dev compose fix** — `frontend/package.json` now bind-mounted into the dev frontend container (`./frontend/package.json:/app/package.json:ro`). Without this the in-container build saw the version baked at image build time (1.11.1) instead of the host's current value (1.13.0), so the SW cache key was permanently stale.
+
+**Files Modified**:
+
+- `frontend/vite.config.ts` — added `input` map and `entryFileNames` callback in `build.rollupOptions`.
+- `frontend/src/service-worker.ts` — version-based `CACHE_NAME`, comment cleanup.
+- `frontend/src/registerSW.ts` — replaced no-op with real registration.
+- `frontend/src/__tests__/pwa.test.tsx` — added a third test covering registration error swallowing (the existing 12 tests already covered the happy path + missing-support case).
+- `nginx/nginx.conf` — new `location = /service-worker.js` block.
+- `docker-compose.dev.yml` — `package.json:ro` bind mount on the frontend service.
+
+**Test Results**:
+
+- `npx vitest --run src/__tests__/pwa.test.tsx`: **14/14 pass**.
+- Full frontend `vitest` run shows the same 526 pre-existing failures across 73 files; verified pre-existing by stashing my changes and re-running.
+- Live smoke test on dev:
+  - `curl -I http://localhost/service-worker.js` returns `200`, `Content-Type: application/javascript`, `Cache-Control: no-cache, no-store, must-revalidate`, `Service-Worker-Allowed: /`.
+  - `curl http://localhost/service-worker.js | grep -oE 'workshoppro-[0-9.]+'` returns `workshoppro-1.13.0`.
+  - Main chunk body contains `navigator.serviceWorker.register('/service-worker.js')`.
+
+**Operational Notes**:
+
+- After deploying to Pi PROD, the first page load installs the worker; the second load uses cached assets (instant repeat visits).
+- A version bump in `package.json` automatically rotates the cache name on the next deploy. Old caches are deleted by the activate event in the new SW.
+- If a deploy ever ships a broken SW, browsers will retry registration on every page load and use the previous worker until a valid one installs (per the SW spec). Worst case: stale cached assets for one visit until the user hard-refreshes.
+- For the kiosk specifically: kiosks restart daily but the SW survives reboot, so the "5 MB redownload on reboot" pain identified in the audit goes away after the first install.
+
+**Status of remaining audit items**: see `docs/PERFORMANCE_AUDIT.md` Phase 2 checklist. Pending: index pack (#3, after-hours), pool retune (#4, PG restart window), `/readyz` endpoint, off-host backup, RLS rollout.

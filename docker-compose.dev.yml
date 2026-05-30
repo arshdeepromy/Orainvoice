@@ -37,6 +37,7 @@ services:
       - ./frontend/tailwind.config.js:/app/tailwind.config.js:delegated
       - ./frontend/postcss.config.js:/app/postcss.config.js:delegated
       - ./frontend/watch-build.sh:/app/watch-build.sh:delegated
+      - ./frontend/package.json:/app/package.json:ro
       - ./shared:/app/../shared:delegated
       - frontend_dist:/app/dist
     # Watch source files and rebuild on change (uses Node fs.watch, works on Alpine)

@@ -287,5 +287,26 @@ describe('PWA Support', () => {
       // Should not throw
       expect(() => registerServiceWorker()).not.toThrow()
     })
+
+    // PERFORMANCE_AUDIT.md §F-H5: registration failures must not crash
+    // the app — the .catch handler should swallow rejected promises.
+    it('swallows registration errors gracefully', async () => {
+      const mockRegister = vi.fn().mockRejectedValue(new Error('boom'))
+      Object.defineProperty(navigator, 'serviceWorker', {
+        value: { register: mockRegister },
+        writable: true,
+        configurable: true,
+      })
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      registerServiceWorker()
+      window.dispatchEvent(new Event('load'))
+
+      // Wait one microtask tick for the rejection to propagate.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(mockRegister).toHaveBeenCalled()
+      expect(warnSpy).toHaveBeenCalled()
+    })
   })
 })

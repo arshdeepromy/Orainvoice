@@ -119,8 +119,25 @@ export default defineConfig({
     // PERFORMANCE_AUDIT.md §F-M8.
     sourcemap: false,
     rollupOptions: {
+      // Multi-entry: the SPA HTML entry plus the standalone service worker.
+      // The SW is built as its own bundle so it can be served at the
+      // origin root (`/service-worker.js`) — required by the SW spec to
+      // claim the maximum scope (the entire site).
+      // PERFORMANCE_AUDIT.md §F-H5 / §1 quick win #5.
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        'service-worker': path.resolve(__dirname, 'src/service-worker.ts'),
+      },
       output: {
         manualChunks: classifyChunk,
+        // Place the SW at /service-worker.js (no hash, no /assets prefix).
+        // Hashing would break browser registration which expects a
+        // stable URL. Service workers are versioned via CACHE_NAME
+        // (which embeds __APP_VERSION__) — see src/service-worker.ts.
+        entryFileNames: (chunk) =>
+          chunk.name === 'service-worker'
+            ? 'service-worker.js'
+            : 'assets/[name]-[hash].js',
       },
     },
     // Bump warning threshold — main chunk is expected to drop below 600 KB
