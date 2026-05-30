@@ -15,6 +15,18 @@ from datetime import date, datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
+# Surface this module's INFO logs in dev. Uvicorn's default logging config
+# does not attach a handler to `app.tasks.scheduled`, so without this the
+# scheduler-lock acquire/renew/yield messages would be silently dropped.
+# In production this is harmless — the root logger is configured separately.
+if os.environ.get("SCHEDULER_DEBUG_PROBE") == "1":
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        _h = logging.StreamHandler()
+        _h.setFormatter(logging.Formatter("%(levelname)s:%(name)s: %(message)s"))
+        logger.addHandler(_h)
+        logger.propagate = False
+
 MAX_NOTIFICATION_RETRIES = 3
 RETRY_DELAYS = (60, 300, 900)
 ERROR_LOG_RETENTION_MONTHS = 12
@@ -989,6 +1001,29 @@ async def _run_task_safe(fn, name: str) -> None:
         logger.exception("Scheduled task [%s] failed", name)
 
 
+# ---------------------------------------------------------------------------
+# Dummy probe task — only enabled when SCHEDULER_DEBUG_PROBE=1.
+#
+# Used to monitor the scheduler-lock behaviour (ISSUE-164) on dev: it runs
+# every 10 seconds, leaves a clearly-prefixed log line, and writes nothing
+# to the database so it's safe to leave on. Should be off in prod.
+# ---------------------------------------------------------------------------
+
+async def _scheduler_probe_task() -> dict:
+    # Use print() not logger.info() so output is visible regardless of
+    # uvicorn's logging config (the `app.tasks.scheduled` logger has no
+    # handler attached in dev, so INFO messages are silently dropped).
+    msg = f"[scheduler-probe] tick from PID {os.getpid()} at {datetime.now(timezone.utc).isoformat()}"
+    print(msg, flush=True)
+    return {"pid": os.getpid(), "at": datetime.now(timezone.utc).isoformat()}
+
+
+if os.environ.get("SCHEDULER_DEBUG_PROBE") == "1":
+    _DAILY_TASKS.append((_scheduler_probe_task, 10, "scheduler_probe"))
+    # Probe is read-only — must NOT be added to WRITE_TASKS so it runs on
+    # standby too, demonstrating that the standby node still ticks.
+
+
 async def _scheduler_loop() -> None:
     """Run all scheduled tasks at their configured intervals.
 
@@ -1056,9 +1091,6 @@ async def _scheduler_loop() -> None:
                         continue
                     last_run[name] = now
                     asyncio.create_task(_run_task_safe(fn, name))
-
-        # Quiet `was_holding` linter warning — kept for log-readability.
-        del was_holding
 
         # Check every 30 seconds
         try:
