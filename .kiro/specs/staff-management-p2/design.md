@@ -1,0 +1,452 @@
+# Staff Management Phase 2 — Design
+
+## 1. Architecture overview
+
+Phase 2 adds the leave engine. New module `app/modules/leave/` holds the bulk of new code; ledger and accrual jobs are the heaviest pieces.
+
+Backend touches:
+- `alembic/versions/0205_leave_schema.py` — DDL for `leave_types`, `leave_balances`, `leave_requests`, `leave_ledger`; backfill statutory types per org; ADP snapshot column on staff_members; org_settings.overtime_handling.
+- `alembic/versions/0206_leave_indexes.py` — CREATE INDEX CONCURRENTLY pack.
+- `app/modules/leave/models.py`
+- `app/modules/leave/schemas.py`
+- `app/modules/leave/service.py`
+- `app/modules/leave/router.py` (registered at `/api/v2/leave` and `/api/v2/staff/:id/leave/*`)
+- `app/modules/leave/accrual.py` — accrual engine.
+- `app/modules/leave/public_holidays.py` — OWD detection + s40A extension.
+- `app/tasks/scheduled.py` — register `accrue_leave`, `process_public_holidays`, `update_adp_snapshots`.
+- `app/main.py` — include leave router.
+
+Frontend touches:
+- `frontend/src/pages/staff/tabs/LeaveTab.tsx` (new)
+- `frontend/src/pages/leave/ApprovalQueue.tsx` (new)
+- `frontend/src/pages/settings/people/LeaveTypesPage.tsx` (new sub-route)
+- `frontend/src/pages/leave/components/RequestLeaveModal.tsx`
+- `frontend/src/pages/leave/components/AdjustBalanceModal.tsx`
+- `frontend/src/pages/leave/components/LedgerTable.tsx`
+- `frontend/src/api/leave.ts` (typed client)
+
+## 2. Navigation & Access
+
+- **Sidebar item:** "Leave" under "People" section, visible when `staff_management` module enabled. Links to `/leave/approvals` (admin) or `/leave` (staff self-service).
+- **Tab on Staff Detail:** "Leave" appears between "Roster" and "Documents" when module enabled.
+- **Settings sub-route:** Settings → People → Leave Types.
+- **Routes added in App.tsx:** `/leave/approvals`, `/leave`, `/settings/people/leave-types`. All lazy-loaded.
+- **Guards:** `RequireOrgAdmin` for the approvals queue and settings; staff self-service routes use existing `RequireAuth`.
+
+## 3. Data Model
+
+### 3.1 Migration `0205_leave_schema.py`
+
+```python
+revision = "0205"
+down_revision = "0204"  # phase 1 indexes
+```
+
+Tables (RLS + tenant_isolation policy on all):
+
+```sql
+CREATE TABLE IF NOT EXISTS leave_types (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id uuid NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+    code text NOT NULL,
+    name text NOT NULL,
+    is_paid boolean NOT NULL DEFAULT true,
+    accrual_method text NOT NULL,
+    accrual_amount numeric(8,2),
+    accrual_unit text NOT NULL DEFAULT 'hours',
+    carry_over_max numeric(8,2),
+    is_statutory boolean NOT NULL DEFAULT false,
+    requires_doctor_note boolean NOT NULL DEFAULT false,
+    confidential_visibility boolean NOT NULL DEFAULT false,
+    active boolean NOT NULL DEFAULT true,
+    display_order int NOT NULL DEFAULT 0,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (org_id, code),
+    CHECK (accrual_method IN ('anniversary','fixed_annual','per_period','unaccrued','event_based')),
+    CHECK (accrual_unit IN ('hours','days'))
+);
+
+CREATE TABLE IF NOT EXISTS leave_balances (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id uuid NOT NULL,
+    staff_id uuid NOT NULL REFERENCES staff_members(id) ON DELETE CASCADE,
+    leave_type_id uuid NOT NULL REFERENCES leave_types(id) ON DELETE RESTRICT,
+    accrued_hours numeric(8,2) NOT NULL DEFAULT 0,
+    used_hours numeric(8,2) NOT NULL DEFAULT 0,
+    pending_hours numeric(8,2) NOT NULL DEFAULT 0,
+    anniversary_date date,
+    last_accrual_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (staff_id, leave_type_id)
+);
+
+CREATE TABLE IF NOT EXISTS leave_requests (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id uuid NOT NULL,
+    staff_id uuid NOT NULL REFERENCES staff_members(id),
+    leave_type_id uuid NOT NULL REFERENCES leave_types(id),
+    start_date date NOT NULL,
+    end_date date NOT NULL,
+    hours_requested numeric(6,2) NOT NULL,
+    status text NOT NULL DEFAULT 'pending',
+    reason text,
+    attachment_upload_id uuid,
+    requested_by uuid NOT NULL REFERENCES users(id),
+    decided_by uuid REFERENCES users(id),
+    decided_at timestamptz,
+    decision_notes text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (status IN ('pending','approved','rejected','cancelled'))
+);
+
+CREATE TABLE IF NOT EXISTS leave_ledger (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id uuid NOT NULL,
+    staff_id uuid NOT NULL,
+    leave_type_id uuid NOT NULL,
+    delta_hours numeric(8,2) NOT NULL,
+    reason text NOT NULL,
+    request_id uuid REFERENCES leave_requests(id),
+    occurred_at date NOT NULL,
+    created_by uuid REFERENCES users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (reason IN (
+        'accrual','request_approved','request_cancelled_after_approval',
+        'manual_adjustment','opening_balance','termination_payout',
+        'public_holiday_extension','public_holiday_worked','pay_run_payout'
+    ))
+);
+
+ALTER TABLE staff_members
+    ADD COLUMN IF NOT EXISTS average_daily_pay_snapshot numeric(10,2);
+```
+
+`org_settings.overtime_handling` lives in the existing org_settings JSONB or its own column — design uses a new column on `organisations`:
+
+```sql
+ALTER TABLE organisations
+    ADD COLUMN IF NOT EXISTS overtime_handling text NOT NULL DEFAULT 'pay_cash';
+ALTER TABLE organisations DROP CONSTRAINT IF EXISTS ck_org_overtime_handling;
+ALTER TABLE organisations ADD CONSTRAINT ck_org_overtime_handling
+    CHECK (overtime_handling IN ('pay_cash','toil','employee_chooses'));
+```
+
+(This is the cleanest place because it's a hard org-level config, not a settings-blob value.)
+
+### 3.2 Statutory backfill
+
+The migration's data block:
+
+```python
+op.execute("""
+    INSERT INTO leave_types (
+        id, org_id, code, name, is_paid, accrual_method, accrual_amount, accrual_unit,
+        carry_over_max, is_statutory, requires_doctor_note, confidential_visibility,
+        active, display_order
+    )
+    SELECT gen_random_uuid(), o.id, t.code, t.name, t.is_paid, t.accrual_method, t.accrual_amount,
+           t.accrual_unit, t.carry_over_max, true, t.requires_doctor_note,
+           t.confidential_visibility, true, t.display_order
+    FROM organisations o
+    CROSS JOIN (VALUES
+        ('annual', 'Annual leave', true, 'anniversary', NULL, 'hours', NULL, false, false, 1),
+        ('sick', 'Sick leave', true, 'per_period', 80.0, 'hours', 160.0, true, false, 2),
+        ('bereavement', 'Bereavement leave', true, 'event_based', NULL, 'days', NULL, false, false, 3),
+        ('family_violence', 'Family violence leave', true, 'per_period', 80.0, 'hours', 80.0, false, true, 4),
+        ('public_holiday_alt', 'Alternative holiday', true, 'event_based', NULL, 'days', NULL, false, false, 5),
+        ('unpaid', 'Unpaid leave', false, 'unaccrued', NULL, 'hours', NULL, false, false, 6)
+    ) AS t(code, name, is_paid, accrual_method, accrual_amount, accrual_unit, carry_over_max,
+           requires_doctor_note, confidential_visibility, display_order)
+    ON CONFLICT (org_id, code) DO NOTHING;
+""")
+
+# Seed leave_balances for every existing active staff × every statutory type.
+op.execute("""
+    INSERT INTO leave_balances (
+        id, org_id, staff_id, leave_type_id, accrued_hours, used_hours, pending_hours,
+        anniversary_date
+    )
+    SELECT gen_random_uuid(), s.org_id, s.id, lt.id, 0, 0, 0, s.employment_start_date
+    FROM staff_members s
+    JOIN leave_types lt ON lt.org_id = s.org_id AND lt.is_statutory = true AND lt.active = true
+    WHERE s.is_active = true
+    ON CONFLICT (staff_id, leave_type_id) DO NOTHING;
+""")
+```
+
+### 3.3 Indexes (`0206_leave_indexes.py`)
+
+CONCURRENTLY pack:
+- `idx_leave_balances_staff_type ON leave_balances (staff_id, leave_type_id)` — uniqueness already covers this; add covering index for the dashboard query.
+- `idx_leave_balances_org ON leave_balances (org_id)`.
+- `idx_leave_requests_org_status ON leave_requests (org_id, status, created_at DESC)` — approval queue.
+- `idx_leave_requests_staff ON leave_requests (staff_id, start_date DESC)`.
+- `idx_leave_ledger_staff_type_occurred ON leave_ledger (staff_id, leave_type_id, occurred_at DESC)`.
+- `idx_leave_ledger_org ON leave_ledger (org_id)`.
+- `idx_leave_ledger_request ON leave_ledger (request_id) WHERE request_id IS NOT NULL`.
+- `idx_leave_types_org_active ON leave_types (org_id, display_order) WHERE active = true`.
+
+## 4. Service layer
+
+### 4.1 Accrual engine `app/modules/leave/accrual.py`
+
+```python
+async def accrue_for_staff(db, staff: StaffMember, today: date) -> list[LeaveLedger]:
+    """Process all accrual types for one staff. Returns ledger rows written."""
+    written = []
+    balances = await load_balances_with_types(db, staff.id)
+    for bal, lt in balances:
+        if not lt.active:
+            continue
+        if lt.accrual_method == 'anniversary':
+            row = await _process_anniversary(db, staff, bal, lt, today)
+            if row: written.append(row)
+        elif lt.accrual_method == 'per_period' and lt.code == 'sick':
+            row = await _process_sick_yearly(db, staff, bal, lt, today)
+            if row: written.append(row)
+        elif lt.accrual_method == 'per_period' and lt.code == 'family_violence':
+            row = await _process_family_violence_yearly(db, staff, bal, lt, today)
+            if row: written.append(row)
+    return written
+```
+
+Idempotency: each `_process_*` does `SELECT 1 FROM leave_ledger WHERE staff_id=? AND leave_type_id=? AND reason='accrual' AND occurred_at=?` first; skips if row exists.
+
+Casual filter: `staff.employment_type == 'casual'` skips the annual-leave anniversary path entirely; sick + family_violence still apply pro-rata.
+
+### 4.2 Public holiday engine `app/modules/leave/public_holidays.py`
+
+```python
+async def is_otherwise_working_day(db, staff_id, holiday_date) -> bool:
+    """4-week pattern from time_clock_entries (Phase 3) → fallback to availability_schedule."""
+    cached = await redis.get(f"staff:owd:{staff_id}:{holiday_date}")
+    if cached is not None:
+        return cached == b'1'
+    # Phase 2 fallback: only availability_schedule
+    weekday_key = WEEKDAY_KEYS[holiday_date.weekday()]
+    staff = await db.get(StaffMember, staff_id)
+    schedule = staff.availability_schedule or {}
+    is_owd = weekday_key in schedule and bool(schedule[weekday_key].get('start'))
+    await redis.setex(f"staff:owd:{staff_id}:{holiday_date}", 86400, b'1' if is_owd else b'0')
+    return is_owd
+
+async def process_holiday_for_org(db, org_id, holiday_date):
+    """For each active staff: detect OWD, flag schedule entries, grant alt-day if worked."""
+    staff_list = await db.execute(...)  # active staff in org
+    for staff in staff_list:
+        if not await is_otherwise_working_day(db, staff.id, holiday_date):
+            continue
+        # if scheduled to work that day → grant alt-day, mark schedule entry
+        entries = await schedule_v2_service.entries_on_date(db, staff.id, holiday_date)
+        if any(e.entry_type in ('job','booking','other') for e in entries):
+            await _grant_alt_day(db, staff, holiday_date)
+            await _mark_entries_time_and_a_half(db, entries)
+
+async def s40a_extension(db, request: LeaveRequest):
+    """When approving annual leave, extend by one paid day per public holiday on OWD."""
+    if request.leave_type.code != 'annual' or request.status != 'approved':
+        return
+    holidays = await load_public_holidays_in_range(db, request.start_date, request.end_date)
+    extended_days = 0
+    cursor = request.end_date
+    for hol in holidays:
+        if not await is_otherwise_working_day(db, request.staff_id, hol.holiday_date):
+            continue
+        # already inside leave window → extend after end_date by one working day
+        cursor = next_working_day(cursor)
+        await create_schedule_entry(db, staff_id=request.staff_id,
+                                    start_time=datetime_combine(cursor, ...),
+                                    end_time=...,
+                                    entry_type='leave',
+                                    notes=f's40A extension for {hol.name}')
+        await write_ledger(db, request.staff_id, request.leave_type_id,
+                           delta=+staff.standard_hours_per_week / 5,
+                           reason='public_holiday_extension', request_id=request.id,
+                           occurred_at=cursor)
+        extended_days += 1
+    return extended_days
+```
+
+### 4.3 Request workflow
+
+`leave_service.submit_request`:
+1. Load staff + leave_type + balance.
+2. Compute `available = accrued - used - pending`.
+3. If `lt.accrual_method` not in `('event_based','unaccrued')` and `hours_requested > available` → raise `InsufficientLeaveError`.
+4. Insert leave_request row (pending).
+5. Increment `pending_hours` on balance.
+6. Audit row.
+7. Return.
+
+`leave_service.approve_request`:
+1. Load request (FOR UPDATE).
+2. Validate state == pending.
+3. Set status=approved, decided_by, decided_at.
+4. Decrement `pending_hours`, increment `used_hours` on balance.
+5. Insert leave_ledger row `reason='request_approved'` `delta_hours=-hours_requested` `request_id`.
+6. Iterate working days in [start_date, end_date], create `schedule_entries` row with `entry_type='leave'` per day.
+7. Run `s40a_extension` if leave_type=annual.
+8. Send approval email + SMS (async).
+9. Audit.
+
+`reject_request`, `cancel_request` — symmetric.
+
+## 5. API endpoints
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/v2/leave/types` | GET, POST | List + create leave types |
+| `/api/v2/leave/types/:id` | PATCH, DELETE | Update + delete (delete blocked for statutory) |
+| `/api/v2/staff/:id/leave/balances` | GET | All balances for one staff |
+| `/api/v2/staff/:id/leave/ledger` | GET | History |
+| `/api/v2/staff/:id/leave/requests` | GET, POST | List own + submit |
+| `/api/v2/staff/:id/leave/balances/:type_id/adjust` | POST | Manual adjustment (admin) |
+| `/api/v2/leave/requests` | GET | Org-wide approval queue |
+| `/api/v2/leave/requests/:id/approve` | POST | Approve |
+| `/api/v2/leave/requests/:id/reject` | POST | Reject |
+| `/api/v2/leave/requests/:id/cancel` | POST | Cancel |
+
+All list responses use `{ items, total }`.
+
+## 6. Frontend Component Tree
+
+### 6.1 `LeaveTab.tsx` (Staff Detail)
+
+```tsx
+export default function LeaveTab({ staff }) {
+  const { balances, ledger, refresh } = useStaffLeave(staff.id)
+  if (staff.employment_type === 'casual') {
+    return <CasualLeaveBanner staff={staff} ledger={ledger} />
+  }
+  return (
+    <>
+      <BalanceCardsRow balances={balances} />
+      <Toolbar>
+        <button onClick={() => openRequestLeaveModal({ staff })}>Request leave</button>
+        {isAdmin && <button onClick={() => openAdjustBalanceModal({ staff })}>Adjust balance</button>}
+      </Toolbar>
+      <LedgerTable rows={ledger} />
+    </>
+  )
+}
+```
+
+### 6.2 Approval Queue `/leave/approvals`
+
+- Filter chips: All / Pending / Approved / Rejected / Cancelled.
+- Each row: avatar + name, leave type, start–end + hours, reason, attached doctor's note (View link), available-balance preview (`64h available → 56h after this`).
+- Inline Approve / Reject buttons.
+- Reject opens modal asking for `decision_notes`.
+
+### 6.3 Settings → People → Leave Types
+
+Table: Order, Name, Code, Method, Amount, Carry-over, Statutory badge, Actions (Edit / Deactivate / Delete-disabled).
+"Add custom leave type" button → modal.
+
+### 6.4 RequestLeaveModal
+
+Fields: leave_type select, start_date, end_date, hours_requested (auto-computed from start/end × std hours, editable), reason, attachment (drag-drop, only shown when leave_type.requires_doctor_note).
+Validation: shows balance preview; refuses submit if insufficient unless event_based/unaccrued.
+
+### 6.5 AdjustBalanceModal (admin only)
+
+Fields: leave_type select, delta hours (signed), reason (text), occurred_at (date).
+Posts to `/balances/:type_id/adjust`; writes ledger row reason='manual_adjustment'.
+
+## 7. User Workflow Traces
+
+### 7.1 Submit + approve annual leave
+
+```
+Staff opens Leave tab → clicks Request leave
+→ Modal: Annual leave, 12-19 June, 40h, reason="Family trip"
+→ POST /staff/:id/leave/requests → 201 (pending)
+→ Balance card now shows pending=40
+Admin opens /leave/approvals
+→ Sees the request → Approve
+→ POST /leave/requests/:id/approve
+   - balance: pending=0, used=40
+   - ledger row written
+   - schedule_entries rows written (Mon, Tue, ... ).
+   - s40A extension: if a public holiday on Wed AND OWD → adds extra leave day after end + ledger row.
+→ Email + SMS to staff.
+→ Toast on admin "Approved. Balance now 24h."
+```
+
+### 7.2 Casual employee leave tab
+
+```
+Open Leave tab for casual staff
+→ Banner: "8% holiday pay-as-you-go on each pay run"
+→ Sick leave card (still applies)
+→ Annual leave card hidden
+→ Ledger filterable
+```
+
+### 7.3 Annual accrual fires on anniversary
+
+```
+Daily task accrue_leave runs at 00:30 UTC
+→ For each staff:
+   - SAVEPOINT
+   - if anniversary today:
+     - SELECT 1 FROM leave_ledger WHERE staff_id=:s AND reason='accrual' AND occurred_at=today → none
+     - INSERT ledger row delta=+std_hours×4, reason='accrual'
+     - UPDATE balance accrued_hours += that
+     - if accrued - used > carry_over_max: write compensating ledger row
+→ Logs counter "accrued_today=N orgs=M"
+```
+
+## 8. Modal/Panel Inventory
+
+| Element | Trigger | Contains | Closes |
+|---|---|---|---|
+| RequestLeaveModal | "Request leave" | Type, dates, hours, reason, attachment | X / Cancel / Submit |
+| AdjustBalanceModal | Admin "Adjust balance" | Type, delta, reason, occurred_at | X / Cancel / Save |
+| RejectModal | Admin Reject button | decision_notes textarea | X / Cancel / Reject |
+| LeaveTypeEditModal | Settings table edit | Name, accrual rate, carry_over | X / Cancel / Save |
+| ConfirmStatutoryEditModal | Edit statutory rate | "Confirm change above legal floor" | Cancel / Confirm |
+
+## 9. Error UI
+
+- 422 `insufficient_balance`: red inline below hours_requested with available figure.
+- 422 `requires_doctor_note_warning`: yellow banner on approver UI (not blocking).
+- 403 statutory delete: toast.
+- 404 module disabled: graceful — Leave tab simply doesn't render.
+
+## 10. Performance
+
+- Accrual job per-staff query is O(1) per staff after the indexes; the job processes ~9 staff per org × ~7 orgs = ~63 ops/day.
+- Public-holiday job runs once daily, processes 11 NZ public holidays × ~9 staff × ~7 orgs = ~700 OWD checks. With Redis cache, second run is near-zero.
+- Approval queue paginates by 50.
+
+## 11. Testing
+
+- `tests/unit/test_leave_accrual.py` — anniversary, casual skip, sick 6-month gate, idempotency.
+- `tests/unit/test_leave_request_workflow.py` — submit / approve / reject / cancel transitions.
+- `tests/unit/test_public_holiday_engine.py` — OWD detection, alt-day grant, s40A extension.
+- `tests/property/test_leave_balance_invariants.py` — Hypothesis: any sequence of accrual+approve+cancel keeps `accrued >= used` and `accrued - used >= 0`.
+- `scripts/test_staff_leave_e2e.py` per R16.
+
+## 12. Verified-against-code addendum
+
+- ✅ `app/modules/scheduling_v2/models.py::ScheduleEntry.entry_type` already includes `'leave'` — no migration needed for entry_type.
+- ✅ `app/modules/admin/models.py::PublicHoliday` exists with `holiday_date`, `name`, `country_code`.
+- ✅ `app/modules/admin/service.py::sync_public_holidays` (Nager.Date) already feeds the table.
+- ✅ `app/integrations/email_sender.py::send_email` handles DLQ.
+- ✅ Phase 1 introduced `app/integrations/sms_sender.py` — Phase 2 reuses it for leave-decision SMS.
+- ✅ Existing `audit_logs` table model is in `app/modules/admin/models.py::AuditLog`.
+- ⚠️ The latest migration before Phase 2 will be 0203 + 0204 (Phase 1). Phase 2 lands as 0205, 0206.
+- ⚠️ `staff_members.availability_schedule` is `JSONB` keyed by `monday`/`tuesday`/...`sunday`. The OWD fallback uses these keys; Phase 3 swaps to time_clock_entries data when available.
+
+## 13. Spec completeness self-check
+
+- ✅ Navigation §2 / §6.
+- ✅ Component tree §6.
+- ✅ User workflow §7.
+- ✅ Modal inventory §8.
+- ✅ Toolbar/list §6.
+- ✅ Error UI §9.
+- ✅ Integration points §11 (existing send_email, sms_sender, scheduler lock, audit_logs).
