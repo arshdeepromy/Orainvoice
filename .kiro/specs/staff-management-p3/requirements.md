@@ -14,13 +14,15 @@ Phase 3 captures actual hours worked, compares them to scheduled hours, supports
 
 Inherits Phase 1 + 2 compliance. Additions:
 
-- Kiosk surface uses the existing `/kiosk/*` route family pattern from `app/modules/kiosk/router.py` — STAFF-006 settles whether shared or dedicated path.
+- Kiosk surface uses the existing `/api/v1/kiosk/*` route family pattern from `app/modules/kiosk/router.py` (verified at `app/main.py:364`). New clock routes mount at `/api/v1/kiosk/clock/lookup` and `/api/v1/kiosk/clock/action` and use the SAME `dependencies=[require_role("kiosk"), Depends(_check_kiosk_rate_limit)]` pattern as the existing `POST /api/v1/kiosk/check-in`. The kiosk tablet's pre-existing role-`kiosk` JWT (30-day refresh) is the auth surface — no separate per-staff login. STAFF-006 settled.
 - All Capacitor calls (mobile photo capture, geolocation) guarded by `isNativePlatform()`.
-- Photo storage uses encrypted uploads (`app/modules/uploads/`) — never raw S3.
+- Photo storage uses encrypted uploads via a new `clock_photos` category in `app/modules/uploads/router.py` (alongside the existing `receipts` and `attachments` endpoints) — never raw S3.
 - Buddy-punch defence is photo + on-file comparison, not PIN.
 - Self-service clock-in is opt-in per staff via Phase 1's `self_service_clock_enabled` flag.
 - Break records back-deduct from worked time per ERA s69ZD.
-- Approved week locks all `time_clock_entries` and any in-period `time_entries` (existing billable timer); edits create an `edited_after_approval` audit record.
+- Approved week locks **only `time_clock_entries`** (G7) — the existing `time_tracking_v2.time_entries` billable timer has its own `is_invoiced` lock (verified at `app/modules/time_tracking_v2/service.py:172-184`) and is not modified by Phase 3.
+- The `flags jsonb` column on `time_clock_entries` (NOT `metadata` — that name is reserved by SQLAlchemy DeclarativeBase) holds review/audit metadata.
+- API path drift note: kiosk endpoints retain the `/api/v1/kiosk/*` prefix to coexist with the existing customer-facing kiosk module (which has a frontend mobile app already calling `/api/v1/kiosk/check-in`). All other new P3 endpoints use `/api/v2/...` per the project mobile-app steering rule.
 
 ## Requirements
 
@@ -43,15 +45,23 @@ Inherits Phase 1 + 2 compliance. Additions:
 
 ### R3. Kiosk Clock-in Flow (the primary channel)
 
-**User story:** As a staff member arriving at work, I tap the kiosk "Clock in / Clock out" button, enter my employee_id, take a photo, and I'm clocked in. No login required.
+**User story:** As a staff member arriving at work, I tap the kiosk "Clock in / Clock out" button on the on-site kiosk tablet, enter my employee_id, take a photo, and I'm clocked in. No staff-specific login required at the device — the kiosk tablet's role-`kiosk` JWT serves the surface (the same auth model as the existing customer-facing kiosk flow).
 
 **Acceptance criteria:**
 
-1. THE SYSTEM SHALL register routes under the existing kiosk surface: `GET /kiosk/clock` (welcome screen) → `POST /kiosk/clock/lookup` (employee_id lookup) → `POST /kiosk/clock/action` (clock-in or clock-out + photo upload).
+1. THE SYSTEM SHALL register routes under the existing kiosk surface using the SAME `dependencies=[require_role("kiosk")]` pattern as the existing `POST /api/v1/kiosk/check-in` endpoint:
+   - `POST /api/v1/kiosk/clock/lookup` — employee_id lookup
+   - `POST /api/v1/kiosk/clock/action` — clock-in or clock-out + photo upload
+   The kiosk tablet logs in once with a kiosk-role JWT (existing 30-day refresh model per `tests/properties/test_kiosk_properties.py`); any walk-in staff uses that device's session — no per-staff JWT involved. Routes are NOT in `PUBLIC_PATHS` / `PUBLIC_PREFIXES`; they require the kiosk JWT just like the existing kiosk endpoints.
 2. THE SYSTEM SHALL refuse the lookup with HTTP 422 when no active staff matches `employee_id`. Generic error: "Employee code not recognised. Please see your manager." (Don't enumerate IDs.)
-3. THE SYSTEM SHALL rate-limit lookups to 10 per minute per `(org_id, employee_id)` to prevent enumeration. Rate-limit storage: existing rate-limit Redis pattern.
+3. THE SYSTEM SHALL rate-limit lookups to 10 per minute per `(org_id, employee_id)` to prevent enumeration (G12). Concrete implementation:
+   - **Redis key shape:** `kiosk_lookup:{org_id}:{sha256(employee_id)[:16]}` — the `employee_id` is SHA-256-hashed (truncated to 16 hex chars) so the raw code never lands in Redis logs or scans.
+   - **Counter:** Redis `INCR` with `EXPIRE 60` on first hit; reject when counter > 10.
+   - **Implementation site:** inline check in `app/modules/kiosk/router.py` at the top of the `/api/v1/kiosk/clock/lookup` handler — does NOT add a policy entry to the global `app/middleware/rate_limit.py` policy map because that middleware is per-IP/per-user and doesn't support compound keys. This is on TOP OF the existing `_check_kiosk_rate_limit` (30/min/kiosk-user) — both apply.
+   - **On limit hit:** return HTTP 429 with `Retry-After: 60` header and body `{ "detail": "kiosk_lookup_rate_limited" }`. Audit row `kiosk.lookup_rate_limited` with `{ org_id, employee_id_hash, retry_after }` (note: hashed employee_id in audit too).
+   - Lookup that succeeds (200) resets nothing — successful kiosk staff hitting the right code 30× a day are not the threat model; this is purely against enumeration.
 4. WHEN lookup matches THE SYSTEM SHALL return `{ staff_id, first_name, on_file_photo_url, currently_clocked_in: bool }`.
-5. THE SYSTEM SHALL require a captured photo on every kiosk action: the request payload must include a `photo_upload_id` (reference to a successful POST to `/api/v2/uploads`); the endpoint refuses with 422 `photo_required` otherwise.
+5. THE SYSTEM SHALL require a captured photo on every kiosk action: the request payload must include a `photo_file_key` (returned by a prior successful POST to `/api/v2/uploads/clock-photos`); the endpoint refuses with 422 `photo_required` otherwise. **A new upload category `clock_photos` is added to `app/modules/uploads/router.py` (mirrors `/receipts` and `/attachments`); files land at `/app/uploads/clock_photos/<org_id>/<uuid>.{jpg,png}` per the existing `_store(category=...)` helper.**
 6. THE SYSTEM SHALL create a `time_clock_entries` row with `source='kiosk'` on clock-in OR update the open row's `clock_out_at` + photo + worked_minutes calc on clock-out.
 7. THE SYSTEM SHALL compute `worked_minutes = (clock_out_at - clock_in_at) - break_minutes` on close.
 8. THE SYSTEM SHALL match `scheduled_entry_id` automatically: pick the staff's `schedule_entries` row whose `(start_time, end_time)` window the clock-in falls within (closest match if multiple).
@@ -84,15 +94,53 @@ Inherits Phase 1 + 2 compliance. Additions:
 
 **Acceptance criteria:**
 
-1. THE SYSTEM SHALL add `org_settings.clock_in_policy` JSONB block with defaults:
+1. THE SYSTEM SHALL add `organisations.clock_in_policy` JSONB block with defaults:
    - `default_channel: 'kiosk_only'` (enum: `kiosk_only | kiosk_and_self_service`)
    - `self_service_require_photo: true`
    - `self_service_require_geofence: false`
-   - `branch_radius_metres: 200`
+   - `branch_radius_metres: 200` (org-level default for newly-created branches; see G17 resolution below)
    - `allow_late_clock_out_edits: true`
    - `kiosk_employee_id_rate_limit: 10` (per minute)
-2. THE SYSTEM SHALL render Settings → People → Clock-in Policy page with all toggles + numeric inputs.
-3. WHEN `default_channel` is changed THE SYSTEM SHALL NOT mass-update existing staff's `self_service_clock_enabled` flag — the flag is the source of truth at clock-in time. Setting only controls the default value on staff-creation going forward.
+2. THE SYSTEM SHALL render Settings → People → Clock-in Policy page with all toggles + numeric inputs. The page also surfaces the overtime policy from R6a as a separate card on the same page.
+3. WHEN `default_channel` is changed THE SYSTEM SHALL NOT mass-update existing staff's `self_service_clock_enabled` flag — the flag is the source of truth at clock-in time. Setting only controls the default value on staff-creation going forward (see R6b/G9 for the create-staff integration).
+4. **Per-branch vs org-default geofence radius (G17):** the authoritative value at clock-in time is `branches.geofence_radius_metres` (the column added in design §3.1). The org-level `clock_in_policy.branch_radius_metres` value is used only as the default when a new branch row is INSERTed (the migration populates the column from this org-level default if available, else 200). Once a branch row exists, the column is the source of truth — editing the org-level default does NOT mass-update existing branches.
+
+### R6a. Overtime Policy Settings (G1)
+
+**User story:** As an org admin, I want to configure when overtime kicks in (weekly threshold, daily threshold) and how it's paid (cash, TOIL, or employee chooses), so the timesheet approval flow can correctly split ordinary vs overtime minutes for each staff.
+
+**Acceptance criteria:**
+
+1. THE SYSTEM SHALL add `organisations.overtime_policy` JSONB column with defaults:
+   ```json
+   {
+       "weekly_threshold_minutes": 2400,
+       "daily_threshold_minutes": 480,
+       "require_pre_approval": false
+   }
+   ```
+   - `weekly_threshold_minutes` — anything above this in a single week is overtime (default 2400 = 40h).
+   - `daily_threshold_minutes` — anything above this in a single day is overtime (default 480 = 8h; common in trades). Daily threshold applies in addition to weekly: if a staff works 9h on Monday + 9h Tue + 9h Wed + 9h Thu = 36h total but each day is 1h over the daily threshold → 4h overtime even though weekly total is under 40h.
+   - `require_pre_approval` — if true, the timesheet-approval flow refuses to count any overtime minutes that don't have an approved `overtime_requests` row covering them; instead they're flagged as "unapproved overtime" with a warning chip (per R10.3).
+2. THE SYSTEM SHALL re-use Phase 2's `overtime_handling` setting (`pay_cash | toil | employee_chooses`). **Location**: per Phase 2's `code-verification.md` §2.5 (🟠 should-fix that gets applied), `overtime_handling` lives in `organisations.settings` JSONB with `'overtime_handling'` added to the `SETTINGS_JSONB_KEYS` allow-list at `app/modules/organisations/service.py`. Phase 3 reads it via `(await get_org_settings(db, org_id=...))['overtime_handling']` (default `'pay_cash'` when missing). Phase 3 does NOT duplicate this — it lives in the JSONB blob alongside other org-level toggles, NOT inside `overtime_policy` JSONB and NOT as a typed column.
+3. THE SYSTEM SHALL render the overtime card in Settings → People → Clock-in Policy below the clock-in settings, with the three policy fields + the existing `overtime_handling` enum from Phase 2.
+4. WHEN `compute_week_totals` runs (R9.3) THE SYSTEM SHALL split `total_worked_minutes` into `ordinary_minutes` + `total_overtime_minutes` using BOTH thresholds:
+   - Compute daily overtime: for each day, `max(0, day_worked_minutes - daily_threshold_minutes)`. Sum across the week → daily_overtime.
+   - Compute weekly overtime: `max(0, week_worked_minutes - weekly_threshold_minutes)` — but cap so total isn't double-counted: `weekly_overtime = max(0, weekly_overtime - daily_overtime_already_counted)`.
+   - `total_overtime_minutes = daily_overtime + weekly_overtime`.
+   - `ordinary_minutes = total_worked_minutes - total_overtime_minutes - public_holiday_minutes`.
+5. WHEN `require_pre_approval=true` AND staff worked overtime AND no approved `overtime_requests` row covers it THE SYSTEM SHALL still populate `total_overtime_minutes` BUT also write `timesheet_approvals.notes` with `"unapproved_overtime: {minutes}min — no overtime_request was approved"` so Phase 4 payroll can decide whether to pay or hold it. The approval-queue UI surfaces this with a warning chip.
+
+### R6b. Default-channel propagation to staff creation (G9)
+
+**Acceptance criteria:**
+
+1. THE SYSTEM SHALL extend `app/modules/staff/service.py::StaffService.create_staff` (added in Phase 1) so that when the caller does NOT explicitly supply `self_service_clock_enabled` in the create payload, the service reads `organisations.clock_in_policy.default_channel` and sets:
+   - `self_service_clock_enabled = true` when `default_channel == 'kiosk_and_self_service'`
+   - `self_service_clock_enabled = false` when `default_channel == 'kiosk_only'` (the system default)
+2. WHEN the caller explicitly supplies `self_service_clock_enabled` (any boolean) in the create payload THE SYSTEM SHALL respect it as-is, regardless of org policy.
+3. Existing staff records' `self_service_clock_enabled` value is NEVER mutated by changes to `clock_in_policy.default_channel` (per R6.3) — the policy only applies on NEW staff insertion.
+4. This task touches the Phase 1 staff module — explicit cross-phase change. Phase 3 owns the patch to Phase 1's `StaffService.create_staff`. The change MUST be guarded by Phase 1's existing `await db.refresh(obj)` pattern.
 
 ### R7. Break Compliance Recording (ERA s69ZD)
 
@@ -115,8 +163,12 @@ Inherits Phase 1 + 2 compliance. Additions:
    - **Scheduled** (from `schedule_entries`) — minutes per day.
    - **Actual** (from `time_clock_entries`) — minutes per day after break deduction.
    - **Variance** column — actual - scheduled.
-3. THE SYSTEM SHALL render a drill-down list of `time_clock_entries` for the week with clock-in / clock-out / break records inline.
-4. WHEN admin THE SYSTEM SHALL render an "Approve hours" button at the week-end (visible Sunday onward).
+3. THE SYSTEM SHALL render a drill-down list of `time_clock_entries` for the week with clock-in / clock-out / break records inline. Each row SHALL include (G10):
+   - Thumbnail of `clock_in_photo_url` and `clock_out_photo_url` (when present) — clickable to expand.
+   - When expanded, the photo opens in a side-by-side panel alongside the staff's `on_file_photo_url` (from Phase 1 R2) for **buddy-punch visual verification by the manager**.
+   - A "Flag for follow-up" button on each row that writes a flag (`time_clock_entries.flags->>'flagged_for_review'='true'` plus optional reason text in `flags->>'review_reason'`); flagged rows surface a 🚩 chip in the row and in the weekly approval summary at the top of the tab. Note: column is named `flags` not `metadata` — `metadata` is reserved by SQLAlchemy's `DeclarativeBase`.
+   - Photo visibility is gated by RBAC — only `org_admin`, `branch_admin`, and `location_manager` can see thumbnails; lower roles see "[photo]" placeholders.
+4. WHEN admin THE SYSTEM SHALL render an "Approve hours" button at the week-end (visible Sunday onward). The approval modal SHALL show a count of flagged-for-review entries and require explicit acknowledgement ("3 entries flagged — review before approving?") before allowing the approve action to proceed.
 
 ### R9. `timesheet_approvals` Table + Locking
 
@@ -125,10 +177,10 @@ Inherits Phase 1 + 2 compliance. Additions:
 1. THE SYSTEM SHALL create `timesheet_approvals`: `id, org_id, staff_id (FK), week_start date, week_end date, status text default 'pending' CHECK IN ('pending','approved','rejected','edited_after_approval'), total_worked_minutes int, total_scheduled_minutes int, total_overtime_minutes int default 0, total_break_minutes int default 0, ordinary_minutes int default 0, public_holiday_minutes int default 0, toil_choice text CHECK IN ('pay_cash','toil') NULL, approved_by uuid (FK users), approved_at timestamptz, notes text. Unique on (staff_id, week_start)`.
 2. RLS + tenant_isolation policy.
 3. WHEN admin clicks Approve THE SYSTEM SHALL:
-   - Compute totals from `time_clock_entries` + `break_records` + `schedule_entries` overlap with public holidays.
+   - Compute totals from `time_clock_entries` + `break_records` + `schedule_entries` overlap with public holidays — and apply the daily + weekly thresholds from R6a to split `ordinary_minutes` vs `total_overtime_minutes`.
    - Insert/upsert `timesheet_approvals` row status=approved.
    - Lock all `time_clock_entries` for that staff in `[week_start, week_end]` against further edit (server-side guard: refuses PUT/DELETE when an approved row exists).
-   - Lock any `time_entries` (the existing billable-timer table) in the same window against being marked `is_invoiced` from the approval flow (separate concern; we don't change the existing time_entries module).
+   - **`time_entries` locking is out of scope for Phase 3 (G7).** The existing `time_tracking_v2` module (billable customer-work timer) is a separate concern from attendance. Phase 3 does NOT modify that module's edit/invoice paths. Phase 4 payslip generation will handle the interaction with billable time_entries separately. The pre-existing R9.3 bullet about locking `time_entries` is dropped — when Phase 3 says "lock approved-week edits", it means `time_clock_entries` only.
 4. WHEN admin clicks "Re-open week" THE SYSTEM SHALL update status='edited_after_approval' (audit log) and unlock edits.
 5. WHEN any underlying time_clock_entries row is edited (admin manual flow) AFTER approval THE SYSTEM SHALL flip status to `'edited_after_approval'` and re-compute totals.
 
@@ -154,10 +206,32 @@ Inherits Phase 1 + 2 compliance. Additions:
 
 **Acceptance criteria:**
 
-1. THE SYSTEM SHALL add `shift_swap_requests` table: `id, org_id, requester_staff_id (FK), target_staff_id (FK, NULL = open), schedule_entry_id (FK), status (pending|accepted|rejected|cancelled), reason, created_at, decided_at`.
-2. THE SYSTEM SHALL expose endpoints for staff to request swap, target staff to accept/reject.
-3. WHEN accepted THE SYSTEM SHALL update the `schedule_entries.staff_id` to target_staff_id.
-4. THE SYSTEM SHALL send SMS to target_staff_id when request is created.
+1. THE SYSTEM SHALL add `shift_swap_requests` table: `id, org_id, requester_staff_id (FK), target_staff_id (FK, NULL = open), schedule_entry_id (FK), status, reason, decided_by uuid (FK users, nullable), created_at, decided_at`. Status CHECK enum: `'pending' | 'awaiting_manager' | 'accepted' | 'rejected' | 'cancelled'` (G8 — the `awaiting_manager` state is new).
+2. THE SYSTEM SHALL add a new org-level setting `shift_swap_requires_manager_approval` boolean (default `false`) inside `clock_in_policy` JSONB. Configurable via Settings → People → Clock-in Policy.
+3. THE SYSTEM SHALL expose endpoints for:
+   - Requester staff: submit swap request (POST → status='pending').
+   - Target staff: accept (POST → see workflow below) or reject (POST → status='rejected'+decided_at).
+   - Manager (org_admin / branch_admin / requester's `reporting_to`): approve from awaiting_manager (POST → status='accepted') or reject (POST → status='rejected').
+   - Requester: cancel own pending request (POST → status='cancelled').
+4. **Workflow with configurable manager approval (G8):**
+   - Auto-approve mode (`shift_swap_requires_manager_approval=false`, default):
+     - Target accepts → status='accepted' → `schedule_entries.staff_id` flips immediately → both staff notified.
+   - Manager-approval mode (`shift_swap_requires_manager_approval=true`):
+     - Target accepts → status='awaiting_manager' → manager-approval queue notified (no schedule change yet).
+     - Manager approves → status='accepted' → `schedule_entries.staff_id` flips → both staff notified.
+     - Manager rejects → status='rejected' → both staff notified (no schedule change).
+5. **Notification matrix (G13):**
+   | Event | SMS to requester | SMS to target | SMS to manager |
+   |---|---|---|---|
+   | Request created | — | "Bob asked you to take their Sat 10–4 shift. Open the app to accept or reject." | — |
+   | Target accepts (auto-approve) | "Alice took your Sat 10–4 shift — it's now hers." | "You're now on the Sat 10–4 shift." | — |
+   | Target accepts (manager-approval mode) | "Alice accepted your swap — pending manager approval." | "Pending manager approval — you're not on the shift yet." | "Shift-swap request needs your approval: Bob ↔ Alice on Sat 10–4." |
+   | Target rejects | "Alice can't take your Sat 10–4 shift." | — | — |
+   | Manager approves | "Manager approved: Sat 10–4 is now Alice's shift." | "Manager approved — you're now on the Sat 10–4 shift." | — |
+   | Manager rejects | "Swap rejected by manager — you're still on Sat 10–4." | "Swap rejected by manager." | — |
+   | Requester cancels | — | "Bob cancelled the swap request for Sat 10–4." | — |
+   - All SMS sends go through Phase 1's `send_sms` helper; each writes an audit row `shift_swap.sms_sent` with `{ event, recipient_staff_id, swap_request_id }`.
+   - SMS skipped (with audit row `shift_swap.sms_skipped` and `reason='no_phone'`) when the recipient has no `phone` set.
 
 ### R13. Open-Shift Cover Broadcast
 
@@ -165,9 +239,25 @@ Inherits Phase 1 + 2 compliance. Additions:
 
 1. THE SYSTEM SHALL add `shift_cover_requests` table: `id, org_id, schedule_entry_id, requester_staff_id, status, accepted_by, broadcast_at, expires_at`.
 2. THE SYSTEM SHALL allow admin/staff to mark a shift "open for cover" — on creation:
-   - All other staff with the same `skills` overlap (or all active staff if no skill filter) receive an SMS: "Cover needed: {shift_summary}. Reply YES on the app to claim."
-   - First responder via the app's Open Shifts page claims it; the SMS does not have a magic-link claim path in Phase 3 — that is a Phase 4+ enhancement.
+   - SMS broadcast to all staff matching the **eligibility filter** below (G6):
+     ```
+     1. is_active = true
+     2. employee_id IS NOT NULL OR user_id IS NOT NULL
+        (must have at least one channel to clock in — kiosk needs employee_id,
+        self-service needs user_id)
+     3. NOT already scheduled in the window
+        [shift.start_time - 30min, shift.end_time + 30min]
+        (queries schedule_entries for entry_type IN ('job','booking','other')
+        belonging to this candidate)
+     4. skills overlap when the shift has any required skills
+        (else step is a no-op — all otherwise-eligible staff get the SMS)
+     5. NOT the requester_staff_id themselves
+     ```
+   - SMS body: "Cover needed: {shift_summary}. Open the app to claim."
+   - First responder via the app's Open Shifts page claims it; the SMS does NOT have a magic-link claim path in Phase 3 — that is a Phase 4+ enhancement.
+   - The previous wording referenced `clock_pin_hash` as an eligibility check — that was stale (no PIN exists in this system). Replaced with the `employee_id OR user_id` check above.
 3. THE SYSTEM SHALL update the schedule entry's staff_id to the accepting staff and notify the requester.
+4. THE SYSTEM SHALL re-check eligibility at claim time too — if the claiming staff has since been scheduled into a conflicting shift (race), refuse with HTTP 409 `{"detail": "scheduling_conflict_at_claim"}` and the cover request stays open.
 
 ### R14. Late-Arrival + Missed-Clock-Out Alerts
 
@@ -177,11 +267,44 @@ Inherits Phase 1 + 2 compliance. Additions:
    - For each staff with a current-day `schedule_entries` row whose `start_time` was 15+ minutes ago AND no matching open `time_clock_entries.clock_in_at` exists:
      - Once-per-shift, send SMS to manager (`reporting_to`): "Late: {staff_name} hasn't clocked in for {shift_label} (started {start_time})."
      - Optionally SMS staff: "You're scheduled to clock in for {shift}."
-   - Track sent state in a `late_arrival_alerts_sent` keyed cache (Redis 8h TTL) to prevent duplicate alerts.
+   - Track sent state in a `late_arrival_alerts_sent` keyed cache (Redis 8h TTL) to prevent duplicate alerts. Redis key: `late:{schedule_entry_id}`.
 2. THE SYSTEM SHALL add an hourly task `check_missed_clock_outs`:
    - For each `time_clock_entries WHERE clock_out_at IS NULL AND clock_in_at < now() - interval '12 hours'`:
      - Send SMS to staff: "Did you forget to clock out?"
      - Notify manager.
+
+### R14a. Roster-change SMS within 48h (G2)
+
+**User story:** As a staff member, when my upcoming shift's time or assignment changes within the next 48 hours, I want to be notified by SMS so I don't show up at the wrong time.
+
+**Acceptance criteria:**
+
+1. THE SYSTEM SHALL hook into the existing `app/modules/scheduling_v2/service.py::update_entry` (and any other schedule_entries write path — `reschedule_entry`, swap acceptance, cover acceptance) to detect changes to `start_time`, `end_time`, or `staff_id` on a `schedule_entries` row whose `start_time` falls within `now() + 48 hours`.
+2. WHEN detected THE SYSTEM SHALL enqueue an SMS to the affected staff:
+   - On `staff_id` change → SMS to BOTH the previous staff ("Your Sat 10–4 shift has been reassigned.") and the new staff ("You're now on the Sat 10–4 shift.").
+   - On `start_time` / `end_time` change with same staff → SMS to that staff: "Your shift on {day} {date} changed: now {new_start}–{new_end} (was {old_start}–{old_end})."
+3. THE SYSTEM SHALL dedupe via Redis `SET NX EX 3600` key `roster_change:{schedule_entry_id}` so multiple edits in quick succession produce one SMS per hour per entry.
+4. THE SYSTEM SHALL skip the SMS when:
+   - The affected staff has `weekly_roster_sms_enabled=false` (Phase 1 opt-in flag).
+   - The affected staff has no `phone` set.
+   - Either skip writes an audit row `roster.change_sms_skipped` with `reason='opt_out'` or `reason='no_phone'`.
+5. WHEN the SMS is sent successfully THE SYSTEM SHALL write audit row `roster.change_sms_sent` with `{ schedule_entry_id, staff_id, change_type }` in `after_value`.
+6. THE SYSTEM SHALL NOT fire for shifts more than 48 hours away (those will be picked up by the Friday auto-roster broadcast from Phase 1 R10).
+
+### R14b. "I'm running late" upward message (G3)
+
+**User story:** As a staff member who's running late, I want to flag this from my phone so my manager knows before I show up, and so the automated "no clock-in yet" alert doesn't also fire.
+
+**Acceptance criteria:**
+
+1. THE SYSTEM SHALL add `POST /api/v2/staff/me/running-late` accepting body `{ minutes_late: int (1-180), reason: text (optional, 200 chars) }`.
+2. THE SYSTEM SHALL require the staff to have a `schedule_entries` row today whose `start_time` is in `[now() - 60min, now() + 120min]` — otherwise return HTTP 422 `{ "detail": "no_upcoming_shift" }`.
+3. THE SYSTEM SHALL send SMS to the staff's manager (`reporting_to` chain, or org owner if none) via `send_sms`: `"Heads up: {first_name} expects to be {minutes} min late for {shift_label}."` Reason text appended when present.
+4. THE SYSTEM SHALL snooze the automated `check_late_arrivals` task's Redis dedupe key (`late:{schedule_entry_id}` SET with TTL extended to `minutes_late + 30`) so the staff-initiated report suppresses the automated alert for that shift.
+5. THE SYSTEM SHALL write audit row `staff.reported_late` with `{ schedule_entry_id, minutes_late, reason }` in `after_value`.
+6. **Mobile UI:** the `Clock` mobile screen renders a "I'm running late" button below the main Clock In button when (a) staff is NOT currently clocked in AND (b) staff has an in-window scheduled shift per criterion 2 above. Tapping opens a sheet with a minutes slider + reason input + Send button.
+7. **Web UI:** the staff self-service `/staff/me/clock` screen renders the same button + sheet.
+8. Rate limit: max 3 running-late reports per staff per shift (to prevent abuse / spam to manager).
 
 ### R15. Mobile Clock-in Screen
 
@@ -198,13 +321,16 @@ Inherits Phase 1 + 2 compliance. Additions:
 
 THE SYSTEM SHALL call `write_audit_log(...)` (writing to the `audit_log` table) for:
 
-- `time_clock.in`, `time_clock.out`, `time_clock.edited`, `time_clock.deleted`
+- `time_clock.in`, `time_clock.out`, `time_clock.edited`, `time_clock.deleted`, `time_clock.flagged_for_review` (G10)
 - `break.started`, `break.ended`
 - `timesheet.approved`, `timesheet.reopened`
 - `overtime_request.submitted`, `overtime_request.approved`, `overtime_request.rejected`
-- `shift_swap.requested`, `shift_swap.accepted`, `shift_swap.rejected`
-- `shift_cover.requested`, `shift_cover.accepted`
-- `clock_policy.updated`
+- `shift_swap.requested`, `shift_swap.target_accepted`, `shift_swap.target_rejected`, `shift_swap.manager_approved`, `shift_swap.manager_rejected`, `shift_swap.cancelled`, `shift_swap.sms_sent`, `shift_swap.sms_skipped` (G8 + G13)
+- `shift_cover.requested`, `shift_cover.accepted`, `shift_cover.claim_conflict` (G6 — race-at-claim)
+- `clock_policy.updated`, `overtime_policy.updated` (G1)
+- `roster.change_sms_sent`, `roster.change_sms_skipped` (G2)
+- `staff.reported_late` (G3)
+- `kiosk.lookup_rate_limited` (G12)
 
 ### R17. E2E Test Script
 
@@ -223,6 +349,8 @@ THE SYSTEM SHALL bump 1.15.0 → 1.16.0.
 - Bank-file export (Phase 5).
 - Payslips (Phase 4).
 - Magic-link SMS shift-cover claim (Phase 4+).
+- **Photo orphan cleanup job (G15).** Phase 3 does NOT ship a scheduled deletion task for clock-in/out photos. The default policy is **retain for 6 years** to match Holidays Act s81 wage-record retention requirement (resolves STAFF-007 in favour of retention). When a `time_clock_entries` row is hard-deleted via admin manual flow, the associated `clock_in_photo_url` / `clock_out_photo_url` upload rows are NOT cascade-deleted from `uploads` — they remain accessible to forensic queries. A future phase may add a scheduled "delete uploads orphaned for > 6 years" job; for now, storage cost is acceptable (one photo ≈ 50–200 KB; ~500 staff × ~250 working days/year × 6 years ≈ 750 k photos ≈ 75–300 GB total, manageable on the existing uploads volume).
+- **Modifying the existing `time_tracking_v2` billable-timer module (G7).** Phase 3 introduces `time_clock_entries` as a separate concern from the existing `time_entries` table. Approvals lock `time_clock_entries` only; the billable timer is untouched. Phase 4 payroll generation will address any interaction.
 
 ## Open Questions
 
