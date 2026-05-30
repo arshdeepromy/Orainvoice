@@ -34,6 +34,71 @@ After creating or modifying any file in `alembic/versions/`, you MUST:
    "
    ```
 
+## Index Migrations Must Use `CREATE INDEX CONCURRENTLY`
+
+**Never use `op.create_index(...)` for index DDL.** Always use raw SQL `CREATE INDEX CONCURRENTLY IF NOT EXISTS ...` inside an `op.get_context().autocommit_block()`.
+
+This rule exists because of ISSUE-168 and PERFORMANCE_AUDIT.md §D-H3: every `op.create_index(...)` call takes an `ACCESS EXCLUSIVE` lock on the table for the entire build. On a 5M-row `invoices` table that blocks all reads and writes for tens of seconds — a release-blocking outage at scale. `CREATE INDEX CONCURRENTLY` only takes `SHARE UPDATE EXCLUSIVE`, so reads and writes continue uninterrupted while the index builds.
+
+### Canonical template
+
+The canonical example is `alembic/versions/2026_05_30_2300-0202_add_perf_indexes.py`. Copy its structure for any new index migration:
+
+```python
+from alembic import op
+
+revision = "0XXX"
+down_revision = "0YYY"
+
+_UPGRADE_STATEMENTS: list[tuple[str, str]] = [
+    (
+        "Description of what this index covers",
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_table_columns "
+        "ON table_name (col_a, col_b DESC)",
+    ),
+    # ... more indexes
+]
+
+_DOWNGRADE_STATEMENTS: list[tuple[str, str]] = [
+    ("Drop idx_table_columns", "DROP INDEX CONCURRENTLY IF EXISTS idx_table_columns"),
+]
+
+
+def _run_outside_tx(statements: list[tuple[str, str]]) -> None:
+    with op.get_context().autocommit_block():
+        for description, sql in statements:
+            op.execute(sql)
+
+
+def upgrade() -> None:
+    _run_outside_tx(_UPGRADE_STATEMENTS)
+
+
+def downgrade() -> None:
+    _run_outside_tx(_DOWNGRADE_STATEMENTS)
+```
+
+### Why each piece matters
+
+- **`autocommit_block()` is mandatory.** `CREATE/DROP INDEX CONCURRENTLY` is rejected by Postgres if executed inside a transaction. Alembic wraps every migration in a transaction by default; `autocommit_block()` commits the active transaction, runs the body in autocommit mode, then opens a fresh transaction for whatever follows.
+- **`IF NOT EXISTS` / `IF EXISTS` guards are mandatory.** A failed CONCURRENTLY build leaves the index behind in an INVALID state — re-running the migration without guards will error on the duplicate name. With guards, the migration is safely re-runnable: drop the invalid index manually (or via the downgrade) and re-run.
+- **Each statement runs independently.** A failure on one CONCURRENTLY index does not roll back the others. This is a Postgres limitation, not a bug. The other indexes will be live; only the failed one needs cleanup. Mention this in code review when migrations contain many indexes.
+- **Extensions (e.g. `pg_trgm`) go in the same migration as the indexes that use them.** Use `CREATE EXTENSION IF NOT EXISTS pg_trgm` as the first statement.
+
+### Banned patterns
+
+| Pattern | Why banned | Use instead |
+|---|---|---|
+| `op.create_index("idx_x", "table", ["col"])` | Takes ACCESS EXCLUSIVE lock; blocks writes | Raw SQL `CREATE INDEX CONCURRENTLY IF NOT EXISTS ...` |
+| `op.execute("CREATE INDEX ...")` (no CONCURRENTLY) | Same blocking lock | Add `CONCURRENTLY` |
+| `CREATE INDEX CONCURRENTLY ...` outside `autocommit_block()` | Postgres rejects: cannot run in a transaction | Wrap in `with op.get_context().autocommit_block():` |
+| `CREATE INDEX CONCURRENTLY ...` without `IF NOT EXISTS` | Migration fails on retry after a partial-build INVALID state | Add `IF NOT EXISTS` |
+| Mixing CONCURRENTLY DDL with other migration ops in the same upgrade() | The autocommit boundary changes transaction semantics for the rest of the migration | Put index DDL in its own migration file |
+
+### Code review
+
+Reject any new migration that contains `op.create_index(` in `upgrade()` or `downgrade()`. The only acceptable index DDL is raw SQL inside `autocommit_block()`. (CI lint is future work — until then this is a manual review gate.)
+
 ## Mandatory Steps After Modifying Frontend Code
 
 After modifying any `.tsx` or `.ts` file in `frontend/src/`, you MUST rebuild the frontend inside the Docker container:
