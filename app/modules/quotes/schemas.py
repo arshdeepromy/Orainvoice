@@ -26,6 +26,7 @@ class QuoteStatus(str, Enum):
     accepted = "accepted"
     declined = "declined"
     expired = "expired"
+    cancelled = "cancelled"
 
 
 VALID_VALIDITY_DAYS = {7, 14, 30}
@@ -231,6 +232,14 @@ class QuoteResponse(BaseModel):
     invoice_template_colours: dict | None = None
     customer_name: str | None = None
     customer_email: str | None = None
+    # NEW — Quote Cancellation Workflow
+    cancel_reason: str | None = None
+    cancelled_at: datetime | None = None
+    cancelled_by: uuid.UUID | None = None
+    # NEW — Quote ↔ Invoice Settings Parity
+    payment_terms_text: str | None = None
+    terms_and_conditions: str | None = None
+    terms_and_conditions_enabled: bool = False
 
 
 class QuoteCreateResponse(BaseModel):
@@ -282,3 +291,9 @@ class QuoteConvertResponse(BaseModel):
     invoice_id: uuid.UUID
     invoice_status: str
     message: str
+
+
+class QuoteCancelRequest(BaseModel):
+    """Request body for PUT /api/v1/quotes/{id}/cancel."""
+
+    reason: str = Field(..., min_length=1)

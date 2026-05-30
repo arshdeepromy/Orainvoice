@@ -1828,10 +1828,12 @@ async def get_invoice(
         ov = ov_result.scalar_one_or_none()
         if ov:
             result["vehicle"] = {
+                "id": str(ov.id),
                 "rego": ov.rego,
                 "make": ov.make,
                 "model": ov.model,
                 "year": ov.year,
+                "inspection_type": getattr(ov, "inspection_type", None),
                 "wof_expiry": ov.wof_expiry.isoformat() if getattr(ov, "wof_expiry", None) else None,
                 "cof_expiry": ov.cof_expiry.isoformat() if getattr(ov, "cof_expiry", None) else None,
                 "odometer": getattr(ov, "odometer_last_recorded", None),
@@ -1846,26 +1848,35 @@ async def get_invoice(
             gv = gv_result.scalar_one_or_none()
             if gv:
                 result["vehicle"] = {
+                    "id": str(gv.id),
                     "rego": gv.rego,
                     "make": gv.make,
                     "model": gv.model,
                     "year": gv.year,
+                    "inspection_type": getattr(gv, "inspection_type", None),
                     "wof_expiry": gv.wof_expiry.isoformat() if getattr(gv, "wof_expiry", None) else None,
                     "cof_expiry": gv.cof_expiry.isoformat() if getattr(gv, "cof_expiry", None) else None,
                     "odometer": getattr(gv, "odometer_last_recorded", None),
                     "service_due_date": gv.service_due_date.isoformat() if getattr(gv, "service_due_date", None) else None,
                 }
             elif invoice.vehicle_make or invoice.vehicle_model or invoice.vehicle_year:
-                # Last resort: use the flat fields stored on the invoice itself
+                # Last resort: use the flat fields stored on the invoice itself.
+                # No vehicle record exists for this rego — manual-entry-only case.
+                # Surface ``inspection_type`` and the inspection expiries from the
+                # invoice's own ``vehicle_display`` snapshot so the edit form can
+                # round-trip the values the user just saved.
+                _vd = (invoice.invoice_data_json or {}).get("vehicle_display") or {}
                 result["vehicle"] = {
+                    "id": None,
                     "rego": invoice.vehicle_rego,
                     "make": invoice.vehicle_make,
                     "model": invoice.vehicle_model,
                     "year": invoice.vehicle_year,
-                    "wof_expiry": None,
-                    "cof_expiry": None,
+                    "inspection_type": _vd.get("inspection_type"),
+                    "wof_expiry": _vd.get("wof_expiry"),
+                    "cof_expiry": _vd.get("cof_expiry"),
                     "odometer": invoice.vehicle_odometer,
-                    "service_due_date": None,
+                    "service_due_date": _vd.get("service_due_date"),
                 }
 
     # Enrich additional vehicles from invoice_data_json with OrgVehicle (preferred) or
@@ -2639,12 +2650,40 @@ async def update_invoice(
     global_vehicle_id = updates.get("global_vehicle_id")
     vehicle_type = None
     vehicle_record = None
-    if global_vehicle_id and (
+
+    # Determine whether the update touches any "Customer Driven Field"
+    # that we need to write back to the vehicle snapshot.
+    _touches_vehicle_writebacks = bool(
         vehicle_service_due_date
         or vehicle_wof_expiry_date
         or vehicle_cof_expiry_date
         or (vehicle_odometer_update is not None and vehicle_odometer_update > 0)
-    ):
+    )
+
+    # When the caller (e.g. the InvoiceCreate edit form, or quote-converted
+    # invoice paths) didn't supply ``global_vehicle_id`` but the invoice has
+    # a ``vehicle_rego``, try to resolve the OrgVehicle for this rego scoped
+    # to the calling org. Mirrors the rego-based fallback used by
+    # ``create_invoice`` (lines ~562-596). Without this, edits to WOF / COF /
+    # odometer / service-due silently drop on any invoice whose creator did
+    # not thread a ``global_vehicle_id`` through the form (e.g. quote →
+    # invoice converts, kiosk-driven invoices, mobile minimal-create flows).
+    if not global_vehicle_id and _touches_vehicle_writebacks and invoice.vehicle_rego:
+        from app.modules.vehicles.models import OrgVehicle as _OrgVehicleEditLookup
+
+        _rego_upper = invoice.vehicle_rego.strip().upper()
+        _ov_res = await db.execute(
+            select(_OrgVehicleEditLookup).where(
+                _OrgVehicleEditLookup.org_id == org_id,
+                func.upper(_OrgVehicleEditLookup.rego) == _rego_upper,
+            )
+        )
+        _ov_existing = _ov_res.scalar_one_or_none()
+        if _ov_existing is not None:
+            global_vehicle_id = _ov_existing.id
+            updates["global_vehicle_id"] = _ov_existing.id
+
+    if global_vehicle_id and _touches_vehicle_writebacks:
         resolution = await _resolve_vehicle_type(db, global_vehicle_id, org_id)
         if resolution is not None:
             vehicle_type, vehicle_record = resolution
@@ -2756,6 +2795,123 @@ async def update_invoice(
         else:
             vehicle_record.odometer_last_recorded = vehicle_odometer_update
             await db.flush()
+
+    # Refresh ``invoice_data_json.vehicle_display`` so the saved snapshot
+    # reflects the user's just-edited inspection / odometer / service-due
+    # fields. Mirrors ``create_invoice``'s vehicle_display block (line ~872)
+    # and is the single source the InvoiceDetail tile + PDF inspection-expiry
+    # gate read from. Without this refresh, edits to WOF / COF / odometer /
+    # service-due / inspection_type silently drop on the rendered invoice
+    # even when the OrgVehicle writeback succeeds.
+    _vehicle_field_keys = (
+        "vehicle_rego",
+        "vehicle_make",
+        "vehicle_model",
+        "vehicle_year",
+        "vehicle_odometer",
+        "vehicle_wof_expiry_date",
+        "vehicle_cof_expiry_date",
+        "vehicle_service_due_date",
+        "vehicle_wof_updated",
+        "vehicle_cof_updated",
+        "vehicle_service_due_updated",
+    )
+    if any(k in updates for k in _vehicle_field_keys):
+        existing_display = dict(
+            (invoice.invoice_data_json or {}).get("vehicle_display") or {}
+        )
+
+        def _merge(update_key: str, snapshot_key: str, fallback):
+            """If the caller sent ``update_key``, take its value; else preserve
+            the existing snapshot value (under ``snapshot_key``); else fall back
+            to the invoice column value."""
+            if update_key in updates:
+                return updates[update_key]
+            if snapshot_key in existing_display:
+                return existing_display[snapshot_key]
+            return fallback
+
+        # Re-derive inspection_type the same way ``create_invoice`` does:
+        # prefer the resolved OrgVehicle / GlobalVehicle's value (post-promote),
+        # then fall back to the dates that were just written.
+        new_inspection_type: str | None = existing_display.get("inspection_type")
+        if vehicle_record is not None:
+            resolved_inspection = getattr(vehicle_record, "inspection_type", None)
+            if resolved_inspection:
+                new_inspection_type = resolved_inspection
+            elif getattr(vehicle_record, "cof_expiry", None) and not getattr(
+                vehicle_record, "wof_expiry", None
+            ):
+                new_inspection_type = "cof"
+            elif getattr(vehicle_record, "wof_expiry", None) and not getattr(
+                vehicle_record, "cof_expiry", None
+            ):
+                new_inspection_type = "wof"
+        if "vehicle_cof_expiry_date" in updates and updates["vehicle_cof_expiry_date"]:
+            new_inspection_type = "cof"
+        elif "vehicle_wof_expiry_date" in updates and updates["vehicle_wof_expiry_date"]:
+            new_inspection_type = "wof"
+
+        new_display = {
+            "rego": _merge("vehicle_rego", "rego", invoice.vehicle_rego),
+            "make": _merge("vehicle_make", "make", invoice.vehicle_make),
+            "model": _merge("vehicle_model", "model", invoice.vehicle_model),
+            "year": _merge("vehicle_year", "year", invoice.vehicle_year),
+            "odometer": _merge("vehicle_odometer", "odometer", invoice.vehicle_odometer),
+            "inspection_type": new_inspection_type,
+            "wof_expiry": (
+                str(updates["vehicle_wof_expiry_date"])
+                if "vehicle_wof_expiry_date" in updates
+                and updates["vehicle_wof_expiry_date"]
+                else (
+                    None
+                    if "vehicle_wof_expiry_date" in updates
+                    else existing_display.get("wof_expiry")
+                )
+            ),
+            "cof_expiry": (
+                str(updates["vehicle_cof_expiry_date"])
+                if "vehicle_cof_expiry_date" in updates
+                and updates["vehicle_cof_expiry_date"]
+                else (
+                    None
+                    if "vehicle_cof_expiry_date" in updates
+                    else existing_display.get("cof_expiry")
+                )
+            ),
+            "service_due_date": (
+                str(updates["vehicle_service_due_date"])
+                if "vehicle_service_due_date" in updates
+                and updates["vehicle_service_due_date"]
+                else (
+                    None
+                    if "vehicle_service_due_date" in updates
+                    else existing_display.get("service_due_date")
+                )
+            ),
+            # Update flags: caller's value wins; otherwise preserve the existing
+            # snapshot's flag so prior "user-edited" state isn't lost.
+            "wof_updated": bool(
+                updates.get("vehicle_wof_updated", existing_display.get("wof_updated", False))
+            ),
+            "cof_updated": bool(
+                updates.get("vehicle_cof_updated", existing_display.get("cof_updated", False))
+            ),
+            "service_due_updated": bool(
+                updates.get(
+                    "vehicle_service_due_updated",
+                    existing_display.get("service_due_updated", False),
+                )
+            ),
+        }
+
+        data_json = dict(invoice.invoice_data_json or {})
+        data_json["vehicle_display"] = new_display
+        invoice.invoice_data_json = data_json
+        from sqlalchemy.orm.attributes import flag_modified as _flag_modified_vd
+
+        _flag_modified_vd(invoice, "invoice_data_json")
+        await db.flush()
 
     # Recalculate totals if discount, line items, or financial fields changed
     needs_recalc = (

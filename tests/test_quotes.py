@@ -439,7 +439,11 @@ class TestUpdateQuote:
         li_result = MagicMock()
         li_result.scalars.return_value.all.return_value = []
 
-        db.execute.side_effect = [q_result, MagicMock(), li_result]
+        # update_quote calls db.execute for: SELECT Quote, audit log INSERT,
+        # SELECT QuoteLineItem, SELECT Organisation (for resolved settings).
+        org_result = MagicMock()
+        org_result.scalar_one_or_none.return_value = _make_org(org_id)
+        db.execute.side_effect = [q_result, MagicMock(), li_result, org_result]
 
         result = await update_quote(
             db,
@@ -464,7 +468,11 @@ class TestUpdateQuote:
         li_result = MagicMock()
         li_result.scalars.return_value.all.return_value = []
 
-        db.execute.side_effect = [q_result, MagicMock(), li_result]
+        # update_quote calls db.execute for: SELECT Quote, audit log INSERT,
+        # SELECT QuoteLineItem, SELECT Organisation (for resolved settings).
+        org_result = MagicMock()
+        org_result.scalar_one_or_none.return_value = _make_org(org_id)
+        db.execute.side_effect = [q_result, MagicMock(), li_result, org_result]
 
         result = await update_quote(
             db,

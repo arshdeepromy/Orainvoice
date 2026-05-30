@@ -72,4 +72,4 @@ OraInvoice is a multi-tenant SaaS invoicing and business management platform bui
 - COF (Certificate of Fitness) expiry support deployed alongside WOF
 - Kiosk vehicle check-in multi-step flow deployed (rego → vehicle summary → customer details)
 - QR partial payment flow shipped (May 2026 cut-over commit `9403258`)
-- App version: 1.11.0
+- App version: 1.13.0

@@ -614,6 +614,20 @@ export default function QuoteCreate() {
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const { isEnabled } = useModules()
   const projectsEnabled = isEnabled('projects')
+  const vehiclesEnabled = isEnabled('vehicles')
+
+  // Read pre-fill params from URL (e.g., /quotes/new?customer_id=xxx&vehicle_rego=yyy
+  // or vehicle_regos=A,B,C from the multi-vehicle picker on the customer profile).
+  // Mirrors the InvoiceCreate "Issue Invoice" prefill flow so the Customer
+  // Profile "Issue Quote" button populates customer + vehicle (incl. WOF /
+  // COF / odometer / inspection_type / service-due) without a manual lookup.
+  const [searchParams] = useState(() => new URLSearchParams(window.location.search))
+  const prefillCustomerId = searchParams.get('customer_id')
+  const prefillVehicleRego = searchParams.get('vehicle_rego')
+  const prefillVehicleRegos = (searchParams.get('vehicle_regos') ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
 
   // Header fields
   const [customer, setCustomer] = useState<Customer | null>(null)
@@ -641,6 +655,66 @@ export default function QuoteCreate() {
   // Notes and terms
   const [notes, setNotes] = useState('')
   const [terms, setTerms] = useState('')
+
+  // Both Notes and T&C are rendered as HTML on the org and the document.
+  // contentEditable preserves rich formatting and line breaks; mirrors
+  // InvoiceCreate's T&C editor.
+  const notesEditorRef = useRef<HTMLDivElement>(null)
+  const notesUserEditingRef = useRef(false)
+  const tcEditorRef = useRef<HTMLDivElement>(null)
+  const tcUserEditingRef = useRef(false)
+
+  // Convert legacy plain-text (with \n) to HTML for contentEditable editors.
+  // If the value already contains tags, pass it through unchanged.
+  const toHtml = (value: string | null | undefined): string => {
+    const v = value || ''
+    if (/<[a-z][\s\S]*>/i.test(v)) return v
+    return v.replace(/\r\n|\r|\n/g, '<br>')
+  }
+
+  // Pre-fill notes from org settings (only on create, not edit) — mirrors invoice behaviour
+  useEffect(() => {
+    if (!isEditMode && settings?.invoice?.default_notes_enabled && settings?.invoice?.default_notes) {
+      setNotes(prev => prev || toHtml(settings.invoice.default_notes))
+    }
+  }, [isEditMode, settings?.invoice?.default_notes_enabled, settings?.invoice?.default_notes])
+
+  // Pre-fill T&C from org settings (same as invoice creation). Org-level T&C
+  // is already HTML; toHtml passes it through.
+  useEffect(() => {
+    if (!isEditMode && settings?.invoice?.terms_and_conditions_enabled && settings?.invoice?.terms_and_conditions) {
+      setTerms(prev => prev || toHtml(settings.invoice.terms_and_conditions))
+    }
+  }, [isEditMode, settings?.invoice?.terms_and_conditions_enabled, settings?.invoice?.terms_and_conditions])
+
+  // Sync the Notes contentEditable editor with the `notes` state — only when
+  // the user is not actively typing.
+  useEffect(() => {
+    if (notesUserEditingRef.current) {
+      notesUserEditingRef.current = false
+      return
+    }
+    if (notesEditorRef.current) {
+      const desired = notes || ''
+      if (notesEditorRef.current.innerHTML !== desired) {
+        notesEditorRef.current.innerHTML = desired
+      }
+    }
+  }, [notes])
+
+  // Sync the T&C contentEditable editor with the `terms` state — same pattern.
+  useEffect(() => {
+    if (tcUserEditingRef.current) {
+      tcUserEditingRef.current = false
+      return
+    }
+    if (tcEditorRef.current) {
+      const desired = terms || ''
+      if (tcEditorRef.current.innerHTML !== desired) {
+        tcEditorRef.current.innerHTML = desired
+      }
+    }
+  }, [terms])
 
   // Parity fields (Phase 5)
   const [orderNumber, setOrderNumber] = useState('')
@@ -758,6 +832,215 @@ export default function QuoteCreate() {
     return () => { cancelled = true }
   }, [editId])
 
+  // Pre-fill customer and vehicle from URL query params
+  // (e.g., from Customer Profile "Issue Quote" button →
+  //  /quotes/new?customer_id=xxx&vehicle_rego=yyy).
+  // Mirrors the InvoiceCreate "Issue Invoice" prefill flow exactly so a
+  // schema-level miss on either side surfaces immediately on the other.
+  useEffect(() => {
+    if (!prefillCustomerId || isEditMode) return
+    let cancelled = false
+    async function prefill() {
+      try {
+        const res = await apiClient.get<any>(`/customers/${prefillCustomerId}`)
+        if (cancelled) return
+        const c = res.data
+        if (!c) return
+
+        const customerObj: Customer = {
+          id: c.id,
+          first_name: c.first_name ?? '',
+          last_name: c.last_name ?? '',
+          email: c.email ?? '',
+          phone: c.phone ?? '',
+          address: c.address ?? undefined,
+          linked_vehicles: (c.vehicles ?? []).map((v: any) => ({
+            id: v.id,
+            rego: v.rego ?? '',
+            make: v.make ?? null,
+            model: v.model ?? null,
+            year: v.year ?? null,
+            colour: v.colour ?? null,
+            odometer: v.odometer ?? null,
+            wof_expiry: v.wof_expiry ?? null,
+            cof_expiry: v.cof_expiry ?? null,
+            inspection_type: v.inspection_type ?? null,
+          })),
+        }
+        setCustomer(customerObj)
+
+        if (!vehiclesEnabled || !isAutomotive) return
+
+        // Multi-vehicle prefill from the customer-profile picker
+        // (?vehicle_regos=A,B,C). The first rego becomes the primary
+        // vehicle on the form; the rest are loaded as additional
+        // vehicles. Mirrors the InvoiceCreate multi-rego branch exactly.
+        if (prefillVehicleRegos.length > 0) {
+          type LocalVeh = {
+            id: string
+            rego: string
+            make: string
+            model: string
+            year: number | null
+            odometer: number | null
+            wof_expiry: string | null
+            cof_expiry: string | null
+            inspection_type: string | null
+          }
+          const matched: LocalVeh[] = []
+          for (const rego of prefillVehicleRegos) {
+            // Try the customer's linked vehicles first.
+            const local = (c.vehicles ?? []).find(
+              (v: any) => (v.rego ?? '').toUpperCase() === rego.toUpperCase(),
+            )
+            if (local) {
+              matched.push({
+                id: local.id,
+                rego: local.rego ?? '',
+                make: local.make ?? '',
+                model: local.model ?? '',
+                year: local.year ?? null,
+                odometer: local.odometer ?? null,
+                wof_expiry: local.wof_expiry ?? null,
+                cof_expiry: local.cof_expiry ?? null,
+                inspection_type: local.inspection_type ?? null,
+              })
+              continue
+            }
+            // Fall back to the global rego search per vehicle.
+            try {
+              const searchRes = await apiClient.get<{ results: any[] }>(
+                '/vehicles/search',
+                { params: { q: rego } },
+              )
+              const found = (searchRes.data?.results ?? []).find(
+                (v: any) => (v.rego ?? '').toUpperCase() === rego.toUpperCase(),
+              )
+              if (found) {
+                matched.push({
+                  id: found.id,
+                  rego: found.rego ?? '',
+                  make: found.make ?? '',
+                  model: found.model ?? '',
+                  year: found.year ?? null,
+                  odometer: found.odometer ?? null,
+                  wof_expiry: found.wof_expiry ?? null,
+                  cof_expiry: found.cof_expiry ?? null,
+                  inspection_type: found.inspection_type ?? null,
+                })
+              }
+            } catch { /* non-blocking */ }
+          }
+          if (matched.length > 0) {
+            const [primary, ...rest] = matched
+            setVehicle({
+              id: primary.id,
+              rego: primary.rego,
+              make: primary.make,
+              model: primary.model,
+              year: primary.year,
+              colour: '',
+              odometer: primary.odometer,
+              wof_expiry: primary.wof_expiry,
+              cof_expiry: primary.cof_expiry,
+              inspection_type: primary.inspection_type,
+            })
+            setVehicleRego(primary.rego)
+            if (rest.length > 0) {
+              setAdditionalVehicles(
+                rest.map((v) => ({
+                  rego: v.rego,
+                  make: v.make,
+                  model: v.model,
+                  year: v.year,
+                  odometer: v.odometer,
+                  wof_expiry: v.wof_expiry,
+                  cof_expiry: v.cof_expiry,
+                })),
+              )
+            }
+            return
+          }
+          // Fall through to the single-vehicle branches as a safety net.
+        }
+
+        // Pre-fill vehicle: prefer the rego from the URL → match in
+        // customer's linked vehicles → search globally → finally fall
+        // back to the first linked vehicle when no rego given.
+        if (prefillVehicleRego && (c.vehicles ?? []).length > 0) {
+          const matchedVehicle = (c.vehicles ?? []).find(
+            (v: any) => (v.rego ?? '').toUpperCase() === prefillVehicleRego.toUpperCase(),
+          )
+          if (matchedVehicle) {
+            setVehicle({
+              id: matchedVehicle.id,
+              rego: matchedVehicle.rego ?? '',
+              make: matchedVehicle.make ?? '',
+              model: matchedVehicle.model ?? '',
+              year: matchedVehicle.year ?? null,
+              colour: '',
+              odometer: matchedVehicle.odometer ?? null,
+              wof_expiry: matchedVehicle.wof_expiry ?? null,
+              cof_expiry: matchedVehicle.cof_expiry ?? null,
+              inspection_type: matchedVehicle.inspection_type ?? null,
+            })
+            setVehicleRego(matchedVehicle.rego ?? '')
+            return
+          }
+        }
+        if (prefillVehicleRego) {
+          // Vehicle rego not in customer's linked vehicles — search globally.
+          try {
+            const searchRes = await apiClient.get<{ results: any[] }>(
+              '/vehicles/search',
+              { params: { q: prefillVehicleRego } },
+            )
+            const found = (searchRes.data?.results ?? []).find(
+              (v: any) => (v.rego ?? '').toUpperCase() === prefillVehicleRego.toUpperCase(),
+            )
+            if (found) {
+              setVehicle({
+                id: found.id,
+                rego: found.rego ?? '',
+                make: found.make ?? '',
+                model: found.model ?? '',
+                year: found.year ?? null,
+                colour: found.colour ?? '',
+                odometer: found.odometer ?? null,
+                wof_expiry: found.wof_expiry ?? null,
+                cof_expiry: found.cof_expiry ?? null,
+                inspection_type: found.inspection_type ?? null,
+              })
+              setVehicleRego(found.rego ?? '')
+              return
+            }
+          } catch { /* non-blocking */ }
+        }
+        // No rego in URL or no global match — auto-fill first linked vehicle.
+        if ((c.vehicles ?? []).length > 0) {
+          const v = c.vehicles[0]
+          setVehicle({
+            id: v.id,
+            rego: v.rego ?? '',
+            make: v.make ?? '',
+            model: v.model ?? '',
+            year: v.year ?? null,
+            colour: '',
+            odometer: v.odometer ?? null,
+            wof_expiry: v.wof_expiry ?? null,
+            cof_expiry: v.cof_expiry ?? null,
+            inspection_type: v.inspection_type ?? null,
+          })
+          setVehicleRego(v.rego ?? '')
+        }
+      } catch {
+        // Non-blocking — user can still manually select customer
+      }
+    }
+    prefill()
+    return () => { cancelled = true }
+  }, [prefillCustomerId, prefillVehicleRego, isEditMode, vehiclesEnabled, isAutomotive])
+
   // Fetch existing attachments when editing (Task 16)
   useEffect(() => {
     if (!editId) return
@@ -842,21 +1125,55 @@ export default function QuoteCreate() {
     return () => controller.abort()
   }, [])
 
-  // Auto-fill linked vehicle when customer is selected (Task 11.6)
+  // Auto-fill linked vehicle when customer is selected (Task 11.6).
+  // Carries the full Customer Driven Field set (odometer / WOF / COF /
+  // inspection_type) — same parity as the InvoiceCreate auto-fill so a
+  // customer selected via the search dropdown gets the same vehicle data
+  // as one passed in via the "Issue Quote" URL prefill.
   useEffect(() => {
     if (!customer || !isAutomotive || !isEnabled('vehicles') || isEditMode) return
     const customerId = customer.id
     const controller = new AbortController()
     async function fetchLinkedVehicles() {
       try {
-        const res = await apiClient.get<{ vehicles?: { id: string; rego: string; make: string; model: string; year: number | null }[] }>(
-          `/customers/${customerId}/vehicles`,
+        // GET /customers/{id} returns the full profile, including linked
+        // ``vehicles[]`` with the Customer Driven Fields. The /vehicles
+        // sub-route does not exist on the customers module — calling it
+        // 404s and the fallback never fires. Same endpoint as the URL-
+        // param prefill above, so behaviour is identical regardless of
+        // entry point.
+        const res = await apiClient.get<{
+          vehicles?: {
+            id: string
+            rego: string
+            make: string
+            model: string
+            year: number | null
+            colour?: string | null
+            odometer?: number | null
+            wof_expiry?: string | null
+            cof_expiry?: string | null
+            inspection_type?: string | null
+          }[]
+        }>(
+          `/customers/${customerId}`,
           { signal: controller.signal }
         )
         const linked = res.data?.vehicles ?? []
         if (linked.length > 0 && !vehicle) {
           const first = linked[0]
-          setVehicle({ id: first.id, rego: first.rego, make: first.make, model: first.model, year: first.year, colour: '' })
+          setVehicle({
+            id: first.id,
+            rego: first.rego,
+            make: first.make,
+            model: first.model,
+            year: first.year,
+            colour: first.colour ?? '',
+            odometer: first.odometer ?? null,
+            wof_expiry: first.wof_expiry ?? null,
+            cof_expiry: first.cof_expiry ?? null,
+            inspection_type: first.inspection_type ?? null,
+          })
           setVehicleRego(first.rego)
         }
       } catch { /* non-blocking */ }
@@ -878,8 +1195,6 @@ export default function QuoteCreate() {
   const [labourPickerOpen, setLabourPickerOpen] = useState(false)
   const [labourRates, setLabourRates] = useState<{id:string;name:string;hourly_rate:string}[]>([])
   const [labourLoading, setLabourLoading] = useState(false)
-
-  const vehiclesEnabled = isEnabled('vehicles')
 
   // Inventory picker (Task 13.2-13.3)
   const [inventoryPickerOpen, setInventoryPickerOpen] = useState(false)
@@ -1531,17 +1846,41 @@ export default function QuoteCreate() {
           {/* Customer Notes — full width like InvoiceCreate */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Customer Notes</label>
-            <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)}
-              placeholder="Enter any notes to be displayed in your transaction"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <div
+              ref={notesEditorRef}
+              contentEditable
+              role="textbox"
+              aria-multiline="true"
+              aria-label="Customer notes"
+              data-placeholder="Enter any notes to be displayed in your transaction"
+              onInput={() => {
+                if (notesEditorRef.current) {
+                  notesUserEditingRef.current = true
+                  setNotes(notesEditorRef.current.innerHTML)
+                }
+              }}
+              className="w-full min-h-[80px] rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm prose prose-sm max-w-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
           </div>
 
           {/* Terms & Conditions — full width like InvoiceCreate */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Terms & Conditions</label>
-            <textarea rows={3} value={terms} onChange={(e) => setTerms(e.target.value)}
-              placeholder="Enter the terms and conditions of your business to be displayed in your transaction"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <div
+              ref={tcEditorRef}
+              contentEditable
+              role="textbox"
+              aria-multiline="true"
+              aria-label="Terms and conditions"
+              data-placeholder="Enter the terms and conditions of your business to be displayed in your transaction"
+              onInput={() => {
+                if (tcEditorRef.current) {
+                  tcUserEditingRef.current = true
+                  setTerms(tcEditorRef.current.innerHTML)
+                }
+              }}
+              className="w-full min-h-[80px] rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm prose prose-sm max-w-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
             <label className="flex items-center gap-2 mt-2 text-sm text-gray-600 cursor-pointer">
               <input
                 type="checkbox"

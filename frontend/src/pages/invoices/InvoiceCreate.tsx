@@ -802,10 +802,15 @@ export default function InvoiceCreate() {
   const [originalStatus, setOriginalStatus] = useState<string | null>(null)
   const isLineItemsLocked = isEditMode && originalStatus !== null && originalStatus !== 'draft'
 
-  // Read pre-fill params from URL (e.g., /invoices/new?customer_id=xxx&vehicle_rego=yyy)
+  // Read pre-fill params from URL (e.g., /invoices/new?customer_id=xxx&vehicle_rego=yyy
+  // or vehicle_regos=A,B,C from the multi-vehicle picker on the customer profile).
   const [searchParams] = useState(() => new URLSearchParams(window.location.search))
   const prefillCustomerId = searchParams.get('customer_id')
   const prefillVehicleRego = searchParams.get('vehicle_rego')
+  const prefillVehicleRegos = (searchParams.get('vehicle_regos') ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
   
   // Invoice header fields
   const [customer, setCustomer] = useState<Customer | null>(null)
@@ -1099,7 +1104,9 @@ export default function InvoiceCreate() {
             body_type: '',
             fuel_type: '',
             engine_size: '',
+            inspection_type: inv.vehicle?.inspection_type ?? null,
             wof_expiry: inv.vehicle?.wof_expiry || null,
+            cof_expiry: inv.vehicle?.cof_expiry || null,
             registration_expiry: null,
             odometer: inv.vehicle_odometer || null,
             service_due_date: inv.vehicle?.service_due_date || null,
@@ -1241,6 +1248,69 @@ export default function InvoiceCreate() {
             })),
           }
           setCustomer(customerObj)
+          // Multi-vehicle prefill from the customer-profile picker
+          // (?vehicle_regos=A,B,C). The first rego becomes the primary
+          // vehicle on the form; the rest are loaded as additional
+          // vehicles. Falls through to the single-rego branch below
+          // when ``prefillVehicleRegos`` is empty so existing single-
+          // vehicle entries (e.g. ?vehicle_rego=A) keep working.
+          if (
+            prefillVehicleRegos.length > 0 &&
+            vehiclesEnabled
+          ) {
+            const matched: Vehicle[] = []
+            for (const rego of prefillVehicleRegos) {
+              // Try the customer's linked vehicles first.
+              const local = (c.vehicles ?? []).find(
+                (v: any) => (v.rego ?? '').toUpperCase() === rego.toUpperCase(),
+              )
+              if (local) {
+                matched.push({
+                  id: local.id,
+                  rego: local.rego ?? '',
+                  make: local.make ?? '',
+                  model: local.model ?? '',
+                  year: local.year ?? null,
+                  odometer: local.odometer ?? null,
+                  wof_expiry: local.wof_expiry ?? null,
+                  cof_expiry: local.cof_expiry ?? null,
+                  inspection_type: local.inspection_type ?? null,
+                  service_due_date: local.service_due_date ?? null,
+                })
+                continue
+              }
+              // Fall back to the global rego search per vehicle.
+              try {
+                const searchRes = await apiClient.get<{ results: any[] }>(
+                  '/vehicles/search',
+                  { params: { q: rego } },
+                )
+                const found = (searchRes.data?.results ?? []).find(
+                  (v: any) => (v.rego ?? '').toUpperCase() === rego.toUpperCase(),
+                )
+                if (found) {
+                  matched.push({
+                    id: found.id,
+                    rego: found.rego ?? '',
+                    make: found.make ?? '',
+                    model: found.model ?? '',
+                    year: found.year ?? null,
+                    odometer: found.odometer ?? null,
+                    wof_expiry: found.wof_expiry ?? null,
+                    cof_expiry: found.cof_expiry ?? null,
+                    inspection_type: found.inspection_type ?? null,
+                    service_due_date: found.service_due_date ?? null,
+                  })
+                }
+              } catch { /* non-blocking */ }
+            }
+            if (matched.length > 0) {
+              setVehicles(matched)
+              return
+            }
+            // Multi-rego list resolved to nothing — fall through to the
+            // single-vehicle branches below as a safety net.
+          }
           // Pre-fill vehicle if rego provided and vehicles module enabled
           if (prefillVehicleRego && vehiclesEnabled && (c.vehicles ?? []).length > 0) {
             const matchedVehicle = (c.vehicles ?? []).find((v: any) => v.rego === prefillVehicleRego)

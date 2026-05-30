@@ -413,7 +413,16 @@ class CustomerVehicleTagRequest(BaseModel):
 
 
 class LinkedVehicleResponse(BaseModel):
-    """A vehicle linked to a customer in the profile view."""
+    """A vehicle linked to a customer in the profile view.
+
+    The customer profile service emits the full vehicle snapshot for each
+    linked vehicle (rego/make/model/year/colour AND the per-org Customer
+    Driven Fields: odometer, service_due_date, wof_expiry, cof_expiry,
+    inspection_type). Declaring those fields here ensures Pydantic does not
+    drop them on serialisation — the InvoiceCreate "Issue Invoice" pre-fill
+    flow (and any other consumer of ``GET /customers/{id}.vehicles``) needs
+    them to populate the new-invoice form without a second lookup.
+    """
 
     id: str = Field(..., description="CustomerVehicle link UUID")
     rego: Optional[str] = Field(None, description="Registration number")
@@ -421,6 +430,17 @@ class LinkedVehicleResponse(BaseModel):
     model: Optional[str] = Field(None, description="Vehicle model")
     year: Optional[int] = Field(None, description="Vehicle year")
     colour: Optional[str] = Field(None, description="Vehicle colour")
+    odometer: Optional[int] = Field(
+        None, description="Last recorded odometer reading (km)"
+    )
+    service_due_date: Optional[str] = Field(
+        None, description="Next service due date (ISO 8601)"
+    )
+    wof_expiry: Optional[str] = Field(None, description="WOF expiry date (ISO 8601)")
+    cof_expiry: Optional[str] = Field(None, description="COF expiry date (ISO 8601)")
+    inspection_type: Optional[str] = Field(
+        None, description="'wof' or 'cof' or null"
+    )
     source: str = Field(..., description="'global' or 'org' (storage location)")
     origin: str = Field(
         "manual",

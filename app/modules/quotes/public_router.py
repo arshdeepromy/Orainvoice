@@ -77,6 +77,8 @@ async def view_shared_quote(
     }
 
     gst_percentage = settings.get("gst_percentage", 15)
+    payment_terms_enabled = settings.get("payment_terms_enabled", True)
+    payment_terms_text = settings.get("payment_terms_text", "") if payment_terms_enabled else ""
 
     # Build quote dict
     quote_dict = {
@@ -150,6 +152,7 @@ async def view_shared_quote(
         org=org_context,
         customer=customer_context,
         gst_percentage=gst_percentage,
+        payment_terms_text=payment_terms_text,
         token=token,
         can_accept=quote.status == "sent",
         already_accepted=quote.status == "accepted",

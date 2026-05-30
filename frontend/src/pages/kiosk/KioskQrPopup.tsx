@@ -184,7 +184,7 @@ export function KioskQrPopup({ session, onPaymentComplete, onExpired, onClose }:
     return () => cleanup()
   }, [cleanup])
 
-  const isWarning = secondsRemaining < 120
+  const isWarning = secondsRemaining < 30
   const timerColorClass = isWarning ? 'text-red-500' : 'text-gray-600'
 
   /* ── Success State ── */

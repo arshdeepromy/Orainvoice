@@ -41,6 +41,7 @@ const STATUS_COLOR: Record<string, string> = {
   expired: 'text-gray-400',
   converted: 'text-emerald-600',
   invoiced: 'text-emerald-600',
+  cancelled: 'text-red-600',
 }
 
 const STATUS_OPTIONS = [
@@ -52,6 +53,7 @@ const STATUS_OPTIONS = [
   { value: 'declined', label: 'Declined' },
   { value: 'expired', label: 'Expired' },
   { value: 'converted', label: 'Converted' },
+  { value: 'cancelled', label: 'Cancelled' },
 ]
 
 /* ------------------------------------------------------------------ */

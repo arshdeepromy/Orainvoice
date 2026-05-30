@@ -6,8 +6,10 @@ Requirements: 58.1, 58.2, 58.4, 58.6
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Any
 
 from sqlalchemy import select, text, func as sa_func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,12 +30,103 @@ GST_DIVISOR = Decimal("1.15")
 # Valid status transitions
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "draft": {"issued", "sent", "accepted", "declined"},
-    "issued": {"draft", "sent", "accepted", "declined", "expired"},
-    "sent": {"draft", "accepted", "declined", "expired"},
+    "issued": {"draft", "sent", "accepted", "declined", "expired", "cancelled"},
+    "sent": {"draft", "accepted", "declined", "expired", "cancelled"},
     "accepted": set(),
     "declined": set(),
     "expired": set(),
+    "cancelled": set(),  # terminal state
 }
+
+
+def _resolve_document_settings(
+    org_settings: Mapping[str, Any] | None,
+    *,
+    per_quote_terms: str | None,
+) -> dict[str, object]:
+    """Resolve render-time Payment Terms and Terms & Conditions for a quote.
+
+    Mirrors the invoice service's behaviour at:
+      - app/modules/invoices/service.py:1764-1775 (detail response)
+      - app/modules/invoices/service.py:4153-4161 (PDF render)
+
+    Both the API response builder (``get_quote``) and the PDF generator
+    (``generate_quote_pdf``) MUST call this helper so the on-screen quote
+    and the PDF cannot drift.
+
+    Parameters
+    ----------
+    org_settings:
+        The organisation's ``settings`` mapping (typically ``Organisation.settings``).
+        ``None`` is treated as an empty mapping so organisations without a
+        settings row resolve to safe defaults.
+    per_quote_terms:
+        The per-quote Terms & Conditions override stored on ``quotes.terms``.
+        Whitespace-only strings are treated as empty.
+
+    Returns
+    -------
+    dict[str, object]
+        ``{"payment_terms_text": str | None,
+           "terms_and_conditions": str | None,
+           "terms_and_conditions_enabled": bool}``
+
+    Resolution rules
+    ----------------
+    payment_terms_text:
+        non-empty ``settings["payment_terms_text"]`` when
+        ``settings.get("payment_terms_enabled", True)`` is true,
+        else ``None``.
+
+    terms_and_conditions_enabled:
+        ``bool(settings.get("terms_and_conditions_enabled", True))``.
+
+    terms_and_conditions:
+        ``per_quote_terms`` if non-empty (regardless of toggle);
+        else ``settings["terms_and_conditions"]`` if the toggle is true and
+        the value is non-empty;
+        else ``None``.
+
+    The helper is total over its declared input domain and does not raise.
+    """
+    settings: Mapping[str, Any] = org_settings if org_settings is not None else {}
+
+    def _clean(value: object) -> str | None:
+        """Return ``value`` as a stripped non-empty string, else ``None``."""
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+        return None
+
+    # Payment terms — gated by payment_terms_enabled (default True).
+    payment_terms_enabled = bool(settings.get("payment_terms_enabled", True))
+    if payment_terms_enabled:
+        payment_terms_text = _clean(settings.get("payment_terms_text"))
+    else:
+        payment_terms_text = None
+
+    # Terms & Conditions toggle — surfaced on the response so the frontend
+    # can gate its rendering even when no resolved string is present.
+    terms_and_conditions_enabled = bool(
+        settings.get("terms_and_conditions_enabled", True)
+    )
+
+    # Terms & Conditions resolution: per-quote override wins, then org-level
+    # value when enabled, else None.
+    per_quote_clean = _clean(per_quote_terms)
+    if per_quote_clean is not None:
+        terms_and_conditions: str | None = per_quote_clean
+    elif terms_and_conditions_enabled:
+        terms_and_conditions = _clean(settings.get("terms_and_conditions"))
+    else:
+        terms_and_conditions = None
+
+    return {
+        "payment_terms_text": payment_terms_text,
+        "terms_and_conditions": terms_and_conditions,
+        "terms_and_conditions_enabled": terms_and_conditions_enabled,
+    }
 
 
 def _calculate_line_total(quantity: Decimal, unit_price: Decimal) -> Decimal:
@@ -176,6 +269,9 @@ def _quote_to_dict(quote: Quote, line_items: list[QuoteLineItem]) -> dict:
         "salesperson_id": quote.salesperson_id,
         "additional_vehicles": quote.additional_vehicles or [],
         "fluid_usage": quote.fluid_usage or [],
+        "cancel_reason": quote.cancel_reason,
+        "cancelled_at": quote.cancelled_at,
+        "cancelled_by": quote.cancelled_by,
         "line_items": [_line_item_to_dict(li) for li in line_items],
         "created_by": quote.created_by,
         "created_at": quote.created_at,
@@ -393,7 +489,13 @@ async def create_quote(
             ip_address=ip_address,
         )
 
-    return _quote_to_dict(quote, created_line_items)
+    result = _quote_to_dict(quote, created_line_items)
+    # Resolve per-document settings so the create response shape matches
+    # get_quote / update_quote / cancel_quote (Requirement 5.6).
+    result.update(
+        _resolve_document_settings(org.settings, per_quote_terms=quote.terms)
+    )
+    return result
 
 
 async def get_quote(
@@ -485,6 +587,12 @@ async def get_quote(
         result["invoice_template_id"] = settings.get("invoice_template_id")
         result["invoice_template_colours"] = settings.get("invoice_template_colours")
 
+        # Payment terms + per-quote Terms & Conditions resolution.
+        # Single source of truth shared with generate_quote_pdf so the
+        # on-screen quote and the PDF cannot drift (Requirements 3.4, 4.6, 5.6).
+        resolved = _resolve_document_settings(org.settings, per_quote_terms=quote.terms)
+        result.update(resolved)
+
     return result
 
 
@@ -564,6 +672,13 @@ async def list_quotes(
         first = row.first_name or ""
         last = row.last_name or ""
         customer_name = f"{first} {last}".strip() or None
+        # Summary view only — list rows intentionally omit ``payment_terms_text``,
+        # ``terms_and_conditions``, and ``terms_and_conditions_enabled`` because
+        # ``QuoteSearchResult`` exposes only the columns needed by the list UI
+        # (id, status, totals, customer name, vehicle rego). The full document
+        # settings live on ``GET /quotes/{id}`` via ``get_quote`` and on the PDF
+        # via ``generate_quote_pdf``; both paths share ``_resolve_document_settings``.
+        # See requirements.md §5.6 and design.md "Testing Strategy".
         quotes.append(
             {
                 "id": row.id,
@@ -754,7 +869,22 @@ async def update_quote(
     )
     line_items = list(li_result.scalars().all())
 
-    return _quote_to_dict(quote, line_items)
+    result = _quote_to_dict(quote, line_items)
+    # Resolve per-document settings so the update response matches
+    # get_quote / create_quote / cancel_quote (Requirement 5.6). ``org`` may
+    # not be in scope here (it is only loaded conditionally above), so we
+    # fetch the settings row by primary key — a single cheap lookup.
+    org_for_settings = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org_row = org_for_settings.scalar_one_or_none()
+    result.update(
+        _resolve_document_settings(
+            org_row.settings if org_row else None,
+            per_quote_terms=quote.terms,
+        )
+    )
+    return result
 
 
 async def delete_quote(
@@ -781,7 +911,7 @@ async def delete_quote(
     if quote.status in non_deletable:
         raise ValueError(
             f"Cannot delete a quote with status '{quote.status}'. "
-            "Only draft, declined, or expired quotes can be deleted."
+            "Only draft, declined, expired, or cancelled quotes can be deleted."
         )
 
     quote_number = quote.quote_number
@@ -809,6 +939,81 @@ async def delete_quote(
     )
 
     return {"quote_id": quote_id, "quote_number": quote_number, "deleted": True}
+
+
+async def cancel_quote(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    quote_id: uuid.UUID,
+    reason: str,
+    ip_address: str | None = None,
+) -> dict:
+    """Cancel a quote that has been issued or sent.
+
+    Records the cancellation reason, timestamp, and actor. Writes an
+    audit log entry with before/after values.
+    """
+    q_result = await db.execute(
+        select(Quote).where(Quote.id == quote_id, Quote.org_id == org_id)
+    )
+    quote = q_result.scalar_one_or_none()
+    if quote is None:
+        raise ValueError("Quote not found in this organisation")
+
+    before_status = quote.status
+    _validate_status_transition(before_status, "cancelled")
+
+    # Record cancellation metadata
+    quote.status = "cancelled"
+    quote.cancel_reason = reason
+    quote.cancelled_at = datetime.now(timezone.utc)
+    quote.cancelled_by = user_id
+
+    await db.flush()
+
+    # Audit log
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="quote.cancelled",
+        entity_type="quote",
+        entity_id=quote.id,
+        before_value={"status": before_status},
+        after_value={
+            "status": "cancelled",
+            "cancel_reason": reason,
+            "cancelled_by": str(user_id),
+        },
+        ip_address=ip_address,
+    )
+
+    await db.refresh(quote)
+
+    # Reload line items
+    li_result = await db.execute(
+        select(QuoteLineItem)
+        .where(QuoteLineItem.quote_id == quote.id)
+        .order_by(QuoteLineItem.sort_order)
+    )
+    line_items = list(li_result.scalars().all())
+
+    result = _quote_to_dict(quote, line_items)
+    # Resolve per-document settings so the cancel response matches
+    # get_quote / create_quote / update_quote (Requirement 5.6).
+    org_for_settings = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org_row = org_for_settings.scalar_one_or_none()
+    result.update(
+        _resolve_document_settings(
+            org_row.settings if org_row else None,
+            per_quote_terms=quote.terms,
+        )
+    )
+    return result
 
 
 async def expire_quotes(db: AsyncSession) -> int:
@@ -896,7 +1101,13 @@ async def generate_quote_pdf(
     org_context["logo_url"] = resolve_logo_for_pdf(org)
 
     gst_percentage = settings.get("gst_percentage", 15)
-    terms_and_conditions = settings.get("terms_and_conditions", "")
+    # Single source of truth shared with the API response builder so the
+    # on-screen quote and the PDF cannot drift (Requirements 4.3, 8.1, 8.4).
+    resolved = _resolve_document_settings(settings, per_quote_terms=quote_dict.get("terms"))
+    payment_terms_text = resolved["payment_terms_text"] or ""   # template expects "" for skip
+    terms_and_conditions = resolved["terms_and_conditions"] or ""
+    # terms_and_conditions_enabled is not needed by the template;
+    # the PDF gates on the resolved string itself.
 
     # Fetch customer
     cust_result = await db.execute(
@@ -938,6 +1149,7 @@ async def generate_quote_pdf(
         customer=customer_context,
         gst_percentage=gst_percentage,
         terms_and_conditions=terms_and_conditions,
+        payment_terms_text=payment_terms_text,
         order_number=quote_dict.get("order_number"),
         salesperson_name=quote_dict.get("salesperson_name"),
         additional_vehicles=quote_dict.get("additional_vehicles") or [],
@@ -1275,17 +1487,23 @@ async def convert_quote_to_invoice(
             "stock_item_id": li.get("stock_item_id"),
         })
 
-    # Build additional vehicles list if present
+    # Build additional vehicles list if present — preserve every field the
+    # invoice side knows how to store (rego/make/model/year/odometer/id +
+    # wof_expiry/cof_expiry/inspection_type used by the detail page).
     additional_vehicles = quote_dict.get("additional_vehicles") or []
     vehicles_data = None
     if additional_vehicles:
         vehicles_data = [
             {
+                "id": v.get("id"),
                 "rego": v.get("rego"),
                 "make": v.get("make"),
                 "model": v.get("model"),
                 "year": v.get("year"),
                 "odometer": v.get("odometer"),
+                "wof_expiry": v.get("wof_expiry"),
+                "cof_expiry": v.get("cof_expiry"),
+                "inspection_type": v.get("inspection_type"),
             }
             for v in additional_vehicles
         ]
@@ -1293,6 +1511,16 @@ async def convert_quote_to_invoice(
     # Build fluid usage data if present
     fluid_usage = quote_dict.get("fluid_usage") or []
     fluid_usage_data = fluid_usage if fluid_usage else None
+
+    # Per-quote vehicle metadata that ``create_invoice`` knows how to persist:
+    #   - ``vehicle_odometer`` → invoices.vehicle_odometer column
+    #   - ``vehicle_wof_expiry_date`` / ``vehicle_cof_expiry_date`` →
+    #     invoice_data_json.vehicle_display (drives the InvoiceDetail "WOF
+    #     Expiry" / "COF Expiry" tile and the PDF appendix).
+    # Quote stores these as ``date`` objects (per ``_quote_to_dict``); pass
+    # them through unchanged.
+    quote_wof = quote_dict.get("vehicle_wof_expiry")
+    quote_cof = quote_dict.get("vehicle_cof_expiry")
 
     # Create draft invoice with quote details
     invoice_dict = await create_invoice(
@@ -1304,6 +1532,9 @@ async def convert_quote_to_invoice(
         vehicle_make=quote_dict.get("vehicle_make"),
         vehicle_model=quote_dict.get("vehicle_model"),
         vehicle_year=quote_dict.get("vehicle_year"),
+        vehicle_odometer=quote_dict.get("vehicle_odometer"),
+        vehicle_wof_expiry_date=quote_wof,
+        vehicle_cof_expiry_date=quote_cof,
         vehicles=vehicles_data,
         status="draft",
         line_items_data=invoice_line_items,

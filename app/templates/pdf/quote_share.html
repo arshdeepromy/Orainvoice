@@ -194,6 +194,10 @@
     {% if quote.notes %}
     <div class="notes"><strong>Notes:</strong> {{ quote.notes }}</div>
     {% endif %}
+
+    {% if payment_terms_text %}
+    <div class="notes"><strong>Payment Terms:</strong><br>{{ payment_terms_text }}</div>
+    {% endif %}
   </div>
 
   <div class="accept-section">

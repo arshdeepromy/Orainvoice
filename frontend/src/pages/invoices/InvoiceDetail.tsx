@@ -126,6 +126,23 @@ interface InvoiceDetail {
   vehicle_year?: number | null
   vehicle_odometer?: number | null
   additional_vehicles?: { rego: string; make?: string; model?: string; year?: number; wof_expiry?: string; cof_expiry?: string; inspection_type?: string; odometer?: number }[]
+  /**
+   * Per-invoice vehicle snapshot stored in ``invoice_data_json.vehicle_display``.
+   * Used when no global vehicle record is linked (e.g. quote → invoice
+   * conversions, kiosk check-ins, manual entry) so the Vehicle tile can still
+   * show odometer / WOF / COF / inspection_type.
+   */
+  vehicle_display?: {
+    rego?: string | null
+    make?: string | null
+    model?: string | null
+    year?: number | null
+    odometer?: number | null
+    inspection_type?: 'wof' | 'cof' | string | null
+    wof_expiry?: string | null
+    cof_expiry?: string | null
+    service_due_date?: string | null
+  } | null
   line_items: LineItem[]
   subtotal: number
   subtotal_ex_gst?: number
@@ -985,6 +1002,25 @@ export default function InvoiceDetail() {
                   <dd className="text-sm text-gray-900">{invoice.vehicle_odometer.toLocaleString()} Kms</dd>
                 </div>
               )}
+              {/* Inspection expiry from invoice-level snapshot when no global
+                  vehicle record is linked (e.g. quote → invoice conversions,
+                  kiosk check-ins). Prefer COF if both somehow appear; mirror
+                  vehicleHelpers.getInspectionLabel/getInspectionExpiry. */}
+              {(() => {
+                const vd = invoice.vehicle_display
+                if (!vd) return null
+                const isCof =
+                  vd.inspection_type === 'cof' ||
+                  (!vd.inspection_type && !!vd.cof_expiry)
+                const expiry = isCof ? vd.cof_expiry : vd.wof_expiry
+                if (!expiry) return null
+                return (
+                  <div>
+                    <dt className="text-xs text-gray-500">{isCof ? 'COF Expiry' : 'WOF Expiry'}</dt>
+                    <dd className="text-sm text-gray-900">{formatDate(expiry)}</dd>
+                  </div>
+                )
+              })()}
             </dl>
           ) : (
             <p className="text-sm text-gray-500">No vehicle linked</p>

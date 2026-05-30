@@ -246,15 +246,22 @@
   {% if quote.notes %}
   <div style="margin-bottom:10px;">
     <div class="section-title">Notes</div>
-    <p style="font-size:9pt; color:#555; white-space:pre-wrap;">{{ quote.notes }}</p>
+    <div style="font-size:9pt; color:#555;">{{ quote.notes | safe }}</div>
   </div>
   {% endif %}
   {% if terms_and_conditions %}
   <div>
     <div class="section-title">Terms &amp; Conditions</div>
-    <div style="font-size:8pt; color:#666; white-space:pre-wrap;">{{ terms_and_conditions }}</div>
+    <div style="font-size:8pt; color:#666;">{{ terms_and_conditions | safe }}</div>
   </div>
   {% endif %}
+</div>
+{% endif %}
+
+{% if payment_terms_text %}
+<div style="margin-top:14px; border-top:1px solid #eee; padding-top:10px;">
+  <div class="section-title">Payment Terms</div>
+  <p style="font-size:9pt; color:#555; white-space:pre-wrap;">{{ payment_terms_text }}</p>
 </div>
 {% endif %}
 

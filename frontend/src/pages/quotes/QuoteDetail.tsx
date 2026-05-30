@@ -8,6 +8,7 @@ import apiClient from '../../api/client'
 import { useTenant } from '../../contexts/TenantContext'
 import { Button } from '../../components/ui'
 import QuoteAttachmentList from '../../components/quotes/QuoteAttachmentList'
+import CancelQuoteModal from '../../components/quotes/CancelQuoteModal'
 import { resolveTemplateStyles } from '@/utils/invoiceTemplateStyles'
 
 const PRINT_STYLES = `
@@ -143,6 +144,11 @@ interface QuoteData {
   additional_vehicles: Vehicle[]
   fluid_usage: FluidUsage[]
   attachment_count: number
+  // Cancellation fields
+  cancel_reason?: string | null
+  cancelled_at?: string | null
+  cancelled_by?: string | null
+  cancelled_by_name?: string | null
   // Org info for template preview
   org_name?: string
   org_logo_url?: string
@@ -161,6 +167,10 @@ interface QuoteData {
   customer_name?: string
   customer_email?: string
   customer_portal_token?: string | null
+  // Quote ↔ Invoice Settings Parity
+  payment_terms_text?: string | null
+  terms_and_conditions?: string | null
+  terms_and_conditions_enabled?: boolean
 }
 
 interface QuoteDetailProps {
@@ -175,6 +185,7 @@ const STATUS_STYLES: Record<string, { bg: string; text: string }> = {
   declined: { bg: 'bg-red-50', text: 'text-red-700' },
   expired: { bg: 'bg-gray-100', text: 'text-gray-500' },
   converted: { bg: 'bg-emerald-50', text: 'text-emerald-700' },
+  cancelled: { bg: 'bg-red-100', text: 'text-red-700' },
 }
 
 function formatNZD(amount: number | string | null | undefined): string {
@@ -202,6 +213,8 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [downloading, setDownloading] = useState<boolean>(false)
   const [copied, setCopied] = useState<boolean>(false)
+  const [cancelModalOpen, setCancelModalOpen] = useState(false)
+  const [cancelLoading, setCancelLoading] = useState(false)
 
   const templateStyles = useMemo(
     () => resolveTemplateStyles(
@@ -366,6 +379,23 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
     }
   }
 
+  const handleCancelQuote = async (reason: string) => {
+    setCancelLoading(true)
+    setError(null)
+    setSuccessMsg(null)
+    try {
+      await apiClient.put(`/quotes/${quoteId}/cancel`, { reason })
+      setSuccessMsg('Quote cancelled')
+      setCancelModalOpen(false)
+      await fetchQuote()
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setError(detail || 'Failed to cancel quote')
+    } finally {
+      setCancelLoading(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="px-4 py-16 text-center sm:px-6 lg:px-8">
@@ -390,7 +420,8 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   const canSend = quote.status === 'draft' || quote.status === 'issued' || quote.status === 'sent'
   const canConvert = (quote.status === 'issued' || quote.status === 'sent' || quote.status === 'accepted') && !quote.converted_invoice_id
   const canRequote = quote.status === 'sent' || quote.status === 'issued'
-  const canDelete = ['draft', 'declined', 'expired'].includes(quote.status)
+  const canDelete = ['draft', 'declined', 'expired', 'cancelled'].includes(quote.status)
+  const canCancel = quote.status === 'issued' || quote.status === 'sent'
   const isDraft = quote.status === 'draft'
 
   return (
@@ -439,6 +470,15 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
               Convert to Invoice
             </Button>
           )}
+          {canCancel && (
+            <button
+              onClick={() => setCancelModalOpen(true)}
+              className="rounded-md border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
+              disabled={actionLoading}
+            >
+              Cancel Quote
+            </button>
+          )}
           {canDelete && !deleteConfirm && (
             <button
               onClick={() => setDeleteConfirm(true)}
@@ -484,6 +524,24 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
             className="font-medium underline hover:text-blue-900">
             View Invoice
           </button>
+        </div>
+      )}
+
+      {/* Cancellation info banner */}
+      {quote.status === 'cancelled' && (
+        <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3" data-print-hide>
+          <div className="flex items-start gap-3">
+            <span className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-bold uppercase text-red-700">
+              Cancelled
+            </span>
+            <div className="text-sm text-red-700">
+              {quote.cancel_reason && <p className="font-medium">{quote.cancel_reason}</p>}
+              <p className="mt-1 text-red-600">
+                {quote.cancelled_at && <>Cancelled on {formatDate(quote.cancelled_at)}</>}
+                {quote.cancelled_by_name && <> by {quote.cancelled_by_name}</>}
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
@@ -759,20 +817,34 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
 
           {/* Notes & Terms footer */}
           <div className="relative z-10 px-8 pb-8">
-            {(quote.notes || quote.terms) && (
+            {(quote.notes || (quote.terms_and_conditions_enabled && quote.terms_and_conditions)) && (
               <div className="border-t border-gray-100 pt-4 mb-4 grid grid-cols-1 md:grid-cols-2 gap-6">
                 {quote.notes && (
                   <div>
                     <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">Notes</p>
-                    <p className="text-sm text-gray-600 whitespace-pre-wrap">{quote.notes}</p>
+                    <div
+                      className="text-sm text-gray-600 prose prose-sm max-w-none"
+                      dangerouslySetInnerHTML={{ __html: quote.notes }}
+                    />
                   </div>
                 )}
-                {quote.terms && (
+                {quote.terms_and_conditions_enabled && quote.terms_and_conditions && (
                   <div>
                     <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">Terms & Conditions</p>
-                    <p className="text-sm text-gray-600 whitespace-pre-wrap">{quote.terms}</p>
+                    <div
+                      className="text-sm text-gray-600 prose prose-sm max-w-none"
+                      dangerouslySetInnerHTML={{ __html: quote.terms_and_conditions }}
+                    />
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Payment Terms Statement (from org settings) */}
+            {quote.payment_terms_text && (
+              <div className="border-t border-gray-100 pt-4 mb-4">
+                <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">Payment Terms</p>
+                <p className="text-sm text-gray-600 whitespace-pre-wrap">{quote.payment_terms_text}</p>
               </div>
             )}
 
@@ -789,6 +861,14 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
           <QuoteAttachmentList quoteId={quote.id} isDraft={isDraft} />
         </div>
       )}
+
+      {/* Cancel Quote Modal */}
+      <CancelQuoteModal
+        isOpen={cancelModalOpen}
+        onClose={() => setCancelModalOpen(false)}
+        onConfirm={handleCancelQuote}
+        loading={cancelLoading}
+      />
     </div>
   )
 }

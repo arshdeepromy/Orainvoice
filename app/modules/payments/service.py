@@ -1434,7 +1434,7 @@ async def create_qr_payment_session(
 
     session_id = pi_result["payment_intent_id"]
     checkout_url = payment_url
-    expires_at = int(time.time() + 1800)  # 30 minutes from now
+    expires_at = int(time.time() + 120)  # 2 minutes from now
 
     # 7. Convert expires_at to ISO string for frontend
     expires_at_iso = dt.fromtimestamp(expires_at, tz=tz.utc).isoformat()
@@ -1694,7 +1694,7 @@ async def create_qr_session_for_existing_invoice(
             invoice_number = invoice.invoice_number or str(invoice.id)
             session_id = invoice.stripe_payment_intent_id
             checkout_url = invoice.payment_page_url
-            expires_at = int(time.time() + 1800)
+            expires_at = int(time.time() + 120)  # 2 minutes from now
             expires_at_iso = dt.fromtimestamp(expires_at, tz=tz.utc).isoformat()
 
             await db.execute(
@@ -1834,7 +1834,7 @@ async def create_qr_session_for_existing_invoice(
     await db.flush()
 
     session_id = new_pi_id
-    expires_at = int(time.time() + 1800)  # 30 minutes from now
+    expires_at = int(time.time() + 120)  # 2 minutes from now
     expires_at_iso = dt.fromtimestamp(expires_at, tz=tz.utc).isoformat()
 
     # 13. Upsert into pending_qr_sessions (DELETE existing for same org,

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.modules.auth.rbac import require_role
 from app.modules.quotes.schemas import (
+    QuoteCancelRequest,
     QuoteConvertResponse,
     QuoteCreate,
     QuoteCreateResponse,
@@ -26,6 +27,7 @@ from app.modules.quotes.schemas import (
     QuoteUpdate,
 )
 from app.modules.quotes.service import (
+    cancel_quote,
     convert_quote_to_invoice,
     create_quote,
     delete_quote,
@@ -353,6 +355,61 @@ async def update_quote_endpoint(
         line_items=[QuoteLineItemResponse(**li) for li in result["line_items"]],
     )
 
+
+
+@router.put(
+    "/{quote_id}/cancel",
+    response_model=QuoteResponse,
+    responses={
+        400: {"description": "Invalid status transition or empty reason"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        404: {"description": "Quote not found"},
+    },
+    summary="Cancel a quote",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def cancel_quote_endpoint(
+    quote_id: uuid.UUID,
+    payload: QuoteCancelRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Cancel a quote that has been issued or sent.
+
+    Records the cancellation reason, timestamp, and actor.
+    Only quotes with status 'issued' or 'sent' can be cancelled.
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid or not user_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        result = await cancel_quote(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            quote_id=quote_id,
+            reason=payload.reason,
+            ip_address=ip_address,
+        )
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        error_msg = str(exc)
+        status_code = 404 if "not found" in error_msg.lower() else 400
+        return JSONResponse(status_code=status_code, content={"detail": error_msg})
+    except Exception:
+        await db.rollback()
+        raise
+
+    return QuoteResponse(
+        **{k: v for k, v in result.items() if k != "line_items"},
+        line_items=[QuoteLineItemResponse(**li) for li in result["line_items"]],
+    )
 
 
 @router.post(

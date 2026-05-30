@@ -148,9 +148,18 @@ class Quote(Base):
         JSONB, nullable=True
     )
 
+    # NEW — Quote Cancellation Workflow
+    cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+
     __table_args__ = (
         CheckConstraint(
-            "status IN ('draft','sent','accepted','declined','expired','converted')",
+            "status IN ('draft','issued','sent','accepted','declined','expired','converted','cancelled')",
             name="ck_quotes_status",
         ),
         {"extend_existing": True},

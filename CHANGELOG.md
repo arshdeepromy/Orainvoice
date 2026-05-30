@@ -4,7 +4,110 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
-## [1.12.0] — Unreleased
+## [1.13.0] — 2026-05-30
+
+### Added
+
+- **"Issue Quote" button on the customer profile.** Mirrors the existing
+  "Issue Invoice" button. Lands on `/quotes/new` with the customer and
+  primary vehicle already pre-filled (rego, make, model, year, odometer,
+  WOF / COF expiry, inspection_type).
+- **Multi-vehicle picker on customer profile.** When a customer has more
+  than one linked vehicle, "Issue Invoice" / "Issue Quote" open a modal
+  letting the user select one or several vehicles. The first selected
+  vehicle becomes the form's primary; the rest land as additional
+  vehicles. Behaviour is unchanged for customers with 0 or 1 linked
+  vehicles. New URL contract: `?vehicle_regos=A,B,C` for multi-pick;
+  `?vehicle_rego=A` retained for back-compat.
+- **`LinkedVehicleResponse` schema now carries the Customer Driven Field
+  set** (`odometer`, `service_due_date`, `wof_expiry`, `cof_expiry`,
+  `inspection_type`). Previously the schema dropped them silently on
+  serialisation, which caused the new-invoice form to receive `undefined`
+  for those fields and leave them blank — even though
+  `get_customer_profile` was emitting them all along.
+
+### Fixed
+
+- **Invoice edit-mode now persists WOF / COF / odometer / service-due
+  changes onto the rendered invoice and PDF.**
+  - `update_invoice` now resolves `global_vehicle_id` from `vehicle_rego`
+    when the caller didn't supply one (covers quote-converted invoices,
+    kiosk-driven invoices, mobile minimal-create) — without this the
+    OrgVehicle writeback gate skipped silently.
+  - `update_invoice` now refreshes
+    `invoice_data_json.vehicle_display` after the OrgVehicle writeback
+    so the InvoiceDetail tile and PDF inspection-expiry gate read the
+    just-edited value. Mirrors `create_invoice`'s vehicle_display block.
+- **`get_invoice` now exposes `vehicle.id` and `vehicle.inspection_type`.**
+  The InvoiceCreate edit form's `loadInvoice` reads `inv.vehicle.id` to
+  thread `global_vehicle_id` back through the edit save. The last-resort
+  fallback branch additionally surfaces WOF / COF / service-due from the
+  invoice's own `vehicle_display` snapshot.
+- **InvoiceDetail vehicle tile renders WOF / COF for invoices without a
+  linked global vehicle record** — falls back to
+  `invoice.vehicle_display.wof_expiry` / `cof_expiry` when
+  `invoice.vehicle` is null.
+- **Quote → Invoice convert carries every vehicle field.**
+  `convert_quote_to_invoice` now hands `vehicle_odometer`,
+  `vehicle_wof_expiry`, `vehicle_cof_expiry`, plus the full
+  `additional_vehicles` shape (incl. WOF / COF / inspection_type / id)
+  through to `create_invoice`. Previously these fields were dropped.
+- **QuoteCreate "Auto-fill linked vehicle" effect was hitting a
+  non-existent `/customers/{id}/vehicles` endpoint** (404 → silent
+  no-op). Redirected to `/customers/{id}` and extended the mapping to
+  carry the Customer Driven Fields, so any flow that selects a customer
+  on QuoteCreate gets the same vehicle data as the URL-prefilled paths.
+- **Backend regression tests** in `tests/quotes/` cover:
+  - WOF edit refreshes `vehicle_display` and writes OrgVehicle.
+  - COF edit re-derives `inspection_type='cof'`.
+  - Non-vehicle updates leave `vehicle_display` untouched.
+  - `LinkedVehicleResponse` carries the new fields (and back-compat for
+    callers without them).
+
+## [1.12.0] — 2026-05-30
+
+### Added
+
+- **Quote ↔ Invoice settings parity.** Notes pre-fill on QuoteCreate, typed
+  Payment Terms / Terms & Conditions resolution on the quote response,
+  resolved fields surfaced on QuoteDetail, and a single
+  `_resolve_document_settings` helper that keeps `GET /quotes/{id}` and
+  `generate_quote_pdf` in lock-step. Backed by 22 new tests (PBT for
+  resolution precedence, helper purity, API/PDF non-divergence; render
+  gates on QuoteDetail; integration tests for the response shape and PDF
+  Jinja). No new settings keys, no new endpoints, no migration.
+- **Rich-text Notes & T&C on QuoteCreate.** ContentEditable editors for both
+  fields preserve formatting (line breaks, bold) when pre-filled from org
+  defaults — mirrors InvoiceCreate's existing T&C pattern. Tags no longer
+  leak as plain text in the form, the saved quote's detail page, or the PDF.
+
+### Fixed
+
+- **Quote → Invoice convert now carries vehicle metadata.**
+  `convert_quote_to_invoice` previously dropped `vehicle_odometer`,
+  `vehicle_wof_expiry`, `vehicle_cof_expiry`, and additional-vehicle
+  WOF/COF/inspection_type fields when handing off to `create_invoice`.
+  All four are now passed through.
+- **InvoiceDetail vehicle tile renders WOF/COF for invoices without a
+  linked global vehicle record.** When `invoice.vehicle` is null but
+  `invoice_data_json.vehicle_display.wof_expiry` is set (common for
+  quote-converted invoices, kiosk-driven flows, manual-entry rego), the
+  tile now reads the snapshot. Frontend gains a typed `vehicle_display`
+  field on `InvoiceDetail`.
+- **Editing WOF / COF / odometer / service-due on an invoice now persists
+  to the rendered invoice and PDF.** `update_invoice` now (a) resolves
+  `global_vehicle_id` from rego when the caller didn't supply one — fixes
+  silent edits on quote-converted, kiosk, and mobile-create invoices, and
+  (b) refreshes `invoice_data_json.vehicle_display` after the OrgVehicle
+  writeback so the InvoiceDetail tile and PDF inspection-expiry gate read
+  the just-edited value. Three new regression tests guard the round-trip.
+- **`get_invoice` now exposes `vehicle.id` and `vehicle.inspection_type`.**
+  Without these fields the InvoiceCreate edit form's `loadInvoice` couldn't
+  thread `global_vehicle_id` back through the edit save, breaking the
+  edit→read→edit round-trip on every flow that didn't go through the rego
+  search dropdown.
+
+## [1.11.1] — 2026-05-26
 
 ### Added
 

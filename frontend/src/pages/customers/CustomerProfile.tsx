@@ -6,6 +6,7 @@ import { useTenant } from '../../contexts/TenantContext'
 import { useModules } from '../../contexts/ModuleContext'
 import { useCustomerClaims } from '../../hooks/useCustomerClaims'
 import { CustomerEditModal } from '../../components/customers/CustomerEditModal'
+import { VehiclePickerModal } from '../../components/customers/VehiclePickerModal'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -281,6 +282,14 @@ export default function CustomerProfilePage() {
 
   /* Edit modal */
   const [editOpen, setEditOpen] = useState(false)
+
+  /* Vehicle picker modal — opens before navigating to /invoices/new or
+     /quotes/new when the customer has more than one linked vehicle so the
+     user can choose which one(s) to attach. ``pickerAction`` records
+     whether the user pressed "Issue Invoice" or "Issue Quote" so the
+     confirm handler routes to the right page. */
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerAction, setPickerAction] = useState<'invoice' | 'quote'>('invoice')
 
   /* Merge modal */
   const [mergeOpen, setMergeOpen] = useState(false)
@@ -700,13 +709,35 @@ export default function CustomerProfilePage() {
             size="sm"
             variant="secondary"
             onClick={() => {
-              const firstVehicle = (customer.vehicles ?? [])[0]
+              const linked = (customer.vehicles ?? []).filter((v) => v.rego)
+              if (linked.length > 1) {
+                setPickerAction('invoice')
+                setPickerOpen(true)
+                return
+              }
               const params = new URLSearchParams({ customer_id: customer.id })
-              if (firstVehicle?.rego) params.set('vehicle_rego', firstVehicle.rego)
+              if (linked[0]?.rego) params.set('vehicle_rego', linked[0].rego)
               navigate(`/invoices/new?${params.toString()}`)
             }}
           >
             Issue Invoice
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              const linked = (customer.vehicles ?? []).filter((v) => v.rego)
+              if (linked.length > 1) {
+                setPickerAction('quote')
+                setPickerOpen(true)
+                return
+              }
+              const params = new URLSearchParams({ customer_id: customer.id })
+              if (linked[0]?.rego) params.set('vehicle_rego', linked[0].rego)
+              navigate(`/quotes/new?${params.toString()}`)
+            }}
+          >
+            Issue Quote
           </Button>
           {remindersConfigured ? (
             <Button
@@ -1360,6 +1391,33 @@ export default function CustomerProfilePage() {
         customerId={editOpen ? customer.id : null}
         onClose={() => setEditOpen(false)}
         onSaved={() => { setEditOpen(false); fetchProfile() }}
+      />
+
+      <VehiclePickerModal
+        open={pickerOpen}
+        action={pickerAction}
+        vehicles={(customer.vehicles ?? [])
+          .filter((v) => !!v.rego)
+          .map((v) => ({
+            id: v.id,
+            rego: v.rego as string,
+            make: v.make,
+            model: v.model,
+            year: v.year,
+          }))}
+        onClose={() => setPickerOpen(false)}
+        onConfirm={(regos) => {
+          setPickerOpen(false)
+          if (regos.length === 0) return
+          const params = new URLSearchParams({ customer_id: customer.id })
+          if (regos.length === 1) {
+            params.set('vehicle_rego', regos[0])
+          } else {
+            params.set('vehicle_regos', regos.join(','))
+          }
+          const path = pickerAction === 'invoice' ? '/invoices/new' : '/quotes/new'
+          navigate(`${path}?${params.toString()}`)
+        }}
       />
     </div>
   )
