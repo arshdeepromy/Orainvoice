@@ -5823,3 +5823,56 @@ Added a 4-hourly cron job on the local box that pulls `pg_dump` from the Prod-St
 | User: "I needed last Tuesday's data" | ⚠️ Have it for ≤7 days then gone |
 
 **Refs**: PERFORMANCE_AUDIT.md §I-M4, §I-H5, Phase 1 checklist.
+---
+
+### ISSUE-168: Missing performance indexes — customer search and invoice list both seq-scan
+
+- **Date**: 2026-05-30
+- **Severity**: medium-high (perf headroom; bites at 200+ orgs)
+- **Status**: resolved on dev; pending PROD apply
+- **Reporter**: Performance audit (`docs/PERFORMANCE_AUDIT.md` §D-H4, §D-H5, §D-H7, §D-H9, §D-M1, §D-M5 / §1 quick win #3)
+- **Regression of**: N/A
+
+**Symptoms**: Per the audit, ~12 hot SQL paths were doing sequential scans:
+
+- Customer search uses `ILIKE '%foo%'` on first_name / last_name / email but no `pg_trgm` GIN existed, so every keystroke scanned the entire customers table.
+- Invoice list (`WHERE org_id = ? ORDER BY created_at DESC LIMIT 20`) had only an index on `org_id` alone — planner did index-scan-then-sort.
+- `mark_invoices_overdue` cron read every active overdue candidate via seq scan with no covering index.
+- Several FK columns (`payments.org_id`, `line_items.org_id`, `credit_notes.org_id`, `quote_line_items.org_id`, `customer_vehicles.customer_id`) had no index despite being filtered on every list page.
+- `get_invoice` did `org_vehicles.UPPER(rego)` lookups for additional vehicles without a matching index.
+
+**Root Cause**: Indexes were never added when the corresponding query patterns evolved. No prior migration used `CREATE INDEX CONCURRENTLY` so adding indexes always meant taking ACCESS EXCLUSIVE locks — which got punted on a live system.
+
+**Fix Applied**:
+
+New Alembic migration `0202_add_perf_indexes.py` adds the audit's full Appendix-A index pack:
+
+| Audit ref | Indexes added |
+|---|---|
+| D-H4 | `idx_invoices_org_created_desc`, `idx_invoices_org_status_created`, `idx_quotes_org_created_desc`, `idx_payments_org_created_desc`, `idx_credit_notes_org_created_desc` |
+| D-H5 | `idx_payments_org`, `idx_line_items_org`, `idx_credit_notes_org`, `idx_quote_line_items_org`, `idx_customer_vehicles_customer`, `idx_org_vehicles_org_rego_upper` |
+| D-H7 | `idx_customers_{first,last,company,display}_trgm` (pg_trgm GIN), `idx_customers_email_lower`, `idx_customers_phone` (plus `pg_trgm` extension itself) |
+| D-H9 | `idx_invoices_due_overdue` (partial: status IN ('issued','partially_paid') AND balance_due > 0) |
+| D-M1 | `idx_customers_org_active` (partial: WHERE is_anonymised = false), `idx_pending_qr_active` (partial: WHERE dismissed_at IS NULL) |
+| D-M5 | `idx_payments_inv_method_refund` (partial: method='stripe' AND is_refund=false) |
+
+20 indexes + 1 extension = 21 schema additions. All use `CREATE INDEX CONCURRENTLY ... IF NOT EXISTS` and `DROP INDEX CONCURRENTLY ... IF EXISTS`, idempotent and reversible.
+
+**Pattern Note**: Migration uses `op.get_context().autocommit_block()` to escape Alembic's transaction wrapper (CONCURRENTLY cannot run inside a transaction). Each statement runs independently — a partial failure does not roll back the others (which is the only behaviour Postgres offers for CONCURRENTLY anyway). This template should be reused for any future index-only migration.
+
+**Files Modified**:
+
+- `alembic/versions/2026_05_30_2300-0202_add_perf_indexes.py` — new migration.
+
+**Live Verification on Dev**:
+
+- `alembic upgrade head` ran cleanly (22 log lines, all CREATE statements reported).
+- `alembic downgrade -1` removes all 21 (verified by index count: 21 → 0).
+- Planner picks up the new indexes immediately:
+  - `EXPLAIN SELECT * FROM invoices WHERE org_id = ? ORDER BY created_at DESC LIMIT 20` now shows `Index Scan using idx_invoices_org_created_desc` (was seq-scan + sort).
+  - `EXPLAIN ... WHERE first_name ILIKE '%john%'` now shows `Bitmap Index Scan on idx_customers_first_trgm` (was seq-scan).
+- `pg_extension` shows `pg_trgm 1.6` installed.
+
+**Pending**: apply on PROD via the standard deploy path (`alembic upgrade head` runs automatically on Pi PROD app-container start). Take the regular pre-deploy `pg_dump` first; CONCURRENTLY adds time to the deploy (a few seconds per index on the current 39 MB DB; minutes per index at multi-million-row scale).
+
+**Refs**: PERFORMANCE_AUDIT.md §D-H3, §D-H4, §D-H5, §D-H7, §D-H9, §D-M1, §D-M5, Appendix A.
