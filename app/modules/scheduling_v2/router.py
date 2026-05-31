@@ -109,6 +109,70 @@ async def create_entry(
     return ScheduleEntryResponse.model_validate(entry)
 
 
+# ------------------------------------------------------------------
+# Shift Templates (Req 57)
+#
+# IMPORTANT: these static-path routes MUST be registered BEFORE the
+# dynamic ``/{entry_id}`` routes below — otherwise FastAPI matches
+# ``GET /templates`` to ``GET /{entry_id}`` (registration order wins
+# for same-method conflicts) and returns 422 because "templates" is
+# not a valid UUID. Verified by reproducing the bug in dev: every
+# call from the new Roster Grid Editor's `listTemplates()` returned
+# 422 until this re-ordering landed.
+# ------------------------------------------------------------------
+
+
+@router.get("/templates", response_model=ShiftTemplateListResponse, summary="List shift templates")
+async def list_templates(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    svc = SchedulingService(db)
+    templates, total = await svc.list_templates(org_id)
+    return ShiftTemplateListResponse(
+        templates=[ShiftTemplateResponse.model_validate(t) for t in templates],
+        total=total,
+    )
+
+
+@router.post(
+    "/templates",
+    response_model=ShiftTemplateResponse,
+    status_code=201,
+    summary="Create shift template",
+)
+async def create_template(
+    payload: ShiftTemplateCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    svc = SchedulingService(db)
+    try:
+        template = await svc.create_template(org_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return ShiftTemplateResponse.model_validate(template)
+
+
+@router.delete(
+    "/templates/{template_id}",
+    status_code=204,
+    summary="Delete shift template",
+)
+async def delete_template(
+    template_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    svc = SchedulingService(db)
+    deleted = await svc.delete_template(org_id, template_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+
 @router.get("/{entry_id}", response_model=ScheduleEntryResponse, summary="Get schedule entry")
 async def get_entry(
     entry_id: UUID,
@@ -280,59 +344,3 @@ async def copy_week_entries(
         created=[ScheduleEntryResponse.model_validate(e) for e in created],
         conflicts=conflicts,
     )
-
-
-# ------------------------------------------------------------------
-# Shift Templates (Req 57)
-# ------------------------------------------------------------------
-
-
-@router.get("/templates", response_model=ShiftTemplateListResponse, summary="List shift templates")
-async def list_templates(
-    request: Request,
-    db: AsyncSession = Depends(get_db_session),
-):
-    org_id = _get_org_id(request)
-    svc = SchedulingService(db)
-    templates, total = await svc.list_templates(org_id)
-    return ShiftTemplateListResponse(
-        templates=[ShiftTemplateResponse.model_validate(t) for t in templates],
-        total=total,
-    )
-
-
-@router.post(
-    "/templates",
-    response_model=ShiftTemplateResponse,
-    status_code=201,
-    summary="Create shift template",
-)
-async def create_template(
-    payload: ShiftTemplateCreate,
-    request: Request,
-    db: AsyncSession = Depends(get_db_session),
-):
-    org_id = _get_org_id(request)
-    svc = SchedulingService(db)
-    try:
-        template = await svc.create_template(org_id, payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    return ShiftTemplateResponse.model_validate(template)
-
-
-@router.delete(
-    "/templates/{template_id}",
-    status_code=204,
-    summary="Delete shift template",
-)
-async def delete_template(
-    template_id: UUID,
-    request: Request,
-    db: AsyncSession = Depends(get_db_session),
-):
-    org_id = _get_org_id(request)
-    svc = SchedulingService(db)
-    deleted = await svc.delete_template(org_id, template_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Template not found")
