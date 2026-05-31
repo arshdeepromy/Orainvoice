@@ -58,6 +58,7 @@ Inherits Phase 1 + 2 compliance. Additions:
    - **Redis key shape:** `kiosk_lookup:{org_id}:{sha256(employee_id)[:16]}` — the `employee_id` is SHA-256-hashed (truncated to 16 hex chars) so the raw code never lands in Redis logs or scans.
    - **Counter:** Redis `INCR` with `EXPIRE 60` on first hit; reject when counter > 10.
    - **Implementation site:** inline check in `app/modules/kiosk/router.py` at the top of the `/api/v1/kiosk/clock/lookup` handler — does NOT add a policy entry to the global `app/middleware/rate_limit.py` policy map because that middleware is per-IP/per-user and doesn't support compound keys. This is on TOP OF the existing `_check_kiosk_rate_limit` (30/min/kiosk-user) — both apply.
+   - **Two-layer interaction (P3-N9):** the limiters layer cleanly. `_check_kiosk_rate_limit` runs as a FastAPI dependency BEFORE the route body and rejects with `{"detail":"Too many requests"}` (HTTP 429) when the kiosk-user is over the global 30/min budget. The G12 inline check runs INSIDE the route body and rejects with `{"detail":"kiosk_lookup_rate_limited"}` (HTTP 429) when a specific `(org_id, employee_id)` pair has been queried > 10 times in the last 60s. A real attacker hitting the kiosk endpoint generally trips the global limit first; a buggy retry loop on a single `employee_id` trips G12 second. Distinct response bodies tell ops which limit was hit.
    - **On limit hit:** return HTTP 429 with `Retry-After: 60` header and body `{ "detail": "kiosk_lookup_rate_limited" }`. Audit row `kiosk.lookup_rate_limited` with `{ org_id, employee_id_hash, retry_after }` (note: hashed employee_id in audit too).
    - Lookup that succeeds (200) resets nothing — successful kiosk staff hitting the right code 30× a day are not the threat model; this is purely against enumeration.
 4. WHEN lookup matches THE SYSTEM SHALL return `{ staff_id, first_name, on_file_photo_url, currently_clocked_in: bool }`.
@@ -73,7 +74,7 @@ Inherits Phase 1 + 2 compliance. Additions:
 
 **Acceptance criteria:**
 
-1. THE SYSTEM SHALL add `POST /api/v2/staff/me/clock-action` accepting `{ action: 'in'|'out', photo_upload_id, lat?, lng? }`.
+1. THE SYSTEM SHALL add `POST /api/v2/staff/me/clock-action` accepting `{ action: 'in'|'out', photo_file_key, lat?, lng? }`. (P3-N1: parameter renamed from `photo_upload_id` to match the kiosk action's R3.5 + the canonical `_store(...)` return shape `file_key`.)
 2. THE SYSTEM SHALL refuse with 403 when the staff record's `self_service_clock_enabled=false` (error body: `"Self-service clock-in not enabled — please use the kiosk."`).
 3. THE SYSTEM SHALL require a photo when the org-level setting `self_service_require_photo=true` (default true).
 4. THE SYSTEM SHALL enforce geofence when `self_service_require_geofence=true`: refuses with 422 when `(lat, lng)` is more than `branch.radius_metres` from the branch's configured `(lat, lng)`.
@@ -88,7 +89,7 @@ Inherits Phase 1 + 2 compliance. Additions:
 1. THE SYSTEM SHALL allow org_admin / branch_admin to insert/edit `time_clock_entries` rows from the Hours tab.
 2. Manual entries set `source='admin_manual'` and `created_by=user_id`.
 3. Manual entries don't require a photo.
-4. Every manual edit writes `audit_logs` action='time_clock.edited' with before/after JSON.
+4. Every manual edit writes an `audit_log` row with `action='time_clock.edited'`, `before_value` capturing the pre-edit ORM dict, `after_value` capturing post-edit values. (P3-N2 + P3-N5: table is `audit_log` singular per `app/modules/admin/models.py:318`; columns are `before_value`/`after_value` JSONB per `app/core/audit.py:35-47`, NOT `before`/`after`.)
 
 ### R6. Org-level Clock-in Policy Settings
 
@@ -103,7 +104,7 @@ Inherits Phase 1 + 2 compliance. Additions:
    - `kiosk_employee_id_rate_limit: 10` (per minute)
 2. THE SYSTEM SHALL render Settings → People → Clock-in Policy page with all toggles + numeric inputs. The page also surfaces the overtime policy from R6a as a separate card on the same page.
 3. WHEN `default_channel` is changed THE SYSTEM SHALL NOT mass-update existing staff's `self_service_clock_enabled` flag — the flag is the source of truth at clock-in time. Setting only controls the default value on staff-creation going forward (see R6b/G9 for the create-staff integration).
-4. **Per-branch vs org-default geofence radius (G17):** the authoritative value at clock-in time is `branches.geofence_radius_metres` (the column added in design §3.1). The org-level `clock_in_policy.branch_radius_metres` value is used only as the default when a new branch row is INSERTed (the migration populates the column from this org-level default if available, else 200). Once a branch row exists, the column is the source of truth — editing the org-level default does NOT mass-update existing branches.
+4. **Per-branch vs org-default geofence radius (G17 + cross-phase X5):** the authoritative value at clock-in time is `branches.geofence_radius_metres` (the column added in design §3.1). The org-level `clock_in_policy.branch_radius_metres` value is used as the default in two places: (a) the migration populates the column from this org-level default if available, else 200; (b) the Branches CRUD service `create_branch` reads it as the default when a new branch is INSERTed without an explicit radius (per task B12). Once a branch row exists, the column is the source of truth — editing the org-level default does NOT mass-update existing branches.
 
 ### R6a. Overtime Policy Settings (G1)
 
@@ -122,7 +123,7 @@ Inherits Phase 1 + 2 compliance. Additions:
    - `weekly_threshold_minutes` — anything above this in a single week is overtime (default 2400 = 40h).
    - `daily_threshold_minutes` — anything above this in a single day is overtime (default 480 = 8h; common in trades). Daily threshold applies in addition to weekly: if a staff works 9h on Monday + 9h Tue + 9h Wed + 9h Thu = 36h total but each day is 1h over the daily threshold → 4h overtime even though weekly total is under 40h.
    - `require_pre_approval` — if true, the timesheet-approval flow refuses to count any overtime minutes that don't have an approved `overtime_requests` row covering them; instead they're flagged as "unapproved overtime" with a warning chip (per R10.3).
-2. THE SYSTEM SHALL re-use Phase 2's `overtime_handling` setting (`pay_cash | toil | employee_chooses`). **Location**: per Phase 2's `code-verification.md` §2.5 (🟠 should-fix that gets applied), `overtime_handling` lives in `organisations.settings` JSONB with `'overtime_handling'` added to the `SETTINGS_JSONB_KEYS` allow-list at `app/modules/organisations/service.py`. Phase 3 reads it via `(await get_org_settings(db, org_id=...))['overtime_handling']` (default `'pay_cash'` when missing). Phase 3 does NOT duplicate this — it lives in the JSONB blob alongside other org-level toggles, NOT inside `overtime_policy` JSONB and NOT as a typed column.
+2. THE SYSTEM SHALL re-use Phase 2's `organisations.overtime_handling` typed text column (`pay_cash | toil | employee_chooses`, default `'pay_cash'`, CHECK enum). (P3-N4: Phase 2's gap-analysis P2-N5 settled this as a typed column on `organisations`, NOT a JSONB key under `organisations.settings`. Phase 3 reads it directly via `org.overtime_handling` (or `(await db.get(Organisation, org_id)).overtime_handling`) — does NOT use `get_org_settings()` for this particular field. Phase 3 also does NOT add a duplicate definition; the column lives once on `organisations` and Phase 4 reads it via the same direct ORM access.)
 3. THE SYSTEM SHALL render the overtime card in Settings → People → Clock-in Policy below the clock-in settings, with the three policy fields + the existing `overtime_handling` enum from Phase 2.
 4. WHEN `compute_week_totals` runs (R9.3) THE SYSTEM SHALL split `total_worked_minutes` into `ordinary_minutes` + `total_overtime_minutes` using BOTH thresholds:
    - Compute daily overtime: for each day, `max(0, day_worked_minutes - daily_threshold_minutes)`. Sum across the week → daily_overtime.
@@ -198,7 +199,7 @@ Inherits Phase 1 + 2 compliance. Additions:
 
 **Acceptance criteria:**
 
-1. WHEN `timesheet_approvals` is approved AND org policy `overtime_handling='toil'` THE SYSTEM SHALL grant the overtime hours to the staff's `toil` leave balance via `leave_ledger` row `reason='request_approved'` (or new reason `'toil_accrual'` — design picks).
+1. WHEN `timesheet_approvals` is approved AND org policy `overtime_handling='toil'` THE SYSTEM SHALL grant the overtime hours to the staff's `toil` leave balance via `leave_ledger` row `reason='toil_accrual'` (cross-phase X3 fix — `'toil_accrual'` is forward-pre-included in P2's leave_ledger.reason CHECK enum, so P3's write does not require an enum amendment). The `toil` leave_type_id is guaranteed to exist for every org per P2 R1.3 + R10.1 (cross-phase X2 fix).
 2. WHEN policy is `'employee_chooses'` THE SYSTEM SHALL render a per-week choice on the approval UI ("Cash" or "TOIL") and write balance/payroll-side accordingly.
 3. WHEN policy is `'pay_cash'` THE SYSTEM SHALL accumulate overtime into `total_overtime_minutes` for Phase 4 to pick up on the payslip.
 
@@ -250,7 +251,12 @@ Inherits Phase 1 + 2 compliance. Additions:
         (queries schedule_entries for entry_type IN ('job','booking','other')
         belonging to this candidate)
      4. skills overlap when the shift has any required skills
-        (else step is a no-op — all otherwise-eligible staff get the SMS)
+        (P3-N8: skills overlap is keyed off `schedule_entries.required_skills`,
+         a JSONB array column NOT YET PRESENT in the schema. For Phase 3,
+         since no such column exists, this step is currently a NO-OP and
+         ALL otherwise-eligible staff receive the broadcast SMS. The filter
+         is included so a future schema addition flips it on without code
+         changes — added if/when shift-skill-tagging ships in a later phase.)
      5. NOT the requester_staff_id themselves
      ```
    - SMS body: "Cover needed: {shift_summary}. Open the app to claim."
@@ -279,7 +285,7 @@ Inherits Phase 1 + 2 compliance. Additions:
 
 **Acceptance criteria:**
 
-1. THE SYSTEM SHALL hook into the existing `app/modules/scheduling_v2/service.py::update_entry` (and any other schedule_entries write path — `reschedule_entry`, swap acceptance, cover acceptance) to detect changes to `start_time`, `end_time`, or `staff_id` on a `schedule_entries` row whose `start_time` falls within `now() + 48 hours`.
+1. THE SYSTEM SHALL hook into the existing `app/modules/scheduling_v2/service.py::update_entry` (and any other schedule_entries write path — `reschedule` (P3-N11: real method name verified at `service.py:215`, NOT `reschedule_entry`), swap acceptance, cover acceptance) to detect changes to `start_time`, `end_time`, or `staff_id` on a `schedule_entries` row whose `start_time` falls within `now() + 48 hours`.
 2. WHEN detected THE SYSTEM SHALL enqueue an SMS to the affected staff:
    - On `staff_id` change → SMS to BOTH the previous staff ("Your Sat 10–4 shift has been reassigned.") and the new staff ("You're now on the Sat 10–4 shift.").
    - On `start_time` / `end_time` change with same staff → SMS to that staff: "Your shift on {day} {date} changed: now {new_start}–{new_end} (was {old_start}–{old_end})."

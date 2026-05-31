@@ -913,3 +913,97 @@ class TestOrgSettingsCache:
             assert result == {"updated_fields": []}
             # Empty update path returns before reaching the invalidation hook.
             mock_invalidate.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Staff Management Phase 1 — B6: minimum_wage_threshold_nzd allowlist
+# Refs: R4
+# ---------------------------------------------------------------------------
+
+
+class TestMinimumWageThresholdAllowlist:
+    """B6 — minimum_wage_threshold_nzd must round-trip through the JSONB allow-list.
+
+    `update_org_settings` iterates `SETTINGS_JSONB_KEYS` and silently drops
+    any kwarg not in the set. C9 (compliance counter) and C10 (save-time
+    gate) read the value back via `get_org_settings` (Redis-cached). The
+    default of 23.15 NZD is applied at call-sites — this layer only
+    persists/round-trips the value when the org explicitly sets one.
+    """
+
+    def test_key_present_in_allowlist(self):
+        """Sanity: without this, the PATCH UI silently drops the field."""
+        assert "minimum_wage_threshold_nzd" in SETTINGS_JSONB_KEYS
+
+    @pytest.mark.asyncio
+    async def test_update_persists_minimum_wage_threshold(self):
+        """PATCH ``minimum_wage_threshold_nzd: 25.00`` writes through to JSONB."""
+        org = _make_org(settings={})
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        with patch(
+            "app.modules.organisations.service.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            with patch(
+                "app.modules.organisations.service.invalidate_org_settings_cache",
+                new_callable=AsyncMock,
+            ):
+                result = await update_org_settings(
+                    db, org_id=org.id, user_id=uuid.uuid4(),
+                    minimum_wage_threshold_nzd=25.00,
+                )
+
+        assert "minimum_wage_threshold_nzd" in result["updated_fields"]
+        assert org.settings["minimum_wage_threshold_nzd"] == 25.00
+
+    @pytest.mark.asyncio
+    async def test_get_returns_minimum_wage_threshold_when_set(self):
+        """Once persisted, the value surfaces on every read."""
+        org = _make_org(settings={"minimum_wage_threshold_nzd": 25.00})
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        result = await get_org_settings(db, org_id=org.id)
+
+        assert result["minimum_wage_threshold_nzd"] == 25.00
+
+    @pytest.mark.asyncio
+    async def test_get_returns_none_when_threshold_missing(self):
+        """Missing JSONB value → None (call-sites apply the 23.15 default)."""
+        org = _make_org(settings={})
+        db = _mock_db_session()
+        db.execute = AsyncMock(return_value=_mock_scalar_result(org))
+
+        result = await get_org_settings(db, org_id=org.id)
+
+        # Key is in the response shape (per `test_all_settings_keys_returned`)
+        # but its value is None until the org sets one — C9 / C10 fall back
+        # to 23.15 in that case.
+        assert "minimum_wage_threshold_nzd" in result
+        assert result["minimum_wage_threshold_nzd"] is None
+
+    @pytest.mark.asyncio
+    async def test_request_schema_accepts_minimum_wage_threshold(self):
+        """Router unpacks `payload.model_dump()` — the field must live on the schema."""
+        req = OrgSettingsUpdateRequest(minimum_wage_threshold_nzd=25.00)
+        assert req.minimum_wage_threshold_nzd == 25.00
+        # Verify it survives the model_dump → kwargs round-trip the router uses.
+        kwargs = {k: v for k, v in req.model_dump().items() if v is not None}
+        assert kwargs.get("minimum_wage_threshold_nzd") == 25.00
+
+    @pytest.mark.asyncio
+    async def test_request_schema_rejects_negative_threshold(self):
+        """``ge=0`` guard — negative wages are nonsensical."""
+        with pytest.raises(Exception):
+            OrgSettingsUpdateRequest(minimum_wage_threshold_nzd=-1.0)
+
+    @pytest.mark.asyncio
+    async def test_response_schema_exposes_minimum_wage_threshold(self):
+        """The GET schema must surface the field for the Settings UI to render it."""
+        resp = OrgSettingsResponse(
+            org_name="Test Workshop",
+            minimum_wage_threshold_nzd=25.00,
+        )
+        assert resp.minimum_wage_threshold_nzd == 25.00

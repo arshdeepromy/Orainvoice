@@ -63,6 +63,14 @@ _PAYMENT_PAGE_RATE_LIMIT = 20
 _HA_HEARTBEAT_PATH = "/api/v1/ha/heartbeat"
 _HA_HEARTBEAT_RATE_LIMIT = 12
 
+# Public staff roster viewer — 30 req/min per IP (Staff Phase 1 G5).
+# The endpoint is unauthenticated + token-gated; the limit defends
+# against accidental scraping (e.g., a token leaked into a public
+# Slack channel and spidered by a crawler) without breaking a
+# legitimate recipient who refreshes the page a few times.
+_PUBLIC_STAFF_ROSTER_PATH_PREFIX = "/api/v2/public/staff-roster/"
+_PUBLIC_STAFF_ROSTER_RATE_LIMIT = 30
+
 # Portal per-token rate limit — 60 req/min per portal token (Req 9.1)
 _PORTAL_PER_TOKEN_RATE_LIMIT = 60
 
@@ -259,6 +267,26 @@ class RateLimitMiddleware:
                 response = JSONResponse(
                     status_code=429,
                     content={"detail": "Too many heartbeat requests"},
+                    headers={"Retry-After": str(retry_after)},
+                )
+                await response(scope, receive, send)
+                return
+
+        # --- Public staff roster viewer per-IP limit (30/min — Staff Phase 1 G5) ---
+        # Unauthenticated, token-gated endpoint; the per-IP limit defends
+        # against accidental scraping when a token leaks into a public
+        # channel (a crawler hitting it 100x/sec is the nightmare case).
+        if path.startswith(_PUBLIC_STAFF_ROSTER_PATH_PREFIX):
+            from app.middleware.auth import get_client_ip
+            client_ip = get_client_ip(request) or "unknown"
+            key = f"rl:public_staff_roster:ip:{client_ip}"
+            allowed, retry_after = await _check_rate_limit(
+                redis, key, _PUBLIC_STAFF_ROSTER_RATE_LIMIT, now,
+            )
+            if not allowed:
+                response = JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many requests. Please try again later."},
                     headers={"Retry-After": str(retry_after)},
                 )
                 await response(scope, receive, send)

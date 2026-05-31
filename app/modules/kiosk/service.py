@@ -579,41 +579,111 @@ async def kiosk_check_in_v2(
         )
         vehicles_linked += 1
 
-        # Record odometer reading if provided
+        # Record odometer reading if provided.
+        #
+        # The shared `global_vehicles.odometer_last_recorded` is
+        # intentionally NOT touched here — that field is owned by the
+        # CarJam cache and per-org operational state must stay private
+        # (Req 1.3, 3.4, 11.1, 11.2). We bump `org_vehicles.odometer_
+        # last_recorded` directly.
+        #
+        # `vehicle_uuid` came from the kiosk frontend which sources it
+        # via `lookup_vehicle_for_kiosk`. That lookup returns the
+        # OrgVehicle.id when the org has its own row (manual entry or
+        # post-promotion) and the GlobalVehicle.id only when the vehicle
+        # exists only in the CarJam cache. We must accept either shape
+        # and resolve to the correct (OrgVehicle, GlobalVehicle?) pair.
+        # `_ensure_vehicle_linked` above already promoted the vehicle if
+        # needed, so an OrgVehicle for (org_id, rego) is guaranteed to
+        # exist by the time we get here.
         if vehicle_entry.odometer_km is not None:
-            from app.modules.vehicles.service import promote_vehicle
+            # Resolve the rego — try GlobalVehicle first, fall back to
+            # OrgVehicle. Whichever exists, the link step has produced
+            # an OrgVehicle row for this rego in this org.
+            gv_row = (
+                await db.execute(
+                    select(GlobalVehicle).where(GlobalVehicle.id == vehicle_uuid)
+                )
+            ).scalar_one_or_none()
+            if gv_row is not None:
+                rego = gv_row.rego
+                gv_for_history = gv_row
+            else:
+                ov_by_id = (
+                    await db.execute(
+                        select(OrgVehicle).where(
+                            OrgVehicle.id == vehicle_uuid,
+                            OrgVehicle.org_id == org_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                rego = ov_by_id.rego if ov_by_id is not None else None
+                # For manual-entry vehicles a matching GlobalVehicle may
+                # still exist (e.g., another org's CarJam call populated
+                # the cache after our manual creation). Look it up by
+                # rego so the shared odometer history captures the
+                # reading when possible.
+                if rego is not None:
+                    gv_for_history = (
+                        await db.execute(
+                            select(GlobalVehicle).where(
+                                func.upper(GlobalVehicle.rego) == rego.upper()
+                            )
+                        )
+                    ).scalar_one_or_none()
+                else:
+                    gv_for_history = None
 
-            odometer_reading = OdometerReading(
-                global_vehicle_id=vehicle_uuid,
-                reading_km=vehicle_entry.odometer_km,
-                source="kiosk",
-                recorded_by=user_id,
-                org_id=org_id,
-            )
-            db.add(odometer_reading)
+            if rego is None:
+                # Shouldn't happen — _ensure_vehicle_linked would have
+                # failed earlier — but skip rather than crash the rest
+                # of the check-in.
+                logger.warning(
+                    "Kiosk check-in v2: could not resolve rego for vehicle %s",
+                    vehicle_uuid,
+                )
+                continue
 
-            # Promote the vehicle for the calling org (idempotent if the
-            # link step already promoted) and bump the per-org odometer
-            # cache. The shared `global_vehicles.odometer_last_recorded`
-            # is intentionally NOT bumped — that field is owned by the
-            # CarJam cache and per-org operational state must stay
-            # private (Req 1.3, 3.4, 11.1, 11.2).
-            ov = await promote_vehicle(
-                db,
-                org_id=org_id,
-                global_vehicle_id=vehicle_uuid,
-                user_id=user_id,
-                trigger_site="kiosk.v2_check_in",
-                ip_address=ip_address,
-            )
-            current = ov.odometer_last_recorded or 0
-            if vehicle_entry.odometer_km >= current:
-                ov.odometer_last_recorded = vehicle_entry.odometer_km
+            # Bump the per-org odometer cache on the OrgVehicle. The link
+            # step guarantees this row exists for (org_id, rego).
+            ov = (
+                await db.execute(
+                    select(OrgVehicle).where(
+                        OrgVehicle.org_id == org_id,
+                        OrgVehicle.rego == rego,
+                    )
+                )
+            ).scalar_one_or_none()
+            if ov is not None:
+                current = ov.odometer_last_recorded or 0
+                if vehicle_entry.odometer_km >= current:
+                    ov.odometer_last_recorded = vehicle_entry.odometer_km
+
+            # Record history in odometer_readings only when a
+            # GlobalVehicle exists — the FK targets `global_vehicles.id`
+            # and there is no equivalent per-org history table. For
+            # pure manual-entry vehicles with no CarJam record this
+            # branch is skipped; the per-org odometer is still bumped
+            # above so the org sees the latest value on the vehicle
+            # profile.
+            if gv_for_history is not None:
+                db.add(
+                    OdometerReading(
+                        global_vehicle_id=gv_for_history.id,
+                        reading_km=vehicle_entry.odometer_km,
+                        source="kiosk",
+                        recorded_by=user_id,
+                        org_id=org_id,
+                    )
+                )
 
             logger.info(
-                "Kiosk check-in v2: recorded odometer %d km for vehicle %s",
+                "Kiosk check-in v2: recorded odometer %d km for vehicle %s "
+                "(rego=%s, history=%s)",
                 vehicle_entry.odometer_km,
                 vehicle_uuid,
+                rego,
+                "yes" if gv_for_history is not None else "no",
             )
 
     if data.vehicles:

@@ -366,14 +366,30 @@ function useIsMobile(breakpoint = 768): boolean {
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
 
-export default function ScheduleCalendar() {
+export interface ScheduleCalendarProps {
+  /**
+   * When provided, the calendar locks to a single staff member and the
+   * "Staff" filter dropdown is hidden. Used by the per-staff Roster tab
+   * (Phase 1 — task E4) to render one staff's roster in isolation while
+   * letting the calendar continue to manage its own data fetching and
+   * read/write state. Optional — when absent, the original "all staff"
+   * behaviour applies.
+   */
+  focusStaffId?: string
+}
+
+export default function ScheduleCalendar({ focusStaffId }: ScheduleCalendarProps = {}) {
   const isMobile = useIsMobile()
-  const [view, setView] = useState<CalendarView>('day')
+  const [view, setView] = useState<CalendarView>(focusStaffId ? 'week' : 'day')
   const [currentDate, setCurrentDate] = useState(new Date())
   const [staff, setStaff] = useState<StaffMember[]>([])
   const [entries, setEntries] = useState<ScheduleEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedStaffId, setSelectedStaffId] = useState<string>('')
+
+  // When focusStaffId is set, it overrides any UI-driven selection and
+  // the staff dropdown is hidden in the toolbar.
+  const effectiveStaffId = focusStaffId ?? selectedStaffId
 
   // Schedule entry modal state
   const [modalOpen, setModalOpen] = useState(false)
@@ -426,7 +442,7 @@ export default function ScheduleCalendar() {
         start: rangeStart.toISOString(),
         end: rangeEnd.toISOString(),
       }
-      if (selectedStaffId) params.staff_id = selectedStaffId
+      if (effectiveStaffId) params.staff_id = effectiveStaffId
       const res = await apiClient.get('/api/v2/schedule', { params })
       setEntries(res.data?.entries ?? [])
     } catch {
@@ -434,7 +450,7 @@ export default function ScheduleCalendar() {
     } finally {
       setLoading(false)
     }
-  }, [view, currentDate, selectedStaffId])
+  }, [view, currentDate, effectiveStaffId])
 
   useEffect(() => { fetchStaff() }, [fetchStaff])
   useEffect(() => { fetchEntries() }, [fetchEntries])
@@ -453,9 +469,9 @@ export default function ScheduleCalendar() {
 
   // Filter staff to show
   const visibleStaff = useMemo(() => {
-    if (selectedStaffId) return staff.filter(s => s.id === selectedStaffId)
+    if (effectiveStaffId) return staff.filter(s => s.id === effectiveStaffId)
     return staff
-  }, [staff, selectedStaffId])
+  }, [staff, effectiveStaffId])
 
   // Get entries for a specific staff + day + hour
   const getSlotEntries = useCallback((staffId: string, date: Date, hour: number) => {
@@ -666,20 +682,22 @@ export default function ScheduleCalendar() {
             </select>
           </div>
 
-          {/* Staff filter */}
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-600">Staff</label>
-            <select
-              value={selectedStaffId}
-              onChange={e => setSelectedStaffId(e.target.value)}
-              className="rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="">All Staff</option>
-              {staff.map(s => (
-                <option key={s.id} value={s.id}>{s.name}{s.position ? ` — ${s.position}` : ''}</option>
-              ))}
-            </select>
-          </div>
+          {/* Staff filter — hidden when the calendar is locked to a single staff */}
+          {!focusStaffId && (
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-gray-600">Staff</label>
+              <select
+                value={selectedStaffId}
+                onChange={e => setSelectedStaffId(e.target.value)}
+                className="rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">All Staff</option>
+                {staff.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}{s.position ? ` — ${s.position}` : ''}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Legend */}
           <div className="flex items-center gap-3 ml-auto">

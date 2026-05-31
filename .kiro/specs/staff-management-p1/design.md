@@ -27,8 +27,8 @@ Frontend touches:
 
 - **Route:** existing `/staff/:id` route stays unchanged (registered in `App.tsx:575`). Route-level gate is `<ModuleRoute moduleSlug="staff">` — that's the **existing legacy `staff` module**, which controls whether `/staff/*` routes are reachable at all. Phase 1 does not change this gate.
 - **Two separate module gates co-exist:**
-  - **`staff` (legacy module, route gate):** if disabled, all `/staff/*` routes return the FeatureNotAvailable page. Pre-existing behaviour, untouched by Phase 1.
-  - **`staff_management` (new module, feature gate, introduced in Phase 1):** if disabled (but `staff` enabled), the page renders the legacy single-form `LegacyStaffDetail` view. If enabled, the tabbed shell renders. The Payroll module's dependency chain points at `staff_management` (NOT the legacy `staff` slug), so enabling Payroll auto-enables `staff_management`.
+  - **`staff` (legacy module, route gate):** if disabled, all `/staff/*` routes return the FeatureNotAvailable page. Pre-existing behaviour, untouched by Phase 1. Path-prefix middleware (`app/middleware/modules.py::MODULE_ENDPOINT_MAP`) returns HTTP **403** for any disabled-module API call. Frontend route gate is `<ModuleRoute moduleSlug="staff">`.
+  - **`staff_management` (new module, feature gate, introduced in Phase 1):** if disabled (but `staff` enabled), the page renders the legacy single-form `LegacyStaffDetail` view. If enabled, the tabbed shell renders. The Payroll module's dependency chain points at `staff_management` (NOT the legacy `staff` slug), so enabling Payroll auto-enables `staff_management`. The new sub-feature endpoints use a service-layer call to `ModuleService.is_enabled` and return HTTP **404** `{"detail": "not_enabled", "module": "staff_management"}` (NOT 403 like the path-prefix gate). The 404 vs 403 difference is deliberate (P1-N4): the broad path-prefix gate already asserts access denial via 403 for any `/staff/*` call when the legacy `staff` module is off; the finer `staff_management` sub-gate uses 404 to hide the new sub-endpoints (e.g. `/pay-rates`, `/email-roster`) without re-asserting denial. Users never see a 404 in the UI because the frontend pre-checks `useModules().isEnabled('staff_management')` and renders `LegacyStaffDetail` instead.
 - **Tabs are sub-routes via URL hash** (`/staff/:id#overview`).
 - **Role guard:** existing roles (`org_admin`, `branch_admin`, `location_manager`) — no new role introduced (§4).
 - **Module-gate hook usage:** `const { isEnabled } = useModules(); const moduleEnabled = isEnabled('staff_management')`. The hook is `useModules()` (returns `{ isEnabled, enabledModules, ... }`), not `useModuleEnabled()`.
@@ -173,24 +173,45 @@ def upgrade() -> None:
         ON CONFLICT (slug) DO NOTHING;
     """)
 
-    # Update default subscription plan's enabled_modules — append both slugs.
-    # 'default' is a placeholder; STAFF-001 settles whether to also touch
-    # 'starter'/'pro' or only the first plan.
+    # Update unarchived subscription plans' enabled_modules — append both
+    # slugs. STAFF-001 resolved (P1-N2): all unarchived plans get the
+    # modules; per-org disablement is the gate. The redundant ILIKE
+    # clauses were removed.
     op.execute("""
         UPDATE subscription_plans
         SET enabled_modules = (
             SELECT jsonb_agg(DISTINCT m)
             FROM jsonb_array_elements_text(enabled_modules || '["staff_management","payroll"]'::jsonb) m
         )
-        WHERE name ILIKE '%default%' OR name ILIKE '%starter%' OR is_archived = false;
+        WHERE is_archived = false;
     """)
 
-    # Feature flag mirrors per implementation-completeness Rule 8
+    # Feature flag mirrors per implementation-completeness Rule 8.
+    # P1-N1 fix: feature_flags has no `scope` or `default_enabled` columns;
+    # actual columns are (id, key, display_name [NOT NULL], description,
+    # category, access_level, dependencies, default_value, is_active,
+    # targeting_rules). Pattern matches alembic 0067 + 0191 seed inserts.
+    # P1-N14 fix: default_value=true follows the policy from migration
+    # 0171_fix_feature_flag_defaults.py — module gate is the real lever;
+    # the flag is a passive mirror.
     op.execute("""
-        INSERT INTO feature_flags (id, key, description, default_enabled, scope)
-        VALUES
-            (gen_random_uuid(), 'staff_management', 'Staff Management module', false, 'org'),
-            (gen_random_uuid(), 'payroll', 'Payroll & Payslips module', false, 'org')
+        INSERT INTO feature_flags (
+            id, key, display_name, description, category,
+            access_level, dependencies, default_value,
+            is_active, targeting_rules
+        ) VALUES
+        (
+            gen_random_uuid(), 'staff_management', 'Staff Management',
+            'Staff Management module — gates the tabbed staff record, pay rates, compliance counters, roster delivery.',
+            'operations', 'all_users', '[]'::jsonb, true,
+            true, '[]'::jsonb
+        ),
+        (
+            gen_random_uuid(), 'payroll', 'Payroll & Payslips',
+            'Payroll & Payslips module — gates payslip generation, allowances, KiwiSaver auto-calc, termination payouts.',
+            'operations', 'all_users', '["staff_management"]'::jsonb, true,
+            true, '[]'::jsonb
+        )
         ON CONFLICT (key) DO NOTHING;
     """)
 
@@ -231,6 +252,8 @@ def downgrade() -> None:
 ```
 
 ### 3.1.1 `staff_roster_view_tokens` table (added inside the same migration, G8)
+
+> **P1-N3 implementation note.** The CREATE statement below MUST be inlined into the `0203_staff_phase1_schema.py::upgrade()` body alongside the `staff_pay_rates` block — it is not a separate migration. The downgrade in §3.1 already drops `staff_roster_view_tokens` first; the upgrade body must match.
 
 ```sql
 CREATE TABLE IF NOT EXISTS staff_roster_view_tokens (
@@ -384,7 +407,7 @@ No new roles. Phase 1 uses existing roles per `auth/service.py`:
 - `branch_admin` / `location_manager` — full access for staff at their branch only (existing scoping logic continues to apply).
 - `staff_member` (linked user) — read-only on own record. Phase 1 does not introduce a self-service edit path.
 
-The `audit_logs` action `staff.minimum_wage_override` is restricted to `org_admin` because branch admins should not be authorising wages below the legal minimum.
+The `audit_log` action `staff.minimum_wage_override` is restricted to `org_admin` because branch admins should not be authorising wages below the legal minimum.
 
 ## 5. API Surface
 
@@ -395,7 +418,7 @@ The `audit_logs` action `staff.minimum_wage_override` is restricted to `org_admi
 | `POST /api/v2/staff` | Accept new fields; envelope-encrypt IRD + bank; auto-set `probation_end_date`; auto-write initial `staff_pay_rates` row; gate behind `staff_management` module. |
 | `PUT /api/v2/staff/:id` | Same accept-extended-payload logic; mask-pattern detection; auto-write `staff_pay_rates` row when rate changes; update `last_pay_review_date` when `change_reason='rate_change'`. |
 | `GET /api/v2/staff/:id` | Mask IRD + bank; populate `employment_agreement_upload_url` (signed URL) for the Documents tab. |
-| `GET /api/v2/staff` | Compliance counters in response payload: `compliance_summary: { probation_ending_soon: N, visa_expiring_soon: N, missing_agreement: N, pay_review_due: N, below_minimum_wage: N }`. |
+| `GET /api/v2/staff` | Compliance counters in response payload: `compliance_summary: { probation_ending_soon, visa_expiring_soon, missing_agreement, pay_review_due, below_minimum_wage, missing_employee_id, missing_start_date }` (all 7 keys, all integer counts). **The list response shape stays `{ staff: [...], total, page, page_size }` (NOT renamed to `items` — would break existing consumers per `app/modules/staff/schemas.py:92`). The new field is `compliance_summary` as a parallel top-level key.** (P1-N8 + P1-N13.) |
 | `POST /api/v2/staff` (create) + minimum-wage path | If submitted `hourly_rate < minimum_wage_threshold_nzd`, accept body field `minimum_wage_override: true` to allow; otherwise return HTTP 422 `{detail: 'minimum_wage_below_threshold', threshold: 23.15}`. |
 
 ### 5.2 New endpoints
@@ -419,13 +442,13 @@ POST /api/v2/staff/:id/email-roster {week_start}
     → render Jinja template app/templates/email/roster.html
     → call send_email(db, EmailMessage(...), dlq_task_name='roster_email',
                       dlq_task_args={...})
-    → write audit_logs row action='roster.emailed'
+    → write audit_log row action='roster.emailed'
     → return {ok: true, message_id: result.provider_message_id}
 ```
 
 SMS path mirrors but composes a 160-char body (downgrading to UCS-2 multi-part when the staff `first_name` contains Māori macrons or other non-GSM-7 characters per R9.3) and uses `connexus_sms`. The viewer-token URL is generated with the same `secrets.token_urlsafe(32)` pattern used in `app/modules/portal/service.py`. Tokens stored in `staff_roster_view_tokens` (DDL in §3.1.1) with idempotent upsert per `(staff_id, week_start)` so re-sending the same week reuses the same link.
 
-**Rate limit on public viewer (G5):** the unauthenticated `GET /api/v2/public/staff-roster/:token` endpoint inherits the existing per-IP rate limiter at a tightened threshold: **30 requests per minute per IP**. Configured by adding a new rule to `app/middleware/rate_limit.py`'s policy map under key `public_staff_roster`. The 32-byte token's entropy makes brute-force impractical, but the limit defends against accidental scraping (e.g., a token leaked into a public Slack channel, scraped by web crawlers).
+**Rate limit on public viewer (G5):** the unauthenticated `GET /api/v2/public/staff-roster/:token` endpoint inherits a per-IP rate limit at a tightened threshold: **30 requests per minute per IP**. (P1-N10 fix: `app/middleware/rate_limit.py` does NOT have a "policy map" data structure today; it uses hardcoded path-prefix conditionals.) Add a new conditional block to `_apply_rate_limits` mirroring the existing HA-heartbeat per-IP limit pattern (lines 252-265). Constants `_PUBLIC_STAFF_ROSTER_PATH_PREFIX = "/api/v2/public/staff-roster/"` and `_PUBLIC_STAFF_ROSTER_RATE_LIMIT = 30` (per minute), Redis key `rl:public_staff_roster:ip:{client_ip}`. Returns 429 with `Retry-After` header on breach. The 32-byte token's entropy makes brute-force impractical, but the limit defends against accidental scraping (e.g., a token leaked into a public Slack channel, scraped by web crawlers).
 
 ### 5.5 Token revocation on staff deactivation/termination (G4)
 
@@ -531,12 +554,11 @@ State management: local `useState` for form fields, `useDirty()` hook for unsave
 
 The Roster tab fetches scheduling entries from `GET /api/v2/schedule?staff_id=:id&start=:weekStartIso&end=:weekEndIso` (verified path per `app/main.py:516`; the endpoint accepts `start`, `end`, `staff_id`, `location_id`). Response shape is `{ entries: [...], total: N }` — note the key is `entries`, not `items`. The frontend MUST consume it as `res.data?.entries ?? []` per `safe-api-consumption.md`.
 
-`ScheduleCalendar` today is a self-contained `export default function ScheduleCalendar()` with no props; Phase 1 task E4 extends its signature to accept an optional `focusStaffId?: string` and threads that into the existing internal `selectedStaffId` state used by `MobileDayView`. When `focusStaffId` is set, only that staff's entries render, hiding the multi-column staff grid.
+`ScheduleCalendar` today is a self-contained `export default function ScheduleCalendar()` with no props; Phase 1 task E4 extends its signature to accept ONLY a single new optional prop `focusStaffId?: string` and threads that into the existing internal `selectedStaffId` state used by `MobileDayView`. When `focusStaffId` is set, only that staff's entries render, hiding the multi-column staff grid. The calendar continues to fetch its own data via its existing internal data hook — Phase 1 does not invert the data flow (P1-N6 + P1-N7: the spec previously implied an `entries` / `readOnly` / `onChange` prop trio that would have required a much bigger refactor; that's deliberately out of scope here).
 
 ```tsx
 export default function RosterTab({ staffId }: { staffId: string }) {
-  const [weekStart, setWeekStart] = useState(startOfWeek(new Date()))
-  const { entries, refresh, isLoading } = useStaffRoster(staffId, weekStart)
+  const { weekStart, setWeekStart } = useRosterWeek()
   const [emailing, setEmailing] = useState(false)
   const [smsing, setSmsing] = useState(false)
 
@@ -553,51 +575,49 @@ export default function RosterTab({ staffId }: { staffId: string }) {
           Send roster SMS
         </button>
       </Toolbar>
-      <ScheduleCalendar
-        entries={entries}
-        focusStaffId={staffId}
-        readOnly={false}
-        onChange={refresh}
-      />
+      <ScheduleCalendar focusStaffId={staffId} />
     </div>
   )
 }
 ```
 
-`useStaffRoster` hook implementation:
+`useRosterWeek` is a tiny local hook (just a `useState<Date>` initialised to `startOfWeek(new Date())`). The toolbar's email/SMS buttons need the active week, but the calendar itself owns the entries fetch.
 
 ```tsx
+// Toolbar-only hook — tracks active week for the email/SMS buttons.
+// (Reference-only data-fetching hook for E4 if the team later decides
+// to drive entries from outside; not used in Phase 1's default path.)
+export function useRosterWeek(initial?: Date) {
+  const [weekStart, setWeekStart] = useState<Date>(initial ?? startOfWeek(new Date()))
+  return { weekStart, setWeekStart }
+}
+
+// Reference-only — kept for future extension (P1-N7 — not active in Phase 1):
 export function useStaffRoster(staffId: string, weekStart: Date) {
   const [entries, setEntries] = useState<ScheduleEntry[]>([])
   const [isLoading, setIsLoading] = useState(false)
-  const refreshRef = useRef<() => Promise<void>>()
   useEffect(() => {
     const controller = new AbortController()
-    refreshRef.current = async () => {
-      setIsLoading(true)
-      try {
-        const res = await apiClient.get('/schedule', {
-          baseURL: '/api/v2',
-          signal: controller.signal,
-          params: {
-            staff_id: staffId,
-            start: weekStart.toISOString(),
-            end: addDays(weekStart, 7).toISOString(),
-          },
-        })
-        setEntries(res.data?.entries ?? [])
-      } catch (err) {
-        if (!controller.signal.aborted) console.error('roster fetch failed', err)
-      } finally {
-        setIsLoading(false)
-      }
-    }
-    refreshRef.current()
+    setIsLoading(true)
+    apiClient
+      .get('/api/v2/schedule', {
+        signal: controller.signal,
+        params: {
+          staff_id: staffId,
+          start: weekStart.toISOString(),
+          end: addDays(weekStart, 7).toISOString(),
+        },
+      })
+      .then(res => setEntries(res.data?.entries ?? []))
+      .catch(err => { if (!controller.signal.aborted) console.error('roster fetch failed', err) })
+      .finally(() => setIsLoading(false))
     return () => controller.abort()
   }, [staffId, weekStart])
-  return { entries, refresh: () => refreshRef.current?.(), isLoading }
+  return { entries, isLoading }
 }
 ```
+
+Note the absolute `/api/v2/schedule` path — the project's `apiClient` is configured with `baseURL: '/api/v1'` and an interceptor that strips the baseURL when the URL starts with `/api/`. Every other v2 call in the codebase uses an absolute path; never an explicit `baseURL: '/api/v2'` override (P1-N5).
 
 ### 6.4 `DocumentsTab.tsx`
 
@@ -646,7 +666,7 @@ User clicks "Add staff" on StaffList
     - sets probation_end_date = start_date + 90d
     - inserts StaffMember
     - inserts staff_pay_rates row (initial_rate)
-    - writes audit_logs (staff.created, staff.minimum_wage_override)
+    - writes audit_log (staff.created, staff.minimum_wage_override)
     - flush + refresh
     - returns masked StaffMemberResponse
 → Frontend redirects to /staff/:id#overview
@@ -661,7 +681,7 @@ User opens /staff/:id#overview
 → Frontend: PUT /api/v2/staff/:id with full payload
 → Backend service.update_staff:
     - detects 27.50 != current 25.00
-    - writes audit_logs (staff.pay_rate_changed, staff.updated)
+    - writes audit_log (staff.pay_rate_changed, staff.updated)
     - inserts staff_pay_rates row (rate_change, changed_by=user)
     - sets staff.last_pay_review_date = today
     - flush + refresh
@@ -679,7 +699,7 @@ User clicks "Email roster" on RosterTab
     - if 0 entries → returns {ok:false, reason:'no_shifts_in_week'}
     - render Jinja → HTML body
     - call send_email(db, EmailMessage(to=staff.email, subject=..., html_body=...), dlq_task_name='roster_email')
-    - audit_logs (roster.emailed)
+    - audit_log (roster.emailed)
     - returns {ok:true, message_id}
 → Frontend: toast "Roster emailed to jane@example.com" or error toast
 ```
@@ -791,12 +811,16 @@ Cross-reference against the actual codebase before implementation begins:
 - ✅ `app/modules/scheduling_v2/models.py::ScheduleEntry` has `entry_type IN ('job','booking','break','other','leave')` — Phase 1 doesn't add new entry_type values.
 - ✅ `app/core/modules.py::ModuleService.is_enabled` is the gate API; it queries `module_registry` + `org_modules`.
 - ✅ `module_registry` columns include `setup_question` + `setup_question_description` (verified in DATABASE_TABLES.md and setup_guide tests).
-- ✅ `feature_flags` table key is `key` (not `slug`), scope column exists, default_enabled column exists.
+- ✅ `feature_flags` table key column is `key` (not `slug`), unique. (P1-N1: the actual columns are `id, key, display_name [NOT NULL], description, category, access_level, dependencies, default_value, is_active, targeting_rules, ...` — there is NO `scope` column and NO `default_enabled` column. The Phase 1 INSERT in §3.1 was corrected accordingly.)
 - ✅ `subscription_plans.enabled_modules` is JSONB.
+- ✅ `app/modules/staff/schemas.py::StaffMemberListResponse` returns `{ staff: [...], total, page, page_size }` — Phase 1 keeps the existing `staff` field name (does NOT rename to `items`); adds `compliance_summary` as a parallel top-level key (P1-N8).
 - ✅ Latest alembic head pre-Phase-1 = `0202`. New migrations get 0203, 0204.
 - ✅ `connexus_sms` is the SMS path — provider is keyed by `provider_key='connexus'` in `SmsVerificationProvider`. There is no module-level "send_sms" function today; Phase 1 introduces a thin helper in `app/integrations/sms_sender.py` (new file, mirroring email_sender's shape) that picks an active provider and calls `ConnexusSmsClient`.
 - ✅ Public-token pattern from `app/modules/portal/service.py` — `secrets.token_urlsafe(32)`, expires_at timestamp column.
-- ⚠️ The "default subscription plan" slug is uncertain — `subscription_plans` has `name`, `is_archived`, but no `slug` column we can rely on. Migration uses `name ILIKE` heuristic + `is_archived=false`. Logged as STAFF-001 to settle the exact target before merge.
+- ✅ Path-prefix module-disabled middleware (`app/middleware/modules.py`) returns HTTP **403** for any disabled-module API call. The new sub-feature `staff_management` gate uses HTTP **404** (P1-N4 — deliberate; covered in §2 dual-gate explanation).
+- ✅ `app/middleware/rate_limit.py` uses hardcoded path-prefix conditionals (no policy map data structure). The HA-heartbeat block at lines 252-265 is the canonical pattern for new per-IP limits (P1-N10).
+- ✅ `audit_log` table is **singular** (`audit_log`, not `audit_logs`) per `app/modules/admin/models.py:317`. Phase 1 spec text updated globally (P1-N11). The `write_audit_log` helper takes `before_value` / `after_value` JSONB fields — there is no separate `metadata` column (P1-N12).
+- ✅ STAFF-001 resolved during P1-N2 review: all unarchived subscription plans receive both `staff_management` and `payroll` in `enabled_modules` (matches existing platform behaviour where modules ship enabled in every plan; per-org disablement is the gate).
 
 ## 17. Spec completeness checklist self-check
 

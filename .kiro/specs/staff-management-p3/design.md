@@ -196,13 +196,18 @@ All new tables get `ENABLE ROW LEVEL SECURITY` + `tenant_isolation` policy.
 ```python
 async def lookup_for_kiosk(db, org_id, employee_id):
     """Returns (staff_id, first_name, on_file_photo_url, currently_clocked_in) or raises 422 not_found.
-    Rate-limited via existing rate-limit pattern."""
+    Two-layer rate limit (P3-N9): dependency-level `_check_kiosk_rate_limit` (30/min/kiosk-user)
+    runs before service body; inline G12 check (10/min/(org_id, sha256(employee_id)),
+    distinct 429 body) runs at top of service. See R3.3 for the body shapes."""
 
-async def kiosk_clock_action(db, *, org_id, staff_id, action, photo_upload_id):
-    """Handles in/out with mandatory photo. Auto-matches scheduled_entry_id."""
+async def kiosk_clock_action(db, *, org_id, staff_id, action, photo_file_key):
+    """Handles in/out with mandatory photo. Auto-matches scheduled_entry_id.
+    (P3-N1: parameter renamed from `photo_upload_id` to match the canonical
+    `_store(...)` return key `file_key`.)"""
 
-async def self_service_clock_action(db, *, org_id, staff_id, action, photo_upload_id, lat, lng, source):
-    """Refuses 403 when self_service_clock_enabled=false. Honours geofence + photo policy."""
+async def self_service_clock_action(db, *, org_id, staff_id, action, photo_file_key, lat, lng, source):
+    """Refuses 403 when self_service_clock_enabled=false. Honours geofence + photo policy.
+    (P3-N1: same rename.)"""
 
 async def admin_manual_entry(db, *, org_id, staff_id, clock_in_at, clock_out_at, ...):
     """Manual edit, audit-logged."""
@@ -330,6 +335,13 @@ async def _emit_roster_change_sms(db, *, entry_before, entry_after, change_type)
     """Fire-and-forget SMS notifications for in-window roster changes."""
     if entry_after.start_time > now() + timedelta(hours=48):
         return  # too far out — Friday auto-broadcast handles it
+    # P3-N10: skip cancelled entries — a cancelled-then-edited entry is
+    # effectively dead and SMS-ing the staff would be misleading.
+    if entry_after.status == 'cancelled':
+        await write_audit_log(action='roster.change_sms_skipped',
+                              entity_type='schedule_entry', entity_id=entry_after.id,
+                              after_value={'reason': 'cancelled_entry'})
+        return
     redis_key = f'roster_change:{entry_after.id}'
     if not await redis.set(redis_key, '1', nx=True, ex=3600):
         return  # already sent in last hour
@@ -376,7 +388,10 @@ async def find_in_window_shift(db, staff_id, *, window) -> ScheduleEntry | None:
             ScheduleEntry.staff_id == staff_id,
             ScheduleEntry.start_time.between(from_dt, to_dt),
             ScheduleEntry.entry_type.in_(['job', 'booking', 'other']),
-            ScheduleEntry.status != 'cancelled',
+            # P3-N7: positive set rather than `!= 'cancelled'` so future state
+            # additions explicitly opt-in. Verified at scheduling_v2/models.py:21
+            # ENTRY_STATUSES = ['scheduled', 'completed', 'cancelled'].
+            ScheduleEntry.status.in_(['scheduled', 'completed']),
         )
         .order_by(func.abs(extract('epoch', ScheduleEntry.start_time - func.now())))
         .limit(1)
@@ -386,7 +401,13 @@ async def find_in_window_shift(db, staff_id, *, window) -> ScheduleEntry | None:
 
 async def resolve_manager(db, staff: StaffMember) -> User | None:
     """Walk staff.reporting_to chain, return the first manager with a
-    user_id. Falls back to first org_admin if no chain leads to a user."""
+    user_id. Falls back to first org_admin if no chain leads to a user.
+
+    Cross-phase X7 — when no chain manager has a user_id, the running-late
+    SMS goes to the org_admin fallback. The org admin should see this
+    state ahead of time on the Overview tab so they can fix the chain
+    before a real running-late event surprises them.
+    """
     from app.modules.staff.models import StaffMember
     from app.modules.auth.models import User
     seen: set[uuid.UUID] = set()
@@ -644,7 +665,7 @@ async function handleClockAction() {
   if (org.clock_in_policy.self_service_require_geofence && isNative) {
     ({ lat, lng } = await getCurrentPosition())
   }
-  await api.post('/api/v2/staff/me/clock-action', { action, photo_upload_id: photoUploadId, lat, lng })
+  await api.post('/api/v2/staff/me/clock-action', { action, photo_file_key: photoFileKey, lat, lng })
 }
 ```
 
@@ -666,11 +687,11 @@ Staff taps "Staff Clock In" on kiosk welcome
 → Enters EMP-001
 → POST /kiosk/clock/lookup → {staff_id, first_name, on_file_photo, currently_clocked_in: false}
 → "Hi Jane. Take a photo to clock in." Camera capture.
-→ POST /api/v2/uploads (existing) → {upload_id}
-→ POST /kiosk/clock/action {staff_id, action:'in', photo_upload_id}
+→ POST /api/v2/uploads/clock-photos (P3-N12: dedicated endpoint, NOT `/uploads`) → {file_key}
+→ POST /kiosk/clock/action {staff_id, action:'in', photo_file_key}
    - server matches scheduled_entry_id from schedule_entries window
    - inserts time_clock_entries row
-   - audit_logs (time_clock.in)
+   - audit_log (time_clock.in)
 → "Clocked in at 08:42. Have a great day."
 ```
 
@@ -682,7 +703,7 @@ Staff opens mobile /clock
 → Currently not clocked in → button "Clock In"
 → Tap → Capacitor camera → photo
 → Geolocation if required
-→ POST /api/v2/staff/me/clock-action {action:'in', photo_upload_id, lat, lng}
+→ POST /api/v2/staff/me/clock-action {action:'in', photo_file_key, lat, lng}
    - server checks self_service_clock_enabled
    - geofence check
    - inserts row source='self_service_mobile'
@@ -748,7 +769,7 @@ Bob can't make Sat shift
 
 | API | Target | Notes |
 |---|---|---|
-| `POST /api/v2/staff/me/clock-action` (mobile + web self-service) | **<200ms p99** | Photo upload is async (frontend POSTs to `/uploads` first, then passes `photo_upload_id`); clock-action request only does DB writes + scheduled-entry match + Redis ops. |
+| `POST /api/v2/staff/me/clock-action` (mobile + web self-service) | **<200ms p99** | Photo upload is async — frontend POSTs to `/api/v2/uploads/clock-photos` first, gets `file_key`, then passes it to clock-action as `photo_file_key` (P3-N1 + P3-N12 unification). Clock-action request only does DB writes + scheduled-entry match + Redis ops. |
 | `POST /kiosk/clock/action` (kiosk) | **<300ms p99** | Slightly larger budget because kiosk operator-attended UX is tolerant; photo upload is still pre-POSTed. |
 | `POST /kiosk/clock/lookup` | **<150ms p99** | Single indexed `employee_id` query + Redis rate-limit check. |
 | `GET /api/v2/staff/:id/clock?week=...` (Hours tab load) | **<400ms p99** | Joins clock entries + breaks + scheduled entries for one week; index-backed. |
@@ -765,7 +786,7 @@ All clock-action paths follow performance-and-resilience steering rules: no sync
 - ✅ Capacitor camera + geolocation plugin patterns — Mobile uses existing helpers in `mobile/src/native/`.
 - ✅ `app/modules/scheduling_v2/models.py::ScheduleEntry` is the lookup target for `scheduled_entry_id`.
 - ✅ Redis `SET NX EX` pattern used throughout the codebase (rate-limit, scheduler lock, late-alert dedupe).
-- ✅ Existing `audit_logs` writer + `send_sms` from Phase 1 in place.
+- ✅ Existing `audit_log` (singular — table is `audit_log` per `app/modules/admin/models.py:318`) writer + `send_sms` from Phase 1 in place. (P3-N2: spec previously referred to `audit_logs` plural in a few places; corrected.)
 
 ## 11. Spec completeness self-check
 
@@ -776,7 +797,7 @@ All clock-action paths follow performance-and-resilience steering rules: no sync
 - ✅ Toolbar §6.2.
 - ✅ List/table §6.2 ScheduledVsActualTable + ClockEntriesList with photos.
 - ✅ Error UI: 403 self_service_disabled banner; 422 photo_required toast; geofence-fail toast; 409 scheduling_conflict_at_claim; 422 no_upcoming_shift (running-late); 429 too_many_late_reports; 429 kiosk_lookup_rate_limited.
-- ✅ Integration points: scheduler lock, audit_logs, send_sms, kiosk router, mobile module gate.
+- ✅ Integration points: scheduler lock, audit_log, send_sms, kiosk router, mobile module gate.
 - ✅ SLOs (G4) at §9.1.
 
 ## 12. Gap-analysis closure addendum
@@ -789,7 +810,7 @@ All clock-action paths follow performance-and-resilience steering rules: no sync
 - ✅ **G7** — `time_entries` locking explicitly dropped from approval flow (R9.3 + §4.2 docstring).
 - ✅ **G8** — `shift_swap_requires_manager_approval` org setting; `awaiting_manager` state in schema; §4.8 workflow.
 - ✅ **G9** — §4.5 cross-phase `create_staff` extension reads `default_channel`.
-- ✅ **G10** — `metadata` column on time_clock_entries; §4.9 flag flow; §6.2 photo thumbnails + side-by-side modal + flagged-acknowledgement on approve.
+- ✅ **G10** — `flags` JSONB column on time_clock_entries (P3-N3: named `flags` not `metadata` — SQLAlchemy DeclarativeBase reservation); §4.9 flag flow; §6.2 photo thumbnails + side-by-side modal + flagged-acknowledgement on approve.
 - ✅ **G12** — R3.3 concrete Redis key + SHA-256 hashing + 429 response.
 - ✅ **G13** — R12.5 notification matrix; §4.8 `_notify_swap` helper.
 - ✅ **G15** — Photo retention policy 6 years in Non-Goals; no orphan-cleanup job in Phase 3.

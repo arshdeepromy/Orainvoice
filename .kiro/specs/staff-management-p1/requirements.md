@@ -26,7 +26,7 @@ This phase delivers visible UX immediately and unblocks every later phase. No le
 - Mirror `feature_flags` row inserted alongside (Rule 8 of `implementation-completeness-checklist.md`).
 - Default subscription plan's `enabled_modules` JSONB updated to include `staff_management`.
 - All emails route through unified `app/integrations/email_sender.py::send_email`.
-- All SMS routes through the existing SMS provider stack (`app/integrations/connexus_sms.py` via the SmsVerificationProvider model — same pattern other modules use).
+- All SMS routes through a new thin wrapper `app/integrations/sms_sender.py::send_sms` (introduced in Phase 1, mirrors `email_sender.py`'s shape), which loads the active `SmsVerificationProvider` row and dispatches via the existing `connexus_sms` provider stack. (P1-N9 fix: previously this bullet implied the wrapper already existed — it doesn't, this phase ships it.)
 - Frontend: every API call uses `?.` + `?? []` / `?? 0`; every `useEffect` with API call uses `AbortController`; no `as any`.
 - E2E test script ships with the PR: `scripts/test_staff_employment_record_e2e.py`.
 
@@ -99,7 +99,7 @@ This phase delivers visible UX immediately and unblocks every later phase. No le
 
 1. THE SYSTEM SHALL add a new org-level setting `minimum_wage_threshold_nzd` (numeric, default 23.15) to the existing `org_settings` JSONB or `organisations` settings store.
 2. WHEN the user types a hourly rate below the threshold on Overview tab THE SYSTEM SHALL show a red badge "Below NZ minimum wage ($23.15/hr)" inline.
-3. WHEN the user clicks Save THE SYSTEM SHALL show a confirm modal "This rate is below the NZ minimum wage. Continue anyway?" — Save proceeds only after the user confirms, and a row is written to `audit_logs` with `action='staff.minimum_wage_override'` and the user_id of who confirmed.
+3. WHEN the user clicks Save THE SYSTEM SHALL show a confirm modal "This rate is below the NZ minimum wage. Continue anyway?" — Save proceeds only after the user confirms, and a row is written to `audit_log` with `action='staff.minimum_wage_override'` and the user_id of who confirmed.
 4. THE SYSTEM SHALL show a red badge on the Staff List view for any active staff with `hourly_rate < minimum_wage_threshold_nzd`.
 
 ### R5. Employment Agreement Upload Slot
@@ -121,12 +121,14 @@ This phase delivers visible UX immediately and unblocks every later phase. No le
 
 **Acceptance criteria:**
 
-1. WHEN viewing the Staff List THE SYSTEM SHALL render a banner at the top showing counters:
-   - "N staff have probation ending in next 14 days" — `probation_end_date BETWEEN now() AND now() + interval '14 days' AND is_active=true`.
-   - "N staff have visa expiring in next 60 days" — `visa_expiry_date BETWEEN now() AND now() + interval '60 days' AND is_active=true AND residency_type IN ('work_visa','student_visa','other')`. Citizens and permanent residents are excluded from the count.
-   - "N staff are due a pay review this month" — `last_pay_review_date IS NULL OR last_pay_review_date < (now() - interval '12 months')` AND `is_active=true`.
-   - **"N staff are missing an employee code" (G1)** — `employee_id IS NULL AND is_active=true`. Tooltip on the counter: *"Staff without an employee code cannot clock in or out at the kiosk in Phase 3. Set one now."*
-   - **"N staff are missing an employment start date" (G3)** — `employment_start_date IS NULL AND is_active=true`. Tooltip: *"Phase 2 leave accrual requires every active staff to have an employment start date. Backfill before Phase 2 ships."*
+1. WHEN viewing the Staff List THE SYSTEM SHALL render a banner at the top showing **seven** counters (P1-N13: enumerated here in one place to keep `compliance_summary` shape unambiguous):
+   - "N staff have probation ending in next 14 days" — `probation_end_date BETWEEN now() AND now() + interval '14 days' AND is_active=true`. Response key: `probation_ending_soon`.
+   - "N staff have visa expiring in next 60 days" — `visa_expiry_date BETWEEN now() AND now() + interval '60 days' AND is_active=true AND residency_type IN ('work_visa','student_visa','other')`. Citizens and permanent residents are excluded from the count. Response key: `visa_expiring_soon`.
+   - "N staff are due a pay review this month" — `last_pay_review_date IS NULL OR last_pay_review_date < (now() - interval '12 months')` AND `is_active=true`. Response key: `pay_review_due`.
+   - **"N staff are below NZ minimum wage" (cross-ref R4.4)** — `hourly_rate IS NOT NULL AND hourly_rate < <org.minimum_wage_threshold_nzd> AND is_active=true`. Response key: `below_minimum_wage`.
+   - **"N staff are missing an employment agreement" (cross-ref R5.5)** — `employment_agreement_upload_id IS NULL AND is_active=true`. Response key: `missing_agreement`.
+   - **"N staff are missing an employee code" (G1)** — `employee_id IS NULL AND is_active=true`. Tooltip on the counter: *"Staff without an employee code cannot clock in or out at the kiosk in Phase 3. Set one now."* Response key: `missing_employee_id`.
+   - **"N staff are missing an employment start date" (G3)** — `employment_start_date IS NULL AND is_active=true`. Tooltip: *"Phase 2 leave accrual requires every active staff to have an employment start date. Backfill before Phase 2 ships."* Response key: `missing_start_date`.
 2. WHEN the counter is non-zero THE SYSTEM SHALL render a clickable badge that filters the staff list to that subset. Each filter is independent and persists in the URL query string.
 3. THE SYSTEM SHALL add a `last_pay_review_date` column (date, nullable) to `staff_members`. Populated whenever a pay-rate change is saved with `change_reason = 'rate_change'`.
 4. THE SYSTEM SHALL show a red dot indicator on each staff row that is missing `employee_id` OR `employment_start_date` (both indicators visible if both are missing). Hovering the dot shows a tooltip listing which fields are missing.
@@ -153,7 +155,7 @@ This phase delivers visible UX immediately and unblocks every later phase. No le
 1. THE SYSTEM SHALL add `POST /api/v2/staff/:id/email-roster` accepting body `{ week_start: 'YYYY-MM-DD' }` and returning `{ ok: true, message_id: '...' }` or `{ ok: false, reason: '...' }`.
 2. THE SYSTEM SHALL refuse with HTTP 422 if `staff.email` is null or `weekly_roster_email_enabled` is false (with explicit `reason`).
 3. WHEN the endpoint is called THE SYSTEM SHALL load all `schedule_entries` for that staff in the week, render a Jinja HTML template with the staff's locale/timezone, and call `send_email(db, EmailMessage(...), dlq_task_name='roster_email')`.
-4. THE SYSTEM SHALL write an `audit_logs` row with `action='roster.emailed'`.
+4. THE SYSTEM SHALL write an `audit_log` row with `action='roster.emailed'`.
 5. THE SYSTEM SHALL only send the email if at least one schedule entry exists in the week — otherwise return HTTP 422 `reason='no_shifts_in_week'`.
 
 ### R9. SMS Roster to Staff
@@ -170,12 +172,12 @@ This phase delivers visible UX immediately and unblocks every later phase. No le
      - If the body fits within UCS-2's 70-char limit → send as a single UCS-2 message.
      - If the body exceeds 70 chars in UCS-2 mode → send as a concatenated multi-part SMS (the `connexus_sms` provider already supports this; the spec just acknowledges the cost implication).
    - THE SYSTEM SHALL **never transliterate** Māori macrons to ASCII vowels — that's culturally inappropriate. Accept the multi-part billing.
-   - THE SYSTEM SHALL log the segment count in the audit row's `metadata` (e.g., `{ "segments": 2, "encoding": "ucs2" }`) for ops visibility.
+   - THE SYSTEM SHALL log the segment count + encoding in the audit row's `after_value` JSONB (e.g. `{ "segments": 2, "encoding": "ucs2", "phone_number_masked": "*****1234" }`) for ops visibility. (P1-N12: `audit_log` has no `metadata` column — `after_value` is the right field.)
 4. THE SYSTEM SHALL generate a tokenised viewer link (similar pattern to `app/modules/portal/service.py` portal tokens) that expires 30 days after issue and renders a read-only HTML schedule. No login required.
 5. THE SYSTEM SHALL route the SMS through the existing `connexus_sms` provider via the configured fallback chain.
-6. THE SYSTEM SHALL write an `audit_logs` row with `action='roster.sms_sent'`.
+6. THE SYSTEM SHALL write an `audit_log` row with `action='roster.sms_sent'`.
 7. **Token lifecycle (G4):** WHEN a staff member is deactivated (R12 `staff.deactivated`) OR terminated (R12 `staff.terminated`) THE SYSTEM SHALL immediately expire all of that staff's `staff_roster_view_tokens` rows by setting `expires_at = now()`. Any subsequent GET to a previously-valid token returns HTTP 410 Gone with body `{ "detail": "token_expired_staff_deactivated" }`. Audit row `roster.tokens_revoked` is written with `{ staff_id, tokens_revoked_count }` in `after_value`.
-8. **Rate limit on public viewer (G5):** the unauthenticated `GET /api/v2/public/staff-roster/:token` endpoint SHALL be subject to a per-IP rate limit of **30 requests per minute**, configured via the existing rate-limit middleware policy file. On 429, the standard `Retry-After` header is returned.
+8. **Rate limit on public viewer (G5):** the unauthenticated `GET /api/v2/public/staff-roster/:token` endpoint SHALL be subject to a per-IP rate limit of **30 requests per minute**, configured by adding a new conditional block to `_apply_rate_limits` in `app/middleware/rate_limit.py` mirroring the existing HA-heartbeat pattern (lines 252-265). On 429, the standard `Retry-After` header is returned. (P1-N10: middleware has no "policy file" — uses hardcoded path-prefix conditionals.)
 
 ### R10. Auto Friday-Afternoon Roster Broadcast (Scheduled Task)
 
@@ -197,9 +199,9 @@ This phase delivers visible UX immediately and unblocks every later phase. No le
 
 1. THE SYSTEM SHALL insert into `module_registry` (idempotent, `ON CONFLICT (slug) DO NOTHING`) one row with `slug='staff_management'`, `display_name='Staff Management'`, `category='operations'`, `is_core=false`, `dependencies='[]'`, `incompatibilities='[]'`, `status='available'`, `setup_question='Do you employ staff or contractors that you need to roster and pay?'`, `setup_question_description='Manage employee records, rosters, leave balances, clock-in/out, and weekly hours approval — built to NZ employment law.'`.
 2. THE SYSTEM SHALL also insert `payroll` row with `dependencies='["staff_management"]'`, `setup_question='Would you like to generate payslips for your staff inside this app?'`. (Payroll itself ships in Phase 4 — Phase 1 only registers the module shell so the setup wizard works once Phase 4 lands.)
-3. THE SYSTEM SHALL update the default subscription plan's `enabled_modules` to include both `staff_management` and `payroll` (idempotent JSONB merge).
-4. THE SYSTEM SHALL insert mirror rows into `feature_flags` for both keys, `default_enabled=false`, `scope='org'` (idempotent).
-5. THE SYSTEM SHALL gate every staff-management UI surface (tabbed view, scheduled task, new endpoints) behind `ModuleService.is_enabled(org_id, 'staff_management')`. When disabled, endpoints return HTTP 404 `not_enabled` and the frontend shows the legacy single-form view.
+3. THE SYSTEM SHALL update **all unarchived subscription plans** (P1-N2: STAFF-001 resolved — modules ship enabled in every plan; per-org disablement is the gate) to include both `staff_management` and `payroll` in `enabled_modules` (idempotent JSONB merge: `WHERE is_archived = false`).
+4. THE SYSTEM SHALL insert mirror rows into `feature_flags` for both keys with `default_value=true` (P1-N14: matches the policy from migration `0171_fix_feature_flag_defaults.py` — module gate is the real lever; flag is a passive mirror for the admin GUI), `category='operations'`, `access_level='all_users'`, `dependencies='[]'::jsonb`, `is_active=true`, `display_name` populated (NOT NULL column). Idempotent on `key`. (P1-N1: `feature_flags` has no `scope` or `default_enabled` column — real names are `default_value`, plus `display_name` is required.)
+5. THE SYSTEM SHALL gate every staff-management UI surface (tabbed view, scheduled task, new endpoints) behind `ModuleService.is_enabled(org_id, 'staff_management')`. When disabled, the new sub-feature endpoints return HTTP **404** `{"detail": "not_enabled", "module": "staff_management"}` and the frontend swaps to the legacy single-form view. (P1-N4: 404 not 403 here is deliberate — the broader `staff` module path-prefix gate already returns 403 via middleware; this finer-grained `staff_management` gate uses 404 to hide the new sub-endpoints without re-asserting access denial. Users never see a 404 in the UI because the frontend pre-checks the flag and renders `LegacyStaffDetail` instead.)
 
 ### R12. Audit Logging
 

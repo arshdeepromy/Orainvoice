@@ -13,6 +13,7 @@ import { usePaymentMethodEnforcement } from '@/hooks/usePaymentMethodEnforcement
 import { BlockingPaymentModal } from '@/components/billing/BlockingPaymentModal'
 import { ExpiringPaymentWarningModal } from '@/components/billing/ExpiringPaymentWarningModal'
 import NotificationBadge from '@/pages/compliance/NotificationBadge'
+import ShiftSwapBadge from '@/pages/swaps/ShiftSwapBadge'
 import InboxBellDropdown from '@/components/notifications/InboxBellDropdown'
 import { Modal, Button } from '@/components/ui'
 import { usePageMeta } from '@/hooks/usePageMeta'
@@ -53,6 +54,10 @@ const navItems: NavItem[] = [
   { to: '/items', label: 'Items', icon: CatalogueIcon, module: 'inventory' },
   { to: '/catalogue', label: 'Catalogue', icon: CatalogueIcon, module: 'inventory' },
   { to: '/staff', label: 'Staff', icon: StaffIcon, module: 'staff', flagKey: 'staff' },
+  { to: '/leave/approvals', label: 'Leave Approvals', icon: StaffIcon, module: 'staff_management', adminOnly: true },
+  { to: '/shift-swaps', label: 'Shift swaps', icon: ScheduleIcon, module: 'staff_management' },
+  { to: '/shift-cover', label: 'Open shifts', icon: ScheduleIcon, module: 'staff_management' },
+  { to: '/payroll/run', label: 'Payroll', icon: PayrollIcon, module: 'payroll' },
   { to: '/projects', label: 'Projects', icon: ProjectsIcon, module: 'projects', flagKey: 'projects' },
   { to: '/expenses', label: 'Expenses', icon: ExpensesIcon, module: 'expenses', flagKey: 'expenses' },
   { to: '/time-tracking', label: 'Time Tracking', icon: TimeTrackingIcon, module: 'time_tracking', flagKey: 'time_tracking' },
@@ -309,6 +314,7 @@ export function OrgLayout() {
                   {item.to === '/compliance' && (
                     <NotificationBadge refreshKey={badgeRefreshKey} />
                   )}
+                  {item.to === '/shift-swaps' && <ShiftSwapBadge />}
                 </NavLink>
               </li>
             ))}
@@ -698,6 +704,14 @@ function ScheduleIcon() {
   return (
     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+    </svg>
+  )
+}
+
+function PayrollIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
     </svg>
   )
 }

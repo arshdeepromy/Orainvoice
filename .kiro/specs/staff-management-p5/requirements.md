@@ -8,6 +8,14 @@ Phase 5 surfaces the visibility owners actually use to run the business and prod
 
 **Status:** Draft, depends on Phases 1–4. **Optional / deferrable** — only implement when customer demand exists.
 
+## Hard prerequisites (P5-N1 + P5-N8)
+
+P5 cannot start widget implementation until **STAFF-011** is resolved (see Open Questions). The dashboard `WidgetGrid` is currently gated by the trade-family check `(tradeFamily ?? 'automotive-transport') === 'automotive-transport'` at `frontend/src/pages/dashboard/OrgAdminDashboard.tsx:346`. P5's two new widgets (labour cost + wage forecast) are payroll-related and apply to all 16 trade families — without resolving STAFF-011, the widgets ship invisible to 15 of 16 trade families even when payroll is fully running.
+
+**Recommended resolution (Option A):** drop the `tradeFamily` gate around `WidgetGrid` since the dashboard infrastructure should be universal. The gate was added when the platform was automotive-only and is now obsolete. Each widget retains its own per-module gate via `WIDGET_DEFINITIONS`, which is the correct level for fine-grained visibility.
+
+**Alternative (Option B):** ship the two payroll widgets in a NEW dedicated `/payroll/dashboard` surface, not the existing `WidgetGrid`. Adds a new task workstream.
+
 ## Steering compliance
 
 - Dashboard widgets follow the 10-step process in `dashboard-widget-gating.md`.
@@ -21,9 +29,13 @@ Phase 5 surfaces the visibility owners actually use to run the business and prod
 
 **Acceptance criteria:**
 
-1. THE SYSTEM SHALL add `WIDGET_DEFINITIONS` entry `labour_cost_vs_revenue` with `module: 'staff_management'`, `defaultOrder: 11`.
-2. Backend service function in `dashboard_service.py::get_labour_cost_vs_revenue(db, org_id, branch_id)` returns `WidgetDataSection[LabourCostItem]` with try/except per-widget.
-3. Computes: `labour_cost = SUM(payslips.gross_pay) over rolling 7d/30d/YTD`; `revenue = SUM(invoices.total_amount) over same window` (joined on org_id; branch-filtered).
+1. THE SYSTEM SHALL add a `WIDGET_DEFINITIONS` entry per the dashboard-widget-gating convention (P5-N5):
+   - **Frontend `WIDGET_DEFINITIONS.id`:** `'labour-cost-vs-revenue'` (kebab-case per existing convention).
+   - **Backend `DashboardWidgetData` field:** `labour_cost_vs_revenue` (snake_case per existing Pydantic convention).
+   - **Module gate (P5-N7):** `module: 'payroll'` — NOT `'staff_management'`. Reason: this widget reads `payslips.gross_pay` which only exists when P4's `payroll` module is enabled. Gating on `staff_management` would render the widget for orgs that have staff but no payroll, showing $0 / no-data perpetually.
+   - `defaultOrder: 11` (P5-N6: re-check `WidgetGrid.tsx::WIDGET_DEFINITIONS` for collisions before merge — bump if 11 is taken).
+2. Backend service function in `dashboard_service.py::get_labour_cost_vs_revenue(db, org_id, branch_id)` returns `WidgetDataSection[LabourCostItem]` with try/except per-widget (mirrors `get_recent_customers` + `get_public_holidays` SAVEPOINT pattern at `dashboard_service.py:184` and `:264`).
+3. Computes: `labour_cost = SUM(payslips.gross_pay) over rolling 7d/30d/YTD`; `revenue = SUM(invoices.total) over same window` (P5-N2 fix: column is `total`, NOT `total_amount` — verified at `app/modules/invoices/models.py:184`). Joined on org_id; branch-filtered.
 4. Returns `{ items: [{period:'7d',labour:X,revenue:Y,pct:X/Y}, ...], total: 3 }`.
 5. Pydantic schema added to `DashboardWidgetsResponse`.
 6. Normalisation in `useDashboardWidgets.ts`.
@@ -33,8 +45,12 @@ Phase 5 surfaces the visibility owners actually use to run the business and prod
 
 **Acceptance criteria:**
 
-1. Add `WIDGET_DEFINITIONS` entry `wage_forecast` with `module: 'staff_management'`, `defaultOrder: 12`.
-2. Computes Monday-morning view: published `schedule_entries` for the current week × `staff_members.hourly_rate` × expected leave (approved leave_requests in week) × overtime estimate (sum of approved overtime_requests).
+1. Add a `WIDGET_DEFINITIONS` entry per the dashboard-widget-gating convention (P5-N5):
+   - **Frontend `WIDGET_DEFINITIONS.id`:** `'wage-forecast'` (kebab-case).
+   - **Backend `DashboardWidgetData` field:** `wage_forecast` (snake_case).
+   - **Module gate:** `module: 'staff_management'` (NOT `payroll` — this widget reads schedule_entries + staff_members + leave_requests + overtime_requests which all exist before payroll ships, so the widget produces useful output even without P4 deployed; per P5-N7 differentiation).
+   - `defaultOrder: 12` (P5-N6 collision pre-flight applies).
+2. Computes Monday-morning view: non-cancelled `schedule_entries` (`status IN ('scheduled', 'completed')` per the actual `ENTRY_STATUSES` enum at `app/modules/scheduling_v2/models.py:21` — P5-N3 fix: previously said "published" which doesn't exist) for the current week × `staff_members.hourly_rate` × expected leave (approved leave_requests in week) × overtime estimate (sum of approved overtime_requests).
 3. Returns `{ items: [{label:'This week',forecast:X}, ...], total: 1 }`.
 
 ### R3. Attendance Patterns Report
@@ -95,3 +111,4 @@ THE SYSTEM SHALL bump 1.17.0 → 1.18.0.
 ## Open Questions
 
 - **STAFF-004:** Which bank format ships first. Recommend BNZ Multi-Pay (most common in NZ SME workshops). Settle before implementation; the framework supports adding more formats post-launch as plugins.
+- **STAFF-011 (BLOCKING for P5 widget work):** Resolve trade-family gating of payroll widgets. The dashboard `WidgetGrid` is currently rendered only for automotive-transport orgs (verified at `frontend/src/pages/dashboard/OrgAdminDashboard.tsx:346`). P5's two new widgets are payroll-related and apply to all 16 trade families. **Recommend Option A**: drop the `tradeFamily` gate around `WidgetGrid` since the dashboard infrastructure should be universal; each widget retains its own per-module gate via `WIDGET_DEFINITIONS`. **Alternative Option B**: ship a separate `/payroll/dashboard` surface for payroll widgets (adds a new task workstream). Settle before P5 A1 starts.

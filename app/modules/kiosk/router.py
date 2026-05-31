@@ -28,6 +28,13 @@ from app.modules.kiosk.service import (
     kiosk_check_in_v2,
     lookup_vehicle_for_kiosk,
 )
+from app.modules.time_clock import service as clock_service
+from app.modules.time_clock.schemas import (
+    KioskClockActionRequest,
+    KioskClockActionResponse,
+    KioskLookupRequest,
+    KioskLookupResponse,
+)
 
 router = APIRouter()
 
@@ -234,3 +241,217 @@ async def customer_lookup(
     )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Staff clock-in surface (Phase 3 task B9)
+# ---------------------------------------------------------------------------
+#
+# Two endpoints layered on the existing kiosk JWT (the role-`kiosk`
+# tablet token), gated by the SAME ``dependencies=[require_role("kiosk"),
+# Depends(_check_kiosk_rate_limit)]`` pattern as ``POST /check-in`` above
+# (P3-N9 — the dependency-level 30/min/kiosk-user limit runs FIRST and
+# returns ``{"detail":"Rate limit exceeded"}``; the inline G12 check
+# inside :func:`lookup_for_kiosk` runs SECOND and returns the distinct
+# ``{"detail":"kiosk_lookup_rate_limited"}`` body when a specific
+# ``(org_id, employee_id)`` pair is being enumerated). Routes are NOT in
+# ``PUBLIC_PATHS`` / ``PUBLIC_PREFIXES`` — the kiosk JWT is required.
+#
+# Validates: Requirements R3 — Staff Management Phase 3 task B9.
+
+
+def _translate_clock_service_error(
+    exc: clock_service.TimeClockServiceError,
+) -> JSONResponse:
+    """Map :mod:`app.modules.time_clock.service` exceptions to documented
+    HTTP envelopes for the kiosk surface (R3).
+
+    Mirrors the translator at :mod:`app.modules.time_clock.router` —
+    duplicated here (not imported) because the kiosk surface only
+    needs the kiosk-flavoured subset and the time_clock router uses
+    ``HTTPException`` while this function returns a JSONResponse for
+    consistency with the rest of the kiosk router.
+    """
+    if isinstance(exc, clock_service.KioskLookupRateLimitedError):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "kiosk_lookup_rate_limited"},
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
+    if isinstance(exc, clock_service.EmployeeNotFoundError):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": "employee_not_found",
+                "message": (
+                    "Employee code not recognised. Please see your manager."
+                ),
+            },
+        )
+    if isinstance(exc, clock_service.PhotoRequiredError):
+        return JSONResponse(
+            status_code=422, content={"detail": "photo_required"},
+        )
+    if isinstance(exc, clock_service.InvalidActionError):
+        return JSONResponse(
+            status_code=409,
+            content={"detail": str(exc) or "invalid_action"},
+        )
+    if isinstance(exc, clock_service.StaffNotFoundError):
+        return JSONResponse(
+            status_code=404, content={"detail": "staff_not_found"},
+        )
+    # Unknown subclass — surface as 500 so it shows up in logs.
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "time_clock_service_error",
+            "message": str(exc),
+        },
+    )
+
+
+@router.post(
+    "/clock/lookup",
+    response_model=KioskLookupResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Kiosk role required"},
+        422: {"description": "Employee code not recognised"},
+        429: {
+            "description": (
+                "Rate limit exceeded — either the global 30/min/kiosk-user "
+                "cap (``Rate limit exceeded``) or the per-(org, employee_id) "
+                "G12 cap (``kiosk_lookup_rate_limited``)"
+            ),
+        },
+    },
+    summary="Kiosk staff lookup by employee_id",
+    dependencies=[
+        require_role("kiosk"),
+        Depends(_check_kiosk_rate_limit),
+    ],
+)
+async def clock_lookup(
+    payload: KioskLookupRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis),
+):
+    """Resolve an ``employee_id`` to a kiosk-ready staff identity (R3).
+
+    Two-layer rate limit (P3-N9):
+      - ``_check_kiosk_rate_limit`` (dependency) caps the kiosk-user
+        at 30 lookups/min — returns ``{"detail":"Rate limit exceeded"}``.
+      - The inline G12 limit inside :func:`lookup_for_kiosk` caps a
+        specific ``(org_id, sha256(employee_id))`` pair at 10 hits/min
+        — returns ``{"detail":"kiosk_lookup_rate_limited"}`` with
+        ``Retry-After: 60``.
+
+    The raw ``employee_id`` is SHA-256-hashed before any Redis or
+    audit write — see :func:`app.modules.time_clock.service._hash_employee_id`.
+    """
+    org_uuid, _user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        result = await clock_service.lookup_for_kiosk(
+            db,
+            org_id=org_uuid,
+            employee_id=payload.employee_id,
+            redis=redis,
+            ip_address=ip_address,
+        )
+    except clock_service.TimeClockServiceError as exc:
+        return _translate_clock_service_error(exc)
+
+    return KioskLookupResponse(
+        staff_id=result["staff_id"],
+        first_name=result["first_name"],
+        on_file_photo_url=result.get("on_file_photo_url"),
+        currently_clocked_in=result["currently_clocked_in"],
+    )
+
+
+@router.post(
+    "/clock/action",
+    response_model=KioskClockActionResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Kiosk role required"},
+        404: {"description": "Staff not found"},
+        409: {"description": "Invalid action sequence (already in / not in)"},
+        422: {"description": "photo_required"},
+        429: {"description": "Rate limit exceeded"},
+    },
+    summary="Kiosk staff clock-in or clock-out",
+    dependencies=[
+        require_role("kiosk"),
+        Depends(_check_kiosk_rate_limit),
+    ],
+)
+async def clock_action(
+    payload: KioskClockActionRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Insert a clock-in row or close the open one (R3.5–R3.8).
+
+    ``photo_file_key`` is mandatory — the kiosk app must POST the
+    captured photo to ``/api/v2/uploads/clock-photos`` first and pass
+    the returned ``file_key`` here. The DB CHECK
+    ``ck_time_clock_entries_kiosk_photo`` is the integrity backstop.
+
+    On clock-in the response surfaces the on-file + just-taken photo
+    URLs for the side-by-side confirmation screen (R3.9).
+    """
+    org_uuid, _user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        entry = await clock_service.kiosk_clock_action(
+            db,
+            org_id=org_uuid,
+            staff_id=payload.staff_id,
+            action=payload.action,
+            photo_file_key=payload.photo_file_key,
+            ip_address=ip_address,
+        )
+    except clock_service.TimeClockServiceError as exc:
+        return _translate_clock_service_error(exc)
+
+    # Resolve on-file photo for the confirmation screen — best-effort;
+    # the kiosk surface tolerates a missing photo (the side-by-side
+    # comparison just shows a placeholder for the on-file slot).
+    on_file_photo_url: str | None = None
+    try:
+        from app.modules.staff.models import StaffMember
+
+        staff = await db.get(StaffMember, payload.staff_id)
+        if staff is not None:
+            on_file_photo_url = staff.on_file_photo_url
+    except Exception:  # noqa: BLE001 - photo lookup is best-effort.
+        on_file_photo_url = None
+
+    just_taken_photo_url = (
+        entry.clock_out_photo_url if payload.action == "out"
+        else entry.clock_in_photo_url
+    )
+
+    return KioskClockActionResponse(
+        time_clock_entry_id=entry.id,
+        action=payload.action,
+        clock_in_at=entry.clock_in_at,
+        clock_out_at=entry.clock_out_at,
+        worked_minutes=entry.worked_minutes,
+        on_file_photo_url=on_file_photo_url,
+        just_taken_photo_url=just_taken_photo_url,
+    )

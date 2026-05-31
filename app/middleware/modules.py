@@ -59,6 +59,10 @@ MODULE_ENDPOINT_MAP: dict[str, str] = {
     "/api/v2/loyalty": "loyalty",
     "/api/v2/franchise": "franchise",
     "/api/v2/ecommerce": "ecommerce",
+    # Staff Management Phase 4 (B11 / N8) — payroll surface.
+    "/api/v2/pay-periods": "payroll",
+    "/api/v2/payslips": "payroll",
+    "/api/v2/allowance-types": "payroll",
     "/api/v1/vehicles": "vehicles",
     "/api/v1/ledger": "accounting",
     "/api/v1/gst": "accounting",

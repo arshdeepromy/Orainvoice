@@ -271,6 +271,8 @@ def create_app() -> FastAPI:
     from app.modules.job_cards import models as _job_card_models  # noqa: F401
     from app.modules.service_types import models as _service_type_models  # noqa: F401
     from app.modules.staff import models as _staff_models  # noqa: F401
+    from app.modules.time_clock import models as _time_clock_models  # noqa: F401
+    from app.modules.payslips import models as _payslips_models  # noqa: F401
     from app.modules.sms_chat import models as _sms_chat_models  # noqa: F401
     from app.modules.ha import models as _ha_models  # noqa: F401
     from app.modules.ha import volume_sync_models as _volume_sync_models  # noqa: F401
@@ -510,6 +512,32 @@ def create_app() -> FastAPI:
     # --- Staff module routers ---
     from app.modules.staff.router import router as staff_router
     app.include_router(staff_router, prefix="/api/v2/staff", tags=["v2-staff"])
+
+    # --- Leave module routers ---
+    from app.modules.leave.router import router as leave_router
+    from app.modules.leave.permissions_router import router as leave_permissions_router
+    app.include_router(leave_router, prefix="/api/v2", tags=["v2-leave"])
+    app.include_router(
+        leave_permissions_router,
+        prefix="/api/v2/permissions/fv-leave-view",
+        tags=["v2-leave-permissions"],
+    )
+
+    # --- Time-clock + scheduling-ops module router (Staff Mgmt Phase 3) ---
+    from app.modules.time_clock.router import router as time_clock_router
+    app.include_router(time_clock_router, prefix="/api/v2", tags=["v2-time-clock"])
+
+    # --- Payslips + allowances + termination router (Staff Mgmt Phase 4) ---
+    from app.modules.payslips.router import router as payslips_router
+    app.include_router(payslips_router, prefix="/api/v2", tags=["v2-payslips"])
+
+    # --- Public staff roster viewer (no auth, token-gated, G5 rate-limited) ---
+    from app.modules.staff.public_router import public_router as staff_public_router
+    app.include_router(
+        staff_public_router,
+        prefix="/api/v2/public/staff-roster",
+        tags=["v2-public-staff-roster"],
+    )
 
     # --- Scheduling module routers ---
     from app.modules.scheduling_v2.router import router as scheduling_router
@@ -854,6 +882,37 @@ def create_app() -> FastAPI:
                         logger.info("Synced %d hand-coded page(s) into editor_pages", created)
         except Exception as exc:
             logger.warning("Page editor registry sync failed on startup: %s", exc)
+
+    @app.on_event("startup")
+    async def _payslips_preflight() -> None:
+        """Staff Mgmt Phase 4 — preflight Phase 1 column presence.
+
+        Hard-fails the boot when P1 migration 0203 hasn't been applied
+        (missing staff_members columns or missing payroll module_registry
+        row). Skipped under pytest via PYTEST_RUNNING=1.
+        """
+        from app.core.database import async_session_factory
+        from app.modules.payslips._preflight import (
+            PayslipsPreflightError,
+            assert_phase1_columns_present,
+        )
+
+        try:
+            async with async_session_factory() as db:
+                await assert_phase1_columns_present(db)
+        except PayslipsPreflightError:
+            # Re-raise so the FastAPI process exits rather than booting
+            # in a half-configured state. The CRITICAL log line was
+            # written inside assert_phase1_columns_present.
+            raise
+        except Exception as exc:
+            # Any other (e.g. transient DB) failure should NOT abort
+            # boot — log a warning and let the app come up. The
+            # subsequent request paths will surface the real error if
+            # the DB is genuinely down.
+            logger.warning(
+                "Payslips preflight could not run (non-fatal): %s", exc,
+            )
 
     @app.on_event("shutdown")
     async def _stop_connexus_token_refresher() -> None:

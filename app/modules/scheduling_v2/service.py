@@ -162,10 +162,26 @@ class SchedulingService:
         entry_id: uuid.UUID,
         payload: ScheduleEntryUpdate,
     ) -> ScheduleEntry | None:
-        """Update an existing schedule entry."""
+        """Update an existing schedule entry.
+
+        Fires the roster-change SMS hook (G2 / R14a / task B7a) after
+        the row is mutated when one of ``start_time``, ``end_time``,
+        or ``staff_id`` changed and the shift falls within the next
+        48 hours. The hook is fire-and-forget — failures inside it
+        are logged but do not fail the update.
+        """
         entry = await self.get_entry(org_id, entry_id)
         if entry is None:
             return None
+
+        # Snapshot pre-mutation state so the hook can emit the
+        # correct "was X, now Y" template (design §4.6).
+        from app.modules.time_clock.roster_change_sms import (
+            _emit_roster_change_sms,
+            snapshot_schedule_entry,
+        )
+        before_snapshot = snapshot_schedule_entry(entry)
+
         update_data = payload.model_dump(exclude_unset=True)
         for field, value in update_data.items():
             setattr(entry, field, value)
@@ -173,6 +189,25 @@ class SchedulingService:
         if entry.end_time <= entry.start_time:
             raise ValueError("end_time must be after start_time")
         await self.db.flush()
+
+        # Detect what changed — fire the hook only when one of the
+        # in-window fields moved.
+        change_type: str | None = None
+        if before_snapshot.staff_id != entry.staff_id:
+            change_type = "staff_reassigned"
+        elif (
+            before_snapshot.start_time != entry.start_time
+            or before_snapshot.end_time != entry.end_time
+        ):
+            change_type = "time_changed"
+        if change_type is not None:
+            await _emit_roster_change_sms(
+                self.db,
+                entry_before=before_snapshot,
+                entry_after=entry,
+                change_type=change_type,
+            )
+
         return entry
 
     # ------------------------------------------------------------------
@@ -219,15 +254,39 @@ class SchedulingService:
         new_start: datetime,
         new_end: datetime,
     ) -> ScheduleEntry | None:
-        """Move a schedule entry to new start/end times."""
+        """Move a schedule entry to new start/end times.
+
+        Fires the roster-change SMS hook (G2 / R14a / task B7a) when
+        the new ``start_time`` falls within the next 48 hours and the
+        times actually moved. The hook is fire-and-forget.
+        """
         entry = await self.get_entry(org_id, entry_id)
         if entry is None:
             return None
         if new_end <= new_start:
             raise ValueError("end_time must be after start_time")
+
+        from app.modules.time_clock.roster_change_sms import (
+            _emit_roster_change_sms,
+            snapshot_schedule_entry,
+        )
+        before_snapshot = snapshot_schedule_entry(entry)
+
         entry.start_time = new_start
         entry.end_time = new_end
         await self.db.flush()
+
+        if (
+            before_snapshot.start_time != entry.start_time
+            or before_snapshot.end_time != entry.end_time
+        ):
+            await _emit_roster_change_sms(
+                self.db,
+                entry_before=before_snapshot,
+                entry_after=entry,
+                change_type="time_changed",
+            )
+
         return entry
 
     # ------------------------------------------------------------------

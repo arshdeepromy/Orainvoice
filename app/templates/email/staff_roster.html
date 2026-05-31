@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Your roster — week of {{ week_start_label }}</title>
+</head>
+<body style="margin:0;padding:24px;background:#f9fafb;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#111827">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;padding:32px;border-radius:8px">
+    <h1 style="margin:0 0 8px 0;font-size:20px;font-weight:600">Kia ora {{ first_name }}</h1>
+    <p style="margin:0 0 16px 0">
+      Here is your roster for the week starting <strong>{{ week_start_label }}</strong>.
+    </p>
+
+    {% if entries %}
+    <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin:16px 0">
+      <thead>
+        <tr style="background:#f3f4f6">
+          <th style="text-align:left;padding:8px 12px;border-bottom:1px solid #e5e7eb">Day</th>
+          <th style="text-align:left;padding:8px 12px;border-bottom:1px solid #e5e7eb">Start</th>
+          <th style="text-align:left;padding:8px 12px;border-bottom:1px solid #e5e7eb">End</th>
+          <th style="text-align:left;padding:8px 12px;border-bottom:1px solid #e5e7eb">Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in entries %}
+        <tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6">{{ entry.day_label }}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6">{{ entry.start_label }}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6">{{ entry.end_label }}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;color:#4b5563">{{ entry.notes or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p style="margin:8px 0 0 0;font-size:12px;color:#6b7280">
+      Times shown in {{ org_timezone }}.
+    </p>
+    {% else %}
+    <p style="margin:16px 0">No shifts scheduled for this week.</p>
+    {% endif %}
+
+    <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0">
+    <p style="margin:0;font-size:12px;color:#6b7280">
+      Sent by {{ org_name }}. Questions? Reply to this email or contact your manager.
+    </p>
+  </div>
+</body>
+</html>

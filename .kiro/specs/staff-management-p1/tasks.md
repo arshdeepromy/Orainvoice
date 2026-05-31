@@ -1,22 +1,37 @@
 # Staff Management Phase 1 — Tasks
 
+## Execution policy (applies to every task in this file)
+
+**Read this once before starting. It governs every task below + every phase that auto-advances from this one (P2 → P3 → P4 → P5).**
+
+- **Scoped testing only.** When a task implements a change, run only the tests that exercise the files that task actually touches — never the full test suite, never tests for unrelated modules. A task that adds `app/modules/staff/security.py` runs `pytest tests/unit/test_staff_phase1_mask.py`, NOT `pytest`. A task that adds `frontend/src/pages/staff/tabs/OverviewTab.tsx` runs `vitest run --testPathPattern=staff` (or the file's own `__tests__/...test.tsx` neighbour), NOT the whole frontend suite. The `**Verify:**` line on each task already names the targeted command — execute exactly that.
+- **No interactive prompts.** Run every command in non-interactive form. Use `--yes`/`-y`, `--no-input`, `--non-interactive`, `--ci` flags wherever a tool offers them. For pytest add `-p no:cacheprovider --override-ini=addopts=` only if the project's `pytest.ini` adds interactive options. For npm/yarn use `--yes`. For docker compose use `-T` (no TTY) and never `-it`. For alembic, `alembic upgrade head` is non-interactive by default — keep it that way. For git, never run anything that could open `$EDITOR` (use `-m` on commits, `--no-edit` on merges).
+- **Never stop for confirmation.** If a tool would normally prompt ("Continue [y/n]?", "Overwrite existing? [Y/n]", "Delete X files?"), pass the appropriate non-interactive flag in advance OR rewrite the command to skip the prompt. The only acceptable stop conditions are: (a) a task verify step fails, OR (b) an explicit `STAFF-NNN` open-question is unresolved AND blocks the current task per the spec. Anything else is "keep going".
+- **No long-running watchers.** Never `npm run dev`, `yarn start`, `vitest --watch`, `pytest --looponfail`, or any other watch/serve command. Use one-shot equivalents: `vitest run`, `pytest`, `tsc --noEmit`. Build commands that exit cleanly are fine.
+- **Auto-advance to the next phase.** When the final pre-merge gate at the bottom of THIS file is fully ticked AND the phase's `gap-analysis.md` (and `internal-alignment-gap-analysis.md` for P4) is empty (or every entry has a documented deferral reason), do NOT stop and ask. Open the next phase's `tasks.md` (P2 if running P1, P3 if running P2, ...) and resume at task A1 of that file. The auto-advance instruction lives at the bottom of every phase's tasks.md. The chain ends after Phase 5's `DONE` task.
+- **Skip optional/deferrable tasks gracefully.** Phase 5 is marked optional/deferrable. If user demand for P5 is undocumented when the chain reaches it, log "Phase 5 deferred — no customer demand recorded" and stop cleanly without raising an error.
+- **Failure handling.** If a task verify step fails: write the failure detail to the phase's `gap-analysis.md` with the failing command output, mark the task as `[~]` (in-progress with issue) instead of `[x]`, and continue with the NEXT task that doesn't depend on the failed one. Do not retry indefinitely. Do not stop the chain unless three consecutive tasks fail (signal real environment problem). The user reviews `gap-analysis.md` after the run.
+- **HA-aware writes.** All migrations + scheduler changes are written by the primary node. Do not run alembic on the standby. The deployment scripts already handle this; tasks just need to know that "alembic upgrade head" runs against `docker-compose.yml + docker-compose.dev.yml` (the local primary), not against any standby compose file.
+
+The tasks below assume this policy. If a task's verify step contradicts it (e.g. asks for an interactive flag), follow the policy and treat the spec as the bug — log the discrepancy in `gap-analysis.md`.
+
 Each task is independently mergeable, has a `**Verify:**` line per `implementation-completeness-checklist.md` Rule 9, and references back to a requirement.
 
 ## Workstream A — Backend schema + module registration
 
-- [ ] **A1. Write Alembic migration `0203_staff_phase1_schema.py`**
+- [x] **A1. Write Alembic migration `0203_staff_phase1_schema.py`**
   - Adds **23 new columns** to `staff_members` with `ADD COLUMN IF NOT EXISTS` (the previous 22 plus `residency_type` per G2).
   - Adds CHECK constraints for `employment_type`, `tax_code`, and `residency_type` enums (each drop+recreate idempotent). `residency_type` enum: `'citizen' | 'permanent_resident' | 'work_visa' | 'student_visa' | 'other'`, default `'citizen'`.
   - Creates `staff_pay_rates` table with `CREATE TABLE IF NOT EXISTS`, RLS policy, FK to `organisations`/`staff_members`/`users`.
   - Creates `staff_roster_view_tokens` table per design §3.1.1 with `CREATE TABLE IF NOT EXISTS`, RLS policy, **and `ON DELETE CASCADE` on both `org_id` and `staff_id` FKs (G8)**. Includes the `UNIQUE (staff_id, week_start)` constraint for the get-or-create-token upsert pattern.
   - Inserts module_registry rows for `staff_management` and `payroll` with `ON CONFLICT (slug) DO NOTHING`.
-  - Inserts mirror feature_flags rows.
-  - Updates `subscription_plans.enabled_modules` JSONB to include both slugs (idempotent set-union).
+  - Inserts mirror feature_flags rows with the **correct column shape** (P1-N1) — `(id, key, display_name [NOT NULL], description, category, access_level, dependencies, default_value, is_active, targeting_rules)` — `default_value=true` per migration `0171` policy (P1-N14). NO `scope` column; NO `default_enabled` column. Pattern matches `alembic/versions/2025_01_15_0067-0067_seed_comprehensive_feature_flags.py`.
+  - Updates `subscription_plans.enabled_modules` JSONB to include both slugs `WHERE is_archived = false` (P1-N2: STAFF-001 resolved — all unarchived plans, not a name-ILIKE heuristic).
   - Provides downgrade that drops both new tables + columns + constraints + module rows + flag rows.
   - **Refs:** R2 (incl. residency_type), R3, R11, G2, G8.
   - **Verify:** `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec app alembic upgrade head` runs cleanly. Then in psql: `SELECT slug FROM module_registry WHERE slug IN ('staff_management','payroll')` returns 2 rows; `SELECT key FROM feature_flags WHERE key IN ('staff_management','payroll')` returns 2 rows; `\d+ staff_members` shows the **23 new columns** (incl. `residency_type`); `\d+ staff_pay_rates` shows the table with RLS; `\d+ staff_roster_view_tokens` shows the table with RLS and ON DELETE CASCADE on both FKs (visible in `\d+` output as `Foreign-key constraints: ... ON DELETE CASCADE`); `SELECT constraint_name FROM information_schema.check_constraints WHERE constraint_name LIKE 'ck_staff_residency_type'` returns 1 row.
 
-- [ ] **A2. Write Alembic migration `0204_staff_phase1_indexes.py`**
+- [x] **A2. Write Alembic migration `0204_staff_phase1_indexes.py`**
   - **10 indexes** via `CREATE INDEX CONCURRENTLY ... IF NOT EXISTS` inside `op.get_context().autocommit_block()`. The 7 from design §3.2 plus:
     - `idx_staff_missing_employee_id` partial: `ON staff_members (org_id) WHERE is_active=true AND employee_id IS NULL` — supports the G1 compliance counter.
     - `idx_staff_missing_start_date` partial: `ON staff_members (org_id) WHERE is_active=true AND employment_start_date IS NULL` — supports the G3 counter.
@@ -28,20 +43,20 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
 
 ## Workstream B — Backend ORM + schemas + service
 
-- [ ] **B1. Extend `app/modules/staff/models.py`**
+- [x] **B1. Extend `app/modules/staff/models.py`**
   - Add the 22 mapped columns to `StaffMember` matching the migration.
   - Add new `StaffPayRate` model with FKs to `StaffMember` and `User`.
   - Encrypted columns typed as `Mapped[bytes | None]` with `LargeBinary`.
   - **Refs:** R2, R3.
   - **Verify:** `docker compose exec app python -c "from app.modules.staff.models import StaffMember, StaffPayRate; print(StaffMember.__table__.columns.keys()); print(StaffPayRate.__table__.columns.keys())"` lists every new column.
 
-- [ ] **B2. Create `app/modules/staff/security.py` with masking helpers**
+- [x] **B2. Create `app/modules/staff/security.py` with masking helpers**
   - `mask_ird`, `mask_bank_account`, `is_masked_ird`, `is_masked_bank` per design §3.4.
   - Add Hypothesis property tests in `tests/unit/test_staff_phase1_mask.py`: any input string → mask output never contains more than 3 IRD digits / 4 bank digits.
   - **Refs:** R2.
   - **Verify:** `docker compose exec app pytest tests/unit/test_staff_phase1_mask.py -v` → all green.
 
-- [ ] **B3. Extend `app/modules/staff/schemas.py`**
+- [x] **B3. Extend `app/modules/staff/schemas.py`**
   - Add `tax_code`, `ird_number`, `student_loan`, `kiwisaver_*`, `bank_account_number`, employment dates/type, std hours, contacts, photos, opt-in flags, `minimum_wage_override` to `StaffMemberCreate` and `StaffMemberUpdate`.
   - Add `StaffPayRateResponse` and `StaffPayRateListResponse`.
   - Add `RosterEmailRequest`, `RosterSmsRequest`, `RosterSendResponse`.
@@ -50,23 +65,23 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   - **Refs:** R2, R8, R9.
   - **Verify:** `pytest tests/unit/test_staff_schemas.py -v` (extend existing test file) covers happy + mask round-trip cases.
 
-- [ ] **B4. Extend `StaffService.create_staff` and `update_staff`**
+- [x] **B4. Extend `StaffService.create_staff` and `update_staff`**
   - Encrypt IRD + bank on save (skip when value is masked or unchanged).
   - Auto-set `probation_end_date` when start_date provided and probation_end empty.
   - Insert initial `staff_pay_rates` row on create (when rate present).
   - On update: if rate changed, insert new pay-rate row + update `last_pay_review_date`.
   - Apply minimum-wage check; raise `MinimumWageBelowThresholdError` (new exception type) when below threshold and `override` flag absent.
   - Mask IRD + bank on outbound serialisation.
-  - Always call `await db.refresh(obj)` after `db.flush()`.
+  - **Always call `await db.refresh(obj)` after `db.flush()`** before returning the ORM object for Pydantic serialization (P1-N15: this prevents `MissingGreenlet` when relationships like `location_assignments` are accessed lazily by `StaffMemberResponse.from_attributes`).
   - **Refs:** R2, R3, R4.
-  - **Verify:** `pytest tests/unit/test_staff_service_phase1.py -v` covers: create with IRD → bytea persisted → response masked; update with masked IRD → DB ciphertext unchanged; rate change → pay-rate row written; below-min-wage without override → 422.
+  - **Verify:** `pytest tests/unit/test_staff_service_phase1.py -v` covers: create with IRD → bytea persisted → response masked; update with masked IRD → DB ciphertext unchanged; rate change → pay-rate row written; below-min-wage without override → 422; **regression case (P1-N15) — assert `staff.location_assignments` is accessible on the returned object without raising `MissingGreenlet` after both create and update paths (proves the `db.refresh(obj)` is in place).**
 
-- [ ] **B5. Add `StaffService.get_pay_rate_history`**
+- [x] **B5. Add `StaffService.get_pay_rate_history`**
   - Selects `StaffPayRate` rows for staff_id, joins users to resolve email of changer.
   - Returns `(items, total)`.
   - **Verify:** unit test covers ordering DESC + paginated total count.
 
-- [ ] **B6. Add minimum-wage threshold to org settings cache path**
+- [x] **B6. Add minimum-wage threshold to org settings cache path**
   - **Extend the `SETTINGS_JSONB_KEYS` allow-list at `app/modules/organisations/service.py:198`** to include `minimum_wage_threshold_nzd`. This is mandatory: `update_org_settings` iterates this set and silently drops any kwarg not in it, so without this step the Settings PATCH UI would never persist the threshold.
   - Reuse the existing `get_org_settings` Redis-cached read (post quick-win #6) — once the key is in `SETTINGS_JSONB_KEYS`, it surfaces automatically on every read.
   - Default value when missing from JSONB: `23.15`. Surface this default at the call-sites that read the value (compliance counter SQL in C9, save-time check in C10) — there's no need to backfill `23.15` into existing org rows.
@@ -76,30 +91,30 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
 
 ## Workstream C — Backend API endpoints
 
-- [ ] **C1. Module-gate the existing staff endpoints**
+- [x] **C1. Module-gate the existing staff endpoints**
   - Add `_require_staff_management_module(request, db)` helper that calls `ModuleService.is_enabled` and raises 404 `not_enabled` when disabled.
   - Apply to `POST /staff`, `PUT /staff/:id`, `GET /staff/:id`, list endpoint, and all new endpoints below.
   - List endpoint stays accessible (legacy view) when module disabled — only the new fields are stripped from response.
   - **Refs:** R11.5.
   - **Verify:** disable module for a test org; POST `/api/v2/staff` → 404 `not_enabled`. Re-enable → 201.
 
-- [ ] **C2. Add `GET /api/v2/staff/:id/pay-rates`**
+- [x] **C2. Add `GET /api/v2/staff/:id/pay-rates`**
   - Returns `{ items: [...], total: N }`.
   - Pagination via existing `?offset=&limit=` pattern.
   - **Refs:** R3.5.
   - **Verify:** `curl /api/v2/staff/<id>/pay-rates` after a rate change → returns the history row at top.
 
-- [ ] **C3. Add `POST /api/v2/staff/:id/email-roster`**
+- [x] **C3. Add `POST /api/v2/staff/:id/email-roster`**
   - Body `{ week_start: 'YYYY-MM-DD' }`.
   - Refuses with 422 reason when staff.email is null OR `weekly_roster_email_enabled=false` OR no shifts in week.
   - Renders new template `app/templates/email/staff_roster.html` (Jinja) with this-week's `schedule_entries`.
   - Calls `send_email(db, message, dlq_task_name='roster_email', dlq_task_args={...})`.
-  - Writes `audit_logs` action='roster.emailed'.
+  - Writes `audit_log` action='roster.emailed'.
   - Returns `{ ok, message_id, reason }`.
   - **Refs:** R8.
   - **Verify:** trigger from API → check email_provider sent log → received in test inbox.
 
-- [ ] **C4. Create `app/integrations/sms_sender.py`**
+- [x] **C4. Create `app/integrations/sms_sender.py`**
   - New thin module mirroring `email_sender.py` shape.
   - `async def send_sms(db, *, to_phone, body, dlq_task_name=None) -> SmsSendResult`.
   - Loads active SMS provider (`SmsVerificationProvider WHERE is_active=true ORDER BY priority`), instantiates `ConnexusSmsClient`, calls `send`.
@@ -108,7 +123,7 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   - **Refs:** R9 prerequisite.
   - **Verify:** `pytest tests/unit/test_sms_sender.py` covers happy + provider-down DLQ paths.
 
-- [ ] **C5. Add `staff_roster_view_tokens` table + service**
+- [x] **C5. Add `staff_roster_view_tokens` table + service**
   - New table per design §3.1.1: `id uuid PK, org_id uuid REFERENCES organisations(id) ON DELETE CASCADE, staff_id uuid REFERENCES staff_members(id) ON DELETE CASCADE (G8), token text UNIQUE, week_start date, expires_at timestamptz, created_at timestamptz`. Unique on `(staff_id, week_start)` for upsert.
   - RLS + tenant_isolation policy.
   - Add to migration 0203 (don't split — same phase). The unique index on `token` is in 0204 (CONCURRENTLY pack, A2).
@@ -116,16 +131,16 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   - **Refs:** R9.4, G8.
   - **Verify:** call helper twice for same staff+week → same token; hard-delete the staff via `DELETE /staff/:id/permanent` → query `staff_roster_view_tokens WHERE staff_id=:id` returns 0 rows (cascade verified).
 
-- [ ] **C6. Add `POST /api/v2/staff/:id/sms-roster`**
+- [x] **C6. Add `POST /api/v2/staff/:id/sms-roster`**
   - Body `{ week_start }`.
   - Refuses with 422 when `phone IS NULL OR weekly_roster_sms_enabled=false OR no shifts`.
   - Composes 160-char body via helper `compose_roster_sms_body(staff, entries, viewer_url)`.
   - Calls `send_sms(db, to_phone=staff.phone, body=..., dlq_task_name='roster_sms')`.
-  - Writes `audit_logs` action='roster.sms_sent'.
+  - Writes `audit_log` action='roster.sms_sent'.
   - **Refs:** R9.
-  - **Verify:** trigger via curl → check `notification_log` row + `audit_logs` row + receive on test phone.
+  - **Verify:** trigger via curl → check `notification_log` row + `audit_log` row + receive on test phone.
 
-- [ ] **C7. Add `GET /api/v2/public/staff-roster/:token`**
+- [x] **C7. Add `GET /api/v2/public/staff-roster/:token`**
   - No auth.
   - Validates token + expiry. Distinguishes three failure modes:
     - Token doesn't exist → HTTP 404 `{ "detail": "token_not_found" }`.
@@ -137,16 +152,16 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   - **Refs:** R9.4, R9.8, G5.
   - **Verify:** open the link in incognito → schedule renders. Hammer with `for i in $(seq 1 35); do curl -s -o /dev/null -w '%{http_code}\n' /api/v2/public/staff-roster/<token>; done` → first ~30 return 200, then 429 with `Retry-After` header. Deactivate the staff → next request returns 410 with body `{ "detail": "token_expired_staff_deactivated" }`.
 
-- [ ] **C8. Add `POST /api/v2/staff/:id/employment-agreement`**
+- [x] **C8. Add `POST /api/v2/staff/:id/employment-agreement`**
   - Accepts JSON `{ upload_id }` from the existing `/uploads` POST flow.
   - Validates the upload exists, belongs to the org.
   - Sets `staff_members.employment_agreement_upload_id`.
-  - Writes `audit_logs` action='staff.employment_agreement_uploaded'.
+  - Writes `audit_log` action='staff.employment_agreement_uploaded'.
   - Returns updated staff (with masked PII).
   - **Refs:** R5.
   - **Verify:** upload via Documents tab → DB column populated → "View" link returns signed URL.
 
-- [ ] **C9. Extend `GET /api/v2/staff` response with `compliance_summary`**
+- [x] **C9. Extend `GET /api/v2/staff` response with `compliance_summary`**
   - **Seven** COUNT(*) FILTER aggregates on the org's staff list. The existing `StaffMemberListResponse` schema returns `{ staff: [...], total, page, page_size }` (verified at `app/modules/staff/schemas.py:92`); Phase 1 adds a NEW top-level `compliance_summary` field — it does NOT rename `staff` to `items`. Both keys must coexist (one for the row data, one for the counter object).
     - `probation_ending_soon` — `probation_end_date BETWEEN now() AND now() + interval '14 days' AND is_active=true`.
     - `visa_expiring_soon` — `visa_expiry_date BETWEEN now() AND now() + interval '60 days' AND is_active=true AND residency_type IN ('work_visa','student_visa','other')` (G2: filtered to visa-holders only).
@@ -159,13 +174,13 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   - **Refs:** R6, G1, G2, G3.
   - **Verify:** `curl /api/v2/staff` → `compliance_summary` contains all 7 integer keys. `EXPLAIN` the count query → planner uses the partial indexes from A2.
 
-- [ ] **C10. Extend POST/PUT for minimum-wage gate**
+- [x] **C10. Extend POST/PUT for minimum-wage gate**
   - When body contains `hourly_rate < threshold`, 422 with `{detail: 'minimum_wage_below_threshold', threshold: 23.15}`.
-  - When body also contains `minimum_wage_override: true`, accept + write `audit_logs` action='staff.minimum_wage_override' with the override user_id.
+  - When body also contains `minimum_wage_override: true`, accept + write `audit_log` action='staff.minimum_wage_override' with the override user_id.
   - **Refs:** R4.
   - **Verify:** unit test covers both paths.
 
-- [ ] **C11. Extend deactivation + termination flows to revoke roster tokens (G4)**
+- [x] **C11. Extend deactivation + termination flows to revoke roster tokens (G4)**
   - Modify `StaffService.deactivate_staff` (existing `DELETE /api/v2/staff/:id` handler) and the new termination flow (when `employment_end_date` is set via `PUT /staff/:id`) to run the token-revocation SQL per design §5.5 inside the same DB transaction:
     ```python
     result = await db.execute(
@@ -193,7 +208,7 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
 
 ## Workstream D — Scheduled task
 
-- [ ] **D1. Register `weekly_roster_broadcast` in `app/tasks/scheduled.py`**
+- [x] **D1. Register `weekly_roster_broadcast` in `app/tasks/scheduled.py`**
   - Runs every 30 minutes (existing tick).
   - Body short-circuits unless current local time in org timezone is Friday 16:00–16:29.
   - For each org with `staff_management` module enabled:
@@ -206,18 +221,18 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
 
 ## Workstream E — Frontend tabbed shell
 
-- [ ] **E1. Create `useTabHash` hook**
+- [x] **E1. Create `useTabHash` hook**
   - At `frontend/src/hooks/useTabHash.ts`. Reads/writes `window.location.hash`. Falls back to default tab on mismatch.
   - **Verify:** unit test in `__tests__/useTabHash.test.tsx`.
 
-- [ ] **E2. Refactor `StaffDetail.tsx` into tabbed shell**
+- [x] **E2. Refactor `StaffDetail.tsx` into tabbed shell**
   - Module-gated: when disabled, renders `<LegacyStaffDetail />` (the current single-form file moved to `frontend/src/pages/staff/_legacy/StaffDetail.legacy.tsx`).
   - When enabled, renders header + tab strip + `<Suspense>` + lazy tab components.
   - Discard-changes guard wraps tab transitions.
   - **Refs:** R1.
   - **Verify:** Browser test: open `/staff/<id>` → tabs visible → click each tab → URL hash updates → refresh → same tab loads.
 
-- [ ] **E3. Build `OverviewTab.tsx`**
+- [x] **E3. Build `OverviewTab.tsx`**
   - Sections: Personal, Employment, Tax & Pay, Schedule (existing WorkSchedule), Clock-in & roster delivery, Skills (per design §6.2).
   - **Employment section** includes the new `residency_type` select with options `citizen | permanent_resident | work_visa | student_visa | other` (default `citizen`). The `visa_expiry_date` date input is **conditionally rendered (G2)** — `{['work_visa', 'student_visa', 'other'].includes(staff.residency_type) && <input ...>}`. Switching back to citizen/resident hides the field; the value is preserved (not nulled).
   - **Inline amber warnings above the Employment section (G1, G3):**
@@ -236,21 +251,21 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
     - Create a staff with `employee_id=null` → amber inline banner shows; type a code and click "Save" → banner disappears.
     - Create a staff with `employment_start_date=null` → amber inline banner shows; set the date → banner disappears.
 
-- [ ] **E4. Build `RosterTab.tsx`**
+- [x] **E4. Build `RosterTab.tsx`**
   - Embeds existing `ScheduleCalendar` filtered to `staff_id` (extend its props if needed: `focusStaffId?: string`).
   - Toolbar: WeekNavigator, Add shift, Apply template, Email roster, Send roster SMS.
   - Calls `POST /:id/email-roster` and `POST /:id/sms-roster` with the active week.
   - **Refs:** R7, R8, R9.
   - **Verify:** Browser test — click Email roster → toast shows; check email inbox for content.
 
-- [ ] **E5. Build `DocumentsTab.tsx`**
+- [x] **E5. Build `DocumentsTab.tsx`**
   - Single section "Employment agreement".
   - Drag-drop or file picker → POST to `/uploads` → POST to `/staff/:id/employment-agreement` → refresh.
   - Shows current filename + View + Replace.
   - **Refs:** R5.
   - **Verify:** Browser test — upload PDF → row updated → View opens signed URL.
 
-- [ ] **E6. Build `MinimumWageWarningModal.tsx`**
+- [x] **E6. Build `MinimumWageWarningModal.tsx`**
   - Props: `threshold`, `proposed`, `onCancel`, `onConfirm`.
   - On Confirm → caller re-submits with `minimum_wage_override: true`.
   - **Refs:** R4.
@@ -262,7 +277,7 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   - **Refs:** R3.5.
   - **Verify:** unit test renders mock data.
 
-- [ ] **E8. Build `ComplianceBanner` for StaffList.tsx**
+- [x] **E8. Build `ComplianceBanner` for StaffList.tsx**
   - Reads `compliance_summary` from list response.
   - Renders **7** clickable counters (G1 + G3 add two new ones) that toggle URL filter chips per design §6.5:
     - probation_ending_soon → `?filter=probation_ending`
@@ -283,7 +298,7 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
     - Persistent banner appears when `missing_start_date > 0`; cannot be dismissed; vanishes only after backfilling.
     - Hover row dot on a staff missing both employee_id and start_date → tooltip "Missing: employee code, employment start date".
 
-- [ ] **E9. Public `StaffRosterPublicView.tsx`**
+- [x] **E9. Public `StaffRosterPublicView.tsx`**
   - Route `/public/staff-roster/:token` (no auth).
   - Fetches `/api/v2/public/staff-roster/:token`, renders read-only week view.
   - 404 / expired token shows clear message.
@@ -292,7 +307,7 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
 
 ## Workstream F — Tests + verification
 
-- [ ] **F1. E2E script `scripts/test_staff_employment_record_e2e.py`**
+- [x] **F1. E2E script `scripts/test_staff_employment_record_e2e.py`**
   - Login as org_admin → create TEST_E2E_ staff with full payload (incl. `residency_type`, `employee_id`, `employment_start_date`) → verify masked response → fetch detail → update pay rate → verify history → upload agreement → trigger email roster → trigger SMS roster (skip if no phone) → exercise min-wage override → cleanup all in `finally`.
   - Idempotent prefix-cleanup at the start.
   - **G1 path:** create a staff WITHOUT `employee_id` → GET `/api/v2/staff` → assert `compliance_summary.missing_employee_id >= 1` → patch `employee_id='TEST_E2E_EMP-001'` → re-fetch → assert counter back down.
@@ -300,12 +315,12 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   - **G3 path:** create a staff WITHOUT `employment_start_date` → GET → assert `compliance_summary.missing_start_date >= 1` → patch the date → assert counter back down.
   - **G4 path:** create staff, send SMS roster (provider mocked or real test phone) → token created in `staff_roster_view_tokens` → curl `/api/v2/public/staff-roster/:token` returns 200. Deactivate the staff via `DELETE /staff/:id` → curl same URL → returns 410 with body `{ "detail": "token_expired_staff_deactivated" }`. Query `audit_log` for the latest row → action=`roster.tokens_revoked`, after_value contains `tokens_revoked_count: 1`.
   - **G5 path:** hammer the public viewer URL 35 times in 10 seconds (sequential curls) → first 30 return 200 (or 410 if previously revoked), then 429 with `Retry-After` header. Wait 60 s → request succeeds again.
-  - **G7 path:** create a staff with `first_name='Aroha Tāmaki'` (Māori macrons) → trigger SMS roster → inspect the audit_log row → assert `metadata.encoding == 'ucs2'` and `metadata.segments >= 1`.
+  - **G7 path:** create a staff with `first_name='Aroha Tāmaki'` (Māori macrons) → trigger SMS roster → inspect the audit_log row → assert `after_value.encoding == 'ucs2'` and `after_value.segments >= 1` (P1-N12: previously called `metadata.encoding` — corrected to `after_value.encoding` since `audit_log` has no `metadata` column).
   - **G8 path:** create staff, send SMS roster (token created) → hard-delete the staff via `DELETE /staff/:id/permanent` → query `staff_roster_view_tokens WHERE staff_id=:id` returns 0 rows (cascade verified).
   - **Refs:** R13, G1, G2, G3, G4, G5, G7, G8.
   - **Verify:** `python scripts/test_staff_employment_record_e2e.py` exits 0 with "passed: N, failed: 0".
 
-- [ ] **F2. Unit-test files**
+- [x] **F2. Unit-test files**
   - `tests/unit/test_staff_phase1_mask.py`
   - `tests/unit/test_staff_phase1_minimum_wage.py`
   - `tests/unit/test_staff_pay_rate_history.py`
@@ -316,30 +331,30 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   - `tests/unit/test_staff_phase1_endpoints.py`
   - **Verify:** `pytest tests/unit/ -k 'phase1 or sms_sender' -v` → all green.
 
-- [ ] **F3. Module + flag rows verified post-migration**
+- [x] **F3. Module + flag rows verified post-migration**
   - Run on dev: `SELECT slug, setup_question FROM module_registry WHERE slug IN ('staff_management','payroll')` → 2 rows.
   - `SELECT key FROM feature_flags WHERE key IN ('staff_management','payroll')` → 2 rows.
   - `SELECT enabled_modules FROM subscription_plans WHERE NOT is_archived` → all rows include both slugs.
 
 ## Workstream G — Versioning + docs
 
-- [ ] **G1. Bump versions**
+- [x] **G1. Bump versions**
   - `pyproject.toml` 1.13.0 → 1.14.0.
   - `frontend/package.json` same bump.
   - `mobile/package.json` same bump (even though no mobile changes — keeps stack in sync).
   - **Refs:** R14.
   - **Verify:** `git grep '1.13.0'` after the change returns no results except CHANGELOG history entries.
 
-- [ ] **G2. Update `CHANGELOG.md`**
+- [x] **G2. Update `CHANGELOG.md`**
   - Add `## [1.14.0]` section.
   - Bullet list: tabbed staff detail; full employment record (tax code, IRD, KiwiSaver, bank, employment dates, probation, visa); pay rate history; min-wage warning; compliance counters; roster email + SMS delivery; module registration for staff_management + payroll.
   - **Refs:** R14.
 
-- [ ] **G3. Allocate STAFF-001..STAFF-008 placeholders in `docs/ISSUE_TRACKER.md`**
+- [x] **G3. Allocate STAFF-001..STAFF-008 placeholders in `docs/ISSUE_TRACKER.md`**
   - One-line entries with the question + "Awaiting decision before Phase X".
   - **Refs:** R14.3.
 
-- [ ] **G4. Update `docs/future/staff-management-system.md`**
+- [x] **G4. Update `docs/future/staff-management-system.md`**
   - Mark Phase 1 status `In progress` once work begins; flip to `Shipped — see CHANGELOG 1.14.0` once merged.
 
 ## Pre-merge gate (per source plan §12)
@@ -361,7 +376,7 @@ Tick before opening the merge PR:
 - [ ] No new env vars introduced
 - [ ] All emails route through send_email
 - [ ] All SMS routes through new `send_sms` (which uses connexus_sms)
-- [ ] audit_logs entries written for every state change
+- [ ] audit_log entries written for every state change
 
 **Frontend**
 - [ ] Every API call uses `?.` + `?? []` / `?? 0`
@@ -405,4 +420,27 @@ Tick before opening the merge PR:
 - [ ] G7: SMS sent for staff with Māori macron in name → multi-part UCS-2 SMS delivered; audit row captures segments + encoding.
 - [ ] G8: Hard-delete a staff via `DELETE /staff/:id/permanent` → `staff_roster_view_tokens` rows for that staff are cascade-deleted (0 rows post-delete).
 
+**P1-N1–P1-N15 closure ticks (added 2026-05-31 internal alignment review)**
+- [ ] P1-N1: feature_flags INSERT in migration 0203 uses real columns (id, key, display_name [NOT NULL], description, category, access_level, dependencies, default_value, is_active, targeting_rules); NO `scope`; NO `default_enabled`.
+- [ ] P1-N2: subscription_plans UPDATE uses `WHERE is_archived = false` only (no name-ILIKE heuristic). STAFF-001 resolved.
+- [ ] P1-N3: staff_roster_view_tokens CREATE TABLE inlined into `0203_staff_phase1_schema.py::upgrade()` (not just §3.1.1 separately).
+- [ ] P1-N4: New sub-feature endpoints return 404 (not 403) when `staff_management` disabled — service-layer check; rationale documented in §2.
+- [ ] P1-N5: All v2 frontend calls use absolute path (`apiClient.get('/api/v2/...')`); no `baseURL: '/api/v2'` override.
+- [ ] P1-N6: ScheduleCalendar gets ONE new optional prop (`focusStaffId?: string`) — not the full `entries`/`readOnly`/`onChange` trio; calendar continues to manage its own internal state.
+- [ ] P1-N7: `useRosterWeek` is the active toolbar-only hook; `useStaffRoster` exists as reference-only for future extension.
+- [ ] P1-N8: `GET /api/v2/staff` keeps `{ staff, total, page, page_size }` shape; `compliance_summary` added as parallel top-level key (NOT renamed `staff` to `items`).
+- [ ] P1-N9: Steering bullet about SMS path correctly points at the new `app/integrations/sms_sender.py` wrapper introduced in Phase 1.
+- [ ] P1-N10: Rate-limit middleware extension uses path-prefix conditional (mirrors HA-heartbeat block at lines 252-265); no policy-map abstraction.
+- [ ] P1-N11: All spec text uses `audit_log` (singular) — matches `app/modules/admin/models.py:317` table name.
+- [ ] P1-N12: SMS audit row stores segments + encoding in `after_value` JSONB (audit_log has no `metadata` column).
+- [ ] P1-N13: All 7 compliance counters listed in R6.1 (probation, visa, pay_review, below_min_wage, missing_agreement, missing_employee_id, missing_start_date).
+- [ ] P1-N14: feature_flags rows created with `default_value=true` (matches policy from migration 0171_fix_feature_flag_defaults).
+- [ ] P1-N15: B4 verify step explicitly checks `db.refresh(obj)` is in place via a `MissingGreenlet` regression test on the returned ORM object.
+
 The phase is NOT done until every box is ticked. Any item that can't be ticked goes into `gap-analysis.md` with the reason.
+
+## Auto-advance to next phase
+
+When every checkbox above is ticked AND `gap-analysis.md` is empty (or every entry has a documented reason for deferral), proceed automatically to **Phase 2** without waiting for further user prompt:
+
+- [ ] **NEXT. Begin Staff Management Phase 2** — open `.kiro/specs/staff-management-p2/tasks.md` and start at task A1. Treat the Phase 2 tasks file as the next active spec; carry forward any implementation context (alembic head revision, version number, module slugs already inserted, etc.) from Phase 1's completion state.

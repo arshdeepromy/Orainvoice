@@ -2,15 +2,15 @@
 
 ## 1. Architecture overview
 
-Phase 4 adds the payroll surface. New module `app/modules/payslips/` contains the bulk of code. The Pay Periods page lives under Settings → People → Pay Periods. The PDF renderer reuses the existing Jinja + WeasyPrint setup (path mirrored on `app/modules/invoices/service.py:4446`).
+Phase 4 adds the payroll surface. New module `app/modules/payslips/` contains the bulk of code. The Pay Periods page lives under Settings → People → Pay Periods. The PDF renderer reuses the existing Jinja + WeasyPrint setup — closest reference is `app/modules/quotes/service.py:1162-1165` (single-template `await asyncio.to_thread(lambda: HTML(string=html_content).write_pdf())` shape). Other canonical examples: `app/modules/invoices/service.py:4449-4452`, `app/modules/inventory/service.py:701-704`, `app/modules/vehicles/report_service.py:283-286`.
 
 Backend touches:
 - `alembic/versions/0209_payslip_schema.py`
 - `alembic/versions/0210_payslip_indexes.py`
-- `app/modules/payslips/{models,schemas,service,router,pdf,calc,termination}.py`
-- `app/templates/payslips/payslip.html` (new Jinja template) + a print-CSS file.
+- `app/modules/payslips/{models,schemas,service,router,pdf,pdf_storage,calc,termination,_preflight}.py`
+- `app/modules/payslips/templates/payslip.html` (new Jinja template) + `app/modules/payslips/templates/payslip.css` (print-CSS sibling).
 - `app/tasks/scheduled.py` — register `roll_pay_periods` daily; update existing `update_adp_snapshots` to use real data.
-- `app/main.py` — include router.
+- `app/main.py` — include router; add new payroll path entries to `app/middleware/modules.py::MODULE_ENDPOINT_MAP`.
 
 Frontend touches:
 - `frontend/src/pages/staff/tabs/PayslipsTab.tsx`
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS payslips (
     gross_pay numeric(12,2) NOT NULL DEFAULT 0,
     gross_ytd numeric(12,2) NOT NULL DEFAULT 0,
     net_pay numeric(12,2) NOT NULL DEFAULT 0,
-    pdf_upload_id uuid,
+    pdf_file_key text,                                              -- N3: path-style key matching invoice/quote/job_card_attachments convention; NULL until finalised
     emailed_at timestamptz,
     finalised_at timestamptz,
     notes text,
@@ -148,6 +148,14 @@ ALTER TABLE organisations
 ALTER TABLE organisations DROP CONSTRAINT IF EXISTS ck_org_pay_period_cadence;
 ALTER TABLE organisations ADD CONSTRAINT ck_org_pay_period_cadence
     CHECK (pay_period_cadence IN ('weekly','fortnightly','monthly'));
+
+-- N1 + N6: deterministic user-to-staff resolution for the G9 self-service
+-- endpoints. WITHOUT this, two staff_members rows could share a user_id
+-- (no DB-level constraint exists today on staff_members.user_id) and
+-- /staff/me/payslips would non-deterministically pick a row. Partial
+-- index because user_id is nullable for not-yet-linked staff records.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_staff_members_user_id
+    ON staff_members (user_id) WHERE user_id IS NOT NULL;
 ```
 
 All RLS-enabled with tenant_isolation policy. Allowance defaults seeded for every existing org.
@@ -254,6 +262,40 @@ async def _resolve_allowance_quantity(
     unit='km'     → quantity = recurring_rule.quantity (often 0 — admin
                     fills km on draft); amount = quantity × default_amount,
                     recomputed on every save when quantity edits.
+
+    N20 — concrete shift-count query. A "shift" = one schedule_entries
+    row that:
+        - falls inside [period.start_date, period.end_date+1day),
+        - belongs to staff_id=:s,
+        - has entry_type IN ('job','booking','other'),
+        - has status='completed',
+        - falls inside an APPROVED week (timesheet_approvals.status='approved'
+          covering the schedule_entries.start_time::date).
+
+    Concretely (cross-phase X1 fix — timesheet_approvals is week-based,
+    NOT linked per-entry, so we join on the week range):
+
+        SELECT COUNT(DISTINCT se.id)
+        FROM schedule_entries se
+        JOIN timesheet_approvals ta
+          ON ta.staff_id = se.staff_id
+         AND se.start_time::date BETWEEN ta.week_start AND ta.week_end
+        WHERE se.staff_id = :staff_id
+          AND se.start_time >= :period_start
+          AND se.start_time <  :period_end_plus_one_day
+          AND se.entry_type IN ('job','booking','other')
+          AND se.status = 'completed'
+          AND ta.status = 'approved'
+
+    The earlier draft joined `timesheet_approvals` on `time_clock_entry_id`
+    — but that column does not exist on `timesheet_approvals` (P3 §3.1
+    schema is week-based with `UNIQUE (staff_id, week_start)`). The
+    week-range join captures the spirit of N20 ("admin signed off the
+    timesheet covering this shift") and parses cleanly against P3's schema.
+
+    Free-form (unscheduled) clocked-in time does NOT count toward
+    shift-allowance — admins use a manual allowance line for those edge
+    cases. COUNT(DISTINCT se.id) handles overlapping schedule rows.
     """
     unit = allowance_type.unit
     base = recurring_rule.amount if recurring_rule and recurring_rule.amount is not None else allowance_type.default_amount or Decimal(0)
@@ -270,8 +312,8 @@ async def _resolve_allowance_quantity(
 
 async def finalise_payslip(db, payslip_id, *, send_email: bool):
     """Re-compute totals (in case admin edited drafts), render PDF
-    (asyncio.to_thread), upload, set pdf_upload_id, status='finalised',
-    finalised_at=now()."""
+    (asyncio.to_thread), store via pdf_storage.store_payslip_pdf,
+    set pdf_file_key, status='finalised', finalised_at=now()."""
 
 
 async def void_payslip(db, payslip_id, reason):
@@ -453,8 +495,10 @@ async def terminate_employment(
        - Find leave_requests WHERE staff_id=:id AND status='approved'
          AND start_date > :end_date.
        - For each: cancel the request, restore hours via leave_ledger
-         row reason='request_cancelled_after_approval', cancel future
-         schedule_entries.
+         row reason='request_cancelled_after_approval', set future
+         schedule_entries.status='cancelled' (NOT hard-delete — cross-
+         phase X8: hard-delete would break P3's roster-change SMS hook
+         and audit-history queries).
        - Audit: staff.termination_cancelled_future_leave.
 
     2. Compute payouts on the now-corrected balances:
@@ -506,7 +550,7 @@ def s27_annual_leave_payout(
     return (hourly * remaining_hours).quantize(Decimal('0.01'))
 ```
 
-### 4.4 PDF renderer `app/modules/payslips/pdf.py`
+### 4.4 PDF renderer `app/modules/payslips/pdf.py` + storage helper `app/modules/payslips/pdf_storage.py`
 
 ```python
 async def render_pdf(payslip_id) -> bytes:
@@ -515,7 +559,47 @@ async def render_pdf(payslip_id) -> bytes:
     return pdf_bytes
 ```
 
-Template includes every R7 field plus the bank-account-masked footer (G1) and the public-holiday band rate (G2). CSS print stylesheet at `app/templates/payslips/payslip.css` per the spec in §6.7 below.
+**YTD aggregation helper (P4-N25).** Only `gross_ytd` is stored on the `payslips` row. PAYE / KiwiSaver-employee / KiwiSaver-employer YTD figures are computed at render time from `payslip_deductions` joined to `payslips` × `pay_periods.pay_date BETWEEN :tax_year_start AND :this_pay_date AND status='finalised'` — same tax-year window as `gross_ytd` per N16. The renderer calls a `_compute_ytd_deductions(staff_id, tax_year_start, this_pay_date) -> dict` helper before passing data into the Jinja template; the helper returns `{paye_ytd, kiwisaver_employee_ytd, kiwisaver_employer_ytd}` Decimals. Recomputed every render; never cached on `payslips`. Tax-year boundary handling per N16.
+
+Template at `app/modules/payslips/templates/payslip.html` includes every R7 field plus the bank-account-masked footer (G1) and the public-holiday band rate (G2). CSS print stylesheet at `app/modules/payslips/templates/payslip.css` per the spec in §6.7 below. Per-module template path mirrors the existing convention used by `app/modules/invoices/templates/`, `app/modules/quotes/templates/`, etc. — there is no shared `app/templates/` directory in this codebase.
+
+**Storage helper (N3).** `pdf_storage.py` follows the pattern from `app/modules/job_cards/attachment_service.py`:
+
+```python
+import os, uuid, zlib
+from pathlib import Path
+from app.core.encryption import envelope_encrypt, envelope_decrypt
+
+UPLOAD_BASE = Path(os.environ.get("UPLOAD_DIR", "/app/uploads"))
+PAYSLIP_CATEGORY = "payslips"
+COMP_ZLIB = b"\x01"
+
+def store_payslip_pdf(pdf_bytes: bytes, *, org_id: str, payslip_id: str) -> str:
+    """Compress + encrypt + write PDF; return the file_key path string."""
+    compressed = zlib.compress(pdf_bytes, 6)
+    encrypted = envelope_encrypt(compressed)
+    file_key = f"{PAYSLIP_CATEGORY}/{org_id}/{payslip_id}/{uuid.uuid4().hex}.pdf"
+    dest = UPLOAD_BASE / file_key
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(COMP_ZLIB + encrypted)
+    return file_key
+
+def read_payslip_pdf(file_key: str, *, org_id: str) -> bytes:
+    """Read + decrypt + decompress. Cross-tenant access guard."""
+    expected_prefix = f"{PAYSLIP_CATEGORY}/{org_id}/"
+    if not file_key.startswith(expected_prefix):
+        raise ValueError("Access denied")  # path-traversal / cross-tenant
+    fp = UPLOAD_BASE / file_key
+    if not fp.is_file():
+        raise ValueError("File not found")
+    raw = fp.read_bytes()
+    flag, payload = raw[:1], raw[1:]
+    if flag != COMP_ZLIB:
+        raise ValueError("Unknown compression flag")
+    return zlib.decompress(envelope_decrypt(payload))
+```
+
+The `pdf_file_key` column on `payslips` stores the returned path string. There is no separate `uploads` table — payroll PDFs are owned outright by the `payslips` row and cleaned up via `_delete_file(file_key)` if a draft is ever truly purged (rare; finalised payslips are immutable per R3.4 so deletion is admin-only via a `void` flow that does NOT delete the PDF).
 
 ### 4.5 Audit redaction (G12)
 
@@ -535,7 +619,7 @@ await write_audit_log(
         'staff_id': str(payslip.staff_id),
         'pay_period_id': str(payslip.pay_period_id),
         'finalised_at': payslip.finalised_at.isoformat(),
-        'pdf_upload_id': str(payslip.pdf_upload_id) if payslip.pdf_upload_id else None,
+        'pdf_file_key': payslip.pdf_file_key if payslip.pdf_file_key else None,
     },
 )
 
@@ -545,10 +629,12 @@ await write_audit_log(..., after_value=payslip.dict())
 
 Per-event after_value shapes per R14 spec text:
 - `payslip.generated` → `{ payslip_id, staff_id, pay_period_id, source }`
-- `payslip.finalised` → `{ payslip_id, staff_id, pay_period_id, finalised_at, pdf_upload_id }`
+- `payslip.finalised` → `{ payslip_id, staff_id, pay_period_id, finalised_at, pdf_file_key }`
 - `payslip.emailed` → `{ payslip_id, staff_id, recipient_email_domain_only }` (split on `@` and keep tail only)
 - `payslip.voided` → `{ payslip_id, staff_id, reason }`
 - `staff.terminated` → counts only, no dollar amounts.
+
+(N3 fix: `pdf_file_key` replaces `pdf_upload_id` everywhere.)
 
 ## 5. API endpoints
 
@@ -577,7 +663,19 @@ Per-event after_value shapes per R14 spec text:
 
 All list responses `{ items, total }`.
 
-The `/staff/me/*` endpoints (G9) are gated behind the `payroll` module — when disabled, return 404 `not_enabled` (matching the rest of P4's module-gate pattern). Server-side ownership is checked at every endpoint via `payslip.staff_id == staff_id_from_user(current_user.id)`; non-match returns 404 (not 403) to avoid leaking the existence of payslips that aren't yours. The IRD + bank decryption rule still applies — `pdf.render_pdf` is the only path that touches encrypted fields, even on the self-service surface.
+The `/staff/me/*` endpoints (G9) are gated behind the `payroll` module — when disabled, return HTTP **403** `{"detail": "Module 'payroll' is not enabled for your organisation.", "module": "payroll"}` (matching the existing `app/middleware/modules.py` response shape — N8 fix; previous spec text said 404 which contradicted the rest of the codebase). Server-side ownership is checked at every endpoint via `payslip.staff_id == staff_id_from_user(current_user.id)`; non-match returns 404 (not 403) to avoid leaking the existence of payslips that aren't yours. The IRD + bank decryption rule still applies — `pdf.render_pdf` is the only path that touches encrypted fields, even on the self-service surface.
+
+**User-to-staff resolver (N1).** The function `staff_id_from_user(user_id)` runs `SELECT id FROM staff_members WHERE user_id = :user_id LIMIT 1`. The `is_active` filter is INTENTIONALLY OMITTED so terminated staff retain access to their own historical payslips per record-retention rules. Determinism is guaranteed by the partial UNIQUE index `ux_staff_members_user_id` created in migration `0209_payslip_schema.py`.
+
+**Adding paths to module middleware (N8).** `app/middleware/modules.py::MODULE_ENDPOINT_MAP` MUST gain three new entries during P4 deploy:
+
+```python
+"/api/v2/pay-periods": "payroll",
+"/api/v2/payslips": "payroll",
+"/api/v2/allowance-types": "payroll",
+```
+
+The self-service `/api/v2/staff/me/payslips` endpoints share the `/api/v2/staff` prefix so they inherit the existing `staff` module gate from the middleware. The additional `payroll` gate is enforced inside the service-layer self-service handlers (where the `current_user` and the org_id are both already resolved).
 
 ## 6. Frontend Component Tree
 
@@ -625,7 +723,7 @@ Table: staff, this-period gross, last-period gross, delta, % change. Filter by %
 
 ### 6.7 Recurring Allowances panel on Staff Detail Overview tab (G4)
 
-Lives under a collapsible "Recurring allowances" section on the Phase 1 Overview tab. Phase 4 ships this surface; Phase 1 reserved the slot.
+Lives under a collapsible "Recurring allowances" section ADDED to the Phase 1 Overview tab. Phase 4 ships this surface as a new collapsible section appended below the existing Tax & Pay panel (where Phase 1's Pay Rate History panel sits). (P4-N31: previously claimed "Phase 1 reserved the slot" — Phase 1 R1.1 enumerates only Overview/Roster/Documents tabs, and Phase 1 design §6.2 lists the Overview tab's six sections without reserving a recurring-allowances slot. Phase 4 is the integration point that adds the section.)
 
 ```tsx
 function RecurringAllowancesPanel({ staffId }: { staffId: string }) {
@@ -684,7 +782,7 @@ export default function MyPayslipsPage() {
 
 ### 6.9 Print CSS spec (G20)
 
-`app/templates/payslips/payslip.css` MUST specify:
+`app/modules/payslips/templates/payslip.css` MUST specify:
 
 ```css
 @page {
@@ -732,7 +830,7 @@ td.numeric, th.numeric { text-align: right; font-variant-numeric: tabular-nums; 
 tr.row-alt { background: #f8f8f8; }   /* still printable if using draft mode */
 ```
 
-The Jinja template at `app/templates/payslips/payslip.html` references this stylesheet via `<link rel="stylesheet" href="{{ static('payslips/payslip.css') }}">` rendered server-side before passing to WeasyPrint.
+The Jinja template at `app/modules/payslips/templates/payslip.html` references this stylesheet via `<link rel="stylesheet" href="{{ static('payslips/payslip.css') }}">` rendered server-side before passing to WeasyPrint.
 
 ## 7. User Workflow Traces
 
@@ -805,7 +903,7 @@ Generate for casual Bob:
 | API | Target | Notes |
 |---|---|---|
 | `POST /api/v2/pay-periods/:id/payslips/generate` (single-org draft generation, 50 staff) | **<3s p99** | Reads timesheet_approvals + leave_requests + recurring_allowances; SAVEPOINT-per-staff; minimal computation. |
-| `POST /api/v2/pay-periods/:id/finalise` (bulk, 50 staff) | **<5s p99 to return**; `pdf_upload_id` populated within 60s p99 per payslip | The endpoint returns once payslips are status='finalised'. PDF render runs as a background task; `pdf_upload_id` patched in async. Bulk-email dispatch is async via `send_email`'s DLQ; emails follow PDF availability. |
+| `POST /api/v2/pay-periods/:id/finalise` (bulk, 50 staff) | **<5s p99 to return**; `pdf_file_key` populated within 60s p99 per payslip | The endpoint returns once payslips are status='finalised'. PDF render runs as a background task; `pdf_file_key` patched in async. Bulk-email dispatch is async via `send_email`'s DLQ; emails follow PDF availability. |
 | `POST /api/v2/payslips/:id/finalise` (single) | **<2s p99** | PDF render in `asyncio.to_thread`; upload + email queued. |
 | `GET /api/v2/payslips/:id/pdf` (download) | **<500ms p99** | Reads pre-rendered PDF from uploads volume; no rendering on this path. |
 | `GET /api/v2/staff/me/payslips` (G9 self-service list) | **<300ms p99** | Single indexed query (`idx_payslips_staff_status_finalised_desc`); paginated 20/page. |
@@ -814,19 +912,39 @@ Generate for casual Bob:
 
 ## 10. Security / PII
 
-- IRD + bank account decryption ONLY happens inside `pdf.render_pdf` and `termination.terminate_employment` calls.
+- IRD + bank-account decryption is permitted in the following service paths only (cross-phase X6 — extended forward-looking to include P5's report exports, which are legitimate decryption paths for tax filing and bank batch credits):
+  1. `app/modules/payslips/pdf.py::render_pdf` (P4 — masked bank account on PDF; IRD masked).
+  2. `app/modules/payslips/termination.py::terminate_employment` (P4 — bank-account masked in PDF; IRD not decrypted in this path).
+  3. `app/modules/payroll_reports/bank_files.py::generate_bank_file` (P5 — bank account decrypted to write CSV for bank batch credit).
+  4. `app/modules/payroll_reports/ird_export.py::generate_ird_export` (P5 — IRD decrypted to write CSV that org admin pastes into myIR).
+
+  Any other path that imports `envelope_decrypt` / `envelope_decrypt_str` against a `staff_members` encrypted column is a leak and MUST be flagged in code review. A lint test grep-filters Python files in `app/modules/` for `envelope_decrypt(_str)?\(` calls and rejects new occurrences outside the four files listed above.
+
 - Returned payslip API responses keep IRD masked + bank masked.
 - Finalised payslips are immutable: PUT/DELETE on `payslips WHERE status='finalised'` returns 409.
+- **Encryption convention (N14, locked at gap analysis):** Phase 1 stores `staff_members.bank_account_number_encrypted` and `ird_number_encrypted` as `bytea` columns encrypted via `app.core.encryption.envelope_encrypt(...)` (consistent with the IRD module's IRD-number storage). Phase 4 PDF rendering decrypts via `envelope_decrypt_str(...)`. The `EncryptedString` `TypeDecorator` in `app/core/encrypted_field.py` is NOT used here — it has no active consumers in the codebase and the manual envelope pattern is the established convention for new sensitive fields.
+- **Self-service reads do NOT emit audit-log rows (N2 + R8a.8).** A staff reading their own payslip is the data subject exercising rights — auditing it would itself be a circular leak. Admin reads of staff payslips DO emit audit rows.
 
 ## 11. Verified-against-code addendum
 
-- ✅ WeasyPrint pattern from `app/modules/invoices/service.py:4446` — Phase 4 reuses the same `await asyncio.to_thread(lambda: HTML(string=html).write_pdf())` shape.
-- ✅ `app/modules/uploads/` is the storage path. PDFs stored under category `payslips/` per the existing `_store(category=...)` helper.
-- ✅ `send_email` with `dlq_task_name` from quick win #10.
+- ✅ WeasyPrint pattern from `app/modules/quotes/service.py:1162-1165` (closest to single-template payslip use case) — Phase 4 reuses the same `await asyncio.to_thread(lambda: HTML(string=html_content).write_pdf())` shape. Other canonical examples: `app/modules/invoices/service.py:4449-4452`, `app/modules/inventory/service.py:701-704`, `app/modules/vehicles/report_service.py:283-286`.
+- ✅ `app/modules/uploads/router.py` exposes `_store(...)` for receipt uploads but **does NOT mint UUIDs** — it returns `{"file_key", "file_name", "file_size"}` (verified at code review). Phase 4 uses its own `app/modules/payslips/pdf_storage.py::store_payslip_pdf(...)` modelled on `app/modules/job_cards/attachment_service.py` rather than chaining through the uploads router. PDF files land at `UPLOAD_BASE / "payslips" / org_id / payslip_id / <uuid>.pdf` (N3 fix).
+- ✅ `send_email(..., dlq_task_name=...)` lives at `app/integrations/email_sender.py:1762` with the right signature; DLQ wiring goes through `app/core/dead_letter.py::DeadLetterService.store_failed_task` per quick win #10.
 - ✅ Phase 2's `leave_balances` and `leave_ledger` provide the s130A "leave taken + remaining balance" data.
 - ✅ Phase 3's `timesheet_approvals` provides the source-of-truth hours; `time_clock_entries` linked via `scheduled_entry_id` for shift-count derivation (G18 unit='shift').
 - ✅ Phase 1's `staff_pay_rates` history table is read for "ordinary_weekly" baseline in s27 calc.
+- ✅ `audit_log` table column names are `before_value` / `after_value` (singular). All examples in this spec already use the singular form (verified at `app/core/audit.py`).
+- ✅ `schedule_entries.entry_type` enum already includes `'leave'` — verified at `app/modules/scheduling_v2/models.py:19` `ENTRY_TYPES = ["job", "booking", "break", "other", "leave"]`. Termination's future-leave cancellation can set `entry_type='leave'` rows to cancelled status without schema change.
+- ✅ `module_registry` table + `ModuleRegistry` ORM model live at `app/modules/module_management/models.py` — Phase 1 module-insert pattern is correct.
+- ✅ `app/middleware/modules.py::MODULE_ENDPOINT_MAP` already gates `/api/v2/staff` to `staff`. New entries needed during P4 deploy (see §5).
+- ✅ `_run_outside_tx` + `autocommit_block()` pattern at `alembic/versions/2026_05_30_2300-0202_add_perf_indexes.py:234` is the canonical CONCURRENT INDEX template — task A2 reference is correct.
+- ✅ `envelope_encrypt(...)` + `envelope_decrypt_str(...)` from `app/core/encryption` are the active encryption helpers. Used by the IRD module for IRD-number storage. P4 uses the same pattern (see §10 N14 lock-in).
 - ⚠️ Existing `app/modules/payments/` is unrelated — it handles invoice payments, not staff wages. Phase 4 lives in a brand-new `app/modules/payslips/`.
+- ⚠️ `users` table has NO `staff_id` column (verified at `app/modules/auth/models.py:36-`). Reverse direction is `staff_members.user_id` (nullable, no UNIQUE). N1 fix: migration 0209 adds the partial UNIQUE index `ux_staff_members_user_id`.
+- ⚠️ `organisations.overtime_handling` location is owned by Phase 2; if Phase 2 ships it as a typed column rather than a JSONB key, P4's `_org_setting('overtime_handling', default='pay_cash')` helper transparently picks it up (N5 fix).
+- ⚠️ Module-disabled responses use HTTP **403**, not 404 — `app/middleware/modules.py:117` returns `JSONResponse(status_code=403, ...)`. R8a + §5 updated to match (N8 fix).
+- ⚠️ There is no `app/templates/` directory. Each module ships its own `templates/` subdir (`app/modules/invoices/templates/`, `app/modules/quotes/templates/`, ...). P4 follows the same convention: `app/modules/payslips/templates/payslip.{html,css}` (N9 fix).
+- ⚠️ `app/tasks/scheduled.py` is a flat module of plain async functions. There is no central daily dispatcher visible in this audit; the cron-like wiring needs to be located at implementation time and `roll_pay_periods_task` registered alongside `check_overdue_invoices_task` (task C1a).
 
 ## 12. Spec completeness self-check
 
@@ -850,5 +968,28 @@ Real gaps from the user's audit, all closed in this revision:
 - ✅ **G21** — Pay-period reopen flow (R1a + §4.2 `reopen_pay_period`).
 - ✅ **G24** — Bulk-finalise SLOs (§9.1 table).
 - ✅ **G25** — Final-payslip pay-period selection logic (R10 step 3 + §4.3 docstring).
+
+Code-vs-spec gaps from the 2026-05-31 verification pass (`gap-analysis.md`), all closed:
+
+- ✅ **N1** — `users.staff_id` doesn't exist; resolver uses `staff_members.user_id` + new partial-UNIQUE index `ux_staff_members_user_id` (§3.1, §5, R8a).
+- ✅ **N2** — Self-service ownership check intentionally omits `is_active` filter so terminated staff retain access to historical payslips per record-retention rules (R8a, §10).
+- ✅ **N3** — `pdf_upload_id` UUID renamed to `pdf_file_key` text path (matches existing attachment-table convention); new `pdf_storage.py` helper (R3.1, §3.1, §4.4, §4.5, R14).
+- ✅ **N4** — WeasyPrint reference points fixed; `app/modules/quotes/service.py:1162-1165` is the closest pattern (§1, §11).
+- ✅ **N5** — `_org_setting('overtime_handling', default='pay_cash')` helper decouples P4 from P2's column-vs-JSONB choice (R4 pre-condition).
+- ✅ **N6** — Covered by N1 partial-UNIQUE index.
+- ✅ **N7** — Startup preflight `assert_phase1_columns_present(...)` fails fast if any required staff_members column is missing (task B0).
+- ✅ **N8** — Module-disabled response is 403 (not 404) per existing middleware; payroll path entries added to MODULE_ENDPOINT_MAP (R8a, §5).
+- ✅ **N9** — Templates live at `app/modules/payslips/templates/` (per existing per-module convention); no `app/templates/` directory (R7.5, §3.1, §6.9, §1).
+- ✅ **N10** — Daily scheduler dispatcher wiring acknowledged as implementation-time TBD (task C1a).
+- ✅ **N11** — `audit_log.before_value`/`after_value` (singular) verified — no fix needed, lock-in noted (§11).
+- ✅ **N12** — `payroll` module_registry insert is a hard P1 prerequisite, gated in pre-merge (requirements.md preamble + tasks.md gate).
+- ✅ **N13** — `schedule_entries.entry_type='leave'` already exists — no fix needed (§11).
+- ✅ **N14** — Bank/IRD encryption locked to `envelope_encrypt(...)` convention matching IRD module (§10).
+- ✅ **N15** — KiwiSaver auto-deduction skips s27 lump-sum on termination payslip (R10 step 4a).
+- ✅ **N16** — `gross_ytd` reset rule defined (NZ tax year 1 April → 31 March, recomputed every draft) (R3.1).
+- ✅ **N17** — Casual 8% line OMITTED rather than attached at $0.00 when gross_taxable_earnings is 0 (R5.3).
+- ✅ **N18** — PDF renders `Cash payment / no bank account on file` when bank account is NULL (R7.2).
+- ✅ **N19** — Termination acquires row-level lock on `staff_members FOR UPDATE` to serialise concurrent requests (R10 step 0).
+- ✅ **N20** — Concrete SQL query for shift-count in `_resolve_allowance_quantity` (§4.2 helper + B3 verify).
 
 Back-port candidates (D1–D4) were already addressed in the master plan in earlier revisions.

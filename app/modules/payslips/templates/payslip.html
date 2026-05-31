@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Payslip — {{ staff.name }} — {{ pay_period.start_date.isoformat() }} to {{ pay_period.end_date.isoformat() }}</title>
+  <style>{{ inline_css | safe }}</style>
+</head>
+<body>
+
+  <!-- Running header (G20 — repeats on every page) -->
+  <div class="payslip-header">
+    {% if org.logo_url %}
+      <img class="logo" src="{{ org.logo_url }}" alt="{{ org.name }} logo">
+    {% endif %}
+    <div class="org-name">{{ org.name }}</div>
+  </div>
+
+  <h1>Payslip</h1>
+
+  <div class="meta-grid">
+    <div>
+      <div class="label">Employee</div>
+      <div class="value">{{ staff.name }}</div>
+    </div>
+    <div>
+      <div class="label">Tax code</div>
+      <div class="value">{{ staff.tax_code or "—" }}</div>
+    </div>
+
+    <div>
+      <div class="label">IRD number</div>
+      <div class="value">{{ staff.ird_number_masked or "—" }}</div>
+    </div>
+    <div>
+      <div class="label">Bank account</div>
+      <div class="value bank-line {% if cash_fallback %}cash-fallback{% endif %}">
+        {{ staff.bank_account_masked }}
+      </div>
+    </div>
+
+    <div>
+      <div class="label">Pay period</div>
+      <div class="value">{{ pay_period.start_date.strftime('%-d %b %Y') }} – {{ pay_period.end_date.strftime('%-d %b %Y') }}</div>
+    </div>
+    <div>
+      <div class="label">Pay date</div>
+      <div class="value">{{ pay_period.pay_date.strftime('%-d %b %Y') }}</div>
+    </div>
+
+    {% if staff.anniversary_date %}
+    <div>
+      <div class="label">Annual leave anniversary</div>
+      <div class="value">{{ staff.anniversary_date.strftime('%-d %b %Y') }}</div>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- Earnings (hour bands) — G2: public_holiday band as own row    -->
+  <!-- ============================================================ -->
+
+  <div class="section">
+    <h2>Earnings</h2>
+    <table class="lines">
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th class="numeric">Hours</th>
+          <th class="numeric">Rate</th>
+          <th class="numeric">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Ordinary</td>
+          <td class="numeric">{{ "%.2f" % (payslip.ordinary_hours or 0) }}</td>
+          <td class="numeric">{{ format_currency(payslip.ordinary_rate) }}</td>
+          <td class="numeric">{{ format_currency(amounts.ordinary) }}</td>
+        </tr>
+        {% if payslip.overtime_hours and payslip.overtime_hours > 0 %}
+        <tr>
+          <td>Overtime</td>
+          <td class="numeric">{{ "%.2f" % payslip.overtime_hours }}</td>
+          <td class="numeric">{{ format_currency(payslip.overtime_rate) }}</td>
+          <td class="numeric">{{ format_currency(amounts.overtime) }}</td>
+        </tr>
+        {% endif %}
+        {% if payslip.public_holiday_hours and payslip.public_holiday_hours > 0 %}
+        <tr>
+          <td>Public holiday (Holidays Act s50)</td>
+          <td class="numeric">{{ "%.2f" % payslip.public_holiday_hours }}</td>
+          <td class="numeric">{{ format_currency(payslip.public_holiday_rate) }}</td>
+          <td class="numeric">{{ format_currency(amounts.public_holiday) }}</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- Allowances — G18: quantity × unit × unit_price = amount       -->
+  <!-- ============================================================ -->
+
+  {% if allowances %}
+  <div class="section">
+    <h2>Allowances</h2>
+    <table class="lines">
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th class="numeric">Quantity</th>
+          <th class="numeric">Unit</th>
+          <th class="numeric">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in allowances %}
+        <tr>
+          <td>
+            {{ a.label }}
+            {% if not a.taxable %}<span class="detail">(non-taxable)</span>{% endif %}
+          </td>
+          <td class="numeric">
+            {% if a.unit in ('shift', 'km') %}
+              {{ "%.2f" % (a.quantity or 0) }}
+            {% else %}
+              —
+            {% endif %}
+          </td>
+          <td class="numeric">{{ a.unit }}</td>
+          <td class="numeric">{{ format_currency(a.amount) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <!-- ============================================================ -->
+  <!-- Reimbursements                                                 -->
+  <!-- ============================================================ -->
+
+  {% if reimbursements %}
+  <div class="section">
+    <h2>Reimbursements <span class="detail">(tax-free)</span></h2>
+    <table class="lines">
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th class="numeric">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in reimbursements %}
+        <tr>
+          <td>{{ r.label }}</td>
+          <td class="numeric">{{ format_currency(r.amount) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <!-- ============================================================ -->
+  <!-- Leave taken in this period (s130A) + remaining balances        -->
+  <!-- ============================================================ -->
+
+  {% if leave_lines %}
+  <div class="section">
+    <h2>Leave taken</h2>
+    <table class="lines">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th class="numeric">Hours</th>
+          <th class="numeric">Rate</th>
+          <th class="numeric">Amount</th>
+          <th class="numeric">Balance after</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in leave_lines %}
+        <tr>
+          <td>{{ l.leave_type_name or l.leave_type_code or "Leave" }}</td>
+          <td class="numeric">{{ "%.2f" % (l.hours or 0) }}</td>
+          <td class="numeric">{{ format_currency(l.rate) }}</td>
+          <td class="numeric">{{ format_currency(l.amount) }}</td>
+          <td class="numeric">{{ "%.2f" % (l.balance_after or 0) }} h</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if leave_balances %}
+  <div class="section">
+    <h2>Remaining leave balances</h2>
+    <table class="lines">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th class="numeric">Accrued</th>
+          <th class="numeric">Used</th>
+          <th class="numeric">Available</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in leave_balances %}
+        <tr>
+          <td>{{ b.name }}</td>
+          <td class="numeric">{{ "%.2f" % b.accrued }} h</td>
+          <td class="numeric">{{ "%.2f" % b.used }} h</td>
+          <td class="numeric">{{ "%.2f" % b.available }} h</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <!-- ============================================================ -->
+  <!-- Deductions                                                     -->
+  <!-- ============================================================ -->
+
+  {% if deductions %}
+  <div class="section">
+    <h2>Deductions</h2>
+    <table class="lines">
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th class="numeric">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in deductions %}
+        <tr>
+          <td>
+            {{ d.label }}
+            {% if d.kind == 'kiwisaver_employer' %}<span class="detail">(employer contribution — informational, not subtracted)</span>{% endif %}
+          </td>
+          <td class="numeric">{{ format_currency(d.amount) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <!-- ============================================================ -->
+  <!-- Totals                                                         -->
+  <!-- ============================================================ -->
+
+  <div class="totals">
+    <table>
+      <tbody>
+        <tr>
+          <td class="total-label">Gross pay</td>
+          <td class="numeric">{{ format_currency(payslip.gross_pay) }}</td>
+        </tr>
+        <tr>
+          <td class="total-label">Deductions (excluding employer KiwiSaver)</td>
+          <td class="numeric">−{{ format_currency(amounts.deductions_total) }}</td>
+        </tr>
+        {% if amounts.reimbursements_total and amounts.reimbursements_total > 0 %}
+        <tr>
+          <td class="total-label">Reimbursements</td>
+          <td class="numeric">+{{ format_currency(amounts.reimbursements_total) }}</td>
+        </tr>
+        {% endif %}
+        <tr class="net-row">
+          <td>Net pay</td>
+          <td class="numeric">{{ format_currency(payslip.net_pay) }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- Year-to-date totals (P4-N25)                                   -->
+  <!-- ============================================================ -->
+
+  <div class="ytd-block">
+    <h3>Year-to-date (NZ tax year)</h3>
+    <div class="ytd-grid">
+      <div>Gross YTD</div><div class="numeric">{{ format_currency(ytd.gross_ytd) }}</div>
+      <div>PAYE YTD</div><div class="numeric">{{ format_currency(ytd.paye_ytd) }}</div>
+      <div>KiwiSaver employee YTD</div><div class="numeric">{{ format_currency(ytd.kiwisaver_employee_ytd) }}</div>
+      <div>KiwiSaver employer YTD</div><div class="numeric">{{ format_currency(ytd.kiwisaver_employer_ytd) }}</div>
+    </div>
+  </div>
+
+  {% if payslip.notes %}
+  <div class="section">
+    <h3>Notes</h3>
+    <p>{{ payslip.notes }}</p>
+  </div>
+  {% endif %}
+
+  <div class="footer-disclaimer">
+    This payslip is generated under the New Zealand Wages Protection Act 1983 and Holidays Act 2003 s130A.
+    Retain for your records. Contact your employer if you have any questions about the figures shown.
+  </div>
+
+</body>
+</html>

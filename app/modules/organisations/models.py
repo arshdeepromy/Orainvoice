@@ -13,6 +13,8 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Integer,
+    Numeric,
     String,
     Text,
     func,
@@ -59,6 +61,20 @@ class Branch(Base):
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="true"
+    )
+    # Phase 3 — geofence anchors for self-service clock-in (G17, R6.4).
+    # ``lat``/``lng`` are populated when the org admin sets a branch
+    # location; ``geofence_radius_metres`` is the per-branch radius
+    # (column-default 200, backfilled from
+    # ``clock_in_policy.branch_radius_metres`` by migration 0207).
+    lat: Mapped[float | None] = mapped_column(
+        Numeric(9, 6), nullable=True
+    )
+    lng: Mapped[float | None] = mapped_column(
+        Numeric(9, 6), nullable=True
+    )
+    geofence_radius_metres: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="200"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

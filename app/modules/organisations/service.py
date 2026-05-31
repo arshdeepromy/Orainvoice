@@ -232,6 +232,10 @@ SETTINGS_JSONB_KEYS = {
     "default_notes_enabled",
     "payment_terms_enabled",
     "terms_and_conditions_enabled",
+    # Staff Management Phase 1 (B6) — per-org floor for compliance counter
+    # (C9) and save-time minimum-wage gate (C10). Default 23.15 NZD applied
+    # at call-sites when key is missing from JSONB; no row backfill needed.
+    "minimum_wage_threshold_nzd",
 }
 
 
@@ -538,12 +542,22 @@ async def create_branch(
     name: str,
     address: str | None = None,
     phone: str | None = None,
+    geofence_radius_metres: int | None = None,
     ip_address: str | None = None,
 ) -> dict:
     """Create a new branch for the organisation.
 
     Returns a dict with the created branch data.
     Raises ValueError if the org doesn't exist.
+
+    Phase 3 task B12 (cross-phase X5 / G17): when ``geofence_radius_metres``
+    is None (caller didn't supply it), read the org's
+    ``clock_in_policy.branch_radius_metres`` (default 200) and use that
+    so the org-level setting continues to influence newly-created
+    branches after the migration-0207 backfill. Once a branch row
+    exists, its ``geofence_radius_metres`` column is the source of
+    truth (R6.4) — editing the org default does NOT mass-update
+    existing branches.
     """
     # Verify org exists
     result = await db.execute(
@@ -553,11 +567,34 @@ async def create_branch(
     if org is None:
         raise ValueError("Organisation not found")
 
+    # G17 / X5 — resolve geofence radius from caller value or org policy.
+    # The Organisation ORM model does not yet declare ``clock_in_policy``
+    # as a typed field (the migration adds the JSONB column but the ORM
+    # extension is out of scope here), so we read it directly via SQL.
+    if geofence_radius_metres is None:
+        from sqlalchemy import text as _text
+
+        policy_row = await db.execute(
+            _text(
+                "SELECT clock_in_policy FROM organisations "
+                "WHERE id = :org_id"
+            ),
+            {"org_id": str(org_id)},
+        )
+        policy = policy_row.scalar_one_or_none()
+        if isinstance(policy, dict):
+            geofence_radius_metres = int(
+                policy.get("branch_radius_metres", 200)
+            )
+        else:
+            geofence_radius_metres = 200
+
     branch = Branch(
         org_id=org_id,
         name=name,
         address=address,
         phone=phone,
+        geofence_radius_metres=geofence_radius_metres,
     )
     db.add(branch)
     await db.flush()
@@ -575,6 +612,7 @@ async def create_branch(
             "name": name,
             "address": address,
             "phone": phone,
+            "geofence_radius_metres": geofence_radius_metres,
         },
         ip_address=ip_address,
     )
@@ -585,6 +623,7 @@ async def create_branch(
         "address": branch.address,
         "phone": branch.phone,
         "is_active": branch.is_active,
+        "geofence_radius_metres": branch.geofence_radius_metres,
         "created_at": branch.created_at.isoformat() if branch.created_at else None,
     }
 

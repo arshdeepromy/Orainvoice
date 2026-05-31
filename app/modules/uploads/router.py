@@ -90,6 +90,28 @@ async def upload_attachment(request: Request, file: UploadFile = File(...), db: 
     await db.commit()
     return r
 
+@router.post("/clock-photos", summary="Upload kiosk/self-service clock-in photo")
+async def upload_clock_photo(request: Request, file: UploadFile = File(...), db: AsyncSession = Depends(get_db_session)):
+    """Upload a kiosk or self-service clock-in/out photo.
+
+    Mirrors ``/receipts`` and ``/attachments``; files land at
+    ``/app/uploads/clock_photos/<org_id>/<uuid>.{jpg,png}`` per the
+    existing :func:`_store` helper. Returns ``{ file_key, file_name,
+    file_size }`` — the ``file_key`` value is what the kiosk + self-
+    service clock-action endpoints accept as ``photo_file_key`` (P3-N1).
+
+    Validates: Requirements R3.5 — Staff Management Phase 3 task B9.
+    """
+    org_id = _get_org_id(request)
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(413, "File too large")
+    if not content:
+        raise HTTPException(400, "Empty file")
+    r = await _store(content, file.filename or "clock-photo.bin", org_id, "clock_photos", db)
+    await db.commit()
+    return r
+
 @router.get("/{category}/{org_path}/{file_id}", summary="Download file")
 async def download_file(category: str, org_path: str, file_id: str, request: Request):
     req_org = _get_org_id(request)

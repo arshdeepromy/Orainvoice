@@ -18,7 +18,7 @@ Inherits all Phase 1 steering compliance bullets. Additions specific to this pha
 
 - Leave-accrual engine wraps each per-staff body in `db.begin_nested()` SAVEPOINT (per `performance-and-resilience.md`).
 - Idempotency: leave-accrual job is idempotent — running twice in the same day must not double-grant entitlement.
-- Public-holiday computations cached in Redis for 1 hour (org × upcoming-window) to avoid repeated `public_holidays` table scans.
+- Public-holiday list (org × upcoming-window of `public_holidays` rows) cached in Redis for 1 hour. Per-staff OWD computations cached separately for 24 h (R8.3 + design §4.2) — they're stable for the holiday's lifetime so a longer TTL is safe. (P2-N9: clarified the two caches are distinct; not a 1h-vs-24h contradiction.)
 - Append-only `leave_ledger` table — service code never UPDATEs or DELETEs ledger rows; corrections write a new compensating row.
 - Family-violence-leave records visible to approver only (per-org permission flag, not a new role).
 
@@ -32,13 +32,14 @@ Inherits all Phase 1 steering compliance bullets. Additions specific to this pha
 
 1. THE SYSTEM SHALL create a `leave_types` table with columns: `id` (uuid PK), `org_id` (uuid FK organisations, NOT NULL), `code` (text, NOT NULL — e.g. `annual`, `sick`, `bereavement`, `family_violence`, `public_holiday_alt`, `unpaid`, `toil`, `custom_*`), `name` (text), `is_paid` (boolean), `accrual_method` (text, CHECK in `'anniversary','fixed_annual','per_period','unaccrued','event_based'`), `accrual_amount` (numeric), `accrual_unit` (text default `'hours'` — values `'hours'|'days'`), `carry_over_max` (numeric, NULL = unlimited), `is_statutory` (boolean default false), `requires_doctor_note` (boolean default false), `confidential_visibility` (boolean default false), `active` (boolean default true), `display_order` (int default 0), `created_at`, `updated_at`. Unique on `(org_id, code)`.
 2. THE SYSTEM SHALL enable RLS + tenant_isolation policy.
-3. THE SYSTEM SHALL ship a one-off backfill migration that inserts 6 statutory types per existing org with `is_statutory=true`:
-   - `annual` — anniversary, 4 weeks/year (= `standard_hours_per_week × 4` granted on each anniversary).
-   - `sick` — per_period, 80 hours/year (10 days × 8 hours by default; pro-rata for variable hours), gated to first accrual after 6 months. `requires_doctor_note=true`.
-   - `bereavement` — event_based, balance always 0; per-event cap (3 days for close family, 1 day for others) enforced server-side via `leave_requests.relationship_to_subject` field — see R4.7.
-   - `family_violence` — per_period, 80 hours/year, gated to 6 months. `confidential_visibility=true` — see R4.6 for the visibility-permission mechanism.
-   - `public_holiday_alt` — event_based; balance grows when staff actually works an OWD public holiday.
-   - `unpaid` — unaccrued, balance always 0; requests don't decrement anything.
+3. THE SYSTEM SHALL ship a one-off backfill migration that inserts **7 leave types** per existing org (cross-phase X2 fix — TOIL added so P3's overtime-handling flow has a target leave_type to write to without an FK violation):
+   - `annual` — anniversary, 4 weeks/year (= `standard_hours_per_week × 4` granted on each anniversary). `is_statutory=true`.
+   - `sick` — per_period, 80 hours/year (10 days × 8 hours by default; pro-rata for variable hours), gated to first accrual after 6 months. `requires_doctor_note=true`. `is_statutory=true`.
+   - `bereavement` — event_based, balance always 0; per-event cap (3 days for close family, 1 day for others) enforced server-side via `leave_requests.relationship_to_subject` field — see R4.7. `is_statutory=true`.
+   - `family_violence` — per_period, 80 hours/year, gated to 6 months. `confidential_visibility=true` — see R4.6 for the visibility-permission mechanism. `is_statutory=true`.
+   - `public_holiday_alt` — event_based; balance grows when staff actually works an OWD public holiday. `is_statutory=true`.
+   - `unpaid` — unaccrued, balance always 0; requests don't decrement anything. `is_statutory=true`.
+   - **`toil`** — event_based, `is_paid=true`, balance always 0 by default; written to by P3's timesheet-approval flow when `overtime_handling='toil'` or `'employee_chooses'` (per P3 R10/R11). `is_statutory=false` because TOIL is a contractual choice rather than a statutory entitlement, but pre-seeded for every org as universal infrastructure so P3's accrual writes don't FK-violate.
 4. THE SYSTEM SHALL allow `is_statutory=true` rows to be edited (rates can go ABOVE the legal floor) but not deleted; DELETE returns HTTP 403 with reason.
 5. THE SYSTEM SHALL allow custom leave types to be created, renamed, deactivated.
 6. THE SYSTEM SHALL gate the entire surface behind `ModuleService.is_enabled(org_id, 'staff_management')`.
@@ -56,10 +57,10 @@ Inherits all Phase 1 steering compliance bullets. Additions specific to this pha
 
 **Acceptance criteria:**
 
-1. THE SYSTEM SHALL create a `leave_ledger` table: `id, org_id, staff_id, leave_type_id, delta_hours numeric(8,2), reason text (CHECK enum), request_id uuid (FK leave_requests, nullable), occurred_at date, created_by uuid (FK users, nullable), created_at timestamptz default now()`. Reason enum: `'accrual', 'request_approved', 'request_cancelled_after_approval', 'manual_adjustment', 'opening_balance', 'termination_payout', 'public_holiday_extension', 'public_holiday_worked', 'pay_run_payout'`.
+1. THE SYSTEM SHALL create a `leave_ledger` table: `id, org_id, staff_id, leave_type_id, delta_hours numeric(8,2), reason text (CHECK enum), request_id uuid (FK leave_requests, nullable), occurred_at date, created_by uuid (FK users, nullable), created_at timestamptz default now()`. Reason enum: `'accrual', 'request_approved', 'request_cancelled_after_approval', 'manual_adjustment', 'opening_balance', 'termination_payout', 'public_holiday_extension', 'public_holiday_worked', 'pay_run_payout', 'toil_accrual'` (cross-phase X3 fix — `'toil_accrual'` added forward-compatibly so P3's TOIL write is unambiguous and doesn't require a P3-time enum amendment).
 2. RLS + tenant_isolation policy.
 3. THE SYSTEM SHALL never UPDATE or DELETE ledger rows from application code. Corrections write a new row with the inverse `delta_hours` and `reason='manual_adjustment'`.
-4. THE SYSTEM SHALL surface the ledger via `GET /api/v2/staff/:id/leave/ledger?leave_type_id=...` with `{ items, total }` shape.
+4. THE SYSTEM SHALL surface the ledger via `GET /api/v2/staff/:id/leave/ledger?leave_type_id=...` with `{ items, total }` shape. **(P2-N10)** When `leave_type_id` filters to a leave type with per-event semantics (e.g., bereavement), each ledger item additionally surfaces `request_relationship_to_subject` (resolved via JOIN to `leave_requests.relationship_to_subject` when `request_id IS NOT NULL`). For other leave types this field is `null` so consumers can render or hide the column conditionally.
 
 ### R4. Leave Requests
 
@@ -92,7 +93,7 @@ Inherits all Phase 1 steering compliance bullets. Additions specific to this pha
 
 9. **Confidential-leave visibility mechanism.** THE SYSTEM SHALL:
    - Reuse the existing `user_permission_overrides` table (already wired through `app/middleware/rbac.py:_load_permission_overrides_cached`). The table's actual columns (verified at `app/modules/auth/permission_overrides.py`) are: `id, user_id, permission_key, is_granted, granted_by, created_at`. There is NO `org_id` column — tenant scoping comes from joining `users.org_id`.
-   - Introduce a permission key `leave.fv_view` (dot-separated to match the existing `module.action` convention used throughout `app/modules/auth/rbac.py::ROLE_PERMISSIONS`; the `leave.*` wildcard at the role level then automatically grants this permission to roles configured for full leave-module access).
+   - Introduce a permission key `leave.fv_view` (dot-separated, two-part — matches the `module.action` convention used throughout `app/modules/auth/rbac.py::ROLE_PERMISSIONS`). **(P2-N1)** This permission is granted **always explicitly per-user** via a `user_permission_overrides` row; there is no role-level shortcut. The earlier draft claimed a `leave.*` wildcard would auto-grant the permission to roles configured for full leave-module access — that was incorrect: no role currently has `leave.*` in its permissions list.
    - On the Phase 2 migration backfill, grant `leave.fv_view` to every user with role `org_admin` at the moment of migration by inserting `user_permission_overrides` rows with `permission_key='leave.fv_view'` and `is_granted=true` (with a Settings nag banner asking the org owner to review and revoke from anyone who shouldn't have it).
    - Provide a Settings UI at `Settings?tab=people-permissions` listing org users with on/off checkboxes; toggling calls `create_or_update_permission_override` / `delete_permission_override` (existing helpers at `app/modules/auth/permission_overrides.py`) which handle audit logging automatically.
    - At the API layer, every endpoint that returns `leave_requests` for any leave_type with `confidential_visibility=true` SHALL filter to rows where `requested_by = current_user` OR the current user holds the permission. The check uses the synchronous `app/modules/auth/rbac.py::has_permission(role, permission_key, overrides=request.state.permission_overrides)` helper — the overrides list is already loaded by `RBACMiddleware`, so no additional DB call is needed.
@@ -125,14 +126,14 @@ Inherits all Phase 1 steering compliance bullets. Additions specific to this pha
 
 2. **Sick leave** (Holidays Act s63):
    - Skip until `now() - employment_start_date >= 6 months`.
-   - On first day past the 6-month mark, grant the full 80 hours (10 days × 8h) for permanent employees, OR pro-rata for variable-hours staff (`standard_hours_per_week × 2 weeks`).
-   - On each subsequent anniversary (yearly) grant the same again, with 160-hour `carry_over_max` cap (Holidays Act s67 — max 20 days at any one time).
+   - On first day past the 6-month mark, grant `(staff.standard_hours_per_week or 40) × 2` hours (P2-N8: 80 h for a standard 40 h/week worker, 60 h for a 30 h/week part-timer, etc. — keeps the rule referenced to a single source-of-truth column rather than a literal).
+   - On each subsequent anniversary (yearly) grant the same again, with `(staff.standard_hours_per_week or 40) × 4`-hour `carry_over_max` cap (Holidays Act s67 — max 20 days at any one time).
 
 3. **Family-violence leave** (Domestic Violence — Victims' Protection Act 2018):
    - Same 6-month gate as sick leave.
-   - On first day past the 6-month mark, grant 80 hours (10 days × 8h) for permanent employees, pro-rata for variable hours.
+   - On first day past the 6-month mark, grant `(staff.standard_hours_per_week or 40) × 2` hours (P2-N8). Pro-rata for variable hours flows from the same formula.
    - On each subsequent anniversary, grant the same.
-   - `carry_over_max=80` (statute does not allow carry-over of family-violence leave; unused hours expire at anniversary).
+   - `carry_over_max = (staff.standard_hours_per_week or 40) × 2` (statute does not allow carry-over of family-violence leave; unused hours expire at anniversary).
 
 4. **Idempotency:** Same guard as R5.4 — each `_process_*_yearly` function does `SELECT 1 FROM leave_ledger WHERE staff_id=? AND leave_type_id=? AND reason='accrual' AND occurred_at=?` before insert; skips on existing row.
 
@@ -184,9 +185,9 @@ Inherits all Phase 1 steering compliance bullets. Additions specific to this pha
 
 Acceptance criteria:
 
-1. THE SYSTEM SHALL add a 7th leave type `toil` with `is_statutory=false`, `accrual_method='event_based'`, `is_paid=true`. Seeded for orgs that select `overtime_handling='toil'` or `'employee_chooses'` in Phase 3 settings (settings table column added in this phase, used in Phase 3).
-2. THE SYSTEM SHALL add `org_settings.overtime_handling` enum (`pay_cash` default, `toil`, `employee_chooses`).
-3. Phase 3 will write to TOIL balance from approved overtime hours; Phase 2 only ensures the leave type and balance row exist when policy is set.
+1. THE SYSTEM SHALL include the `toil` leave type as one of the **7 pre-seeded leave types** that ship for every org (per R1.3 — cross-phase X2 fix). `is_statutory=false` because it's a contractual choice; but seeded for every org regardless of `overtime_handling` value so P3's overtime-toil flow can write to a guaranteed-existent leave_type_id without FK violations.
+2. THE SYSTEM SHALL add `organisations.overtime_handling` enum column (`pay_cash` default, `toil`, `employee_chooses`). (P2-N5: typed column on `organisations`, NOT a key in any `org_settings` JSONB blob — settled here so Phase 4's helper reads the typed column directly.)
+3. Phase 3 will write to TOIL balance from approved overtime hours via `leave_ledger` row `reason='toil_accrual'` (per cross-phase X3 — `'toil_accrual'` added to the leave_ledger.reason CHECK enum below); Phase 2 only ensures the leave type and balance row exist.
 
 ### R11. Settings → People → Leave Types Page
 
@@ -262,7 +263,7 @@ THE SYSTEM SHALL bump 1.14.0 → 1.15.0 across `pyproject.toml`, `frontend/packa
 
 ## Open Questions
 
-- **STAFF-002 (resolved):** Family-violence-leave visibility uses the existing `user_permission_overrides` table with permission key `leave:family_violence:view` — see R4.9. Backfill grants the permission to current org_admins; ongoing administration via Settings → People → Permissions. Decision based on: (a) reuses existing RBAC infrastructure already cached by [`app/middleware/rbac.py`](../../app/middleware/rbac.py), (b) scales to N approvers without schema change, (c) audit trail comes for free.
+- **STAFF-002 (resolved):** Family-violence-leave visibility uses the existing `user_permission_overrides` table with permission key `leave.fv_view` (P2-N1: dot-separated, matching the rbac.py convention; this entry previously used the inconsistent `leave:family_violence:view` form) — see R4.9. Backfill grants the permission to current org_admins; ongoing administration via Settings → People → Permissions. Decision based on: (a) reuses existing RBAC infrastructure already cached by [`app/middleware/rbac.py`](../../app/middleware/rbac.py), (b) scales to N approvers without schema change, (c) audit trail comes for free.
 - **STAFF-003:** Confirm Nager.Date NZ public-holiday observed dates match Holidays Act observed dates (Monday-isation of public holidays falling on Saturday/Sunday). Settle before R8 lands in production. Suggested check: pull 2024+2025 NZ public-holiday list from Nager.Date and compare against [employment.govt.nz/public-holidays](https://employment.govt.nz/leave-and-holidays/public-holidays/public-holidays-and-anniversary-dates/) — line up dates including any Monday-ised observances.
 - **STAFF-009 (new, deferrable):** Half-day / partial-day leave UX. Phase 2 schema supports `leave_requests.partial_day_start_time` but the frontend doesn't expose a partial-day toggle. Resolution deferred to Phase 2.5 — see Non-Goals.
 - **STAFF-010 (new, deferrable):** Leap-year anniversary edge case (employees with `employment_start_date = Feb 29`). Use the helper rule "same `MMDD` or last day of February in non-leap years". Phase 2 ships the rule in `accrue_for_staff` per design §4.1.

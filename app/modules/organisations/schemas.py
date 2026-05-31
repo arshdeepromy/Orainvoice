@@ -216,6 +216,16 @@ class OrgSettingsResponse(BaseModel):
         None, description="Automatically create expense when adding stock with a purchase price"
     )
 
+    # Staff Management Phase 1 — minimum-wage compliance threshold (R4)
+    # Used by C9 (compliance counter `below_minimum_wage`) and C10
+    # (save-time gate). Default 23.15 NZD applied at call-sites when
+    # missing from the JSONB blob.
+    minimum_wage_threshold_nzd: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Per-org minimum hourly wage threshold in NZD (default 23.15)",
+    )
+
     # Trade info (for trade-specific UI gating)
     trade_family: Optional[str] = Field(
         None, description="Trade family slug (e.g. 'automotive-transport', 'plumbing-gas')"
@@ -352,6 +362,13 @@ class OrgSettingsUpdateRequest(BaseModel):
     # Inventory / Expense automation
     auto_expense_on_stock_purchase: Optional[bool] = Field(
         None, description="Automatically create expense when adding stock with a purchase price"
+    )
+
+    # Staff Management Phase 1 — minimum-wage compliance threshold (R4)
+    minimum_wage_threshold_nzd: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Per-org minimum hourly wage threshold in NZD (default 23.15)",
     )
 
     # Trade category

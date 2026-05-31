@@ -5876,3 +5876,62 @@ New Alembic migration `0202_add_perf_indexes.py` adds the audit's full Appendix-
 **Pending**: apply on PROD via the standard deploy path (`alembic upgrade head` runs automatically on Pi PROD app-container start). Take the regular pre-deploy `pg_dump` first; CONCURRENTLY adds time to the deploy (a few seconds per index on the current 39 MB DB; minutes per index at multi-million-row scale).
 
 **Refs**: PERFORMANCE_AUDIT.md §D-H3, §D-H4, §D-H5, §D-H7, §D-H9, §D-M1, §D-M5, Appendix A.
+
+
+---
+
+## Staff Management Phase 1 — Open questions (carried forward)
+
+The following placeholder IDs cover open questions from `docs/future/staff-management-system.md` §13. Each is logged here for future reference; most are resolved or scoped to later phases. Per task G3 of `.kiro/specs/staff-management-p1/tasks.md`.
+
+### STAFF-001: Default subscription plan inclusion
+
+- **Date**: 2026-05-31
+- **Status**: resolved
+- **Resolution**: All unarchived `subscription_plans.enabled_modules` are updated by migration `0203` to include both `staff_management` and `payroll`. Per-org disablement is the gate. Awaiting decision before Phase 2 — no action needed; see `requirements.md` R11.3 + `gap-analysis.md` P1-N2.
+
+### STAFF-002: Casual employment 8% holiday-pay-as-you-go calculation
+
+- **Date**: 2026-05-31
+- **Status**: resolved (Phase 2)
+- **Resolution**: Annual-leave card hidden on the Leave tab for `staff.employment_type='casual'` staff (per design §6.4). Sick + family violence still accrue pro-rata via the daily accrual engine. The 8% holiday-pay-as-you-go figure is computed at payroll time (Phase 4) — the leave engine does NOT track an annual-leave balance for casuals because there isn't one to track. `CasualLeaveBanner.tsx` explains the arrangement on the Leave tab.
+
+### STAFF-003: Public holiday OWD detection edge cases
+
+- **Date**: 2026-05-31
+- **Status**: resolved (Phase 2)
+- **Resolution**: Phase 2 ships `is_otherwise_working_day` (`app/modules/leave/public_holidays.py`) keyed on `staff.availability_schedule` JSONB. Per-staff result cached in Redis for 24h (R8.3). Phase 3 will swap in a 4-week historical average derived from `time_clock_entries` for variable-schedule staff. The Phase 2 implementation handles the salaried/permanent case correctly; variable-schedule edge cases fall back to "no OWD" until Phase 3.
+
+### STAFF-004: Annual leave anniversary detection for staff with multiple stints
+
+- **Date**: 2026-05-31
+- **Status**: deferred to Phase 5 / payroll bank-file export
+- **Decision required**: When a staff is rehired (employment_end_date set, then employment_start_date reset), does annual leave anniversary reset to the new start date or carry forward? Awaiting decision before Phase 2.
+- **Phase 4 update (2026-06-01)**: Phase 4 ships the payroll engine using the current `employment_start_date` as the anniversary anchor on `leave_balances.anniversary_date` (Phase 2 contract). The rehire scenario is not yet exercised in production. The bank-file format choice for rehire payouts is also deferred to Phase 5 (currently the s27 termination payout writes to `staff_recurring_allowances` + `payslip_allowances` lines on the final payslip — no bank file). When Phase 5 ships bank-file export, a single rehire decision will pin both the annual-leave anniversary anchor and the bank-file rehire format. No Phase 4 change.
+
+### STAFF-005: Sick leave 6-month gate behaviour
+
+- **Date**: 2026-05-31
+- **Status**: deferred to Phase 4 / payroll re-hire flow
+- **Decision required**: Should the 6-month gate count from the original `employment_start_date` or the most recent rehire? Same question as STAFF-004 but for sick leave specifically. Awaiting decision before Phase 2.
+- **Phase 3 update**: Phase 2 shipped the leave engine using the current `employment_start_date` as the gate anchor (matches the Phase 2 design's `eligible_from = employment_start_date + 6 months` formula). The rehire scenario is not yet exercised in production — defer the formal carry-forward decision to Phase 4 when payroll-side re-hire flows are implemented. No Phase 3 change.
+
+### STAFF-006: Kiosk routing for staff without `employee_id`
+
+- **Date**: 2026-05-31
+- **Status**: resolved (Phase 3, 2026-05-31)
+- **Decision required**: When a staff has no `employee_id` set, should the kiosk fall back to PIN-based clock-in or block them entirely? G1 inline warning in Phase 1 nudges admins to set the code; Phase 3 needs the policy. Awaiting decision before Phase 3 (kiosk).
+- **Resolution**: Block — no PIN fallback. The kiosk surface uses the existing role-`kiosk` JWT for the device, not a per-staff PIN. Staff without an `employee_id` are excluded from the kiosk lookup (R3.2 returns `employee_not_found`), and the org_admin sees a G1 amber chip on the Staff Detail Overview tab prompting them to set the code. The `(employee_id IS NOT NULL OR user_id IS NOT NULL)` filter in the cover-broadcast eligibility (R13.2) makes the same trade-off — staff need at least one channel to clock in.
+
+### STAFF-007: Payslip storage retention period
+
+- **Date**: 2026-05-31
+- **Status**: deferred to Phase 4 (payslips)
+- **Decision required**: NZ Wages Protection Act requires retention; spec says "as long as the org subscribes". Need to confirm with legal whether termination of subscription requires export, or whether we keep the payslips beyond cancellation. Awaiting decision before Phase 4 (payslips).
+- **Phase 3 update**: Phase 3 ships the photo-retention default at 6 years (Holidays Act s81) per G15. No Phase 3 deletion job ships — design §3.1 + Non-Goals documented. Payslip retention remains a Phase 4 decision.
+
+### STAFF-008: Bank file export format priority
+
+- **Date**: 2026-05-31
+- **Status**: open
+- **Decision required**: Which NZ bank's batch file format to support first — ANZ MTS, BNZ Connect, ASB FastNet Business, or a generic CSV? Awaiting customer demand signal before Phase 5 (export).

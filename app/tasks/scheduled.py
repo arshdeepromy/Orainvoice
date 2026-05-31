@@ -820,6 +820,1206 @@ async def cleanup_stale_sessions_task() -> dict:
         return {"deleted": result.rowcount}
 
 
+# ---------------------------------------------------------------------------
+# 14. Weekly roster broadcast — Staff Management Phase 1 task D1 (R10)
+# ---------------------------------------------------------------------------
+
+async def weekly_roster_broadcast(_now_utc: datetime | None = None) -> dict:
+    """Friday 16:00-16:29 broadcast — sends next-week's roster to every
+    opted-in staff member, in each org's local timezone.
+
+    Runs every 30 minutes (the existing scheduler tick); the body
+    short-circuits for any org whose local time is not currently
+    inside the Friday 16:00-16:29 window. Per-staff sends are wrapped
+    in ``db.begin_nested()`` SAVEPOINTs so a single failure does not
+    poison the batch (per ``performance-and-resilience`` steering and
+    R10.3). The cluster-wide Redis SETNX scheduler lock (``ISSUE-164``)
+    keeps duplicate broadcasts from firing across multiple gunicorn
+    workers — there is no extra coordination needed here (R10.4).
+
+    Logs each per-staff outcome with ``org_id`` + ``staff_id`` so admins
+    can grep production logs for failures (R10.5):
+
+    - ``weekly_roster_broadcast: org=<id> staff=<id> email=ok message_id=...``
+    - ``weekly_roster_broadcast: org=<id> staff=<id> email=skipped reason=...``
+    - ``weekly_roster_broadcast: org=<id> staff=<id> email=failed error=...``
+    - ``weekly_roster_broadcast: org=<id> staff=<id> sms=ok ...`` (same triplet)
+
+    The optional ``_now_utc`` parameter is for unit tests only — it
+    short-circuits the ``datetime.now(timezone.utc)`` call so the
+    Friday-16:05 logic can be exercised deterministically without
+    freezing the system clock.
+
+    **Validates: Requirement R10** (Phase 1 task D1).
+    """
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import or_, select
+
+    from app.config import settings as app_settings
+    from app.core.database import _set_rls_org_id, async_session_factory
+    from app.modules.admin.models import Organisation
+    from app.modules.module_management.models import OrgModule
+    from app.modules.staff.models import StaffMember
+
+    now_utc = _now_utc or datetime.now(timezone.utc)
+
+    summary: dict = {
+        "orgs_in_window": 0,
+        "staff_processed": 0,
+        "email_sent": 0,
+        "email_failed": 0,
+        "sms_sent": 0,
+        "sms_failed": 0,
+    }
+
+    # ------------------------------------------------------------------
+    # Step 1 — enumerate orgs that have ``staff_management`` enabled.
+    # The ``Organisation`` and ``org_modules`` tables have no RLS gate,
+    # so a plain cross-tenant query is fine here (mirrors the pattern
+    # used by ``process_recurring_billing_task``).
+    # ------------------------------------------------------------------
+    async with async_session_factory() as session:
+        async with session.begin():
+            stmt = (
+                select(Organisation.id, Organisation.timezone)
+                .join(OrgModule, OrgModule.org_id == Organisation.id)
+                .where(
+                    OrgModule.module_slug == "staff_management",
+                    OrgModule.is_enabled.is_(True),
+                )
+            )
+            result = await session.execute(stmt)
+            enabled_orgs = result.all()
+
+    if not enabled_orgs:
+        return summary
+
+    viewer_base_url = (
+        f"{(app_settings.frontend_base_url or 'http://localhost').rstrip('/')}"
+        f"/public/staff-roster"
+    )
+
+    # ------------------------------------------------------------------
+    # Step 2 — for each enabled org, check whether the org-local time
+    # is currently inside the Friday 16:00-16:29 window. If yes,
+    # broadcast to every active staff with at least one opt-in.
+    # ------------------------------------------------------------------
+    for org_id, org_tz_name in enabled_orgs:
+        try:
+            tz = ZoneInfo(org_tz_name or "UTC")
+        except (KeyError, ValueError):
+            tz = ZoneInfo("UTC")
+        local_now = now_utc.astimezone(tz)
+
+        # Short-circuit unless we're inside Friday 16:00-16:29 local.
+        # ``weekday()`` returns 0=Mon .. 4=Fri .. 6=Sun.
+        if local_now.weekday() != 4:
+            continue
+        if local_now.hour != 16:
+            continue
+        if local_now.minute >= 30:
+            continue
+
+        summary["orgs_in_window"] += 1
+
+        # Compute the week_start (next Monday in local time). The
+        # Friday broadcast covers NEXT week's roster, so:
+        #   - Friday  → +3 days = next Monday
+        #   - Anything else → (7 - weekday) % 7 days, with Monday
+        #     special-cased to +7 (rare path — short-circuit above
+        #     guarantees Friday-only).
+        local_today = local_now.date()
+        days_until_monday = (7 - local_today.weekday()) % 7 or 7
+        week_start = local_today + timedelta(days=days_until_monday)
+
+        try:
+            async with async_session_factory() as session:
+                async with session.begin():
+                    # Set RLS so the staff query only sees this org's
+                    # rows (``staff_members`` has a ``tenant_isolation``
+                    # policy keyed on ``app.current_org_id``).
+                    await _set_rls_org_id(session, str(org_id))
+                    stmt_staff = select(StaffMember).where(
+                        StaffMember.org_id == org_id,
+                        StaffMember.is_active.is_(True),
+                        or_(
+                            StaffMember.weekly_roster_email_enabled.is_(True),
+                            StaffMember.weekly_roster_sms_enabled.is_(True),
+                        ),
+                    )
+                    result_staff = await session.execute(stmt_staff)
+                    staff_list = list(result_staff.scalars().all())
+
+                    for staff in staff_list:
+                        summary["staff_processed"] += 1
+
+                        # Email leg ----------------------------------
+                        if (
+                            staff.weekly_roster_email_enabled
+                            and staff.email
+                            and staff.email.strip()
+                        ):
+                            await _broadcast_one_email(
+                                session,
+                                org_id=org_id,
+                                staff=staff,
+                                week_start=week_start,
+                                summary=summary,
+                            )
+
+                        # SMS leg ------------------------------------
+                        if (
+                            staff.weekly_roster_sms_enabled
+                            and staff.phone
+                            and staff.phone.strip()
+                        ):
+                            await _broadcast_one_sms(
+                                session,
+                                org_id=org_id,
+                                staff=staff,
+                                week_start=week_start,
+                                viewer_base_url=viewer_base_url,
+                                summary=summary,
+                            )
+        except Exception:
+            # The whole-org work-unit failed (DB connect, RLS set, ...).
+            # Log and move on so one bad org doesn't poison the batch.
+            logger.exception(
+                "weekly_roster_broadcast: org=%s broadcast batch failed",
+                org_id,
+            )
+
+    return summary
+
+
+async def _broadcast_one_email(
+    session,
+    *,
+    org_id,
+    staff,
+    week_start: date,
+    summary: dict,
+) -> None:
+    """Email-leg helper for :func:`weekly_roster_broadcast`.
+
+    Wrapped in a SAVEPOINT (``begin_nested``) so a per-staff failure
+    rolls back only that staff's writes (e.g. ``notification_log``,
+    ``audit_log`` partial inserts), letting the rest of the org's
+    batch keep flowing (R10.3).
+    """
+    from app.modules.staff.roster_delivery import send_roster_email
+
+    try:
+        savepoint = await session.begin_nested()
+    except Exception:
+        # Couldn't even open a SAVEPOINT — DB session is sick. Bail
+        # this leg so we don't crash the per-org transaction.
+        logger.warning(
+            "weekly_roster_broadcast: org=%s staff=%s email=failed "
+            "error=savepoint_open_failed",
+            org_id, staff.id,
+        )
+        summary["email_failed"] += 1
+        return
+
+    try:
+        result = await send_roster_email(
+            session, org_id=org_id, staff=staff, week_start=week_start,
+        )
+    except Exception as exc:
+        await savepoint.rollback()
+        summary["email_failed"] += 1
+        logger.warning(
+            "weekly_roster_broadcast: org=%s staff=%s email=failed error=%s",
+            org_id, staff.id, exc,
+        )
+        return
+
+    if result.ok:
+        summary["email_sent"] += 1
+        logger.info(
+            "weekly_roster_broadcast: org=%s staff=%s email=ok message_id=%s",
+            org_id, staff.id, result.message_id,
+        )
+    else:
+        # Refusal cases (no shifts in week, opt-out flipped during the
+        # tick) are NOT failures — they're skips. Roll back the
+        # SAVEPOINT so any side-effect rows the helper might have
+        # written (none today, but defence-in-depth) don't persist.
+        await savepoint.rollback()
+        summary["email_failed"] += 1
+        logger.info(
+            "weekly_roster_broadcast: org=%s staff=%s email=skipped reason=%s",
+            org_id, staff.id, result.reason,
+        )
+
+
+async def _broadcast_one_sms(
+    session,
+    *,
+    org_id,
+    staff,
+    week_start: date,
+    viewer_base_url: str,
+    summary: dict,
+) -> None:
+    """SMS-leg helper for :func:`weekly_roster_broadcast`.
+
+    Mirrors :func:`_broadcast_one_email` but for the SMS provider
+    chain. The viewer-token mint inside ``send_roster_sms`` is
+    idempotent per ``(staff_id, week_start)`` so re-running this on
+    the next Friday-16:05 tick (e.g. after a worker restart) reuses
+    the same public viewer URL.
+    """
+    from app.modules.staff.roster_delivery import send_roster_sms
+
+    try:
+        savepoint = await session.begin_nested()
+    except Exception:
+        logger.warning(
+            "weekly_roster_broadcast: org=%s staff=%s sms=failed "
+            "error=savepoint_open_failed",
+            org_id, staff.id,
+        )
+        summary["sms_failed"] += 1
+        return
+
+    try:
+        result = await send_roster_sms(
+            session,
+            org_id=org_id,
+            staff=staff,
+            week_start=week_start,
+            viewer_base_url=viewer_base_url,
+        )
+    except Exception as exc:
+        await savepoint.rollback()
+        summary["sms_failed"] += 1
+        logger.warning(
+            "weekly_roster_broadcast: org=%s staff=%s sms=failed error=%s",
+            org_id, staff.id, exc,
+        )
+        return
+
+    if result.ok:
+        summary["sms_sent"] += 1
+        logger.info(
+            "weekly_roster_broadcast: org=%s staff=%s sms=ok message_id=%s",
+            org_id, staff.id, result.message_id,
+        )
+    else:
+        await savepoint.rollback()
+        summary["sms_failed"] += 1
+        logger.info(
+            "weekly_roster_broadcast: org=%s staff=%s sms=skipped reason=%s",
+            org_id, staff.id, result.reason,
+        )
+
+
+
+
+# ---------------------------------------------------------------------------
+# 15. Accrue leave (Staff Management Phase 2 task C1) — daily UTC
+# ---------------------------------------------------------------------------
+
+async def accrue_leave() -> dict:
+    """Daily leave-accrual sweep for every active staff in every org
+    with the ``staff_management`` module enabled.
+
+    Iterates orgs → iterates active staff → calls
+    :func:`app.modules.leave.accrual.accrue_for_staff`. Each per-staff
+    call is wrapped in a SAVEPOINT (``begin_nested``) so a single
+    failure doesn't poison the per-org batch (mirrors the pattern used
+    by :func:`weekly_roster_broadcast`). The accrual helper is itself
+    idempotent — its existing-row guard keyed on
+    ``(staff_id, leave_type_id, reason='accrual', occurred_at)``
+    makes a same-day re-run a no-op (e.g. after a crash + restart).
+
+    Per-org RLS is set via :func:`app.core.database._set_rls_org_id` so
+    the staff query only sees the current tenant's rows. Cross-org work
+    happens in separate sessions to keep RLS bounded.
+
+    **Validates: Requirements R5, R6, R7 — Staff Management Phase 2 task C1**
+    """
+    from sqlalchemy import select
+
+    from app.core.database import _set_rls_org_id, async_session_factory
+    from app.modules.admin.models import Organisation
+    from app.modules.leave.accrual import accrue_for_staff
+    from app.modules.module_management.models import OrgModule
+    from app.modules.staff.models import StaffMember
+
+    today = date.today()
+    summary = {"orgs_processed": 0, "staff_processed": 0, "errors": 0}
+
+    # Step 1 — list orgs with staff_management enabled.
+    try:
+        async with async_session_factory() as session:
+            async with session.begin():
+                stmt = (
+                    select(Organisation.id)
+                    .join(OrgModule, OrgModule.org_id == Organisation.id)
+                    .where(
+                        OrgModule.module_slug == "staff_management",
+                        OrgModule.is_enabled.is_(True),
+                    )
+                )
+                result = await session.execute(stmt)
+                org_ids = [row[0] for row in result.all()]
+    except Exception as exc:
+        logger.exception("accrue_leave: failed to load orgs: %s", exc)
+        return {"error": str(exc)}
+
+    if not org_ids:
+        return summary
+
+    # Step 2 — per-org work in its own session so RLS is bounded.
+    for org_id in org_ids:
+        try:
+            async with async_session_factory() as session:
+                async with session.begin():
+                    await _set_rls_org_id(session, str(org_id))
+                    stmt_staff = select(StaffMember).where(
+                        StaffMember.org_id == org_id,
+                        StaffMember.is_active.is_(True),
+                    )
+                    staff_result = await session.execute(stmt_staff)
+                    staff_list = list(staff_result.scalars().all())
+
+                    for staff in staff_list:
+                        summary["staff_processed"] += 1
+                        try:
+                            savepoint = await session.begin_nested()
+                        except Exception:
+                            logger.warning(
+                                "accrue_leave: org=%s staff=%s "
+                                "error=savepoint_open_failed",
+                                org_id, staff.id,
+                            )
+                            summary["errors"] += 1
+                            continue
+                        try:
+                            await accrue_for_staff(session, staff, today)
+                        except Exception as exc:
+                            await savepoint.rollback()
+                            summary["errors"] += 1
+                            logger.warning(
+                                "accrue_leave: org=%s staff=%s error=%s",
+                                org_id, staff.id, exc,
+                            )
+            summary["orgs_processed"] += 1
+        except Exception:
+            # Whole-org work-unit failed (DB connect, RLS set, ...).
+            # Log + move on so a single bad org doesn't poison the batch.
+            logger.exception(
+                "accrue_leave: org=%s batch failed", org_id,
+            )
+            summary["errors"] += 1
+
+    logger.info(
+        "accrue_leave: orgs=%d staff=%d errors=%d",
+        summary["orgs_processed"],
+        summary["staff_processed"],
+        summary["errors"],
+    )
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# 16. Process public holidays (Staff Management Phase 2 task C2) — daily UTC
+# ---------------------------------------------------------------------------
+
+async def process_public_holidays() -> dict:
+    """For every org with ``staff_management`` enabled, walk public
+    holidays in the next 14 days for the org's ``country_code`` (default
+    NZ when unset) and call
+    :func:`app.modules.leave.public_holidays.process_holiday_for_org`
+    for each. Each per-holiday call is wrapped in a SAVEPOINT so a
+    single failure doesn't poison the per-org batch.
+
+    The downstream helper is itself idempotent — the alt-day grant is
+    keyed on ``(staff_id, leave_type_id, reason='public_holiday_extension',
+    occurred_at)`` so re-running the task is a no-op for already-granted
+    days. Time-and-a-half schedule-entry markers are also idempotent
+    (the helper checks for the existing marker substring).
+
+    **Validates: Requirement R8 — Staff Management Phase 2 task C2**
+    """
+    from sqlalchemy import select
+
+    from app.core.database import _set_rls_org_id, async_session_factory
+    from app.modules.admin.models import Organisation, PublicHoliday
+    from app.modules.leave.public_holidays import process_holiday_for_org
+    from app.modules.module_management.models import OrgModule
+
+    today = date.today()
+    horizon = today + timedelta(days=14)
+    summary = {
+        "orgs_processed": 0,
+        "holidays_processed": 0,
+        "alt_days_granted": 0,
+        "entries_marked": 0,
+        "errors": 0,
+    }
+
+    # Step 1 — list orgs with staff_management enabled (+ their country).
+    try:
+        async with async_session_factory() as session:
+            async with session.begin():
+                stmt = (
+                    select(Organisation.id, Organisation.country_code)
+                    .join(OrgModule, OrgModule.org_id == Organisation.id)
+                    .where(
+                        OrgModule.module_slug == "staff_management",
+                        OrgModule.is_enabled.is_(True),
+                    )
+                )
+                result = await session.execute(stmt)
+                org_rows = list(result.all())
+    except Exception as exc:
+        logger.exception("process_public_holidays: failed to load orgs: %s", exc)
+        return {"error": str(exc)}
+
+    if not org_rows:
+        return summary
+
+    # Step 2 — per-org work in its own session.
+    for org_id, country_code in org_rows:
+        cc = (country_code or "NZ").upper()
+        try:
+            async with async_session_factory() as session:
+                async with session.begin():
+                    await _set_rls_org_id(session, str(org_id))
+                    ph_stmt = (
+                        select(PublicHoliday.holiday_date)
+                        .where(
+                            PublicHoliday.country_code == cc,
+                            PublicHoliday.holiday_date >= today,
+                            PublicHoliday.holiday_date <= horizon,
+                        )
+                        .order_by(PublicHoliday.holiday_date)
+                    )
+                    ph_result = await session.execute(ph_stmt)
+                    holiday_dates = [row[0] for row in ph_result.all()]
+
+                    for holiday_date in holiday_dates:
+                        summary["holidays_processed"] += 1
+                        try:
+                            savepoint = await session.begin_nested()
+                        except Exception:
+                            logger.warning(
+                                "process_public_holidays: org=%s date=%s "
+                                "error=savepoint_open_failed",
+                                org_id, holiday_date,
+                            )
+                            summary["errors"] += 1
+                            continue
+                        try:
+                            sub = await process_holiday_for_org(
+                                session, org_id, holiday_date,
+                            )
+                            summary["alt_days_granted"] += sub.get(
+                                "alt_days_granted", 0,
+                            )
+                            summary["entries_marked"] += sub.get(
+                                "entries_marked", 0,
+                            )
+                        except Exception as exc:
+                            await savepoint.rollback()
+                            summary["errors"] += 1
+                            logger.warning(
+                                "process_public_holidays: org=%s date=%s "
+                                "error=%s",
+                                org_id, holiday_date, exc,
+                            )
+            summary["orgs_processed"] += 1
+        except Exception:
+            logger.exception(
+                "process_public_holidays: org=%s batch failed", org_id,
+            )
+            summary["errors"] += 1
+
+    logger.info(
+        "process_public_holidays: orgs=%d holidays=%d alt_days=%d "
+        "entries_marked=%d errors=%d",
+        summary["orgs_processed"],
+        summary["holidays_processed"],
+        summary["alt_days_granted"],
+        summary["entries_marked"],
+        summary["errors"],
+    )
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# 17. Update ADP snapshots (Staff Management Phase 2 task C3) — daily UTC
+# ---------------------------------------------------------------------------
+
+# Phase 4 (R13) divisor — NZ standard 260 working days/year (52 × 5).
+# Used when a staff member has finalised payslips covering the last 52
+# weeks; the Phase 2 fallback below uses the per-week schedule.
+_ADP_PAYSLIP_WORKING_DAYS_PER_YEAR = 260
+
+
+def _compute_phase2_adp(staff) -> "Decimal | None":  # noqa: F821 — Decimal imported lazily
+    """Phase-2 placeholder ADP formula — unchanged from the original
+    ``update_adp_snapshots`` body. Returns ``None`` when the staff
+    record is missing the inputs required to compute a value.
+
+    Formula (per design §1 / R9.1):
+
+        daily_rate = (hourly_rate × standard_hours_per_week)
+                      / weekday_count_in_schedule
+
+    where ``weekday_count_in_schedule`` is the number of Mon-Fri keys
+    flagged in ``staff.availability_schedule`` (fallback 5 when zero
+    or missing).
+    """
+    from decimal import Decimal
+
+    if (
+        staff.hourly_rate is None
+        or staff.standard_hours_per_week is None
+    ):
+        return None
+
+    weekday_keys = ("monday", "tuesday", "wednesday", "thursday", "friday")
+    schedule = staff.availability_schedule or {}
+    weekday_count = 0
+    for key in weekday_keys:
+        entry = schedule.get(key)
+        if isinstance(entry, dict):
+            if entry.get("start") or entry.get("enabled"):
+                weekday_count += 1
+        elif isinstance(entry, bool):
+            if entry:
+                weekday_count += 1
+        elif isinstance(entry, str):
+            if entry.strip():
+                weekday_count += 1
+    if weekday_count == 0:
+        weekday_count = 5
+
+    weekly_pay = (
+        Decimal(staff.hourly_rate)
+        * Decimal(staff.standard_hours_per_week)
+    )
+    return (weekly_pay / Decimal(weekday_count)).quantize(Decimal("0.01"))
+
+
+async def _compute_payslip_adp(
+    session, staff_id, *, as_of: date,
+) -> "Decimal | None":  # noqa: F821 — Decimal imported lazily
+    """Phase-4 (R13) ADP from finalised payslips.
+
+    Sums ``payslips.gross_pay`` for the staff over the last 365 days
+    (joined to ``pay_periods.pay_date`` so we use the actual money-out
+    date, not the period boundary) and divides by the NZ-standard 260
+    working days/year. Only ``status='finalised'`` payslips count —
+    drafts and voided rows are excluded.
+
+    Returns ``None`` when no finalised payslips fall in the window or
+    the sum is zero / NULL — the caller falls back to Phase 2.
+    """
+    from decimal import Decimal
+
+    from sqlalchemy import text as sql_text
+
+    window_end = as_of
+    window_start = as_of - timedelta(days=365)
+
+    result = await session.execute(
+        sql_text(
+            "SELECT COALESCE(SUM(p.gross_pay), 0) "
+            "FROM payslips p "
+            "JOIN pay_periods pp ON pp.id = p.pay_period_id "
+            "WHERE p.staff_id = :staff_id "
+            "  AND p.status = 'finalised' "
+            "  AND pp.pay_date BETWEEN :start AND :end"
+        ),
+        {
+            "staff_id": str(staff_id),
+            "start": window_start,
+            "end": window_end,
+        },
+    )
+    total = result.scalar_one_or_none() or 0
+    total_d = Decimal(total)
+    if total_d <= 0:
+        return None
+    return (
+        total_d / Decimal(_ADP_PAYSLIP_WORKING_DAYS_PER_YEAR)
+    ).quantize(Decimal("0.01"))
+
+
+async def update_adp_snapshots() -> dict:
+    """Compute + persist ``average_daily_pay`` snapshot for every
+    active staff member.
+
+    Phase 4 (R13) — primary path uses real finalised payslip data:
+
+        adp = sum(payslips.gross_pay over last 365 days, finalised)
+              / 260 working days
+
+    Falls back to the Phase 2 placeholder formula
+    (:func:`_compute_phase2_adp`) when a staff member has no finalised
+    payslips in the 52-week window — typical for new hires or orgs
+    that haven't run their first pay run yet.
+
+    Terminated staff are skipped (``is_active=false``) — consistent
+    with the Phase 2 behaviour. Staff with neither finalised payslips
+    nor the Phase 2 inputs (``hourly_rate`` + ``standard_hours_per_week``)
+    are also skipped.
+
+    Each successful update writes a redacted ``staff.adp_snapshot_updated``
+    audit row with ``after_value = {staff_id, adp, source}`` only —
+    no PII, no breakdown JSON.
+
+    Idempotent — re-running overwrites the same value, so a crash +
+    restart loop won't double-up.
+
+    The ``average_daily_pay_snapshot`` column is added by alembic 0205
+    but isn't on the ``StaffMember`` ORM yet, so we issue a raw
+    parameterised UPDATE keyed on ``id``.
+
+    **Validates: Requirement R13 — Staff Management Phase 4 task C2**
+    """
+    from sqlalchemy import select, text as sql_text
+
+    from app.core.audit import write_audit_log
+    from app.core.database import async_session_factory
+    from app.modules.staff.models import StaffMember
+
+    today = date.today()
+    summary = {
+        "staff_updated": 0,
+        "skipped": 0,
+        "errors": 0,
+        "from_payslips": 0,
+        "from_phase2": 0,
+    }
+
+    try:
+        async with async_session_factory() as session:
+            async with session.begin():
+                stmt = select(StaffMember).where(
+                    StaffMember.is_active.is_(True),
+                )
+                result = await session.execute(stmt)
+                staff_list = list(result.scalars().all())
+
+                for staff in staff_list:
+                    try:
+                        # Try real-payslip path first (R13.1).
+                        daily_rate = await _compute_payslip_adp(
+                            session, staff.id, as_of=today,
+                        )
+                        source = "payslips"
+                        if daily_rate is None:
+                            # Fall back to Phase 2 placeholder (R13.2).
+                            daily_rate = _compute_phase2_adp(staff)
+                            source = "phase2"
+
+                        if daily_rate is None:
+                            # No payslips and Phase 2 inputs missing —
+                            # nothing to compute.
+                            summary["skipped"] += 1
+                            continue
+
+                        await session.execute(
+                            sql_text(
+                                "UPDATE staff_members "
+                                "SET average_daily_pay_snapshot = :v "
+                                "WHERE id = :id"
+                            ),
+                            {"v": daily_rate, "id": staff.id},
+                        )
+                        # Redacted audit per task spec — staff_id, adp,
+                        # source only. NO breakdown JSON, NO PII.
+                        await write_audit_log(
+                            session=session,
+                            org_id=staff.org_id,
+                            user_id=None,
+                            action="staff.adp_snapshot_updated",
+                            entity_type="staff_member",
+                            entity_id=staff.id,
+                            after_value={
+                                "staff_id": str(staff.id),
+                                "adp": str(daily_rate),
+                                "source": source,
+                            },
+                        )
+                        summary["staff_updated"] += 1
+                        if source == "payslips":
+                            summary["from_payslips"] += 1
+                        else:
+                            summary["from_phase2"] += 1
+                    except Exception as exc:
+                        summary["errors"] += 1
+                        logger.warning(
+                            "update_adp_snapshots: staff=%s error=%s",
+                            staff.id, exc,
+                        )
+    except Exception as exc:
+        logger.exception("update_adp_snapshots failed: %s", exc)
+        return {"error": str(exc)}
+
+    logger.info(
+        "update_adp_snapshots: updated=%d (payslips=%d phase2=%d) "
+        "skipped=%d errors=%d",
+        summary["staff_updated"],
+        summary["from_payslips"],
+        summary["from_phase2"],
+        summary["skipped"],
+        summary["errors"],
+    )
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# 17. Late-arrival + missed-clock-out alerts — Staff Management Phase 3 C1/C2
+# ---------------------------------------------------------------------------
+
+
+async def check_late_arrivals_task() -> dict:
+    """Every 5 min: find scheduled shifts that started 15+ minutes ago
+    where the staff hasn't clocked in yet, and SMS the manager (R14).
+
+    Per-shift dedupe via Redis key ``late:{shift_id}`` (8h TTL). Honours
+    the snooze set by the running-late upward report (R14b / G3) — if
+    the key already exists (set by the staff's "I'm running late"
+    POST), this task skips the shift.
+
+    The whole task is wrapped in try/except so a transient SMS failure
+    or DB hiccup doesn't take the scheduler down.
+
+    **Validates: Requirement R14 (G3 snooze) — Phase 3 task C1.**
+    """
+    from sqlalchemy import and_, select
+
+    from app.core.database import async_session_factory
+    from app.core.redis import redis_pool
+    from app.integrations.sms_sender import send_sms
+    from app.modules.scheduling_v2.models import ScheduleEntry
+    from app.modules.staff.models import StaffMember
+    from app.modules.time_clock.models import TimeClockEntry
+
+    summary = {"shifts_checked": 0, "sms_sent": 0, "skipped": 0, "errors": 0}
+
+    try:
+        now_utc = datetime.now(timezone.utc)
+        # Shifts that started 15-60 minutes ago — narrow window so
+        # we only nag once per shift; the dedupe key prevents repeated
+        # SMS for the same shift.
+        window_start = now_utc - timedelta(minutes=60)
+        window_end = now_utc - timedelta(minutes=15)
+
+        async with async_session_factory() as session:
+            async with session.begin():
+                # Find candidate shifts.
+                stmt = (
+                    select(ScheduleEntry)
+                    .where(
+                        and_(
+                            ScheduleEntry.status.in_(["scheduled"]),
+                            ScheduleEntry.staff_id.is_not(None),
+                            ScheduleEntry.start_time >= window_start,
+                            ScheduleEntry.start_time <= window_end,
+                            ScheduleEntry.entry_type.in_(
+                                ["job", "booking", "other"],
+                            ),
+                        ),
+                    )
+                )
+                shifts = (await session.execute(stmt)).scalars().all()
+
+                for shift in shifts:
+                    summary["shifts_checked"] += 1
+
+                    # Honour the running-late snooze (G3).
+                    redis_key = f"late:{shift.id}"
+                    try:
+                        existing = await redis_pool.get(redis_key)
+                        if existing:
+                            summary["skipped"] += 1
+                            continue
+                    except Exception:
+                        # Redis down — proceed; skipping is best-effort.
+                        existing = None
+
+                    # Check if the staff has clocked in for this shift.
+                    open_or_matched = (
+                        await session.execute(
+                            select(TimeClockEntry.id).where(
+                                and_(
+                                    TimeClockEntry.staff_id == shift.staff_id,
+                                    TimeClockEntry.clock_in_at >= shift.start_time - timedelta(hours=1),
+                                    TimeClockEntry.clock_in_at <= now_utc,
+                                ),
+                            ).limit(1)
+                        )
+                    ).scalar_one_or_none()
+                    if open_or_matched is not None:
+                        summary["skipped"] += 1
+                        continue
+
+                    # Resolve manager via reporting_to chain.
+                    staff = await session.get(StaffMember, shift.staff_id)
+                    if staff is None:
+                        summary["skipped"] += 1
+                        continue
+                    manager = None
+                    cursor = staff
+                    seen: set = set()
+                    while (
+                        cursor.reporting_to
+                        and cursor.reporting_to not in seen
+                    ):
+                        seen.add(cursor.id)
+                        m = await session.get(StaffMember, cursor.reporting_to)
+                        if m is None:
+                            break
+                        if m.phone:
+                            manager = m
+                            break
+                        cursor = m
+
+                    if manager is None or not manager.phone:
+                        summary["skipped"] += 1
+                        # Still set the dedupe key so we don't re-check
+                        # this shift every 5 minutes.
+                        try:
+                            await redis_pool.set(redis_key, "1", ex=28800)
+                        except Exception:
+                            pass
+                        continue
+
+                    body = (
+                        f"Late: {staff.first_name or staff.name} hasn't "
+                        f"clocked in for shift starting "
+                        f"{shift.start_time.strftime('%H:%M')}."
+                    )
+                    try:
+                        await send_sms(
+                            session,
+                            to_phone=manager.phone,
+                            body=body,
+                            dlq_task_name="late_arrival_alert",
+                            dlq_task_args={
+                                "schedule_entry_id": str(shift.id),
+                                "staff_id": str(staff.id),
+                            },
+                            org_id=shift.org_id,
+                        )
+                        summary["sms_sent"] += 1
+                    except Exception as exc:
+                        summary["errors"] += 1
+                        logger.warning(
+                            "check_late_arrivals: shift=%s sms_failed=%s",
+                            shift.id, exc,
+                        )
+
+                    # Dedupe so we don't SMS the manager again for this shift.
+                    try:
+                        await redis_pool.set(redis_key, "1", ex=28800)  # 8h
+                    except Exception:
+                        pass
+    except Exception as exc:
+        logger.exception("check_late_arrivals failed: %s", exc)
+        return {"error": str(exc)}
+
+    logger.info(
+        "check_late_arrivals: shifts=%d sms=%d skipped=%d errors=%d",
+        summary["shifts_checked"],
+        summary["sms_sent"],
+        summary["skipped"],
+        summary["errors"],
+    )
+    return summary
+
+
+async def check_missed_clock_outs_task() -> dict:
+    """Hourly: find ``time_clock_entries`` with ``clock_out_at IS NULL
+    AND clock_in_at < now() - 12h`` and send the staff a "Did you
+    forget to clock out?" SMS, plus notify the manager.
+
+    Per-entry dedupe via Redis key ``missed_clockout:{entry_id}``
+    (24h TTL).
+
+    **Validates: Requirement R14.2 — Phase 3 task C2.**
+    """
+    from sqlalchemy import and_, select
+
+    from app.core.database import async_session_factory
+    from app.core.redis import redis_pool
+    from app.integrations.sms_sender import send_sms
+    from app.modules.staff.models import StaffMember
+    from app.modules.time_clock.models import TimeClockEntry
+
+    summary = {"entries_checked": 0, "sms_sent": 0, "skipped": 0, "errors": 0}
+
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=12)
+
+        async with async_session_factory() as session:
+            async with session.begin():
+                stmt = (
+                    select(TimeClockEntry)
+                    .where(
+                        and_(
+                            TimeClockEntry.clock_out_at.is_(None),
+                            TimeClockEntry.clock_in_at < cutoff,
+                        ),
+                    )
+                )
+                entries = (await session.execute(stmt)).scalars().all()
+
+                for entry in entries:
+                    summary["entries_checked"] += 1
+                    redis_key = f"missed_clockout:{entry.id}"
+                    try:
+                        existing = await redis_pool.get(redis_key)
+                        if existing:
+                            summary["skipped"] += 1
+                            continue
+                    except Exception:
+                        pass
+
+                    staff = await session.get(StaffMember, entry.staff_id)
+                    if staff is None or not staff.phone:
+                        summary["skipped"] += 1
+                        try:
+                            await redis_pool.set(
+                                redis_key, "1", ex=86400,
+                            )
+                        except Exception:
+                            pass
+                        continue
+
+                    body = (
+                        "Did you forget to clock out? Your shift from "
+                        f"{entry.clock_in_at.strftime('%H:%M')} is still open. "
+                        "Open the app to close it."
+                    )
+                    try:
+                        await send_sms(
+                            session,
+                            to_phone=staff.phone,
+                            body=body,
+                            dlq_task_name="missed_clockout_alert",
+                            dlq_task_args={
+                                "time_clock_entry_id": str(entry.id),
+                            },
+                            org_id=entry.org_id,
+                        )
+                        summary["sms_sent"] += 1
+                    except Exception as exc:
+                        summary["errors"] += 1
+                        logger.warning(
+                            "check_missed_clock_outs: entry=%s sms_failed=%s",
+                            entry.id, exc,
+                        )
+
+                    try:
+                        await redis_pool.set(redis_key, "1", ex=86400)
+                    except Exception:
+                        pass
+    except Exception as exc:
+        logger.exception("check_missed_clock_outs failed: %s", exc)
+        return {"error": str(exc)}
+
+    logger.info(
+        "check_missed_clock_outs: entries=%d sms=%d skipped=%d errors=%d",
+        summary["entries_checked"],
+        summary["sms_sent"],
+        summary["skipped"],
+        summary["errors"],
+    )
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# 18. Roll pay periods — Staff Management Phase 4 task C1
+# ---------------------------------------------------------------------------
+
+
+async def roll_pay_periods_task() -> dict:
+    """Daily roll-forward of pay periods for every org with the
+    ``payroll`` module enabled.
+
+    For each such org, ensures the next four pay periods exist.
+    Uses :func:`app.modules.payslips.period_rolling.compute_next_period_dates`
+    with the org's stored ``pay_period_cadence`` / ``pay_period_anchor_day``
+    / ``pay_date_offset_days`` columns and the latest existing
+    ``pay_periods.end_date`` watermark.
+
+    Idempotent — every INSERT uses ``ON CONFLICT (org_id, start_date)
+    DO NOTHING`` against the unique index ``uq_pay_periods_org_start``,
+    so a re-run is a silent no-op.
+
+    G14 — non-retroactive cadence change: the algorithm reads cadence
+    from ``organisations`` at call time and rolls forward from
+    ``latest_end+1`` only. Existing finalised/paid periods are never
+    rewritten.
+
+    Per-org work runs in its own session + ``begin()`` transaction so
+    a single org failure doesn't poison the batch (mirrors the
+    pattern used by :func:`accrue_leave`).
+
+    **Validates: Requirements R1.5, R1.6 (G5 + G14) — Staff Management
+    Phase 4 task C1.**
+    """
+    from sqlalchemy import select, text as sql_text
+
+    from app.core.audit import write_audit_log
+    from app.core.database import _set_rls_org_id, async_session_factory
+    from app.modules.payslips.models import PayPeriod
+    from app.modules.payslips.period_rolling import compute_next_period_dates
+
+    summary = {
+        "orgs_processed": 0,
+        "periods_created": 0,
+        "periods_skipped": 0,
+        "errors": 0,
+    }
+
+    # Step 1 — list orgs with payroll enabled.
+    # The pay_period_* columns are physically present on
+    # ``organisations`` (added by alembic 0209) but not yet mapped on
+    # the ``Organisation`` ORM, so we use a raw SELECT.
+    try:
+        async with async_session_factory() as session:
+            async with session.begin():
+                stmt = sql_text(
+                    "SELECT o.id, o.pay_period_cadence, "
+                    "       o.pay_period_anchor_day, "
+                    "       o.pay_date_offset_days "
+                    "FROM organisations o "
+                    "JOIN org_modules m ON m.org_id = o.id "
+                    "WHERE m.module_slug = 'payroll' "
+                    "  AND m.is_enabled = true"
+                )
+                result = await session.execute(stmt)
+                org_rows = list(result.all())
+    except Exception as exc:
+        logger.exception("roll_pay_periods: failed to load orgs: %s", exc)
+        return {"error": str(exc)}
+
+    if not org_rows:
+        return summary
+
+    today = date.today()
+
+    # Step 2 — per-org work in its own session so RLS is bounded.
+    for org_id, cadence, anchor_day, offset_days in org_rows:
+        cadence = (cadence or "fortnightly")
+        anchor_day = int(anchor_day or 1)
+        offset_days = int(offset_days if offset_days is not None else 3)
+
+        try:
+            async with async_session_factory() as session:
+                async with session.begin():
+                    await _set_rls_org_id(session, str(org_id))
+
+                    latest_end = (
+                        await session.execute(
+                            select(PayPeriod.end_date)
+                            .where(PayPeriod.org_id == org_id)
+                            .order_by(PayPeriod.end_date.desc())
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+
+                    # Roll forward up to 4 periods, ON CONFLICT DO
+                    # NOTHING for idempotency. We carry our own
+                    # latest_end forward across the loop iterations
+                    # so the next compute call chains end-to-start
+                    # even when the prior INSERT silently no-op'd.
+                    for _ in range(4):
+                        try:
+                            start, end, pay_dt = compute_next_period_dates(
+                                cadence=cadence,
+                                anchor_day=anchor_day,
+                                pay_date_offset_days=offset_days,
+                                latest_end=latest_end,
+                                today=today,
+                            )
+                        except ValueError as exc:
+                            logger.warning(
+                                "roll_pay_periods: org=%s "
+                                "compute_failed=%s",
+                                org_id, exc,
+                            )
+                            summary["errors"] += 1
+                            break
+
+                        new_id = uuid.uuid4()
+                        result = await session.execute(
+                            sql_text(
+                                "INSERT INTO pay_periods "
+                                "(id, org_id, start_date, end_date, "
+                                " pay_date, status) "
+                                "VALUES (:id, :org_id, :start, :end, "
+                                "        :pay, 'open') "
+                                "ON CONFLICT (org_id, start_date) "
+                                "DO NOTHING "
+                                "RETURNING id"
+                            ),
+                            {
+                                "id": str(new_id),
+                                "org_id": str(org_id),
+                                "start": start,
+                                "end": end,
+                                "pay": pay_dt,
+                            },
+                        )
+                        inserted_id = result.scalar_one_or_none()
+                        if inserted_id is not None:
+                            summary["periods_created"] += 1
+                            # G12-compliant audit: dates only, no PII /
+                            # money. ``pay_period.created_by_roll`` is
+                            # a system-initiated event so user_id=None.
+                            await write_audit_log(
+                                session=session,
+                                org_id=org_id,
+                                user_id=None,
+                                action="pay_period.created_by_roll",
+                                entity_type="pay_period",
+                                entity_id=new_id,
+                                after_value={
+                                    "pay_period_id": str(new_id),
+                                    "start_date": start.isoformat(),
+                                    "end_date": end.isoformat(),
+                                    "pay_date": pay_dt.isoformat(),
+                                    "cadence": cadence,
+                                },
+                            )
+                        else:
+                            summary["periods_skipped"] += 1
+
+                        # Carry the watermark forward so the next
+                        # iteration computes against this end_date,
+                        # whether we INSERTed or hit ON CONFLICT.
+                        latest_end = end
+
+            summary["orgs_processed"] += 1
+        except Exception:
+            # Whole-org work-unit failed — log + move on so a single
+            # bad org doesn't poison the batch.
+            logger.exception(
+                "roll_pay_periods: org=%s batch failed", org_id,
+            )
+            summary["errors"] += 1
+
+    logger.info(
+        "roll_pay_periods: orgs=%d created=%d skipped=%d errors=%d",
+        summary["orgs_processed"],
+        summary["periods_created"],
+        summary["periods_skipped"],
+        summary["errors"],
+    )
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -866,6 +2066,13 @@ WRITE_TASKS: set[str] = {
     "sync_public_holidays",        # sync_public_holidays_task — DELETE + INSERT holidays + audit log (ISSUE-147)
     "quote_expiry",                # check_quote_expiry_task — UPDATE quotes to expired status
     "cleanup_bounce_rows",         # cleanup_expired_bounce_rows_task — deletes expired soft bounces (Phase 8c)
+    "weekly_roster_broadcast",     # weekly_roster_broadcast — sends roster email/SMS, writes audit_log + notification_log (Staff Phase 1, R10)
+    "accrue_leave",                # accrue_leave — writes leave_ledger + leave_balance updates (Staff Phase 2, C1)
+    "process_public_holidays",     # process_public_holidays — writes leave_ledger + schedule_entries notes (Staff Phase 2, C2)
+    "update_adp_snapshots",        # update_adp_snapshots — UPDATEs staff_members.average_daily_pay_snapshot + writes staff.adp_snapshot_updated audit row (Staff Phase 2 C3 → Phase 4 C2 swapped in real payslip data per R13)
+    "check_late_arrivals",         # check_late_arrivals_task — sends late-arrival SMS, sets Redis dedupe (Staff Phase 3, C1)
+    "check_missed_clock_outs",     # check_missed_clock_outs_task — sends missed-clock-out SMS (Staff Phase 3, C2)
+    "roll_pay_periods",            # roll_pay_periods_task — INSERTs next 4 pay_periods rows + audit_log (Staff Phase 4, C1)
 }
 
 # (task_fn, interval_seconds, name)
@@ -889,6 +2096,30 @@ _DAILY_TASKS: list[tuple] = [
     (check_grace_period_task, 900, "check_grace_period"),  # every 15 minutes (matches billing cadence)
     (check_suspension_retention_task, 86400, "check_suspension_retention"),  # daily
     (cleanup_expired_bounce_rows_task, 3600, "cleanup_bounce_rows"),  # hourly (Phase 8c)
+    # Staff Phase 1 D1 — runs every 30 minutes; the body short-circuits
+    # unless the org-local time is currently inside Friday 16:00-16:29
+    # (R10). The 30-min interval lines up with the spec so every timezone
+    # in our customer base hits exactly one tick inside the window.
+    (weekly_roster_broadcast, 1800, "weekly_roster_broadcast"),
+    # Staff Phase 2 C1/C2/C3 — run once per UTC day. The 86400s interval
+    # combined with the scheduler-lock first-acquire (last_run=0.0) means
+    # they fire on the first tick after each app start; the per-task
+    # idempotency guards (existing-ledger-row SELECTs in the accrual +
+    # public-holiday helpers; same-key UPDATE for ADP) make a same-day
+    # re-run a no-op (e.g. after a crash + restart).
+    (accrue_leave, 86400, "accrue_leave"),
+    (process_public_holidays, 86400, "process_public_holidays"),
+    (update_adp_snapshots, 86400, "update_adp_snapshots"),
+    # Staff Phase 3 C1/C2 — operational alerts. The scheduler-lock +
+    # WRITE_TASKS guards skip these on standby HA nodes so the same
+    # alert isn't sent twice. Both honour per-shift / per-entry Redis
+    # dedupe so an immediate re-run after a worker restart is a no-op.
+    (check_late_arrivals_task, 300, "check_late_arrivals"),
+    (check_missed_clock_outs_task, 3600, "check_missed_clock_outs"),
+    # Staff Phase 4 C1 — daily roll of pay_periods for orgs with the
+    # payroll module enabled. Idempotent via UNIQUE(org_id, start_date)
+    # + ON CONFLICT DO NOTHING; a same-day re-run is a no-op.
+    (roll_pay_periods_task, 86400, "roll_pay_periods"),
 ]
 
 _stop_event: asyncio.Event | None = None

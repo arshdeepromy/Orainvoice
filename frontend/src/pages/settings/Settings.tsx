@@ -17,6 +17,9 @@ import { Profile } from './Profile'
 import { SecuritySettings } from './SecuritySettings'
 import OnlinePaymentsSettings from './OnlinePaymentsSettings'
 import { InvoiceTemplateTab } from './InvoiceTemplateTab'
+import LeaveTypesPage from './people/LeaveTypesPage'
+import PermissionsPage from './people/PermissionsPage'
+import ClockInPolicyPage from './people/ClockInPolicyPage'
 
 type SettingsSection =
   | 'profile'
@@ -34,6 +37,9 @@ type SettingsSection =
   | 'modules'
   | 'notifications'
   | 'online-payments'
+  | 'leave-types'
+  | 'people-permissions'
+  | 'clock-in-policy'
 
 const NAV_ITEMS: { id: SettingsSection; label: string; icon: string; adminOnly?: boolean; module?: string }[] = [
   { id: 'profile', label: 'Profile', icon: '👤' },
@@ -51,6 +57,9 @@ const NAV_ITEMS: { id: SettingsSection; label: string; icon: string; adminOnly?:
   { id: 'webhooks', label: 'Webhooks', icon: '🔗', adminOnly: true },
   { id: 'modules', label: 'Modules', icon: '🧩', adminOnly: true },
   { id: 'notifications', label: 'Notifications', icon: '🔔', adminOnly: true },
+  { id: 'leave-types', label: 'Leave Types', icon: '🌴', adminOnly: true, module: 'staff_management' },
+  { id: 'people-permissions', label: 'People Permissions', icon: '👥', adminOnly: true, module: 'staff_management' },
+  { id: 'clock-in-policy', label: 'Clock-in Policy', icon: '⏰', adminOnly: true, module: 'staff_management' },
 ]
 
 const SECTION_COMPONENTS: Record<SettingsSection, React.FC> = {
@@ -69,6 +78,9 @@ const SECTION_COMPONENTS: Record<SettingsSection, React.FC> = {
   modules: ModuleConfiguration,
   notifications: NotificationsPage,
   'online-payments': OnlinePaymentsSettings,
+  'leave-types': LeaveTypesPage,
+  'people-permissions': PermissionsPage,
+  'clock-in-policy': ClockInPolicyPage,
 }
 
 export function Settings() {

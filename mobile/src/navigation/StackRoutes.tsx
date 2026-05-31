@@ -464,6 +464,20 @@ const KioskScreen = lazy(() =>
   })),
 )
 
+// Clock (self-service clock-in/out — Phase 3 D8 / R4 / G3)
+const ClockScreen = lazy(() =>
+  import('@/screens/clock/ClockScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Clock" />,
+  })),
+)
+
+// Payslips (self-service — Phase 4 D11 / G9)
+const PayslipsScreen = lazy(() =>
+  import('@/screens/payslips/PayslipsScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Payslips" />,
+  })),
+)
+
 // Auth screens
 const LoginScreen = lazy(() =>
   import('@/screens/auth/LoginScreen').catch(() => ({
@@ -691,6 +705,8 @@ export function StackRoutes() {
         <Route path="/fleet/checklists" element={<AuthGuard><FleetChecklistScreen /></AuthGuard>} />
         <Route path="/fleet/bookings" element={<AuthGuard><FleetBookingsScreen /></AuthGuard>} />
         <Route path="/kiosk" element={<AuthGuard><KioskScreen /></AuthGuard>} />
+        <Route path="/clock" element={<AuthGuard><ClockScreen /></AuthGuard>} />
+        <Route path="/payslips" element={<AuthGuard><PayslipsScreen /></AuthGuard>} />
 
         {/* Fallback */}
         <Route path="*" element={<Navigate to="/login" replace />} />

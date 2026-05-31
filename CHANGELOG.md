@@ -4,6 +4,405 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
+## [1.17.0] — 2026-06-01
+
+### Added — Staff Management Phase 4 (Payslips + Allowances + Termination + Wage Variance)
+
+**Payslips engine.** New `app/modules/payslips/` module ships the full payroll surface:
+- Pay-period CRUD with weekly / fortnightly / monthly cadences. Daily `roll_pay_periods` task ensures the next 4 periods exist for every org with `payroll` enabled (idempotent via UNIQUE `(org_id, start_date)`); cadence change is non-retroactive (G14).
+- Draft generation per active staff with auto-attached recurring allowance rules (G4 — `staff_recurring_allowances` table), KiwiSaver employee + employer auto-deductions (employer informational only, NEVER subtracted from gross — R6.2), and casual 8% holiday pay-as-you-go (R5; line OMITTED entirely when wages are zero per N17).
+- Public-holiday band rendered as a separate row on the payslip with rate defaulting to ordinary × 1.5 (Holidays Act s50, G2). Admin-overridable per draft.
+- Allowance rows carry `quantity` + `unit` columns (`shift` / `period` / `km`) — derived shift count from approved timesheets for `unit='shift'`, admin-entered for `km`, fixed at 1 for `period` (G18).
+- Bulk-finalise console with SAVEPOINT-per-payslip resilience (R9) and email-all option routed through the existing DLQ.
+- Pay-period reopen flow (G21) — refuses 409 on `paid`, 422 on already-`open`, allows new compensating drafts alongside the existing locked finalised payslips.
+- Finalised-payslip immutability via column allowlist (P4-N26) — only `emailed_at` is mutable post-finalise.
+
+**Termination workflow (R10).** New `terminate_employment` flow:
+- Step 0 — `SELECT … FOR UPDATE` row lock on `staff_members` (N19) — concurrent terminate calls serialise; the second sees `is_active=false` and returns 409 `already_terminated`.
+- Step 1 — reconciles future-dated approved leave (G16) — cancels the request, writes a compensating leave-ledger row that restores hours, marks future `schedule_entries.status='cancelled'` (NOT hard-delete — preserves the P3 SMS hook + audit history per X8).
+- Step 2 — Holidays Act s27 annual-leave payout = greater of (ordinary weekly pay, 52-week average); alt-day payout via ADP snapshot; casual 8% remainder true-up against YTD.
+- Step 3 — pay-period selection state machine (G25 + G6): open → use; finalised → reopen + audit `pay_period.reopened_for_termination`; paid → 409; missing → roll forward synchronously.
+- Step 4a — KiwiSaver carve-out (N15): KiwiSaver employee + employer apply to the non-s27 portion only.
+- Step 5 — flips `is_active=false`, zeros remaining accruing leave balances with compensating ledger rows, writes redacted `staff.terminated` audit row with `payout_summary` (counts only — no dollar amounts per R14 + G12).
+
+**PDF rendering.** New WeasyPrint payslip PDF includes every Wages Protection Act + Holidays Act s130A field — masked bank account `**-****-****NN-**` (G1) or "Cash payment / no bank account on file" fallback when the encrypted column is NULL (N18); masked IRD `***NNN`; tax code; all hour bands incl. public-holiday rate (G2); allowance qty × unit × amount for shift/km units (G18); KiwiSaver employer informational line; leave-taken with rates + balance-after; remaining leave balances; YTD totals (gross, PAYE, KiwiSaver-employee, KiwiSaver-employer — three computed at render time per P4-N25 with NZ tax-year boundary per N16); anniversary date. Multi-page A4 print CSS (G20) with running header/footer and page-break-inside on every table.
+
+**PDF storage.** `app/modules/payslips/pdf_storage.py` mirrors the attachment helper convention — `envelope_encrypt` + zlib + path-style `pdf_file_key` (N3 — replaces the earlier `pdf_upload_id uuid`). `read_payslip_pdf` validates `file_key.startswith(f"payslips/{org_id}/")` to prevent cross-tenant access and path traversal.
+
+**Self-service payslips (G9).** `/api/v2/staff/me/payslips` + web page at `/staff/me/payslips` + mobile screen at `/payslips`. Server-side ownership check via the `staff_members.user_id` partial UNIQUE index `ux_staff_members_user_id` (N1); cross-staff lookups return 404 (NOT 403 — no existence leak). Terminated staff retain access for record retention (N2). Mobile uses Capacitor `Share` plugin with `isNativePlatform()` guard for the PDF download.
+
+**Wage variance report (R12).** `/reports/wage-variance` — per-staff this-period vs previous-period gross with delta and percentage change. Threshold filter highlights flagged rows.
+
+**Settings → People → Pay Periods + Allowance Types.** CRUD UIs with the G21 Reopen button and "Already paid — contact support" tooltip on paid periods.
+
+**Audit redaction enforced (G12).** Every `write_audit_log` call site in `app/modules/payslips/` constructs an explicit redacted `after_value` excluding the forbidden-key set (`gross_pay`, `net_pay`, `amount`, `ird_number`, `bank_account_number`, `paye`, `s27_lump_sum`, `annual_payout_dollars`, `alt_day_total_dollars`, `casual_8pct_remainder_dollars`, `recipient_email`). Lint test `tests/unit/test_payslip_audit_redaction.py` walks the AST and rejects regressions. Self-service GET endpoints do NOT emit audit rows (N2).
+
+### Migrations
+
+- `alembic 0209_payslip_schema.py` — pay_periods, allowance_types (+ 6 default seeds), payslips (with `pdf_file_key text`, `public_holiday_rate`, UNIQUE `(staff_id, pay_period_id)`, `gross_pay`/`net_pay` NOT NULL DEFAULT 0), payslip_allowances (+ `quantity`, `unit`), payslip_deductions, payslip_reimbursements, payslip_leave_lines, staff_recurring_allowances. Added `organisations.pay_period_cadence`, `pay_period_anchor_day`, `pay_date_offset_days`. RLS + `tenant_isolation` policies on every new table. Partial UNIQUE index `ux_staff_members_user_id` (N1).
+- `alembic 0210_payslip_indexes.py` — 9 CONCURRENTLY indexes including the G9 self-service list path and G25 termination period-selection path.
+
+### Scheduled tasks
+
+- `roll_pay_periods` — daily, registered in `WRITE_TASKS` + `_DAILY_TASKS` (N10 + C1a).
+- `update_adp_snapshots` — switched to use real finalised-payslip data (R13) when available, falls back to the Phase 2 placeholder formula for new hires.
+
+### Module middleware
+
+- New entries in `MODULE_ENDPOINT_MAP` (B11 + N8): `/api/v2/pay-periods`, `/api/v2/payslips`, `/api/v2/allowance-types` → `payroll`. Module-disabled response is **403** (not 404), with `{"detail": …, "module": "payroll"}` body.
+
+### G1–G25 closures
+
+Recurring allowances (G4), public-holiday band (G2), period rolling (G5), period reopen (G21), future-leave reconciliation (G16), allowance quantity semantics (G18), self-service payslips (G9), audit redaction (G12), termination period selection (G25), masked bank account on PDF (G1), cash-payment fallback (N18), bulk-finalise SLO (G24), multi-page header/footer (G20), termination synchronous period roll (G6), cadence non-retroactivity (G14).
+
+### Tests
+
+- `tests/unit/test_payslip_calc.py`, `test_payslip_service.py`, `test_payslip_termination.py`, `test_payslip_pdf.py`, `test_period_rolling.py`, `test_payslip_audit_redaction.py` — 79 unit tests covering every G1–G25 + N1–N20 + P4-N21–N32 closure.
+- `tests/property/test_payslip_invariants.py` — Hypothesis-based gross/net + KiwiSaver invariants, casual 8% idempotency, G2 + G18 fuzzed math.
+- `tests/integration/test_payslip_pdf_integration.py` — real WeasyPrint render + PDF parse (skips when WeasyPrint native deps absent).
+- `scripts/test_staff_payslip_e2e.py` — gap-path end-to-end harness (gated by `RUN_E2E=1`).
+
+### Known deferrals
+
+- STAFF-004 (annual-leave anniversary detection for staff with multiple stints): bank-format choice for the rehire scenario remains deferred to Phase 5 / payroll re-hire flow. No customer impact in production today.
+
+---
+
+## [1.16.0] — 2026-05-31
+
+### Added — Staff Management Phase 3 (Clock-in/Out + Hours Approval + Operational Layer)
+
+- **Kiosk clock-in surface.** New `/api/v1/kiosk/clock/lookup` and
+  `/api/v1/kiosk/clock/action` routes use the existing kiosk-role JWT
+  pattern — no per-staff login at the device. Staff types employee_id,
+  takes a photo, and is shown side-by-side with the on-file photo for
+  buddy-punch verification (G10). G12 inline rate limit (10/min per
+  hashed `(org_id, employee_id)`, distinct `Retry-After: 60` body) layers
+  on top of the existing 30/min/kiosk-user dependency cap (P3-N9).
+- **Self-service clock-in (mobile + web).** New `/api/v2/staff/me/clock-action`
+  endpoint, gated server-side by `self_service_clock_enabled`. Web at
+  `/staff/me/clock`, mobile at `/clock` (lazy-loaded, ModuleGate, Capacitor
+  camera + geolocation guarded by `isNativePlatform()`).
+- **Break compliance recording (ERA s69ZD).** New `break_records` table.
+  Suggested-break windows for 4h / 6h / 10h shifts. `meal_unpaid` breaks
+  deduct from `worked_minutes` on clock-out close. Compliance chip on
+  Hours tab when a shift has less than the legally required break time.
+- **Hours tab + week approval.** New Staff Detail "Hours" tab with week
+  selector, scheduled vs actual table, drill-down list, photo thumbnails
+  (RBAC-gated to org_admin / branch_admin / location_manager), and
+  side-by-side buddy-punch comparison modal. Approve button locks
+  `time_clock_entries` against further edit.
+- **Overtime split + pre-approval.** New `organisations.overtime_policy`
+  JSONB with weekly + daily thresholds; `compute_week_totals` splits
+  ordinary vs overtime via both thresholds with double-count guard.
+  When `require_pre_approval=true`, the timesheet carries an
+  `unapproved_overtime` warning chip in `notes` (G1.5).
+- **TOIL accrual round-trip.** When `overtime_handling='toil'` (or
+  `'employee_chooses'+'toil'`), week approval writes a `leave_ledger`
+  row `reason='toil_accrual'` and bumps the staff's TOIL balance —
+  idempotent so re-approve doesn't write duplicates.
+- **Time-clock entry locking (G7 scope).** Approved weeks lock
+  `time_clock_entries` only — the `time_tracking_v2.time_entries`
+  billable timer keeps its own `is_invoiced` lock and is not touched
+  by Phase 3.
+- **Edited-after-approval flow (G16).** Manual edits on entries inside
+  an approved week flip the row to `status='edited_after_approval'`
+  + recompute totals + write audit row.
+- **Flag-for-review (G10).** New `flags jsonb` column on
+  `time_clock_entries`. Manager flags a row from the Hours tab; weekly
+  approval requires explicit acknowledgement when there are flagged
+  entries. RBAC-gated to org_admin / branch_admin / location_manager.
+- **Shift-swap workflow with optional manager approval (G8 + G13).**
+  New `shift_swap_requests` table with 5-state machine (`pending`,
+  `awaiting_manager`, `accepted`, `rejected`, `cancelled`).
+  `clock_in_policy.shift_swap_requires_manager_approval` toggles
+  auto-approve vs manager-approval flow. Per-event SMS notification
+  matrix per R12.5 — sends to requester, target, and manager based
+  on event. Eligibility re-checked at the flip moment with documented
+  409 codes (`scheduling_conflict_at_accept`,
+  `scheduling_conflict_at_manager_approval`).
+- **Open-shift cover broadcast (G6).** New `shift_cover_requests` table.
+  Eligibility filter at broadcast time excludes already-scheduled
+  staff in `[shift.start - 30min, shift.end + 30min]`. Eligibility
+  re-checked at claim — 409 `scheduling_conflict_at_claim` on race.
+- **Late-arrival + missed-clock-out alerts (G3).** New scheduled tasks
+  `check_late_arrivals` (300s) and `check_missed_clock_outs` (3600s)
+  added to `WRITE_TASKS` so they're skipped on standby HA nodes.
+  Per-shift Redis dedupe via `late:{shift_id}` (8h TTL).
+- **Staff-initiated running-late report (G3).** New
+  `/api/v2/staff/me/running-late` endpoint. Finds in-window shift
+  in `[now-60m, now+120m]`, sends manager SMS, snoozes
+  `late:{shift_id}` Redis key for `(minutes_late + 30) * 60` seconds
+  so the automated alert is suppressed. Per-shift rate limit (3 reports
+  in 4h) → 429 `too_many_late_reports`. Resolves manager via
+  `staff.reporting_to` chain with org_admin fallback (X7).
+- **Roster-change SMS hook (G2).** Hooks into `scheduling_v2.update_entry`,
+  `reschedule`, plus shift-swap and cover accept paths. Detects
+  in-window changes (start_time/end_time/staff_id within 48h),
+  Redis-dedupes via `roster_change:{schedule_entry_id}` (1h TTL),
+  composes per-template SMS, honours `staff.weekly_roster_sms_enabled`
+  opt-out. Skips cancelled entries (P3-N10).
+- **Per-branch geofence (G17 + cross-phase X5).** New `branches.lat`,
+  `branches.lng`, `branches.geofence_radius_metres` columns. Migration
+  backfills existing branches from each org's
+  `clock_in_policy.branch_radius_metres` default. New branches inherit
+  the org default at creation but the per-branch column is the source
+  of truth at clock-in time.
+- **Default-channel propagation (G9 + cross-phase X3).** Phase 1's
+  `StaffService.create_staff` reads `clock_in_policy.default_channel`
+  when caller omits `self_service_clock_enabled` —
+  `kiosk_and_self_service` → True; `kiosk_only` → False. Existing
+  staff are never mutated by policy changes.
+- **Manager-fallback warning chip (cross-phase X7 / D9).** Staff
+  Detail Overview tab surfaces an amber chip when the staff's
+  `reporting_to` chain doesn't lead to a manager with a `user_id`
+  (running-late SMS would fall back to org_admin).
+- **Settings page.** New "Clock-in Policy" tab in Settings → People
+  surfaces clock-in policy + overtime policy + `overtime_handling`
+  enum + `shift_swap_requires_manager_approval` toggle.
+- **Sidebar.** "Open shifts" → `/shift-cover` and "Shift swaps" →
+  `/shift-swaps`. Shift-swaps badge counter shows red dot when
+  managers have `awaiting_manager` rows.
+- **Photo upload endpoint.** New `POST /api/v2/uploads/clock-photos`
+  multipart endpoint mirrors `/receipts` and `/attachments`. Returns
+  `{ file_key, file_name, file_size }` — `file_key` is what the
+  clock-action endpoints accept as `photo_file_key` (P3-N1).
+- **Photo retention default 6 years (G15).** Photos retained for the
+  Holidays Act s81 retention window. No deletion job ships in Phase 3
+  — design §3.1 + Non-Goals documented.
+
+### Database
+
+- New tables: `time_clock_entries`, `break_records`,
+  `timesheet_approvals`, `overtime_requests`, `shift_swap_requests`,
+  `shift_cover_requests`. All RLS-enabled with `tenant_isolation`
+  policy.
+- New columns: `organisations.clock_in_policy` JSONB,
+  `organisations.overtime_policy` JSONB, `branches.lat`,
+  `branches.lng`, `branches.geofence_radius_metres`.
+- Alembic head moves to **0208** (`0207_time_clock_schema` +
+  `0208_time_clock_indexes`). Indexes via CONCURRENTLY: 9 base +
+  1 partial for the flagged-for-review query (G10).
+
+### Tests
+
+- 143 new unit tests covering: kiosk lookup + clock action + admin
+  manual + worked_minutes + lock check (B3), break round-trip + ERA
+  s69ZD compliance (B4), week totals + overtime split + TOIL accrual
+  + lock check + recompute_after_edit (B5), swap state machine + cover
+  eligibility + claim conflict (B6), overtime request workflow (B6),
+  default-channel propagation (B3a), roster-change SMS hook (B7a),
+  G12 kiosk lookup rate limit (B9), running-late report (G3),
+  branches geofence default (B12).
+- New property test `test_clock_calc_invariants.py` — Hypothesis
+  invariants on worked_minutes formula and overtime split.
+- New E2E script `scripts/test_staff_clock_in_out_e2e.py` covering
+  the 10 documented gap paths.
+
+---
+
+## [1.15.0] — 2026-05-31
+
+### Added — Staff Management Phase 2 (Leave Engine)
+
+- **Leave types catalogue.** New `leave_types` table per org with seven
+  statutory + custom rows seeded by migration: annual, sick (with
+  `requires_doctor_note=true`), bereavement, family violence (with
+  `confidential_visibility=true`), public holiday, alternative day, and
+  TOIL. Manage via `/settings?tab=leave-types` — list, edit, deactivate
+  (statutory delete blocked).
+- **Per-staff leave balances + append-only ledger.** New `leave_balances`
+  and `leave_ledger` tables. Every accrual, request, approval, cancellation,
+  and manual adjustment writes a new ledger row; the balance row is a
+  pre-aggregated view. Surfaced on the new Leave tab on each staff record.
+- **Daily accrual engine.** New `accrue_leave` scheduled task fires every
+  UTC day at 00:30. Anniversary grants for annual leave (Holidays Act 2003),
+  yearly grants for sick + family violence, leap-year safe via
+  `anniversary_in_year(...)`, days→hours conversion via `days_to_hours(...)`
+  for custom days-unit types. Idempotent — same-day re-runs are no-ops.
+- **Leave request workflow.** Full submit → approve → reject → cancel
+  lifecycle with a partial-day capture branch (single date, hours <
+  std_daily), bereavement gate (3 working days for close family, 1 for
+  other), TOIL Phase 2 guard (insufficient_toil_balance → 422), and
+  compensating ledger rows for cancel-after-approval. Approval queue at
+  `/leave/approvals` is role-scoped — org_admin all, branch_admin via
+  staff_location_assignments, manager via reporting_to.
+- **Public holiday engine.** New `process_public_holidays` scheduled task
+  runs after accrual. Implements Holidays Act s12 (Otherwise Working Day
+  detection with 24h Redis cache), s40 (alternative-day grant when staff
+  scheduled on OWD holiday), and s40A (auto-extend annual leave by one day
+  when a public holiday falls inside the leave window).
+- **Casual employee handling.** Annual-leave card hidden on the Leave tab
+  for `employment_type='casual'` staff (8% holiday-pay-as-you-go shown
+  via banner). Sick + family violence still accrue pro-rata.
+- **Average Daily Pay snapshot.** New `staff_members.average_daily_pay_snapshot`
+  column, refreshed daily by the new `update_adp_snapshots` task.
+  Phase 2 placeholder formula (`hourly_rate × standard_hours_per_week ÷
+  weekday_count_in_schedule`) — Phase 4 will swap in real payslip data.
+- **Family Violence Leave confidential visibility.** New `leave.fv_view`
+  permission via `user_permission_overrides`. Confidential leave requests
+  (`leave_type.confidential_visibility=true`) are filtered at every list
+  endpoint by the synchronous `_apply_confidential_filter` helper that
+  reads `request.state.permission_overrides`. Subject access keyed to
+  `staff_id` (not `requested_by`) so a staff member submitted on behalf
+  by a manager still sees their own request. Migration backfills the
+  permission for current org_admins; new `/settings?tab=people-permissions`
+  page lets the org owner grant/revoke per-user with optimistic toggle +
+  30-day post-migration nag banner.
+- **Audit log redaction for confidential leave.** Audit `after_value`
+  payloads strip `reason`, `decision_notes`, `relationship_to_subject`,
+  and `attachment_upload_id` for `family_violence` requests. Centralised
+  via `_audit_after_value(...)` helper; lint test asserts every call site.
+- **Approval / rejection notifications.** New `leave_decision_email`
+  (DLQ-protected via `send_email`) and SMS (Phase 1 helper, opt-in via
+  `weekly_roster_sms_enabled`). Confidential leave types use generic
+  body text — never leaks reason, dates, or hours.
+
+### Changed
+
+- `organisations.overtime_handling` — new typed enum column (pay_cash /
+  accrue_toil / pay_or_accrue / pay_higher_rate). Phase 4 reads this for
+  the overtime → TOIL flow.
+- Approval queue endpoint scoped per role — org_admin sees all, branch_admin
+  via `staff_location_assignments.location_id IN request.state.branch_ids`,
+  manager via `staff_members.reporting_to`.
+- New scheduled tasks added to `WRITE_TASKS` so they skip on standby nodes
+  (ISSUE-147 standby-write protection).
+
+### Migrations
+
+- `0205_leave_schema.py` — `leave_types`, `leave_balances`, `leave_requests`,
+  `leave_ledger` tables; `staff_members.average_daily_pay_snapshot` column;
+  `organisations.overtime_handling` column; statutory leave-type backfill
+  per org; `leave.fv_view` permission backfill for current org_admins.
+- `0206_leave_indexes.py` — 8 indexes via `CREATE INDEX CONCURRENTLY`.
+
+---
+
+## [1.14.0] — 2026-05-31
+
+### Added — Staff Management Phase 1
+
+- **Tabbed Staff Detail page** (Overview / Roster / Documents). Replaces the
+  single-form view with a module-gated tabbed shell at `/staff/:id#<tab>`. The
+  legacy single-form view still renders for orgs without the `staff_management`
+  module enabled.
+- **Expanded employment record** on `staff_members` — 22 new columns covering
+  employment dates and type, NZ tax code, IRD number (envelope-encrypted),
+  KiwiSaver enrolment + employee/employer rates, bank account number
+  (envelope-encrypted), probation end date (auto-set to start + 90 days),
+  residency type (citizen / permanent_resident / work_visa / student_visa /
+  other), visa expiry date (conditionally rendered for visa-holders), opt-ins
+  for self-service kiosk clock-in and weekly roster delivery, on-file photo,
+  emergency contact, last pay review date, employment agreement upload id.
+- **Pay rate history audit ledger.** New `staff_pay_rates` table records every
+  rate change with `effective_from`, change reason, and the user who made the
+  change. Surfaces on the Overview tab via a collapsible
+  `PayRateHistoryPanel`. New endpoint `GET /api/v2/staff/:id/pay-rates`
+  returns the paginated history.
+- **Minimum-wage warning** on save. When `hourly_rate < threshold` (default
+  NZD 23.15, configurable per-org via `minimum_wage_threshold_nzd` in the
+  Settings UI), POST/PUT returns HTTP 422 with
+  `{detail: 'minimum_wage_below_threshold', threshold: 23.15}`. Resubmitting
+  with `minimum_wage_override: true` accepts the rate and writes an
+  `audit_log` row with `action='staff.minimum_wage_override'`.
+- **Compliance counters** on the Staff List. New `compliance_summary` field on
+  `GET /api/v2/staff` carries seven integer counters
+  (`probation_ending_soon`, `visa_expiring_soon`, `pay_review_due`,
+  `below_minimum_wage`, `missing_agreement`, `missing_employee_id`,
+  `missing_start_date`) computed in a single SELECT via `COUNT(*) FILTER`
+  aggregates backed by partial indexes. Frontend `ComplianceBanner` renders
+  clickable counters that toggle URL filter chips, with a persistent
+  non-dismissible banner above the counter row when missing-start-date count
+  is non-zero (drives the Phase 2 leave-accrual backfill).
+- **Roster delivery — email** via `POST /api/v2/staff/:id/email-roster`.
+  Renders `app/templates/email/staff_roster.html`, dispatches via the unified
+  `send_email` with `dlq_task_name='roster_email'`, and writes an
+  `audit_log` row with `action='roster.emailed'`. Refusal reasons:
+  `no_email`, `opt_out`, `no_shifts_in_week`.
+- **Roster delivery — SMS** via `POST /api/v2/staff/:id/sms-roster`.
+  Composes a 160-char body (downgrades to UCS-2 multi-part when the staff
+  first name contains Māori macrons — never transliterated, per G7),
+  dispatches via the new `app/integrations/sms_sender.py::send_sms` thin
+  wrapper, and writes an `audit_log` row with `action='roster.sms_sent'` and
+  `after_value` carrying `encoding`, `segments`, and `phone_number_masked`.
+- **Public roster viewer** at `GET /api/v2/public/staff-roster/:token` (no
+  auth, token-gated). Mints/reuses one-per-(staff, week) tokens via
+  `get_or_create_viewer_token`. Distinguishes 404 `token_not_found` from
+  410 `token_expired_staff_deactivated` (G4) and 410 `token_expired`
+  (natural 30-day TTL). Per-IP rate-limited at 30 req/min (G5) via the
+  rate-limit middleware.
+- **Token revocation on staff deactivation/termination** (G4). The deactivate
+  and terminate flows expire all of a staff's roster tokens by setting
+  `expires_at = now()` in the same transaction and write an `audit_log` row
+  with `action='roster.tokens_revoked'`. Reactivation does not un-revoke;
+  the staff must receive a fresh roster send to get a new viewer link.
+- **Friday-afternoon roster broadcast** scheduled task
+  (`weekly_roster_broadcast`, runs every 30 minutes via the existing
+  scheduler tick). Body short-circuits unless the org-local time is
+  Friday 16:00–16:29; per-staff sends wrapped in `db.begin_nested()`
+  SAVEPOINTs so a single failure does not poison the batch.
+- **Employment agreement attach** via
+  `POST /api/v2/staff/:id/employment-agreement`. Accepts an `upload_id`
+  pointing at a previously-uploaded file under the org's
+  `attachments/{org_id}/` namespace, sets
+  `staff_members.employment_agreement_upload_id`, and writes an
+  `audit_log` row with `action='staff.employment_agreement_uploaded'`.
+- **Module registration.** New entries in `module_registry` for
+  `staff_management` and `payroll` (with `staff_management` as a dependency)
+  including setup-question prompts. Mirror rows in `feature_flags` with
+  `default_value=true`. Updates `subscription_plans.enabled_modules` for all
+  unarchived plans to include both slugs.
+- **G1 inline warning** on the Overview tab when `employee_id` is null —
+  amber banner with quick-set input that PUTs the new code immediately.
+  Phase 3 kiosk clock-in depends on the code, so the prompt surfaces early.
+- **G3 inline warning** on the Overview tab when `employment_start_date`
+  is null — amber banner with date picker that PUTs the date immediately.
+  Phase 2 leave accrual depends on the start date.
+- **MinimumWageWarningModal** confirmation dialog on save. Re-submits with
+  `minimum_wage_override: true` on confirm.
+- **`useTabHash` hook** at `frontend/src/hooks/useTabHash.ts` — syncs the
+  active tab with `window.location.hash` so refreshing the page or using
+  browser back/forward lands on the same tab.
+
+### Database
+
+- Migration `0203_staff_phase1_schema.py` adds the 22 new columns on
+  `staff_members`, the new `staff_pay_rates` (audit ledger) and
+  `staff_roster_view_tokens` (public viewer) tables — both with RLS +
+  `tenant_isolation` policy and `ON DELETE CASCADE` on FKs (G8). Inserts
+  module_registry + feature_flags rows; updates subscription plan enabled
+  modules.
+- Migration `0204_staff_phase1_indexes.py` adds 10 `CREATE INDEX
+  CONCURRENTLY` indexes covering pay rate history access, the five
+  `staff_members` compliance counters (anniversary review, probation,
+  visa, roster-email/sms opt-in scans), the two G1/G3 missing-field
+  partials (`idx_staff_missing_employee_id`, `idx_staff_missing_start_date`),
+  and the unique index on `staff_roster_view_tokens(token)` for O(1)
+  public viewer lookups.
+
+### API contract
+
+- `GET /api/v2/staff` adds a top-level `compliance_summary` field. The
+  legacy `staff` array key is preserved (NOT renamed to `items`) for
+  backward compatibility with existing consumers.
+- `POST /api/v2/staff` and `PUT /api/v2/staff/:id` accept the 22 new
+  fields plus the request-only `minimum_wage_override` flag. Below-min-wage
+  saves return HTTP 422 with `{detail: 'minimum_wage_below_threshold',
+  threshold}` unless override is set.
+- `GET /api/v2/staff/:id/pay-rates` — paginated `{items, total}` shape.
+- `POST /api/v2/staff/:id/email-roster` and `/sms-roster` — accept
+  `{week_start: 'YYYY-MM-DD'}`, return `{ok, message_id, reason}`.
+- `POST /api/v2/staff/:id/employment-agreement` — accepts `{upload_id}`,
+  returns the updated staff record with masked PII.
+- `GET /api/v2/public/staff-roster/:token` — public viewer (no auth),
+  returns `{staff_name, week_start, week_end, entries}` on success.
+- New sub-feature endpoints return HTTP 404 `{detail: 'not_enabled',
+  module: 'staff_management'}` when the module is disabled (the legacy
+  staff route stays accessible — frontend renders the legacy form).
+
+---
+
 ## [1.13.0] — 2026-05-30
 
 ### Added

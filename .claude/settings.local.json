@@ -57,7 +57,9 @@
       "Bash(grep -n \"email_providers/service.py\\\\` | 5\\\\|active_providers: list\" /mnt/hindi-tv/Invoicing/.kiro/specs/email-provider-unification/plan.md)",
       "Bash(grep -c \"notifications/service.py\\\\` | 8a\" /mnt/hindi-tv/Invoicing/.kiro/specs/email-provider-unification/plan.md)",
       "Bash(grep -nE \">[A-Z][a-zA-Z &/]{3,40}<|h2 className|h3 className\" /mnt/hindi-tv/Invoicing/frontend/src/pages/invoices/InvoiceCreate.tsx)",
-      "Bash(grep -nE \">[A-Z][a-zA-Z &/]{3,40}<|h2 className|h3 className\" /mnt/hindi-tv/Invoicing/frontend/src/pages/quotes/QuoteCreate.tsx)"
+      "Bash(grep -nE \">[A-Z][a-zA-Z &/]{3,40}<|h2 className|h3 className\" /mnt/hindi-tv/Invoicing/frontend/src/pages/quotes/QuoteCreate.tsx)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/modules/kiosk/service.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app/modules/kiosk/service.py'\\).read\\(\\)\\); ast.parse\\(open\\('app/modules/vehicles/service.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")"
     ],
     "deny": []
   }

@@ -1441,6 +1441,23 @@ async def search_vehicles(
     if not query_upper:
         return []
 
+    # Pre-fetch this org's OrgVehicle regos matching the prefix. When the
+    # same rego exists as both a GlobalVehicle (CarJam cache) and an
+    # OrgVehicle (post-promotion snapshot), the OrgVehicle holds the
+    # customer_vehicles link via org_vehicle_id and is the source of
+    # truth for this org. We skip the GlobalVehicle entry here so Pass 2
+    # below returns the OrgVehicle with its actual linked_customers —
+    # without this, rego→customer auto-fill on Invoice/Quote create
+    # silently returns linked_customers=[] for every promoted vehicle.
+    org_vehicle_regos_upper: set[str] = set()
+    if org_id:
+        rego_stmt = select(OrgVehicle.rego).where(
+            OrgVehicle.org_id == org_id,
+            OrgVehicle.rego.like(f"{query_upper}%"),
+        )
+        rego_result = await db.execute(rego_stmt)
+        org_vehicle_regos_upper = {r.upper() for (r,) in rego_result.all()}
+
     # --- 1. Search global_vehicles ---
     stmt = (
         select(GlobalVehicle)
@@ -1456,6 +1473,10 @@ async def search_vehicles(
     seen_regos: set[str] = set()
 
     for v in vehicles:
+        if v.rego.upper() in org_vehicle_regos_upper:
+            # OrgVehicle for this rego exists in this org — Pass 2 will
+            # return it with the migrated customer link.
+            continue
         seen_regos.add(v.rego.upper())
         vehicle_data = {
             "id": str(v.id),
@@ -1473,7 +1494,10 @@ async def search_vehicles(
             "linked_customers": [],
         }
 
-        # Fetch linked customers for this global vehicle within the org
+        # Fetch linked customers for this global vehicle within the org.
+        # Anonymised customers are excluded — their PII has been cleared by
+        # the merge flow and surfacing them in the autofill would populate
+        # the customer card with the "Merged Customer" placeholder.
         if org_id:
             links_result = await db.execute(
                 select(CustomerVehicle, Customer)
@@ -1481,6 +1505,7 @@ async def search_vehicles(
                 .where(
                     CustomerVehicle.global_vehicle_id == v.id,
                     CustomerVehicle.org_id == org_id,
+                    Customer.is_anonymised.is_(False),
                 )
             )
             for link, cust in links_result.all():
@@ -1534,13 +1559,16 @@ async def search_vehicles(
                 "linked_customers": [],
             }
 
-            # Fetch linked customers for this org vehicle
+            # Fetch linked customers for this org vehicle. Anonymised
+            # customers are excluded — same rationale as the global branch
+            # above.
             links_result = await db.execute(
                 select(CustomerVehicle, Customer)
                 .join(Customer, CustomerVehicle.customer_id == Customer.id)
                 .where(
                     CustomerVehicle.org_vehicle_id == ov.id,
                     CustomerVehicle.org_id == org_id,
+                    Customer.is_anonymised.is_(False),
                 )
             )
             for link, cust in links_result.all():

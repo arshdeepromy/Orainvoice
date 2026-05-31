@@ -5,7 +5,7 @@
 Phase 2 adds the leave engine. New module `app/modules/leave/` holds the bulk of new code; ledger and accrual jobs are the heaviest pieces.
 
 Backend touches:
-- `alembic/versions/0205_leave_schema.py` — DDL for `leave_types`, `leave_balances`, `leave_requests`, `leave_ledger`; backfill statutory types per org; ADP snapshot column on staff_members; org_settings.overtime_handling.
+- `alembic/versions/0205_leave_schema.py` — DDL for `leave_types`, `leave_balances`, `leave_requests`, `leave_ledger`; backfill statutory types per org; ADP snapshot column on staff_members; `organisations.overtime_handling` typed column (P2-N5: not a JSONB key). Plus the FV-leave permission backfill into `user_permission_overrides`.
 - `alembic/versions/0206_leave_indexes.py` — CREATE INDEX CONCURRENTLY pack.
 - `app/modules/leave/models.py`
 - `app/modules/leave/schemas.py`
@@ -122,7 +122,8 @@ CREATE TABLE IF NOT EXISTS leave_ledger (
     CHECK (reason IN (
         'accrual','request_approved','request_cancelled_after_approval',
         'manual_adjustment','opening_balance','termination_payout',
-        'public_holiday_extension','public_holiday_worked','pay_run_payout'
+        'public_holiday_extension','public_holiday_worked','pay_run_payout',
+        'toil_accrual'  -- cross-phase X3: pre-included so P3's TOIL write doesn't require an enum amendment
     ))
 );
 
@@ -130,7 +131,7 @@ ALTER TABLE staff_members
     ADD COLUMN IF NOT EXISTS average_daily_pay_snapshot numeric(10,2);
 ```
 
-`org_settings.overtime_handling` lives in the existing org_settings JSONB or its own column — design uses a new column on `organisations`:
+`organisations.overtime_handling` is added as a typed column on `organisations` (P2-N5: settled here as a typed column rather than a JSONB key — Phase 4's `_org_setting('overtime_handling', ...)` helper will read this column directly):
 
 ```sql
 ALTER TABLE organisations
@@ -139,8 +140,6 @@ ALTER TABLE organisations DROP CONSTRAINT IF EXISTS ck_org_overtime_handling;
 ALTER TABLE organisations ADD CONSTRAINT ck_org_overtime_handling
     CHECK (overtime_handling IN ('pay_cash','toil','employee_chooses'));
 ```
-
-(This is the cleanest place because it's a hard org-level config, not a settings-blob value.)
 
 ### 3.2 Statutory backfill
 
@@ -163,13 +162,20 @@ op.execute("""
         ('bereavement', 'Bereavement leave', true, 'event_based', NULL, 'days', NULL, false, false, 3),
         ('family_violence', 'Family violence leave', true, 'per_period', 80.0, 'hours', 80.0, false, true, 4),
         ('public_holiday_alt', 'Alternative holiday', true, 'event_based', NULL, 'days', NULL, false, false, 5),
-        ('unpaid', 'Unpaid leave', false, 'unaccrued', NULL, 'hours', NULL, false, false, 6)
+        ('unpaid', 'Unpaid leave', false, 'unaccrued', NULL, 'hours', NULL, false, false, 6),
+        -- cross-phase X2: toil pre-seeded universally so P3's overtime-toil write
+        -- doesn't FK-violate. is_statutory=false because TOIL is a contractual choice,
+        -- but ship it for every org because every org might enable it later.
+        ('toil', 'Time off in lieu', true, 'event_based', NULL, 'hours', NULL, false, false, 7)
     ) AS t(code, name, is_paid, accrual_method, accrual_amount, accrual_unit, carry_over_max,
            requires_doctor_note, confidential_visibility, display_order)
     ON CONFLICT (org_id, code) DO NOTHING;
 """)
 
-# Seed leave_balances for every existing active staff × every statutory type.
+# Seed leave_balances for every existing active staff × every active leave_type
+# in this org (cross-phase X2: previously filtered by is_statutory=true, but toil
+# is is_statutory=false yet still needs a balance row per staff so P3's
+# overtime-toil write can find the (staff_id, leave_type_id) pair).
 op.execute("""
     INSERT INTO leave_balances (
         id, org_id, staff_id, leave_type_id, accrued_hours, used_hours, pending_hours,
@@ -177,7 +183,7 @@ op.execute("""
     )
     SELECT gen_random_uuid(), s.org_id, s.id, lt.id, 0, 0, 0, s.employment_start_date
     FROM staff_members s
-    JOIN leave_types lt ON lt.org_id = s.org_id AND lt.is_statutory = true AND lt.active = true
+    JOIN leave_types lt ON lt.org_id = s.org_id AND lt.active = true
     WHERE s.is_active = true
     ON CONFLICT (staff_id, leave_type_id) DO NOTHING;
 """)
@@ -259,6 +265,10 @@ Use everywhere the anniversary date is computed.
 
 ### 4.2 Public holiday engine `app/modules/leave/public_holidays.py`
 
+> **Cache TTL note (P2-N9).** Two distinct caches operate here, each with its own TTL:
+> - **Public-holiday list cache** (org × upcoming-window of `public_holidays` rows): **1 hour TTL**, keyed `org:public_holidays:{org_id}:{from_date}:{to_date}`. This is the steering-compliance bullet's reference; rebuilds quickly when admins manually re-sync from Nager.Date.
+> - **Per-staff OWD computation cache** (the `staff:owd:{staff_id}:{holiday_date}` Redis key below): **24 hour TTL**. The OWD answer for a given staff × holiday date is stable for the holiday's lifetime, so the longer TTL is safe and reduces compute on repeated runs.
+
 ```python
 async def is_otherwise_working_day(db, staff_id, holiday_date) -> bool:
     """4-week pattern from time_clock_entries (Phase 3) → fallback to availability_schedule."""
@@ -336,42 +346,81 @@ async def s40a_extension(db, request: LeaveRequest):
 1. Load request (FOR UPDATE).
 2. Validate state == pending.
 3. **Permission check for confidential leave (G2 / R4.6 / R4.9):** if `leave_type.confidential_visibility == true`:
-   - Verify the current user (the approver) has the `leave:family_violence:view` permission via `user_permission_overrides`. Otherwise return HTTP 403 `{ reason: 'fv_leave_no_approval_permission' }`.
+   - Verify the current user (the approver) has the `leave.fv_view` permission via `user_permission_overrides` (P2-N1: dot-separated form aligned with the rest of the spec). Otherwise return HTTP 403 `{ reason: 'fv_leave_no_approval_permission' }`.
 4. Set status=approved, decided_by, decided_at.
 5. Decrement `pending_hours`, increment `used_hours` on balance.
 6. Insert leave_ledger row `reason='request_approved'` `delta_hours=-hours_requested` `request_id`.
 7. Iterate working days in `[start_date, end_date]`, create `schedule_entries` row with `entry_type='leave'` per day. For partial-day requests, the single schedule_entries row uses `partial_day_start_time` as start and `partial_day_start_time + hours_requested` as end (otherwise full-day from `shift_start` to `shift_end`).
 8. Run `s40a_extension` if leave_type.code == 'annual'.
 9. Send approval email + SMS (async). For confidential types, email body redacts the leave type name → "Your approved leave request" (full details visible only on login).
-10. Audit `leave_request.approved` (redacted for confidential types).
+10. Audit `leave_request.approved` (redacted for confidential types per §4.3.1).
 
 `reject_request`, `cancel_request` — symmetric. Both honour the same R4.6 permission check.
+
+### 4.3.1 Confidential-leave audit redaction shapes (P2-N6)
+
+When the leave_type has `confidential_visibility=true` (i.e., `family_violence`), the `write_audit_log(...)` call sites in `app/modules/leave/service.py` MUST construct an explicit, redacted `after_value` dict — the full leave_request payload would leak the `reason`, `decision_notes`, `relationship_to_subject`, and `attachment_upload_id` fields, defeating the confidentiality model.
+
+Per-event after_value shapes:
+
+- `leave_request.submitted` → `{ leave_request_id, staff_id, leave_type_code: 'family_violence', date_range: '<start>..<end>', hours_requested }` — NO `reason`, NO `relationship_to_subject`, NO `attachment_upload_id`.
+- `leave_request.approved` → `{ leave_request_id, staff_id, leave_type_code: 'family_violence', decided_at }` — NO `decision_notes`.
+- `leave_request.rejected` → `{ leave_request_id, staff_id, leave_type_code: 'family_violence', decided_at }` — NO `decision_notes`.
+- `leave_request.cancelled` → `{ leave_request_id, staff_id, leave_type_code: 'family_violence' }` — same redaction.
+
+For non-confidential types, the service writes the full payload — existing behaviour, no change.
+
+Implementation hint: a small helper `_redact_for_confidential(leave_type, full_payload) -> dict` in `app/modules/leave/service.py` keeps the redaction rule in one place and the lint test (tasks B3 verify) parses it.
 
 ### 4.4 Confidential-leave visibility filter (G2)
 
 Implemented as a reusable query helper applied to every endpoint that returns `leave_requests` rows. **Important:** this uses the existing synchronous `app/modules/auth/rbac.py::has_permission(role, permission_key, overrides=...)` helper — the spec does NOT introduce a new async DB-querying helper. The user's permission overrides are already loaded by `RBACMiddleware` into `request.state.permission_overrides` (60s Redis cache at `app/middleware/rbac.py:_load_permission_overrides_cached`), so the filter just consumes that list.
 
 ```python
+from sqlalchemy import or_, select
+from sqlalchemy.sql import Select
+from fastapi import Request
+
 from app.modules.auth.rbac import has_permission
+from app.modules.leave.models import LeaveRequest, LeaveType
 from app.modules.leave.visibility import FV_LEAVE_VIEW_PERMISSION
+from app.modules.staff.models import StaffMember
+
 
 def _apply_confidential_filter(query: Select, request: Request, user_id: UUID, user_role: str) -> Select:
     """Restrict confidential-leave-type rows to:
-       (a) the staff member who submitted the request, OR
+       (a) the staff member who is the SUBJECT of the request (i.e., LeaveRequest.staff_id
+           resolves to a StaffMember whose user_id == current user_id), OR
        (b) users holding the leave.fv_view permission via user_permission_overrides.
 
     Non-confidential leave types pass through unchanged.
 
     Synchronous — reads from request.state.permission_overrides (already cached
     by RBACMiddleware on the way in).
+
+    P2-N12 — subject access is keyed by `staff_id` not `requested_by`. A manager
+    submitting on behalf of a staff member who can't access the system would set
+    `requested_by = manager.user_id` while `staff_id = subject.staff_id`. The
+    earlier draft used `requested_by == user_id` which would have HIDDEN the
+    request from the subject (the staff member whose privacy this whole feature
+    protects) and SHOWN it to the proxy submitter. Fixed by joining on `staff_id`.
     """
     overrides = getattr(request.state, "permission_overrides", []) or []
     has_fv_view = has_permission(user_role, FV_LEAVE_VIEW_PERMISSION, overrides=overrides)
     if has_fv_view:
         return query  # no restriction
 
+    # Resolve the current user's staff_id (NULL when the user is not linked to a
+    # staff record — e.g., global_admin or non-staff org users).
+    current_staff_id_subq = (
+        select(StaffMember.id)
+        .where(StaffMember.user_id == user_id)
+        .limit(1)
+        .scalar_subquery()
+    )
+
     # Filter: exclude requests whose leave_type has confidential_visibility=true
-    # UNLESS the request was submitted by the current user (their own data).
+    # UNLESS the current user is the subject (staff_id matches their staff record).
     confidential_type_ids = (
         select(LeaveType.id).where(
             LeaveType.org_id == request.state.org_id,
@@ -381,14 +430,14 @@ def _apply_confidential_filter(query: Select, request: Request, user_id: UUID, u
     return query.where(
         or_(
             LeaveRequest.leave_type_id.notin_(confidential_type_ids),
-            LeaveRequest.requested_by == user_id,
+            LeaveRequest.staff_id == current_staff_id_subq,
         )
     )
 ```
 
 Apply at:
 - `GET /api/v2/leave/requests` (approval queue) — every list query.
-- `GET /api/v2/staff/:id/leave/requests` — when `:id != current_staff_id` (own requests always visible to self).
+- `GET /api/v2/staff/:id/leave/requests` — when `:id != current_staff_id` (own requests always visible to self via the subject branch).
 - `GET /api/v2/staff/:id/leave/ledger` — same filter on the underlying `leave_requests` join when surfacing request-linked ledger rows.
 
 Cache implication: `request.state.permission_overrides` is already populated by `RBACMiddleware` from the existing 60s Redis cache. No additional DB query per filter call. Revocation effective within 60s — acceptable per R4.9.
@@ -396,8 +445,10 @@ Cache implication: `request.state.permission_overrides` is already populated by 
 Permission key constant lives in `app/modules/leave/visibility.py`:
 
 ```python
-# Dot-separated to match the existing rbac convention
-# (matches role wildcard 'leave.*'; verified against ROLE_PERMISSIONS in rbac.py).
+# Dot-separated to match the existing rbac convention.
+# Granting this permission requires writing a user_permission_overrides row
+# explicitly per user — no role wildcard auto-grants it (verified against
+# ROLE_PERMISSIONS in rbac.py: no role currently has `leave.*`).
 FV_LEAVE_VIEW_PERMISSION = 'leave.fv_view'
 ```
 
@@ -408,7 +459,7 @@ FV_LEAVE_VIEW_PERMISSION = 'leave.fv_view'
 | `/api/v2/leave/types` | GET, POST | List + create leave types |
 | `/api/v2/leave/types/:id` | PATCH, DELETE | Update + delete (delete blocked for statutory) |
 | `/api/v2/staff/:id/leave/balances` | GET | All balances for one staff |
-| `/api/v2/staff/:id/leave/ledger` | GET | History |
+| `/api/v2/staff/:id/leave/ledger` | GET | History. **(P2-N10)** When `leave_type_id` filters to a per-event leave type (e.g., bereavement), each item additionally surfaces `request_relationship_to_subject` via JOIN to `leave_requests.relationship_to_subject` when `request_id IS NOT NULL`. NULL for other leave types. |
 | `/api/v2/staff/:id/leave/requests` | GET, POST | List own + submit |
 | `/api/v2/staff/:id/leave/balances/:type_id/adjust` | POST | Manual adjustment (admin) |
 | `/api/v2/leave/requests` | GET | Org-wide approval queue |
@@ -578,7 +629,7 @@ Backend:
 - ✅ `app/modules/admin/service.py::sync_public_holidays` (Nager.Date) already feeds the table.
 - ✅ `app/integrations/email_sender.py::send_email` handles DLQ.
 - ✅ Phase 1 introduced `app/integrations/sms_sender.py` — Phase 2 reuses it for leave-decision SMS.
-- ✅ Existing `audit_logs` table model is in `app/modules/admin/models.py::AuditLog`.
+- ✅ Existing `audit_log` (singular — verified at `app/modules/admin/models.py:318`; the model class is `AuditLog`) is the right table. (P2-N2: spec previously referred to `audit_logs` plural in a few places; corrected.)
 - ⚠️ The latest migration before Phase 2 will be 0203 + 0204 (Phase 1). Phase 2 lands as 0205, 0206.
 - ⚠️ `staff_members.availability_schedule` is `JSONB` keyed by `monday`/`tuesday`/...`sunday`. The OWD fallback uses these keys; Phase 3 swaps to time_clock_entries data when available.
 
@@ -590,7 +641,7 @@ Backend:
 - ✅ Modal inventory §8.
 - ✅ Toolbar/list §6.
 - ✅ Error UI §9 (incl. new 422/403 codes for bereavement + FV permission).
-- ✅ Integration points §11 (existing send_email, sms_sender, scheduler lock, audit_logs, user_permission_overrides).
+- ✅ Integration points §11 (existing send_email, sms_sender, scheduler lock, audit_log, user_permission_overrides).
 - ✅ Bereavement per-event cap §4.3 step 3 (G1 closed).
 - ✅ Family-violence visibility mechanism §4.4 + §9.1 (G2 closed).
 - ✅ Sick + family-violence 6-month gate §4.1 (G3 closed via R6 rename).

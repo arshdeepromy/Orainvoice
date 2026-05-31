@@ -129,6 +129,9 @@ const PortalRecover = lazy(() => import('@/pages/portal/PortalRecover').then(m =
 /* Invoice payment page (public, token-based — lazy to keep Stripe bundles out of main chunk) */
 const InvoicePaymentPage = lazy(() => import('@/pages/public/InvoicePaymentPage'))
 
+/* Public staff roster viewer (Phase 1 task E9 — token-gated, no auth) */
+const StaffRosterPublicView = lazy(() => import('@/pages/public/StaffRosterPublicView'))
+
 /* QR payment result pages (public — rendered on customer's phone after Stripe redirect) */
 const QrPaymentSuccess = lazy(() => import('@/pages/payments/QrPaymentSuccess'))
 const QrPaymentCancel = lazy(() => import('@/pages/payments/QrPaymentCancel'))
@@ -164,6 +167,28 @@ const OnboardingWizard = lazy(() => import('@/pages/onboarding/OnboardingWizard'
 
 /* Staff detail */
 const StaffDetail = lazy(() => import('@/pages/staff/StaffDetail'))
+
+/* Self-service clock-in (web) — Phase 3 D3 */
+const SelfServiceClockScreen = lazy(() => import('@/pages/staff/me/SelfServiceClockScreen'))
+
+/* Self-service Payslips (web) — Phase 4 D11 / G9 */
+const MyPayslipsPage = lazy(() => import('@/pages/staff/me/MyPayslipsPage'))
+
+/* Shift swaps + cover (Phase 3 D6) */
+const ShiftSwapPage = lazy(() => import('@/pages/swaps/ShiftSwapPage'))
+const ShiftCoverPage = lazy(() => import('@/pages/swaps/ShiftCoverPage'))
+
+/* Payroll (Phase 4 D1 / D2 / D7 / D8) */
+const PayRunPage = lazy(() => import('@/pages/payroll/PayRunPage'))
+const PayslipDetailPage = lazy(() => import('@/pages/payroll/PayslipDetail'))
+
+/* Payroll settings + report pages (Phase 4 D5 / D6) */
+const PayPeriodsPage = lazy(() => import('@/pages/settings/people/PayPeriodsPage'))
+const AllowanceTypesPage = lazy(() => import('@/pages/settings/people/AllowanceTypesPage'))
+const WageVariancePage = lazy(() => import('@/pages/reports/WageVariancePage'))
+
+/* Leave engine (Phase 2) */
+const ApprovalQueue = lazy(() => import('@/pages/leave/ApprovalQueue'))
 
 /* Franchise location detail */
 const LocationDetail = lazy(() => import('@/pages/franchise/LocationDetail'))
@@ -441,6 +466,8 @@ function AppRoutes() {
           <Route element={<RequireOrgAdmin />}>
             <Route path="/settings" element={<SafePage name="settings"><OrgSettingsPage /></SafePage>} />
             <Route path="/settings/online-payments" element={<SafePage name="online-payments-settings"><OnlinePaymentsSettings /></SafePage>} />
+            <Route path="/settings/people/pay-periods" element={<SafePage name="pay-periods-settings"><ModuleRoute moduleSlug="payroll"><PayPeriodsPage /></ModuleRoute></SafePage>} />
+            <Route path="/settings/people/allowance-types" element={<SafePage name="allowance-types-settings"><ModuleRoute moduleSlug="payroll"><AllowanceTypesPage /></ModuleRoute></SafePage>} />
           </Route>
 
           {/* Notifications */}
@@ -449,6 +476,13 @@ function AppRoutes() {
 
           {/* Staff */}
           <Route path="/staff" element={<SafePage name="staff"><ModuleRoute moduleSlug="staff"><StaffList /></ModuleRoute></SafePage>} />
+
+          {/* Leave engine (Phase 2) — approval queue is module-gated by
+              staff_management. The backend scopes the queue per role
+              (org_admin sees all; branch_admin scoped via location
+              assignments; managers scoped via reporting_to). Salespeople
+              with no managed staff get an empty list. */}
+          <Route path="/leave/approvals" element={<SafePage name="leave-approvals"><ModuleRoute moduleSlug="staff_management"><ApprovalQueue /></ModuleRoute></SafePage>} />
 
           {/* Projects */}
           <Route path="/projects" element={<SafePage name="projects"><ModuleRoute moduleSlug="projects"><ProjectList /></ModuleRoute></SafePage>} />
@@ -467,6 +501,9 @@ function AppRoutes() {
           <Route path="/reports/profit-loss" element={<SafePage name="profit-and-loss"><ModuleRoute moduleSlug="accounting"><ProfitAndLoss /></ModuleRoute></SafePage>} />
           <Route path="/reports/balance-sheet" element={<SafePage name="balance-sheet"><ModuleRoute moduleSlug="accounting"><BalanceSheet /></ModuleRoute></SafePage>} />
           <Route path="/reports/aged-receivables" element={<SafePage name="aged-receivables"><ModuleRoute moduleSlug="accounting"><AgedReceivables /></ModuleRoute></SafePage>} />
+
+          {/* Payroll Reports (Phase 4 D6) */}
+          <Route path="/reports/wage-variance" element={<SafePage name="wage-variance"><ModuleRoute moduleSlug="payroll"><WageVariancePage /></ModuleRoute></SafePage>} />
 
           {/* GST / Tax */}
           <Route path="/tax/gst-periods" element={<SafePage name="gst-periods"><ModuleRoute moduleSlug="accounting"><GstPeriods /></ModuleRoute></SafePage>} />
@@ -574,6 +611,20 @@ function AppRoutes() {
           {/* Staff detail */}
           <Route path="/staff/:id" element={<SafePage name="staff-detail"><ModuleRoute moduleSlug="staff"><StaffDetailRoute /></ModuleRoute></SafePage>} />
 
+          {/* Self-service clock-in (Phase 3 D3) — gated server-side by self_service_clock_enabled */}
+          <Route path="/staff/me/clock" element={<SafePage name="self-service-clock"><ModuleRoute moduleSlug="staff_management"><SelfServiceClockScreen /></ModuleRoute></SafePage>} />
+
+          {/* Self-service payslips (Phase 4 D11 / G9) — server enforces ownership via staff_members.user_id */}
+          <Route path="/staff/me/payslips" element={<SafePage name="my-payslips"><ModuleRoute moduleSlug="payroll"><MyPayslipsPage /></ModuleRoute></SafePage>} />
+
+          {/* Shift swaps + open-shift cover (Phase 3 D6) */}
+          <Route path="/shift-swaps" element={<SafePage name="shift-swaps"><ModuleRoute moduleSlug="staff_management"><ShiftSwapPage /></ModuleRoute></SafePage>} />
+          <Route path="/shift-cover" element={<SafePage name="shift-cover"><ModuleRoute moduleSlug="staff_management"><ShiftCoverPage /></ModuleRoute></SafePage>} />
+
+          {/* Payroll (Phase 4 D1 / D2 / D7 / D8) */}
+          <Route path="/payroll/run" element={<SafePage name="payroll-run"><ModuleRoute moduleSlug="payroll"><PayRunPage /></ModuleRoute></SafePage>} />
+          <Route path="/payroll/payslips/:id" element={<SafePage name="payslip-detail"><ModuleRoute moduleSlug="payroll"><PayslipDetailPage /></ModuleRoute></SafePage>} />
+
           {/* Franchise location detail */}
           <Route path="/locations/:id" element={<SafePage name="location-detail"><ModuleRoute moduleSlug="franchise"><LocationDetailRoute /></ModuleRoute></SafePage>} />
 
@@ -601,6 +652,9 @@ function AppRoutes() {
 
         {/* Invoice payment page (public, token-based access — Stripe Elements) */}
         <Route path="/pay/:token" element={<SafePage name="invoice-payment"><InvoicePaymentPage /></SafePage>} />
+
+        {/* Public staff roster viewer (Phase 1 E9 — token-gated, no auth, R9.4) */}
+        <Route path="/public/staff-roster/:token" element={<SafePage name="staff-roster-public"><StaffRosterPublicView /></SafePage>} />
 
         {/* QR payment result pages (public — customer's phone after Stripe Checkout redirect) */}
         <Route path="/payments/qr-success" element={<SafePage name="qr-payment-success"><QrPaymentSuccess /></SafePage>} />
