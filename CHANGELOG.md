@@ -4,6 +4,43 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
+## [1.18.0]
+
+### Added — Roster Grid Editor
+
+**Roster grid at `/staff-schedule/grid`.** New desktop-first 14-day roster grid editor (≥1024px viewport; mobile users see a fallback banner linking to the day/week view). Staff rows × 14 day columns with a vertical separator between week 1 and week 2. Toolbar carries Today / prev-fortnight / next-fortnight, branch + position filters, template palette toggle, "Apply template" multi-select, "Copy Week 1 → Week 2", "Export CSV", and "Print".
+
+- **Paint mode** — pick a shift template, drag a rectangle, releases a single bulk_create with one entry per cell. 200-cell cap per action, idempotent re-paint of identical cells, leave-shaded cells skipped unless Alt is held (with confirmation modal).
+- **Multi-select rows + columns** — click row / column headers (Shift+click for range), then "Apply template" emits the same bulk_create across the (staff × day) matrix.
+- **Copy Week 1 → Week 2** — confirmation dialog with source / target counts, optional `overwrite_existing`.
+- **Keyboard nav** — arrow keys move focus, Enter opens the create/edit modal, Delete removes the focused entry, Shift+Arrow extends a multi-cell selection, Ctrl+C / Ctrl+V copy / paste cells (in-memory clipboard, never `navigator.clipboard`).
+- **Drag-resize handle** — 6-px grab handle on every entry block, snaps to 15-min increments via PUT `/api/v2/schedule/{id}/reschedule`.
+- **CSV export** — RFC 4180 compliant; landscape A3 print stylesheet hides toolbar / palette / filters.
+- **Conflict banner** — persistent banner lists every conflict from the most recent bulk submit; clicking a row scrolls the grid + outlines the conflicting cell red.
+- **Optimistic UI** — paint / apply / copy-week placeholders render with `opacity-60 animate-pulse` and resolve to created entries (or roll back on conflict / network failure).
+
+**New backend endpoints (org_admin / salesperson only):**
+
+- `POST /api/v2/schedule/bulk` — accepts up to 200 entries with per-entry SAVEPOINT rollback. Returns `{ created, conflicts }` where each conflict carries the input index, the attempted payload, and the overlapping existing entries. Per-entry conflicts never abort the batch.
+- `POST /api/v2/schedule/copy-week` — shifts a 7-day window into another 7-day window. Refuses 422 unless `target_week_start - source_week_start` is a non-zero multiple of 7 days. Forces `recurrence_group_id = NULL` and `status = 'scheduled'` on every copy. `overwrite_existing` deletes overlapping target entries before insert.
+- Both endpoints write a single `audit_log` row per call with summary counts only — never per-entry payloads (R17.3).
+
+**`/api/v2/leave/approvals` extension.** Added optional `start_lte` and `end_gte` query params so the grid can fetch only the leave requests overlapping the visible 14-day window. Backwards-compatible — existing callers passing only `status` / `offset` / `limit` are unaffected.
+
+### Migrations
+
+None — this feature reuses `schedule_entries` and `shift_templates`.
+
+### Tests
+
+- Unit + integration: `tests/unit/test_scheduling_v2_bulk.py`, `test_scheduling_v2_copy_week.py`, `tests/integration/test_scheduling_v2_audit.py`, `test_scheduling_v2_routes.py`, `test_leave_approvals_dates.py`.
+- Property-based (Hypothesis): `tests/test_scheduling_v2_bulk_property.py` — bulk_create cardinality + copy_week duration / metadata invariants.
+- Frontend property + render tests: `frontend/src/pages/staff-schedule/__tests__/properties.test.ts`, `RosterGrid.test.tsx`, `virtualisation.test.tsx`, plus per-task suites for B6–B20.
+- E2E: `scripts/test_roster_grid_editor_e2e.py` covers login → list → bulk → re-bulk-idempotence → copy-week → cross-org payload safety, with `TEST_E2E_RosterGrid_*` cleanup in `finally`.
+- Performance (RUN_PERF gated): `tests/integration/test_scheduling_v2_bulk_perf.py` and `frontend/src/pages/staff-schedule/__tests__/perf.test.ts`.
+
+---
+
 ## [1.17.0] — 2026-06-01
 
 ### Added — Staff Management Phase 4 (Payslips + Allowances + Termination + Wage Variance)

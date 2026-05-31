@@ -9,6 +9,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import {
   DndContext,
   PointerSensor,
@@ -701,6 +702,13 @@ export default function ScheduleCalendar({ focusStaffId }: ScheduleCalendarProps
 
           {/* Legend */}
           <div className="flex items-center gap-3 ml-auto">
+            <Link
+              to="/staff-schedule/grid"
+              className="px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-600 hover:bg-gray-50 no-print"
+              data-print-hide
+            >
+              Grid view
+            </Link>
             <button
               onClick={handlePrint}
               className="px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-600 hover:bg-gray-50 no-print"

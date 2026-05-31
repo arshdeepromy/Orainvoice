@@ -42,6 +42,7 @@ Approval-queue role scoping (B6 spec):
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -792,6 +793,14 @@ async def list_approval_queue(
     status: str | None = Query(
         "pending", pattern="^(pending|approved|rejected|cancelled|all)$"
     ),
+    start_lte: date | None = Query(
+        None,
+        description="Filter requests starting on or before this date (used with end_gte)",
+    ),
+    end_gte: date | None = Query(
+        None,
+        description="Filter requests ending on or after this date (used with start_lte)",
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
     db: AsyncSession = Depends(get_db_session),
@@ -835,6 +844,15 @@ async def list_approval_queue(
     base_query = select(LeaveRequest).where(LeaveRequest.org_id == org_id)
     if status and status != "all":
         base_query = base_query.where(LeaveRequest.status == status)
+    # Date-range filter (Roster Grid Editor — task A7). When both
+    # ``start_lte`` and ``end_gte`` are supplied, restrict to requests
+    # whose date range overlaps the visible window. Applied BEFORE the
+    # role-scoping wrapper so admin scoping still bites.
+    if start_lte is not None and end_gte is not None:
+        base_query = base_query.where(
+            LeaveRequest.start_date <= start_lte,
+            LeaveRequest.end_date >= end_gte,
+        )
     base_query = _scope_approval_queue(base_query, request, org_id, user_id)
     base_query = _apply_confidential_filter(base_query, request, user_id, user_role)
 
@@ -864,6 +882,11 @@ async def list_approval_queue(
     )
     if status and status != "all":
         detail_stmt = detail_stmt.where(LeaveRequest.status == status)
+    if start_lte is not None and end_gte is not None:
+        detail_stmt = detail_stmt.where(
+            LeaveRequest.start_date <= start_lte,
+            LeaveRequest.end_date >= end_gte,
+        )
     detail_stmt = _scope_approval_queue(detail_stmt, request, org_id, user_id)
     detail_stmt = _apply_confidential_filter(
         detail_stmt, request, user_id, user_role

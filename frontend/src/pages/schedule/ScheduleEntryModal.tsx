@@ -39,6 +39,24 @@ interface ScheduleEntryModalProps {
   entry?: ScheduleEntry | null
   /** Pre-select entry type (e.g. 'leave' for Add Leave button) */
   defaultEntryType?: string
+  /**
+   * Optional pre-fill for create mode. Ignored when `entry` is provided.
+   * Used by the Roster Grid Editor's click-to-create flow (R4.1) to
+   * seed the new entry's staff_id, start/end datetimes, and entry_type
+   * from the clicked grid cell. The values follow the `<input
+   * type="datetime-local">` shape (`YYYY-MM-DDTHH:MM`) for the time
+   * fields and a UUID string for `staff_id`.
+   *
+   * When both `defaultValues.entry_type` and the legacy
+   * `defaultEntryType` prop are supplied, `defaultValues.entry_type`
+   * wins — it is the more specific signal.
+   */
+  defaultValues?: {
+    staff_id?: string
+    start_time?: string
+    end_time?: string
+    entry_type?: string
+  }
 }
 
 interface ShiftTemplate {
@@ -103,6 +121,7 @@ export default function ScheduleEntryModal({
   onSave,
   entry,
   defaultEntryType,
+  defaultValues,
 }: ScheduleEntryModalProps) {
   const isEdit = !!entry
 
@@ -187,12 +206,18 @@ export default function ScheduleEntryModal({
       setNotes(entry.description ?? '')
       setRecurrence('none') // Recurrence not editable on existing entries
     } else if (open && !entry) {
-      // Reset for create mode
-      setStaffId('')
+      // Reset for create mode. When `defaultValues` is supplied (e.g.
+      // by the Roster Grid Editor click-to-create flow, R4.1), prefer
+      // those values over empty strings. `defaultValues.entry_type`
+      // takes precedence over the legacy `defaultEntryType` prop —
+      // it's the more specific signal from the calling surface.
+      setStaffId(defaultValues?.staff_id ?? '')
       setTitle('')
-      setEntryType(defaultEntryType ?? 'job')
-      setStartTime('')
-      setEndTime('')
+      setEntryType(
+        defaultValues?.entry_type ?? defaultEntryType ?? 'job',
+      )
+      setStartTime(defaultValues?.start_time ?? '')
+      setEndTime(defaultValues?.end_time ?? '')
       setNotes('')
       setRecurrence('none')
     }

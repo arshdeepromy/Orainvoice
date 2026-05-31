@@ -6,6 +6,8 @@ Endpoints:
 - GET    /api/v2/schedule/{id}         — get entry
 - PUT    /api/v2/schedule/{id}         — update entry
 - PUT    /api/v2/schedule/{id}/reschedule — reschedule (move times)
+- POST   /api/v2/schedule/bulk         — bulk-create entries (org_admin/salesperson)
+- POST   /api/v2/schedule/copy-week    — copy a week of entries (org_admin/salesperson)
 
 **Validates: Requirement 18 — Scheduling Module**
 """
@@ -19,9 +21,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.modules.auth.rbac import require_role
 from app.modules.scheduling_v2.schemas import (
+    BulkScheduleEntryCreateRequest,
+    BulkScheduleEntryResponse,
     ConflictCheckResponse,
     ConflictInfo,
+    CopyWeekRequest,
     RescheduleRequest,
     ScheduleEntryCreate,
     ScheduleEntryListResponse,
@@ -191,6 +197,88 @@ async def check_conflicts(
             )
             for c in conflicts
         ],
+    )
+
+
+# ------------------------------------------------------------------
+# Bulk + Copy-Week (Roster Grid Editor — Workstream A)
+# ------------------------------------------------------------------
+
+
+@router.post(
+    "/bulk",
+    response_model=BulkScheduleEntryResponse,
+    summary="Bulk-create schedule entries (up to 200 per request)",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def bulk_create_entries(
+    payload: BulkScheduleEntryCreateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create up to 200 schedule entries in a single transaction with
+    per-entry SAVEPOINT rollback.
+
+    Returns ``200`` with ``{ created, conflicts }``. Per-entry conflicts
+    do not abort the batch — successful entries persist and the
+    response lists the conflicting entries with their original index.
+
+    **Validates: R11.1 — R11.5, R11.6, R11.9.**
+    """
+    org_id = _get_org_id(request)
+    user_id_raw = getattr(request.state, "user_id", None)
+    user_id = UUID(str(user_id_raw)) if user_id_raw else None
+
+    svc = SchedulingService(db)
+    try:
+        created, conflicts = await svc.bulk_create(
+            org_id, payload, user_id=user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return BulkScheduleEntryResponse(
+        created=[ScheduleEntryResponse.model_validate(e) for e in created],
+        conflicts=conflicts,
+    )
+
+
+@router.post(
+    "/copy-week",
+    response_model=BulkScheduleEntryResponse,
+    summary="Copy a week of schedule entries (delta must be a non-zero multiple of 7 days)",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def copy_week_entries(
+    payload: CopyWeekRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Copy every entry in the source 7-day window into the target
+    7-day window with the times shifted by ``target - source`` days.
+
+    Per R8.5 the copy is NOT recurring (``recurrence_group_id``
+    forced to NULL); per R8.6 the copy's ``status`` is reset to
+    ``'scheduled'``. ``overwrite_existing`` toggles destructive
+    overwrite of overlapping target entries.
+
+    **Validates: R8.3 — R8.9, R11.7, R11.8.**
+    """
+    org_id = _get_org_id(request)
+    user_id_raw = getattr(request.state, "user_id", None)
+    user_id = UUID(str(user_id_raw)) if user_id_raw else None
+
+    svc = SchedulingService(db)
+    try:
+        created, conflicts = await svc.copy_week(
+            org_id, payload, user_id=user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return BulkScheduleEntryResponse(
+        created=[ScheduleEntryResponse.model_validate(e) for e in created],
+        conflicts=conflicts,
     )
 
 

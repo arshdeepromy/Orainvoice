@@ -5,6 +5,7 @@
  * Validates: Requirements 19.1, 19.2, 19.3, 19.4, 19.5
  */
 import { useState, useEffect, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { useBranch } from '@/contexts/BranchContext'
 import { Button } from '@/components/ui/Button'
@@ -215,9 +216,17 @@ export default function StaffSchedule() {
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
       <div className="flex items-center justify-between mb-4">
         <p className="text-sm text-gray-500">Staff schedule{selectedBranchId ? '' : ' across all branches'}.</p>
-        <Button size="sm" onClick={() => setShowForm(!showForm)}>
-          {showForm ? 'Cancel' : 'Add Shift'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/staff-schedule/grid"
+            className="hidden lg:inline-flex items-center rounded border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            Grid view
+          </Link>
+          <Button size="sm" onClick={() => setShowForm(!showForm)}>
+            {showForm ? 'Cancel' : 'Add Shift'}
+          </Button>
+        </div>
       </div>
 
       {showForm && (

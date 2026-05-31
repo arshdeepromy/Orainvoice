@@ -89,6 +89,7 @@ const ExpenseList = lazy(() => import('@/pages/expenses/ExpenseList'))
 const TimeSheet = lazy(() => import('@/pages/time-tracking/TimeSheet'))
 const POSScreen = lazy(() => import('@/pages/pos/POSScreen'))
 const ScheduleCalendar = lazy(() => import('@/pages/schedule/ScheduleCalendar'))
+const RosterGridPage = lazy(() => import('@/pages/staff-schedule/RosterGridPage'))
 const RecurringList = lazy(() => import('@/pages/recurring/RecurringList'))
 const POList = lazy(() => import('@/pages/purchase-orders/POList'))
 const PODetail = lazy(() => import('@/pages/purchase-orders/PODetail'))
@@ -524,6 +525,7 @@ function AppRoutes() {
 
           {/* Schedule */}
           <Route path="/schedule" element={<SafePage name="schedule"><ModuleRoute moduleSlug="scheduling"><ScheduleCalendar /></ModuleRoute></SafePage>} />
+          <Route path="/staff-schedule/grid" element={<SafePage name="roster-grid"><ModuleRoute moduleSlug="scheduling"><RosterGridPage /></ModuleRoute></SafePage>} />
 
           {/* Recurring Invoices */}
           <Route path="/recurring" element={<SafePage name="recurring"><ModuleRoute moduleSlug="recurring_invoices"><RecurringList /></ModuleRoute></SafePage>} />

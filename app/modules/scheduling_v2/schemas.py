@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import date, datetime, time
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -110,3 +110,59 @@ class ShiftTemplateResponse(BaseModel):
 class ShiftTemplateListResponse(BaseModel):
     templates: list[ShiftTemplateResponse]
     total: int
+
+
+# ------------------------------------------------------------------
+# Bulk + Copy-Week schemas (Roster Grid Editor — Workstream A)
+# ------------------------------------------------------------------
+
+
+class BulkScheduleEntryCreateRequest(BaseModel):
+    """Request body for ``POST /api/v2/schedule/bulk``.
+
+    Validates Requirement 11.1 / 11.2: between 1 and 200 entries per
+    request. Pydantic enforces both bounds at the schema level so the
+    service layer never sees an out-of-range list.
+    """
+
+    entries: list[ScheduleEntryCreate] = Field(
+        ..., min_length=1, max_length=200,
+    )
+
+
+class BulkConflictItem(BaseModel):
+    """A single per-entry conflict result returned in the bulk response.
+
+    The ``index`` corresponds to the entry's position in the original
+    ``entries`` array; ``attempted`` is the original create payload
+    (so the frontend can replay or surface it to the user); and
+    ``conflicts_with`` is the list of existing entries that overlap
+    the attempted entry's time window.
+    """
+
+    index: int
+    attempted: ScheduleEntryCreate
+    conflicts_with: list[ScheduleEntryResponse] = Field(default_factory=list)
+
+
+class BulkScheduleEntryResponse(BaseModel):
+    """Response body for both ``/bulk`` and ``/copy-week``.
+
+    Per R11.4: ``len(created) + len(conflicts) == len(entries)``.
+    """
+
+    created: list[ScheduleEntryResponse] = Field(default_factory=list)
+    conflicts: list[BulkConflictItem] = Field(default_factory=list)
+
+
+class CopyWeekRequest(BaseModel):
+    """Request body for ``POST /api/v2/schedule/copy-week``.
+
+    The service refuses 422 when ``target_week_start - source_week_start``
+    is not a non-zero multiple of 7 days; ``overwrite_existing`` toggles
+    the destructive overwrite path (R8.9).
+    """
+
+    source_week_start: date
+    target_week_start: date
+    overwrite_existing: bool = False

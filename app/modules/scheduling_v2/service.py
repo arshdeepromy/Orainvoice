@@ -6,15 +6,19 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.scheduling_v2.models import ScheduleEntry, ShiftTemplate
 from app.modules.scheduling_v2.schemas import (
+    BulkConflictItem,
+    BulkScheduleEntryCreateRequest,
+    CopyWeekRequest,
     ScheduleEntryCreate,
+    ScheduleEntryResponse,
     ScheduleEntryUpdate,
     ShiftTemplateCreate,
 )
@@ -83,6 +87,245 @@ class SchedulingService:
         self.db.add(entry)
         await self.db.flush()
         return entry
+
+    # ------------------------------------------------------------------
+    # Bulk + Copy-Week (Roster Grid Editor — Workstream A)
+    # ------------------------------------------------------------------
+
+    async def bulk_create(
+        self,
+        org_id: uuid.UUID,
+        payload: BulkScheduleEntryCreateRequest,
+        *,
+        user_id: uuid.UUID | None = None,
+    ) -> tuple[list[ScheduleEntry], list[BulkConflictItem]]:
+        """Bulk-create up to 200 schedule entries with per-entry SAVEPOINT
+        rollback.
+
+        Each entry is wrapped in ``db.begin_nested()`` so that a single
+        validation failure or conflict-detected entry does NOT abort the
+        whole batch — it only rolls back that one entry's INSERT. The
+        outer transaction is committed by the ``get_db_session``
+        ``session.begin()`` context manager owned by the request, so
+        per-`.kiro/steering/performance-and-resilience.md` rule 1 we
+        never call ``db.commit()`` / ``db.rollback()`` here.
+
+        Writes a single audit_log row per call (R17.3) summarising the
+        counts only — never per-entry payloads.
+
+        **Validates: R11.3, R11.4, R11.5, R11.9**
+        """
+        from app.core.audit import write_audit_log
+
+        created: list[ScheduleEntry] = []
+        conflicts: list[BulkConflictItem] = []
+
+        class _InvalidEntry(Exception):
+            pass
+
+        class _ConflictsDetected(Exception):
+            def __init__(self, overlapping: list[ScheduleEntry]) -> None:
+                self.overlapping = overlapping
+
+        for index, entry_payload in enumerate(payload.entries):
+            try:
+                async with self.db.begin_nested():
+                    if entry_payload.end_time <= entry_payload.start_time:
+                        raise _InvalidEntry()
+
+                    if entry_payload.staff_id is not None:
+                        overlapping = await self.detect_conflicts(
+                            org_id,
+                            entry_payload.staff_id,
+                            entry_payload.start_time,
+                            entry_payload.end_time,
+                        )
+                        if overlapping:
+                            raise _ConflictsDetected(overlapping)
+
+                    entry = ScheduleEntry(
+                        org_id=org_id,  # ALWAYS resolved org — never trust payload
+                        staff_id=entry_payload.staff_id,
+                        job_id=entry_payload.job_id,
+                        booking_id=entry_payload.booking_id,
+                        location_id=entry_payload.location_id,
+                        title=entry_payload.title,
+                        description=entry_payload.description,
+                        start_time=entry_payload.start_time,
+                        end_time=entry_payload.end_time,
+                        entry_type=entry_payload.entry_type,
+                        notes=entry_payload.notes,
+                    )
+                    self.db.add(entry)
+                    await self.db.flush()
+                    await self.db.refresh(entry)
+                    created.append(entry)
+            except _InvalidEntry:
+                conflicts.append(
+                    BulkConflictItem(
+                        index=index,
+                        attempted=entry_payload,
+                        conflicts_with=[],
+                    ),
+                )
+            except _ConflictsDetected as exc:
+                conflicts.append(
+                    BulkConflictItem(
+                        index=index,
+                        attempted=entry_payload,
+                        conflicts_with=[
+                            ScheduleEntryResponse.model_validate(o)
+                            for o in exc.overlapping
+                        ],
+                    ),
+                )
+
+        # Audit summary (R17.3 — counts only, no per-entry payload)
+        await write_audit_log(
+            session=self.db,
+            action="schedule.bulk_created",
+            entity_type="schedule_entry",
+            entity_id=None,
+            org_id=org_id,
+            user_id=user_id,
+            before_value=None,
+            after_value={
+                "created_count": len(created),
+                "conflicts_count": len(conflicts),
+            },
+        )
+
+        return created, conflicts
+
+    async def copy_week(
+        self,
+        org_id: uuid.UUID,
+        payload: CopyWeekRequest,
+        *,
+        user_id: uuid.UUID | None = None,
+    ) -> tuple[list[ScheduleEntry], list[BulkConflictItem]]:
+        """Copy every Schedule_Entry in the source 7-day window to the
+        target 7-day window with the times shifted by ``delta``.
+
+        ``delta`` must be a non-zero multiple of 7 days; otherwise the
+        method raises ``ValueError`` (the router maps to HTTP 422).
+        ``recurrence_group_id`` is forced to NULL on every copy
+        (R8.5); ``status`` is the default ``'scheduled'`` (R8.6).
+
+        When ``overwrite_existing`` is true, every overlapping target
+        entry is deleted before the new copy is inserted (R8.9).
+
+        Audit row written once at the end of the call summarising the
+        counts plus the source / target weeks and the overwrite flag.
+
+        **Validates: R8.3, R8.4, R8.5, R8.6, R8.7, R8.9, R11.7, R11.8**
+        """
+        from app.core.audit import write_audit_log
+
+        delta = payload.target_week_start - payload.source_week_start
+        if delta.days == 0 or delta.days % 7 != 0:
+            raise ValueError(
+                "target_week_start must be a non-zero multiple of 7 days "
+                "from source_week_start",
+            )
+
+        source_window_start = datetime.combine(
+            payload.source_week_start, time.min, tzinfo=timezone.utc,
+        )
+        source_window_end = datetime.combine(
+            payload.source_week_start + timedelta(days=7),
+            time.min,
+            tzinfo=timezone.utc,
+        )
+
+        stmt = select(ScheduleEntry).where(
+            ScheduleEntry.org_id == org_id,
+            ScheduleEntry.start_time >= source_window_start,
+            ScheduleEntry.start_time < source_window_end,
+        )
+        sources = list((await self.db.execute(stmt)).scalars().all())
+
+        # Build the bulk_create payload from the source rows.
+        entries: list[ScheduleEntryCreate] = []
+        for src in sources:
+            entries.append(
+                ScheduleEntryCreate(
+                    staff_id=src.staff_id,
+                    job_id=src.job_id,
+                    booking_id=src.booking_id,
+                    location_id=src.location_id,
+                    title=src.title,
+                    description=src.description,
+                    start_time=src.start_time + delta,
+                    end_time=src.end_time + delta,
+                    entry_type=src.entry_type,
+                    notes=src.notes,
+                    recurrence="none",  # explicitly NOT recurring (R8.5)
+                ),
+            )
+
+        # Overwrite: delete every overlapping target entry before insert.
+        if payload.overwrite_existing:
+            for entry in entries:
+                if entry.staff_id is None:
+                    continue
+                existing = await self.detect_conflicts(
+                    org_id,
+                    entry.staff_id,
+                    entry.start_time,
+                    entry.end_time,
+                )
+                for e in existing:
+                    await self.db.delete(e)
+            await self.db.flush()
+
+        # Short-circuit: nothing to copy → write audit + return empty.
+        if not entries:
+            await write_audit_log(
+                session=self.db,
+                action="schedule.copied_week",
+                entity_type="schedule_entry",
+                entity_id=None,
+                org_id=org_id,
+                user_id=user_id,
+                before_value=None,
+                after_value={
+                    "created_count": 0,
+                    "conflicts_count": 0,
+                    "source_week_start": payload.source_week_start.isoformat(),
+                    "target_week_start": payload.target_week_start.isoformat(),
+                    "overwrite_existing": payload.overwrite_existing,
+                },
+            )
+            return [], []
+
+        bulk_payload = BulkScheduleEntryCreateRequest(entries=entries)
+        # bulk_create writes its own ``schedule.bulk_created`` audit row;
+        # we ALSO write a ``schedule.copied_week`` audit row so the two
+        # operations are individually traceable. Both rows carry only
+        # summary counts (R17.3).
+        created, conflicts = await self.bulk_create(
+            org_id, bulk_payload, user_id=user_id,
+        )
+
+        await write_audit_log(
+            session=self.db,
+            action="schedule.copied_week",
+            entity_type="schedule_entry",
+            entity_id=None,
+            org_id=org_id,
+            user_id=user_id,
+            before_value=None,
+            after_value={
+                "created_count": len(created),
+                "conflicts_count": len(conflicts),
+                "source_week_start": payload.source_week_start.isoformat(),
+                "target_week_start": payload.target_week_start.isoformat(),
+                "overwrite_existing": payload.overwrite_existing,
+            },
+        )
+
+        return created, conflicts
 
     async def create_recurring_entry(
         self,
