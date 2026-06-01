@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import apiClient from '../../api/client'
 import { Button, Badge, Spinner, Tabs, Modal, Input, ToastContainer, useToast } from '../../components/ui'
 import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
+import { PpsrCard } from './components/PpsrCard'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -487,6 +488,11 @@ export default function VehicleProfilePage() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 mb-6">
         <ExpiryBadge expiry={vehicle.inspection_type === 'cof' ? vehicle.cof_expiry : vehicle.wof_expiry} label={getInspectionLabel(vehicle)} />
         <ExpiryBadge expiry={vehicle.rego_expiry} label="Registration Expiry" />
+      </div>
+
+      {/* PPSR — module-gated; renders nothing when the module is disabled */}
+      <div className="mb-6">
+        <PpsrCard rego={vehicle.rego} />
       </div>
 
       {/* Vehicle details */}

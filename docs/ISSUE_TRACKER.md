@@ -5935,3 +5935,87 @@ The following placeholder IDs cover open questions from `docs/future/staff-manag
 - **Date**: 2026-05-31
 - **Status**: open
 - **Decision required**: Which NZ bank's batch file format to support first — ANZ MTS, BNZ Connect, ASB FastNet Business, or a generic CSV? Awaiting customer demand signal before Phase 5 (export).
+
+
+---
+
+## PPSR Module — Open Questions (Phase 1)
+
+These entries track the open questions in `.kiro/specs/ppsr-module/requirements.md §Open Questions`. None block the v1.19.0 release; each carries a decision target and a default behaviour shipped today.
+
+### PPSR-001: Subscription-plan default quota policy
+
+- **Date**: 2026-05-31
+- **Severity**: low
+- **Status**: open
+- **Reporter**: developer
+- **Symptoms**: Default subscription plans currently ship with `ppsr_lookups_included = 0`. New orgs see a "PPSR quota exhausted" message on the search page until a global admin grants quota via Subscription Plans → Plan form.
+- **Root Cause**: design open question — product hasn't decided whether to bundle a starter quota (e.g. 10/month) into existing plans or treat PPSR as an admin-grant-only add-on.
+- **Fix Applied**: pending — awaiting product decision before quota launch.
+- **Files Changed**: pending.
+
+### PPSR-002: Cache TTL default validation
+
+- **Date**: 2026-05-31
+- **Severity**: low
+- **Status**: open
+- **Reporter**: developer
+- **Symptoms**: Default `ppsr_cache_ttl_minutes = 5`. Field operators may want longer (lower CarJam cost, less freshness) or shorter (more current). No data yet on real-world re-search frequency.
+- **Root Cause**: design open question — awaiting field validation after 1 month of usage.
+- **Fix Applied**: pending — capture telemetry on cache-hit ratio per org for the first month, revisit default.
+- **Files Changed**: pending.
+
+### PPSR-003: s241_purpose dropdown vs free-text
+
+- **Date**: 2026-05-31
+- **Severity**: low
+- **Status**: open
+- **Reporter**: developer
+- **Symptoms**: Owner / ownership-history lookups send a single string `s241_purpose` to CarJam. Today this is a free-text input on the search form. CarJam may accept only specific enum values.
+- **Root Cause**: design open question — awaiting CarJam-API capability investigation.
+- **Fix Applied**: pending — query CarJam support for the canonical s241 purpose enum; if a dropdown lands the existing string field round-trips unchanged.
+- **Files Changed**: pending.
+
+### PPSR-004: PDF branding template
+
+- **Date**: 2026-05-31
+- **Severity**: low
+- **Status**: open
+- **Reporter**: developer
+- **Symptoms**: Phase 1 ships a dedicated `app/modules/ppsr/templates/report.html` with the same org-branding header as the invoice PDF. Open question whether to align with the new branding system that powers `app/templates/pdf/invoice.html`.
+- **Root Cause**: design open question — awaiting design sign-off; default is the dedicated PPSR template.
+- **Fix Applied**: pending — design review, possible consolidation with the invoice / quote shared header partial.
+- **Files Changed**: pending.
+
+### PPSR-005: Retention period for forgotten search rows
+
+- **Date**: 2026-05-31
+- **Severity**: low
+- **Status**: open
+- **Reporter**: developer
+- **Symptoms**: `DELETE /searches/:id/forget` wipes `response_encrypted` to NULL and stamps `forgotten_at`, but the summary row + audit trail are kept indefinitely. No purge job removes forgotten rows.
+- **Root Cause**: design open question — awaiting ops decision on a retention window. Default today is indefinite + admin-purge.
+- **Fix Applied**: pending — discuss with ops whether to add a scheduled job that hard-deletes rows past N years post-forget.
+- **Files Changed**: pending.
+
+### PPSR-006: Telemetry / Prometheus metrics scope (G17)
+
+- **Date**: 2026-05-31
+- **Severity**: low
+- **Status**: open
+- **Reporter**: developer
+- **Symptoms**: No Prometheus / observability metrics ship with Phase 1. Quota usage, cache-hit ratio, CarJam latency, and 502 rate are only visible via the `audit_log` and the integration cost dashboard.
+- **Root Cause**: design open question — awaiting observability priority.
+- **Fix Applied**: pending — wait for the platform-wide metrics rollout, then layer PPSR counters on top.
+- **Files Changed**: pending.
+
+### PPSR-007: Setup-Guide post-enable quota-grant prompt (G50)
+
+- **Date**: 2026-05-31
+- **Severity**: low
+- **Status**: open
+- **Reporter**: developer
+- **Symptoms**: After an org admin enables PPSR via the setup wizard, the org has zero quota and the search page renders "PPSR quota exhausted". UX could nudge the admin to grant quota immediately.
+- **Root Cause**: design open question — awaiting UX review.
+- **Fix Applied**: pending — design + implement a one-shot prompt that links to Subscription Plans for orgs whose plan still has `ppsr_lookups_included=0` after enabling.
+- **Files Changed**: pending.

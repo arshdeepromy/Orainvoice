@@ -163,6 +163,19 @@ async def process_recurring_billing_task() -> dict:
                     except Exception as exc:
                         logger.warning("Failed to compute Carjam overage for org %s: %s", org.id, exc)
 
+                    # 2c-bis. Compute PPSR overage count (Phase 1 — counter-reset only;
+                    # PPSR overage is not yet billed via total_excl_gst_cents — that lands
+                    # in a follow-up once BillingReceipt has PPSR columns).
+                    ppsr_overage_count = 0
+                    try:
+                        ppsr_overage_count = max(
+                            0,
+                            (org.ppsr_lookups_this_month or 0)
+                            - (plan.ppsr_lookups_included or 0),
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to compute PPSR overage for org %s: %s", org.id, exc)
+
                     # 2d. Compute storage add-on charge (excl. GST)
                     # This is ONLY for extra storage purchased by the user,
                     # NOT the storage included in the plan.
@@ -194,6 +207,12 @@ async def process_recurring_billing_task() -> dict:
                             org.sms_sent_this_month = 0
                         if carjam_overage_count > 0:
                             org.carjam_lookups_this_month = 0
+                        # PPSR Phase 1 — counter resets fire at the same billing-cycle
+                        # boundary as carjam counters; both PPSR counters share the
+                        # same boundary (G44).
+                        if ppsr_overage_count > 0:
+                            org.ppsr_lookups_this_month = 0
+                            org.ppsr_hidden_plate_lookups_this_month = 0
                         skipped += 1
                         continue
 
@@ -271,6 +290,12 @@ async def process_recurring_billing_task() -> dict:
                         org.sms_sent_this_month = 0
                     if carjam_overage_count > 0:
                         org.carjam_lookups_this_month = 0
+                    # PPSR Phase 1 — counter resets fire at the same billing-cycle
+                    # boundary as carjam counters; both PPSR counters share the
+                    # same boundary (G44).
+                    if ppsr_overage_count > 0:
+                        org.ppsr_lookups_this_month = 0
+                        org.ppsr_hidden_plate_lookups_this_month = 0
 
                     await session.flush()
 

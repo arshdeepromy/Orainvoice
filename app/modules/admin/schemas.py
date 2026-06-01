@@ -263,6 +263,25 @@ class CarjamConfigRequest(BaseModel):
     global_rate_limit_per_minute: int | None = Field(
         None, gt=0, description="Maximum Carjam API calls per minute (platform-wide)"
     )
+    # PPSR Phase 1 (G-CODE-11) — non-secret platform-wide PPSR config.
+    ppsr_cache_ttl_minutes: int | None = Field(
+        None,
+        ge=0,
+        description="PPSR result cache TTL in minutes (0 disables the in-memory cache)",
+    )
+    ppsr_owner_lookups_enabled: bool | None = Field(
+        None,
+        description="Whether owner-revealing PPSR lookups (s241) are enabled platform-wide",
+    )
+    # Treated like a secret for GUI consistency — surfaced via
+    # ``s241_purpose_default_last4`` and protected by mask-pattern detection
+    # on save so the GUI's masked display value never overwrites the real
+    # purpose string.
+    s241_purpose_default: str | None = Field(
+        None,
+        min_length=1,
+        description="Default 's241 purpose' string sent on owner-revealing PPSR lookups",
+    )
 
 
 class CarjamConfigResponse(BaseModel):
@@ -277,6 +296,19 @@ class CarjamConfigResponse(BaseModel):
         ..., description="Last 4 chars of API key for display"
     )
     is_verified: bool
+    # PPSR Phase 1 (G-CODE-11) — non-secret platform-wide PPSR config.
+    ppsr_cache_ttl_minutes: int = Field(
+        default=5,
+        description="PPSR result cache TTL in minutes (0 disables the in-memory cache)",
+    )
+    ppsr_owner_lookups_enabled: bool = Field(
+        default=False,
+        description="Whether owner-revealing PPSR lookups (s241) are enabled platform-wide",
+    )
+    s241_purpose_default_last4: str = Field(
+        default="",
+        description="Last 4 chars of the saved s241 purpose default (treated as secret for GUI consistency)",
+    )
 
 
 class CarjamTestResponse(BaseModel):
@@ -424,6 +456,10 @@ class PlanCreateRequest(BaseModel):
     user_seats: int = Field(..., gt=0, description="Number of user seats included")
     storage_quota_gb: int = Field(..., gt=0, description="Storage quota in GB")
     carjam_lookups_included: int = Field(..., ge=0, description="Carjam lookups included per month")
+    ppsr_lookups_included: int = Field(default=0, ge=0, description="PPSR lookups included per month")
+    ppsr_hidden_plate_lookups_included: int = Field(
+        default=0, ge=0, description="PPSR hidden-plate lookups included per month"
+    )
     enabled_modules: list[str] = Field(default_factory=list, description="List of enabled feature modules")
     is_public: bool = Field(default=True, description="Visible on public signup page")
     storage_tier_pricing: list[StorageTierPricing] = Field(
@@ -453,6 +489,10 @@ class PlanUpdateRequest(BaseModel):
     user_seats: int | None = Field(None, gt=0, description="Number of user seats included")
     storage_quota_gb: int | None = Field(None, gt=0, description="Storage quota in GB")
     carjam_lookups_included: int | None = Field(None, ge=0, description="Carjam lookups included per month")
+    ppsr_lookups_included: int | None = Field(None, ge=0, description="PPSR lookups included per month")
+    ppsr_hidden_plate_lookups_included: int | None = Field(
+        None, ge=0, description="PPSR hidden-plate lookups included per month"
+    )
     enabled_modules: list[str] | None = Field(None, description="List of enabled feature modules")
     is_public: bool | None = Field(None, description="Visible on public signup page")
     storage_tier_pricing: list[StorageTierPricing] | None = Field(
@@ -483,6 +523,8 @@ class PlanResponse(BaseModel):
     user_seats: int
     storage_quota_gb: int
     carjam_lookups_included: int
+    ppsr_lookups_included: int = 0
+    ppsr_hidden_plate_lookups_included: int = 0
     enabled_modules: list[str]
     is_public: bool
     is_archived: bool

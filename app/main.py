@@ -728,6 +728,11 @@ def create_app() -> FastAPI:
         tags=["fleet-portal-admin"],
     )
 
+    # --- PPSR module (vehicle PPSR / money-owing checks via CarJam) ---
+    # Router self-prefixes with /api/v2/ppsr and self-tags with ["ppsr"].
+    from app.modules.ppsr.router import router as ppsr_router
+    app.include_router(ppsr_router)
+
     @app.get("/health")
     async def health_check():
         import os

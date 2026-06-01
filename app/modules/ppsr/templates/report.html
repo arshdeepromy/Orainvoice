@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PPSR Report — {{ search.rego }}</title>
+  {#-
+    CSS is inlined via the ``inline_css`` context var that the renderer
+    populates from ``report.css``. The choice (inline rather than a
+    `<link>` element) keeps the template self-contained — WeasyPrint is
+    invoked with ``HTML(string=...)`` and no ``base_url``, so any
+    relative ``<link rel="stylesheet">`` would 404. The CSS file still
+    lives next to the template for editor / lint visibility.
+  -#}
+  <style>{{ inline_css | safe }}</style>
+</head>
+<body>
+
+  {#- Running header — repeats on every page via @top-center / position: running() -#}
+  <div class="report-header">
+    {% if org.logo_url %}
+      <img class="logo" src="{{ org.logo_url }}" alt="{{ org.name }} logo">
+    {% endif %}
+    <div class="org-block">
+      <div class="org-name">{{ org.name }}</div>
+      {% if org.address_unit %}<div class="org-line">{{ org.address_unit }}</div>{% endif %}
+      {% if org.address_street %}<div class="org-line">{{ org.address_street }}</div>{% endif %}
+      {% if org.address_city or org.address_state or org.address_postcode %}
+        <div class="org-line">{{ org.address_city or '' }}{% if org.address_city and (org.address_state or org.address_postcode) %}, {% endif %}{{ org.address_state or '' }}{% if org.address_state and org.address_postcode %} {% endif %}{{ org.address_postcode or '' }}</div>
+      {% endif %}
+      {% if org.address_country %}<div class="org-line">{{ org.address_country }}</div>{% endif %}
+      {% if org.phone %}<div class="org-line">{{ org.phone }}</div>{% endif %}
+      {% if org.email %}<div class="org-line">{{ org.email }}</div>{% endif %}
+    </div>
+  </div>
+
+  <h1>PPSR Vehicle Check</h1>
+
+  <table class="meta-grid">
+    <tr>
+      <td class="label">Rego</td>
+      <td class="value rego-value">{{ search.rego }}</td>
+      <td class="label">Searched at</td>
+      <td class="value">{{ search.created_at_display }}</td>
+    </tr>
+    <tr>
+      <td class="label">Searched by</td>
+      <td class="value">{{ searcher.name or "—" }}</td>
+      <td class="label">Email</td>
+      <td class="value">{{ searcher.email or "—" }}</td>
+    </tr>
+    {% if search.carjam_request_id %}
+    <tr>
+      <td class="label">CarJam request id</td>
+      <td class="value" colspan="3">{{ search.carjam_request_id }}</td>
+    </tr>
+    {% endif %}
+  </table>
+
+  {#- ============================================================ -#}
+  {#- Money-owing banner — colour driven by `match` (CSS class)     -#}
+  {#- ============================================================ -#}
+
+  <div class="banner {{ money_owing.css_class }}">
+    <div class="banner-headline">{{ money_owing.headline }}</div>
+    {% if money_owing.description %}
+      <div class="banner-description">{{ money_owing.description }}</div>
+    {% endif %}
+    {% if money_owing.match %}
+      <div class="banner-meta">Match code: {{ money_owing.match }} · Statements: {{ search.statement_count }}</div>
+    {% endif %}
+  </div>
+
+  {#- ============================================================ -#}
+  {#- Vehicle summary (basic block from CarJam idh)                 -#}
+  {#- ============================================================ -#}
+
+  {% if not search.not_found %}
+  <section class="section">
+    <h2>Vehicle</h2>
+    <table class="kv-table">
+      <tr>
+        <td class="label">Make</td>
+        <td>{{ basic.make or "—" }}</td>
+        <td class="label">Model</td>
+        <td>{{ basic.model or "—" }}</td>
+      </tr>
+      <tr>
+        <td class="label">Year</td>
+        <td>{{ basic.year or "—" }}</td>
+        <td class="label">Colour</td>
+        <td>{{ basic.colour or basic.color or "—" }}</td>
+      </tr>
+    </table>
+  </section>
+  {% endif %}
+
+  {#- ============================================================ -#}
+  {#- Financing-statement table                                    -#}
+  {#- ============================================================ -#}
+
+  {% if ppsr_details %}
+  <section class="section">
+    <h2>Financing statements ({{ ppsr_details | length }})</h2>
+    <table class="lines">
+      <thead>
+        <tr>
+          <th>Registration</th>
+          <th>Secured party</th>
+          <th>Collateral</th>
+          <th>Registered</th>
+          <th>Expires</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in ppsr_details %}
+        <tr>
+          <td>{{ s.registration_number or s.registration_id or "—" }}</td>
+          <td>{{ s.secured_party or s.secured_party_name or "—" }}</td>
+          <td>{{ s.collateral_description or s.collateral or "—" }}</td>
+          <td>{{ s.registration_date or s.registered_at or "—" }}</td>
+          <td>{{ s.expiry_date or s.expires_at or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {#- ============================================================ -#}
+  {#- Warnings rows                                                -#}
+  {#- ============================================================ -#}
+
+  {% if warnings %}
+  <section class="section">
+    <h2>Warnings</h2>
+    <table class="lines">
+      <thead>
+        <tr>
+          <th>Severity</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Date</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for w in warnings %}
+        <tr class="warning-row warning-{{ (w.severity or 'info') | lower }}">
+          <td>{{ w.severity or "Info" }}</td>
+          <td>{{ w.type or w.category or "—" }}</td>
+          <td>{{ w.description or w.message or "—" }}</td>
+          <td>{{ w.date or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {#- ============================================================ -#}
+  {#- Ownership history (gated on s241 lookup)                     -#}
+  {#- ============================================================ -#}
+
+  {% if has_ownership %}
+  <section class="section">
+    <h2>Ownership</h2>
+
+    {% if current_owner %}
+    <h3>Current owner</h3>
+    <table class="kv-table">
+      <tr>
+        <td class="label">Name</td>
+        <td>{{ current_owner.name or current_owner.full_name or "—" }}</td>
+        <td class="label">Since</td>
+        <td>{{ current_owner.from_date or current_owner.since or "—" }}</td>
+      </tr>
+    </table>
+    {% endif %}
+
+    {% if ownership_history %}
+    <h3>Previous owners</h3>
+    <table class="lines">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>From</th>
+          <th>To</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in ownership_history %}
+        <tr>
+          <td>{{ o.name or o.full_name or "—" }}</td>
+          <td>{{ o.from_date or o["from"] or "—" }}</td>
+          <td>{{ o.to_date or o["to"] or "—" }}</td>
+          <td>{{ o.status or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {#- ============================================================ -#}
+  {#- Charges footer + disclaimer                                  -#}
+  {#- ============================================================ -#}
+
+  {% if search.charges_cents %}
+  <p class="charges-line">
+    CarJam reported a charge of NZD {{ "%.2f"|format(search.charges_cents / 100) }} for this check.
+  </p>
+  {% endif %}
+
+  <div class="disclaimer">
+    This PPSR report was generated via the CarJam API on {{ search.created_at_display }}.
+    It is current as at the search time only. Independent legal advice should be sought
+    before acting on this information.
+  </div>
+
+</body>
+</html>

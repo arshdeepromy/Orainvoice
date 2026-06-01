@@ -830,6 +830,8 @@ async def create_subscription_plan(
             sms_included_quota=payload.sms_included_quota,
             sms_package_pricing=[t.model_dump() for t in payload.sms_package_pricing] if payload.sms_package_pricing else [],
             interval_config=[ic.model_dump() for ic in payload.interval_config] if payload.interval_config else None,
+            ppsr_lookups_included=payload.ppsr_lookups_included,
+            ppsr_hidden_plate_lookups_included=payload.ppsr_hidden_plate_lookups_included,
             created_by=uuid.UUID(user_id) if user_id else None,
             ip_address=ip_address,
         )
@@ -1484,6 +1486,9 @@ async def configure_carjam(
             per_lookup_cost_nzd=payload.per_lookup_cost_nzd,
             abcd_per_lookup_cost_nzd=payload.abcd_per_lookup_cost_nzd,
             global_rate_limit_per_minute=payload.global_rate_limit_per_minute,
+            ppsr_cache_ttl_minutes=payload.ppsr_cache_ttl_minutes,
+            ppsr_owner_lookups_enabled=payload.ppsr_owner_lookups_enabled,
+            s241_purpose_default=payload.s241_purpose_default,
             updated_by=uuid.UUID(user_id) if user_id else uuid.uuid4(),
             ip_address=ip_address,
         )

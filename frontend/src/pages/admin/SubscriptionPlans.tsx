@@ -39,6 +39,8 @@ export interface Plan {
   storage_quota_gb: number
   carjam_lookups_included: number
   per_carjam_lookup_cost_nzd: number
+  ppsr_lookups_included: number
+  ppsr_hidden_plate_lookups_included: number
   enabled_modules: string[]
   is_public: boolean
   is_archived: boolean
@@ -276,6 +278,8 @@ interface PlanFormData {
   storage_quota_gb: number
   carjam_lookups_included: number
   per_carjam_lookup_cost_nzd: number
+  ppsr_lookups_included: number
+  ppsr_hidden_plate_lookups_included: number
   enabled_modules: string[]
   is_public: boolean
   storage_tier_pricing: StorageTier[]
@@ -323,6 +327,8 @@ const EMPTY_FORM: PlanFormData = {
   storage_quota_gb: 5,
   carjam_lookups_included: 0,
   per_carjam_lookup_cost_nzd: 0,
+  ppsr_lookups_included: 0,
+  ppsr_hidden_plate_lookups_included: 0,
   enabled_modules: [],
   is_public: true,
   storage_tier_pricing: [],
@@ -357,6 +363,8 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
           storage_quota_gb: editPlan.storage_quota_gb,
           carjam_lookups_included: editPlan.carjam_lookups_included,
           per_carjam_lookup_cost_nzd: editPlan.per_carjam_lookup_cost_nzd ?? 0,
+          ppsr_lookups_included: editPlan.ppsr_lookups_included ?? 0,
+          ppsr_hidden_plate_lookups_included: editPlan.ppsr_hidden_plate_lookups_included ?? 0,
           enabled_modules: editPlan.enabled_modules,
           is_public: editPlan.is_public,
           storage_tier_pricing: editPlan.storage_tier_pricing ?? [],
@@ -518,6 +526,68 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
                       value={String(form.per_carjam_lookup_cost_nzd)}
                       onChange={e => set('per_carjam_lookup_cost_nzd', Math.max(0, Number(e.target.value)))}
                       helperText="Overage cost per lookup beyond quota"
+                    />
+                  </div>
+                </div>
+              )}
+            </fieldset>
+
+            {/* PPSR lookups — only relevant for automotive trades */}
+            <fieldset className="rounded-md border border-gray-200 p-3 space-y-2">
+              <legend className="text-sm font-medium text-gray-700 px-1">PPSR vehicle lookups</legend>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.ppsr_lookups_included > 0}
+                  onChange={e => set('ppsr_lookups_included', e.target.checked ? 100 : 0)}
+                />
+                <span>
+                  <span className="font-medium">Include PPSR lookups</span>
+                  <br />
+                  <span className="text-xs text-gray-500">Only needed for automotive trades (workshops, mechanics, fleet). Leave off for other industries.</span>
+                </span>
+              </label>
+              {form.ppsr_lookups_included > 0 && (
+                <div className="ml-6 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      label="Included lookup quota"
+                      type="number"
+                      min="0"
+                      value={String(form.ppsr_lookups_included)}
+                      onChange={e => set('ppsr_lookups_included', Math.max(0, Number(e.target.value)))}
+                      helperText="PPSR API lookups included per month"
+                    />
+                  </div>
+                </div>
+              )}
+            </fieldset>
+
+            {/* PPSR hidden-plate lookups — only relevant for automotive trades */}
+            <fieldset className="rounded-md border border-gray-200 p-3 space-y-2">
+              <legend className="text-sm font-medium text-gray-700 px-1">PPSR hidden-plate lookups</legend>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.ppsr_hidden_plate_lookups_included > 0}
+                  onChange={e => set('ppsr_hidden_plate_lookups_included', e.target.checked ? 100 : 0)}
+                />
+                <span>
+                  <span className="font-medium">Include PPSR hidden-plate lookups</span>
+                  <br />
+                  <span className="text-xs text-gray-500">Only needed for automotive trades (workshops, mechanics, fleet). Leave off for other industries.</span>
+                </span>
+              </label>
+              {form.ppsr_hidden_plate_lookups_included > 0 && (
+                <div className="ml-6 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      label="Included lookup quota"
+                      type="number"
+                      min="0"
+                      value={String(form.ppsr_hidden_plate_lookups_included)}
+                      onChange={e => set('ppsr_hidden_plate_lookups_included', Math.max(0, Number(e.target.value)))}
+                      helperText="PPSR hidden-plate lookups included per month"
                     />
                   </div>
                 </div>
@@ -1525,6 +1595,8 @@ export function SubscriptionPlans() {
     { key: 'user_seats', header: 'Seats', sortable: true },
     { key: 'storage_quota_gb', header: 'Storage', render: (r) => `${r.storage_quota_gb} GB` },
     { key: 'carjam_lookups_included', header: 'Carjam', render: (r) => r.carjam_lookups_included > 0 ? `${r.carjam_lookups_included}/mo` : <span className="text-xs text-gray-400">—</span> },
+    { key: 'ppsr_lookups_included', header: 'PPSR', render: (r) => r.ppsr_lookups_included > 0 ? `${r.ppsr_lookups_included}/mo` : <span className="text-xs text-gray-400">—</span> },
+    { key: 'ppsr_hidden_plate_lookups_included', header: 'PPSR Hidden', render: (r) => r.ppsr_hidden_plate_lookups_included > 0 ? `${r.ppsr_hidden_plate_lookups_included}/mo` : <span className="text-xs text-gray-400">—</span> },
     { key: 'sms_included', header: 'SMS', render: (r) => (r as Plan).sms_included ? <span className="text-green-600">✓</span> : <span className="text-xs text-gray-400">—</span> },
     {
       key: 'enabled_modules', header: 'Modules',

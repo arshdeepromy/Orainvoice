@@ -9,4 +9,4 @@ user's inbox. Implemented using the same raw ``smtplib`` +
 invitation emails, so reset emails now actually deliver.
 """
 
-__version__ = "1.18.0"
+__version__ = "1.19.0"

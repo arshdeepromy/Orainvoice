@@ -71,6 +71,13 @@ _HA_HEARTBEAT_RATE_LIMIT = 12
 _PUBLIC_STAFF_ROSTER_PATH_PREFIX = "/api/v2/public/staff-roster/"
 _PUBLIC_STAFF_ROSTER_RATE_LIMIT = 30
 
+# PPSR search — 10 req/min per org (Phase 1 G10).
+# Cache hits in the service don't reach this middleware because the
+# service short-circuits before any HTTP call; only fresh searches
+# consume budget.
+_PPSR_SEARCH_PATH = "/api/v2/ppsr/search"
+_PPSR_SEARCH_RATE_LIMIT = 10
+
 # Portal per-token rate limit — 60 req/min per portal token (Req 9.1)
 _PORTAL_PER_TOKEN_RATE_LIMIT = 60
 
@@ -291,6 +298,27 @@ class RateLimitMiddleware:
                 )
                 await response(scope, receive, send)
                 return
+
+        # --- PPSR search per-org limit (10/min — Phase 1 G10) ---
+        # POST-only endpoint; cache hits short-circuit in the service before
+        # reaching this middleware, so only fresh searches consume budget.
+        # Keyed on org_id so a noisy org throttles itself without blocking
+        # other tenants.
+        if path == _PPSR_SEARCH_PATH and request.method == "POST":
+            org_id_for_ppsr: str | None = getattr(request.state, "org_id", None)
+            if org_id_for_ppsr:
+                key = f"rl:ppsr_search:org:{org_id_for_ppsr}"
+                allowed, retry_after = await _check_rate_limit(
+                    redis, key, _PPSR_SEARCH_RATE_LIMIT, now,
+                )
+                if not allowed:
+                    response = JSONResponse(
+                        status_code=429,
+                        content={"detail": "Too many PPSR searches. Please try again later."},
+                        headers={"Retry-After": str(retry_after)},
+                    )
+                    await response(scope, receive, send)
+                    return
 
         # --- Auth-endpoint per-IP limit (skip public read-only endpoints) ---
         if is_auth_endpoint(path) and path not in _PUBLIC_READ_ONLY_PATHS:

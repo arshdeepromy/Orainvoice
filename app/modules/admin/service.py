@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -1250,6 +1251,9 @@ async def save_carjam_config(
     per_lookup_cost_nzd: float | None = None,
     abcd_per_lookup_cost_nzd: float | None = None,
     global_rate_limit_per_minute: int | None = None,
+    ppsr_cache_ttl_minutes: int | None = None,
+    ppsr_owner_lookups_enabled: bool | None = None,
+    s241_purpose_default: str | None = None,
     updated_by: uuid.UUID,
     ip_address: str | None = None,
 ) -> dict:
@@ -1259,9 +1263,23 @@ async def save_carjam_config(
     Only updates fields that are provided (not None).
     Returns non-secret config fields.
     Requirement 48.3.
+
+    PPSR Phase 1 (G-CODE-11) — also accepts:
+      * ``ppsr_cache_ttl_minutes`` (int, non-secret)
+      * ``ppsr_owner_lookups_enabled`` (bool, non-secret)
+      * ``s241_purpose_default`` (str, treated like a secret for GUI
+        consistency — incoming values that match the masked-display
+        pattern are skipped per ``security-hardening-checklist.md §2``
+        so the GUI's masked round-trip never overwrites the real value).
     """
     from app.modules.admin.models import IntegrationConfig
     from app.core.encryption import envelope_encrypt, envelope_decrypt
+
+    # Mask-pattern detection (security-hardening-checklist §2): the GUI
+    # surfaces masked secrets like ``****`` or ``ab****``. If the client
+    # echoes one of those values back, we must NOT overwrite the real
+    # secret with the mask string.
+    _MASK_PATTERN = re.compile(r"^\*+$|^.{0,4}\*{4,}$")
 
     # Load existing config
     result = await db.execute(
@@ -1290,7 +1308,7 @@ async def save_carjam_config(
             raise ValueError(f"Carjam endpoint URL rejected: {reason}")
 
     # Update only provided fields
-    if api_key is not None:
+    if api_key is not None and not _MASK_PATTERN.match(api_key):
         current_data["api_key"] = api_key
     if endpoint_url is not None:
         current_data["endpoint_url"] = endpoint_url
@@ -1300,6 +1318,12 @@ async def save_carjam_config(
         current_data["abcd_per_lookup_cost_nzd"] = abcd_per_lookup_cost_nzd
     if global_rate_limit_per_minute is not None:
         current_data["global_rate_limit_per_minute"] = global_rate_limit_per_minute
+    if ppsr_cache_ttl_minutes is not None:
+        current_data["ppsr_cache_ttl_minutes"] = ppsr_cache_ttl_minutes
+    if ppsr_owner_lookups_enabled is not None:
+        current_data["ppsr_owner_lookups_enabled"] = ppsr_owner_lookups_enabled
+    if s241_purpose_default is not None and not _MASK_PATTERN.match(s241_purpose_default):
+        current_data["s241_purpose_default"] = s241_purpose_default
 
     # Encrypt and save
     config_data = json.dumps(current_data)
@@ -1332,6 +1356,16 @@ async def save_carjam_config(
         audit_data["abcd_per_lookup_cost_nzd"] = abcd_per_lookup_cost_nzd
     if global_rate_limit_per_minute is not None:
         audit_data["global_rate_limit_per_minute"] = global_rate_limit_per_minute
+    if ppsr_cache_ttl_minutes is not None:
+        audit_data["ppsr_cache_ttl_minutes"] = ppsr_cache_ttl_minutes
+    if ppsr_owner_lookups_enabled is not None:
+        audit_data["ppsr_owner_lookups_enabled"] = ppsr_owner_lookups_enabled
+    if s241_purpose_default is not None:
+        audit_data["s241_purpose_default_last4"] = (
+            s241_purpose_default[-4:]
+            if len(s241_purpose_default) >= 4
+            else s241_purpose_default
+        )
 
     await write_audit_log(
         session=db,
@@ -1344,13 +1378,25 @@ async def save_carjam_config(
         ip_address=ip_address,
     )
 
+    saved_api_key = current_data.get("api_key", "")
+    saved_purpose = current_data.get("s241_purpose_default", "")
+
     return {
         "endpoint_url": current_data["endpoint_url"],
         "per_lookup_cost_nzd": current_data["per_lookup_cost_nzd"],
         "abcd_per_lookup_cost_nzd": current_data.get("abcd_per_lookup_cost_nzd", 0.05),
         "global_rate_limit_per_minute": current_data["global_rate_limit_per_minute"],
-        "api_key_last4": current_data["api_key"][-4:] if len(current_data["api_key"]) >= 4 else current_data["api_key"],
+        "api_key_last4": saved_api_key[-4:] if len(saved_api_key) >= 4 else saved_api_key,
         "is_verified": False,
+        # PPSR Phase 1 (G-CODE-11) — surface the new fields per the standard
+        # safe-fields / masked-fields contract.
+        "ppsr_cache_ttl_minutes": current_data.get("ppsr_cache_ttl_minutes", 5),
+        "ppsr_owner_lookups_enabled": current_data.get(
+            "ppsr_owner_lookups_enabled", False
+        ),
+        "s241_purpose_default_last4": (
+            saved_purpose[-4:] if len(saved_purpose) >= 4 else saved_purpose
+        ),
     }
 
 
@@ -1731,7 +1777,15 @@ async def test_stripe_api_keys(
 
 # Maps integration name → list of fields safe to return (non-secret)
 _SAFE_FIELDS: dict[str, list[str]] = {
-    "carjam": ["endpoint_url", "per_lookup_cost_nzd", "abcd_per_lookup_cost_nzd", "global_rate_limit_per_minute"],
+    "carjam": [
+        "endpoint_url",
+        "per_lookup_cost_nzd",
+        "abcd_per_lookup_cost_nzd",
+        "global_rate_limit_per_minute",
+        # PPSR Phase 1 (G-CODE-11): non-secret platform-wide PPSR config.
+        "ppsr_cache_ttl_minutes",
+        "ppsr_owner_lookups_enabled",
+    ],
     "stripe": ["webhook_endpoint"],
     "smtp": ["provider", "domain", "from_email", "from_name", "reply_to", "host", "port"],
     "twilio": ["sender_number"],
@@ -1739,7 +1793,11 @@ _SAFE_FIELDS: dict[str, list[str]] = {
 
 # Maps integration name → list of fields to show as masked (last 4 chars)
 _MASKED_FIELDS: dict[str, list[str]] = {
-    "carjam": ["api_key"],
+    # PPSR Phase 1 (G-CODE-11): ``s241_purpose_default`` is treated as a
+    # secret for GUI consistency — surfaced as ``s241_purpose_default_last4``
+    # so the admin can spot-check what's stored without leaking the full
+    # purpose string.
+    "carjam": ["api_key", "s241_purpose_default"],
     "stripe": ["platform_account_id", "signing_secret", "publishable_key", "secret_key", "connect_client_id"],
     "smtp": ["api_key"],
     "twilio": ["account_sid", "auth_token"],
@@ -1856,6 +1914,8 @@ async def create_plan(
     sms_included_quota: int = 0,
     sms_package_pricing: list[dict] | None = None,
     interval_config: list[dict] | None = None,
+    ppsr_lookups_included: int = 0,
+    ppsr_hidden_plate_lookups_included: int = 0,
     created_by: uuid.UUID | None = None,
     ip_address: str | None = None,
 ) -> dict:
@@ -1897,6 +1957,8 @@ async def create_plan(
         sms_included_quota=sms_included_quota,
         sms_package_pricing=sms_package_pricing or [],
         interval_config=resolved_interval_config,
+        ppsr_lookups_included=ppsr_lookups_included,
+        ppsr_hidden_plate_lookups_included=ppsr_hidden_plate_lookups_included,
     )
     db.add(plan)
     await db.flush()
@@ -1924,6 +1986,8 @@ async def create_plan(
         "user_seats": plan.user_seats,
         "storage_quota_gb": plan.storage_quota_gb,
         "carjam_lookups_included": plan.carjam_lookups_included,
+        "ppsr_lookups_included": plan.ppsr_lookups_included,
+        "ppsr_hidden_plate_lookups_included": plan.ppsr_hidden_plate_lookups_included,
         "enabled_modules": plan.enabled_modules,
         "is_public": plan.is_public,
         "is_archived": plan.is_archived,
@@ -1968,6 +2032,8 @@ async def list_plans(
             "user_seats": p.user_seats,
             "storage_quota_gb": p.storage_quota_gb,
             "carjam_lookups_included": p.carjam_lookups_included,
+            "ppsr_lookups_included": p.ppsr_lookups_included,
+            "ppsr_hidden_plate_lookups_included": p.ppsr_hidden_plate_lookups_included,
             "enabled_modules": p.enabled_modules,
             "is_public": p.is_public,
             "is_archived": p.is_archived,
@@ -2005,6 +2071,8 @@ async def get_plan(
         "user_seats": p.user_seats,
         "storage_quota_gb": p.storage_quota_gb,
         "carjam_lookups_included": p.carjam_lookups_included,
+        "ppsr_lookups_included": p.ppsr_lookups_included,
+        "ppsr_hidden_plate_lookups_included": p.ppsr_hidden_plate_lookups_included,
         "enabled_modules": p.enabled_modules,
         "is_public": p.is_public,
         "is_archived": p.is_archived,
@@ -2110,6 +2178,7 @@ async def update_plan(
         "storage_tier_pricing", "trial_duration", "trial_duration_unit",
         "sms_included", "per_sms_cost_nzd", "sms_included_quota",
         "sms_package_pricing", "interval_config",
+        "ppsr_lookups_included", "ppsr_hidden_plate_lookups_included",
     }
 
     # Validate interval_config if provided
@@ -2167,6 +2236,8 @@ async def update_plan(
         "user_seats": plan.user_seats,
         "storage_quota_gb": plan.storage_quota_gb,
         "carjam_lookups_included": plan.carjam_lookups_included,
+        "ppsr_lookups_included": plan.ppsr_lookups_included,
+        "ppsr_hidden_plate_lookups_included": plan.ppsr_hidden_plate_lookups_included,
         "enabled_modules": plan.enabled_modules,
         "is_public": plan.is_public,
         "is_archived": plan.is_archived,
@@ -2250,6 +2321,8 @@ async def archive_plan(
         "user_seats": plan.user_seats,
         "storage_quota_gb": plan.storage_quota_gb,
         "carjam_lookups_included": plan.carjam_lookups_included,
+        "ppsr_lookups_included": plan.ppsr_lookups_included,
+        "ppsr_hidden_plate_lookups_included": plan.ppsr_hidden_plate_lookups_included,
         "enabled_modules": plan.enabled_modules,
         "is_public": plan.is_public,
         "is_archived": plan.is_archived,

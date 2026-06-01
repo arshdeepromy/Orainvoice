@@ -64,6 +64,7 @@ const CustomerCreate = lazy(() => import('@/pages/customers/CustomerCreate'))
 const CustomerProfile = lazy(() => import('@/pages/customers/CustomerProfile'))
 const VehicleList = lazy(() => import('@/pages/vehicles/VehicleList'))
 const VehicleProfile = lazy(() => import('@/pages/vehicles/VehicleProfile'))
+const PPSRSearchPage = lazy(() => import('@/pages/ppsr/PPSRSearchPage'))
 const InvoiceList = lazy(() => import('@/pages/invoices/InvoiceList'))
 const InvoiceCreate = lazy(() => import('@/pages/invoices/InvoiceCreate'))
 const QuoteList = lazy(() => import('@/pages/quotes/QuoteList'))
@@ -436,6 +437,9 @@ function AppRoutes() {
             <Route path="/vehicles" element={<SafePage name="vehicles"><ModuleRoute moduleSlug="vehicles"><VehicleList /></ModuleRoute></SafePage>} />
             <Route path="/vehicles/:id" element={<SafePage name="vehicle-profile"><ModuleRoute moduleSlug="vehicles"><VehicleProfile /></ModuleRoute></SafePage>} />
           </Route>
+
+          {/* PPSR */}
+          <Route path="/ppsr/search" element={<SafePage name="ppsr-search"><ModuleRoute moduleSlug="ppsr"><PPSRSearchPage /></ModuleRoute></SafePage>} />
 
           {/* Invoices */}
           <Route path="/invoices" element={<SafePage name="invoices"><InvoiceList /></SafePage>} />

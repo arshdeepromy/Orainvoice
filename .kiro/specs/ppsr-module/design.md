@@ -33,7 +33,7 @@ No layer is skipped or guessed at — each one matches existing code:
 
 | Layer | Existing reference |
 |---|---|
-| ModuleMiddleware | `app/middleware/modules.py:79-128` (returns 403, not 404, with `{detail, module}` — corrected from earlier draft) |
+| ModuleMiddleware | `app/middleware/modules.py:79-130` (returns 403 at lines 121-130, not 404, with `{detail, module}` — corrected from earlier draft; note a second fail-open exists in the exception handler at lines 115-119) |
 | RateLimit | `app/middleware/rate_limit.py` (existing decorator-driven pattern) |
 | envelope_encrypt | `app/core/encryption.py:66` (function name is `envelope_encrypt`, not `envelope_encrypt_str`) |
 | write_audit_log | `app/core/audit.py:35` writes to table `audit_log` (singular) per `app/core/audit.py:79` |
@@ -49,11 +49,11 @@ PPSR is a thin module that reuses the existing CarJam infrastructure and adds th
 
 Backend touches:
 
-- `alembic/versions/0207_ppsr_module.py` (schema + module-registry inserts).
-- `alembic/versions/0208_ppsr_indexes.py` (CONCURRENTLY pack).
+- `alembic/versions/0211_ppsr_module.py` (schema + module-registry inserts).
+- `alembic/versions/0212_ppsr_indexes.py` (CONCURRENTLY pack).
 - `app/integrations/carjam.py` — extend with `lookup_ppsr(...)` method + `CarjamPpsrResponse` dataclass + XML parser additions (parse `ppsr`, `ppsr_details`, `money_owing`, `ioh`, `ico`, `warnings`, `flood`, `charges`). The existing `_parse_vehicle_response` doesn't need to change — `lookup_ppsr` builds its own response dataclass.
 - `app/modules/ppsr/{__init__,models,schemas,service,router,pdf}.py` — new module.
-- `app/modules/admin/service.py:1742` — extend the `"carjam": ["api_key"]` map to include `s241_purpose_default`, `ppsr_cache_ttl_minutes`, `ppsr_owner_lookups_enabled`.
+- `app/modules/admin/service.py:1743` — extend the `"carjam": ["api_key"]` map to include `s241_purpose_default`, `ppsr_cache_ttl_minutes`, `ppsr_owner_lookups_enabled`.
 - `app/modules/admin/router.py` — extend the CarJam config GET/PATCH to cover the new fields.
 - `app/main.py` — include the new router; add `/api/v2/ppsr/*` path entries to `app/middleware/modules.py::MODULE_ENDPOINT_MAP` so the module middleware knows to gate them.
 
@@ -70,25 +70,25 @@ Frontend touches:
 
 ## 2. Navigation & Access
 
-- **Route:** `/ppsr/search` registered in `App.tsx`, lazy-loaded. Pattern mirrors [App.tsx:414](frontend/src/App.tsx#L414):
+- **Route:** `/ppsr/search` registered in `App.tsx`, lazy-loaded. Pattern mirrors [App.tsx:437](frontend/src/App.tsx#L437):
   ```tsx
   const PPSRSearchPage = lazy(() => import('@/pages/ppsr/PPSRSearchPage'))
   // inside <Routes>:
   <Route path="/ppsr/search" element={<SafePage name="ppsr-search"><ModuleRoute moduleSlug="ppsr"><PPSRSearchPage/></ModuleRoute></SafePage>} />
   ```
 - **Route guard:** existing `RequireAuth` is applied globally by `OrgLayout` — no per-route guard needed. The `ModuleRoute moduleSlug="ppsr"` wrapper renders `FeatureNotAvailable` (existing component at [frontend/src/pages/common/FeatureNotAvailable.tsx](frontend/src/pages/common/FeatureNotAvailable.tsx)) when the module is disabled.
-- **Sidebar (G-CODE-9):** the sidebar is a **flat `navItems` array** at [frontend/src/layouts/OrgLayout.tsx:43-85](frontend/src/layouts/OrgLayout.tsx#L43-L85) — there are no nested "Vehicles" or "Tools" sections in the existing layout. Add a single entry positioned immediately after the existing Vehicles entry (line 46):
+- **Sidebar (G-CODE-9):** the sidebar is a **flat `navItems` array** at [frontend/src/layouts/OrgLayout.tsx:44-90](frontend/src/layouts/OrgLayout.tsx#L44-L90) — there are no nested "Vehicles" or "Tools" sections in the existing layout. Add a single entry positioned immediately after the existing Vehicles entry (line 47):
   ```ts
   { to: '/ppsr/search', label: 'PPSR Check', icon: PpsrIcon, module: 'ppsr', flagKey: 'ppsr' },
   ```
-  No `tradeFamily` filter — PPSR is universal. The existing filter logic at line 161 already hides items when `useModules().isEnabled(item.module)` is false, so no extra wiring is needed. A new `PpsrIcon` SVG component lives at `frontend/src/components/icons/PpsrIcon.tsx` (mirrors the existing icon pattern).
+  No `tradeFamily` filter — PPSR is universal. The existing filter logic at line 167 already hides items when `useModules().isEnabled(item.module)` is false, so no extra wiring is needed. A new `PpsrIcon` SVG component lives at `frontend/src/components/icons/PpsrIcon.tsx` (mirrors the existing icon pattern).
 - **CarJam admin sub-section:** the existing Integrations admin page at [frontend/src/pages/admin/Integrations.tsx](frontend/src/pages/admin/Integrations.tsx) already renders CarJam fields generically from `INTEGRATION_FIELDS.carjam`. PPSR adds three field-def entries to that array (no new sub-section component required; the page renders new fields automatically).
 - **Vehicle Profile embed:** [frontend/src/pages/vehicles/VehicleProfile.tsx](frontend/src/pages/vehicles/VehicleProfile.tsx) renders the new `<PpsrCard rego={vehicle.rego} />` between WOF/COF and Notes; the card internally wraps itself in `<ModuleGate module="ppsr">` (G-CODE-3 — actual prop name is `module`, not `moduleSlug`, per [ModuleGate.tsx:13](frontend/src/components/common/ModuleGate.tsx#L13)).
 - **Module gate (two-layer):** `ModuleRoute` at the route boundary returns `FeatureNotAvailable` for disabled module; `ModuleGate` inside the Vehicle Profile renders nothing when disabled. Both are existing components.
 
 ## 3. Data Model
 
-### 3.1 Migration `0207_ppsr_module.py`
+### 3.1 Migration `0211_ppsr_module.py`
 
 ```sql
 -- Audit log + cache. RLS enforced.
@@ -150,7 +150,7 @@ INSERT INTO module_registry (
 ) ON CONFLICT (slug) DO NOTHING;
 
 -- Feature-flag mirror per implementation-completeness-checklist Rule 8.
--- ACTUAL column shape per app/modules/feature_flags/models.py:18-80 — there is NO `default_enabled` and NO `scope` column. Mirror 0203_staff_phase1_schema.py:254-276 exactly.
+-- ACTUAL column shape per app/modules/feature_flags/models.py:18-80 — there is NO `default_enabled` and NO `scope` column. Mirror 0203_staff_phase1_schema.py:255-281 exactly.
 INSERT INTO feature_flags (
     id, key, display_name, description, category,
     access_level, dependencies, default_value,
@@ -210,7 +210,7 @@ Neither call mutates the vehicle tables — the PPSR module does NOT auto-create
 
 If the user later clicks "Save report to vehicle file" on the result panel, the frontend POSTs `/ppsr/searches/:id/link-vehicle` with the chosen `org_vehicle_id` — the service updates the link column (audit-logged as `ppsr.search.linked`).
 
-### 3.2 Migration `0208_ppsr_indexes.py` (CONCURRENTLY)
+### 3.2 Migration `0212_ppsr_indexes.py` (CONCURRENTLY)
 
 ```python
 _UPGRADE: list[tuple[str, str]] = [
@@ -316,7 +316,7 @@ class CarjamClient:
 The parser (`_parse_ppsr_response`) handles the CarJam JSON response (`f=json` per G-CODE-13). The nested structure mirrors the XML response shape — keys are the same. Handles:
 - Top-level `error` key → raise `CarjamError(error.message)`.
 - `message.idh.header.not_found == true` → `not_found=True`.
-- `message.idh` content → `basic` dict (delegate to existing `_parse_vehicle_response(rego, message.idh)` for parity).
+- `message.idh` content → `basic` dict (delegate to existing `_parse_vehicle_response(rego, idh_data["vehicle"])` for parity). Note: the existing `_parse_vehicle_response(rego, idh_data["vehicle"])` extracts the **inner** `idh.vehicle` dict, not `message.idh` itself. PPSR's parser must extract the equivalent inner block before delegating.
 - `message.ioh.owners` → `ownership_history` array (when `owners=1`).
 - `message.ico` → `current_owner` dict (when `owner=1`).
 - `message.ppsr` + `message.ppsr_details` → `ppsr_summary` + `ppsr_details`.
@@ -353,7 +353,7 @@ class PpsrService:
         # G-CODE-4: `get_integration_config` returns ONLY masked / safe fields — it cannot
         # return the secret api_key needed for runtime calls. Load the IntegrationConfig
         # row directly and decrypt the full JSON, mirroring `_load_carjam_client` at
-        # app/modules/vehicles/service.py:28-64.
+        # app/modules/vehicles/service.py:28-65.
         from app.modules.admin.models import IntegrationConfig
         from app.core.encryption import envelope_decrypt_str
         cfg_row_q = await self.db.execute(
@@ -1006,7 +1006,7 @@ History row now shows "(payload forgotten)" instead of a clickable detail link.
 - **CarJam credentials** — reuses `integration_configs[name='carjam']` and the existing `_load_carjam_client(db, redis)` factory. No new integration to register.
 - **Module-gate middleware** — `app/middleware/modules.py::MODULE_ENDPOINT_MAP` needs entries for `/api/v2/ppsr/*` → `ppsr`.
 - **Setup wizard** — auto-picks up the new `module_registry` row; no frontend change in the wizard component.
-- **Subscription Plans admin UI** — actual page is [frontend/src/pages/admin/SubscriptionPlans.tsx:1349](frontend/src/pages/admin/SubscriptionPlans.tsx#L1349) (G-CODE-12 — `SubscriptionPlanForm.tsx` doesn't exist). Pattern is inline form state via `set('field_name', value)`; mirror the `carjam_lookups_included` field at line 493. New form fields: `ppsr_lookups_included`, `ppsr_hidden_plate_lookups_included` (G44).
+- **Subscription Plans admin UI** — actual page is [frontend/src/pages/admin/SubscriptionPlans.tsx](frontend/src/pages/admin/SubscriptionPlans.tsx); the form is the `PlanFormModal` component at [line 338](frontend/src/pages/admin/SubscriptionPlans.tsx#L338) (G-CODE-12 — `SubscriptionPlanForm.tsx` doesn't exist; the page-level export sits much further down at line 1349 but is **not** the form). Pattern is inline form state via `set('field_name', value)`; mirror the `carjam_lookups_included` field at line 493. New form fields: `ppsr_lookups_included`, `ppsr_hidden_plate_lookups_included` (G44).
 - **Audit log viewer** — existing `AuditLog.tsx` admin screen surfaces the new actions automatically (slug-agnostic).
 - **Vehicle Profile** — additive embed via `PpsrCard.tsx`. No existing functionality removed or reshaped.
 - **Email / SMS** — none. PPSR is a pure-fetch surface; no outbound notifications.
@@ -1046,7 +1046,7 @@ Every fact below was confirmed by reading the actual file at the cited line rang
   if not allowed:
       raise CarjamRateLimitError(retry_after=retry_after)
   ```
-- ✅ `_load_carjam_client(db, redis)` at [app/modules/vehicles/service.py:28-64](app/modules/vehicles/service.py#L28-L64) loads from `IntegrationConfig`, decrypts via `envelope_decrypt_str`, reads JSON fields `api_key`, `endpoint_url`, `global_rate_limit_per_minute`. PPSR will use this same factory verbatim — no fork.
+- ✅ `_load_carjam_client(db, redis)` at [app/modules/vehicles/service.py:28-65](app/modules/vehicles/service.py#L28-L65) loads from `IntegrationConfig`, decrypts via `envelope_decrypt_str`, reads JSON fields `api_key`, `endpoint_url`, `global_rate_limit_per_minute`. PPSR will use this same factory verbatim — no fork.
 - ✅ `IntegrationConfig` table ([app/modules/admin/models.py:271-291](app/modules/admin/models.py#L271-L291)) has a CHECK constraint `name IN ('carjam','stripe','smtp','twilio')` — PPSR reuses `name='carjam'`, no new constraint value needed.
 - ✅ `subscription_plans.carjam_lookups_included` is `Mapped[int]` at [app/modules/admin/models.py:57](app/modules/admin/models.py#L57). `subscription_plans.enabled_modules` is JSONB at line 58. `subscription_plans.is_archived` is Boolean (line 60).
 - ✅ `organisations.carjam_lookups_this_month` at line 112; `carjam_lookups_reset_at` at line 113. `organisations.settings` is JSONB at line 116 — the org address / phone / email / GST / logo all live in this dict.
@@ -1058,9 +1058,9 @@ Every fact below was confirmed by reading the actual file at the cited line rang
   if not await ModuleService(self.db).is_enabled(str(org_id), "ppsr"):
       raise HTTPException(403, "module_not_enabled")
   ```
-- ✅ `app/middleware/modules.py::MODULE_ENDPOINT_MAP` at line 36 — dict of path-prefix → module slug. PPSR adds single entry `"/api/v2/ppsr": "ppsr"` (no wildcard; `_resolve_module` at line 71 matches by prefix). Disabled-module response is HTTP **403** with `{detail: "Module 'ppsr' is not enabled for your organisation.", module: "ppsr"}` at lines 117-126.
+- ✅ `app/middleware/modules.py::MODULE_ENDPOINT_MAP` at line 36 — dict of path-prefix → module slug. PPSR adds single entry `"/api/v2/ppsr": "ppsr"` (no wildcard; `_resolve_module` at line 71 matches by prefix). Disabled-module response is HTTP **403** with `{detail: "Module 'ppsr' is not enabled for your organisation.", module: "ppsr"}` at lines 121-130.
 - ✅ `module_registry.setup_question` + `setup_question_description` columns exist at [app/modules/module_management/models.py:41-42](app/modules/module_management/models.py#L41-L42).
-- ✅ `feature_flags` real columns ([app/modules/feature_flags/models.py:18-80](app/modules/feature_flags/models.py#L18-L80)): `id, key, display_name, description, category, access_level, dependencies, default_value, is_active, targeting_rules`. **No `default_enabled`, no `scope`.** Migration must mirror [0203:254-276](alembic/versions/2026_05_31_0900-0203_staff_phase1_schema.py#L254-L276).
+- ✅ `feature_flags` real columns ([app/modules/feature_flags/models.py:18-80](app/modules/feature_flags/models.py#L18-L80)): `id, key, display_name, description, category, access_level, dependencies, default_value, is_active, targeting_rules`. **No `default_enabled`, no `scope`.** Migration must mirror [0203:255-281](alembic/versions/2026_05_31_0900-0203_staff_phase1_schema.py#L255-L281).
 - ✅ `TRADE_GATED_MODULES = {"vehicles"}` at [app/modules/setup_guide/router.py:45](app/modules/setup_guide/router.py#L45) — PPSR is **not** added here ✓.
 - ✅ User roles per [alembic 0136](alembic/versions/2026_04_04_0900-0136_add_branch_admin_role.py#L24): `global_admin, franchise_admin, org_admin, branch_admin, location_manager, salesperson, staff_member, kiosk`. PPSR RBAC uses `org_admin` for admin-only ops; all other org-roles for own-search read.
 - ✅ Router DI pattern (mirror [app/modules/vehicles/router.py:126-131](app/modules/vehicles/router.py#L126-L131)):
@@ -1081,10 +1081,10 @@ Every fact below was confirmed by reading the actual file at the cited line rang
   - **Actual keys** in `org.settings`: `address_unit`, `address_street`, `address_city`, `address_state`, `address_postcode`, `address_country`, `phone`, `email`, `website`, `gst_number`, `primary_colour`, `invoice_header_text`, `invoice_footer_text`.
   - Logo: `from app.core.pdf_utils import resolve_logo_for_pdf; org_context["logo_url"] = resolve_logo_for_pdf(org)` — returns a base64 data URI.
   - The PPSR PDF template uses **these exact keys** — earlier spec mention of `address_line_1`, `region`, `postcode` was wrong; corrected in §4.3a.
-- ✅ Existing CarJam config admin schema map ([app/modules/admin/service.py:1734-1742](app/modules/admin/service.py#L1734-L1742)):
-  - `_SAFE_FIELDS["carjam"] = ["endpoint_url", "per_lookup_cost_nzd", "abcd_per_lookup_cost_nzd", "global_rate_limit_per_minute"]` — PPSR extends to: `[..., "ppsr_cache_ttl_minutes", "ppsr_owner_lookups_enabled"]` (boolean + int, both safe).
-  - `_MASKED_FIELDS["carjam"] = ["api_key"]` — PPSR extends to: `[..., "s241_purpose_default"]` (treated like a secret for GUI consistency per R7.3).
-- ✅ Existing CarJam DB JSON config keys (per [_load_carjam_client](app/modules/vehicles/service.py#L28-L64)): `api_key`, `endpoint_url`, `global_rate_limit_per_minute`. **PPSR adds three NEW keys to the same JSON:** `s241_purpose_default`, `ppsr_cache_ttl_minutes`, `ppsr_owner_lookups_enabled`. The `_load_carjam_client` helper reads only `api_key`/`endpoint_url`/`rate_limit` — PPSR service must do its own JSON read for the three new keys (load the row + decrypt the JSON directly, same pattern).
+- ✅ Existing CarJam config admin schema map ([app/modules/admin/service.py:1733-1743](app/modules/admin/service.py#L1733-L1743)):
+  - `_SAFE_FIELDS["carjam"]` (entry at line 1735) `= ["endpoint_url", "per_lookup_cost_nzd", "abcd_per_lookup_cost_nzd", "global_rate_limit_per_minute"]` — PPSR extends to: `[..., "ppsr_cache_ttl_minutes", "ppsr_owner_lookups_enabled"]` (boolean + int, both safe).
+  - `_MASKED_FIELDS["carjam"]` (entry at line 1743) `= ["api_key"]` — PPSR extends to: `[..., "s241_purpose_default"]` (treated like a secret for GUI consistency per R7.3).
+- ✅ Existing CarJam DB JSON config keys (per [_load_carjam_client](app/modules/vehicles/service.py#L28-L65)): `api_key`, `endpoint_url`, `global_rate_limit_per_minute`. **PPSR adds three NEW keys to the same JSON:** `s241_purpose_default`, `ppsr_cache_ttl_minutes`, `ppsr_owner_lookups_enabled`. The `_load_carjam_client` helper reads only `api_key`/`endpoint_url`/`rate_limit` — PPSR service must do its own JSON read for the three new keys (load the row + decrypt the JSON directly, same pattern).
 - ✅ `get_integration_config(db, name)` ([app/modules/admin/service.py:1749-1809](app/modules/admin/service.py#L1749-L1809)) returns `{name, is_verified, updated_at, fields: { ...safe and masked fields only... }}` — **DO NOT use this for runtime credentials**; it doesn't return secrets. The PPSR service must read `IntegrationConfig` + `envelope_decrypt_str` directly (same as `_load_carjam_client`).
 
 ### Frontend code references — verified
@@ -1094,12 +1094,12 @@ Every fact below was confirmed by reading the actual file at the cited line rang
 - ✅ `FeatureNotAvailable` ([frontend/src/pages/common/FeatureNotAvailable.tsx:7](frontend/src/pages/common/FeatureNotAvailable.tsx#L7)) is the disabled-module fallback; `ModuleRoute` renders it automatically — no manual import in PPSRSearchPage required.
 - ✅ `useTenant().tradeFamily` returns slug strings like `'automotive-transport'`, `'plumbing-gas'` ([frontend/src/contexts/TenantContext.tsx:56-57,94](frontend/src/contexts/TenantContext.tsx#L56-L57)). Null fallback per steering: `tradeFamily ?? 'automotive-transport'`.
 - ✅ `useModules().isEnabled(slug: string)` ([frontend/src/contexts/ModuleContext.tsx:27,91](frontend/src/contexts/ModuleContext.tsx#L27)).
-- ✅ **Sidebar layout is a FLAT `navItems` array, not nested sections.** [frontend/src/layouts/OrgLayout.tsx:43-85](frontend/src/layouts/OrgLayout.tsx#L43-L85). Each item: `{ to, label, icon, module?, flagKey?, tradeFamily?, adminOnly? }`. Earlier spec mention of "PPSR Check under Vehicles/Tools section" was wrong — there are no sections. PPSR Check is a single nav item inserted after Vehicles:
+- ✅ **Sidebar layout is a FLAT `navItems` array, not nested sections.** [frontend/src/layouts/OrgLayout.tsx:44-90](frontend/src/layouts/OrgLayout.tsx#L44-L90). Each item: `{ to, label, icon, module?, flagKey?, tradeFamily?, adminOnly? }`. Earlier spec mention of "PPSR Check under Vehicles/Tools section" was wrong — there are no sections. PPSR Check is a single nav item inserted after Vehicles:
   ```ts
   { to: '/ppsr/search', label: 'PPSR Check', icon: PpsrIcon, module: 'ppsr', flagKey: 'ppsr' },
   ```
   (No `tradeFamily` filter — PPSR is universal, visible to any trade as long as module enabled.)
-- ✅ `VehicleProfile` lives at [frontend/src/pages/vehicles/VehicleProfile.tsx](frontend/src/pages/vehicles/VehicleProfile.tsx); route at [App.tsx:414](frontend/src/App.tsx#L414) is gated by `ModuleRoute moduleSlug="vehicles"`. PPSR card embed goes inside this page wrapped in `<ModuleGate module="ppsr">` (not `moduleSlug=`).
+- ✅ `VehicleProfile` lives at [frontend/src/pages/vehicles/VehicleProfile.tsx](frontend/src/pages/vehicles/VehicleProfile.tsx); route at [App.tsx:437](frontend/src/App.tsx#L437) is gated by `ModuleRoute moduleSlug="vehicles"`. PPSR card embed goes inside this page wrapped in `<ModuleGate module="ppsr">` (not `moduleSlug=`).
 - ✅ **CarJam config UI is at [frontend/src/pages/admin/Integrations.tsx](frontend/src/pages/admin/Integrations.tsx) (Global Admin → Integrations) — NOT a path under `/settings/integrations/`.** PPSR fields go into the `INTEGRATION_FIELDS.carjam` array at line 45-51. The component renders fields generically — appending three new entries is mechanical:
   ```ts
   { key: 's241_purpose_default', label: 's241 purpose code', type: 'password', placeholder: '••••••••', backendKey: 's241_purpose_default_last4', helperText: 'Source from your CarJam member dashboard → s241 section. Required for owner-lookups.' },
@@ -1107,8 +1107,8 @@ Every fact below was confirmed by reading the actual file at the cited line rang
   { key: 'ppsr_owner_lookups_enabled', label: 'Enable owner / ownership-history lookups', type: 'checkbox', helperText: 'Tick this AND set s241 purpose code before owner-lookups will work.' },
   ```
   (Note: `Integrations.tsx` may need a `type: 'checkbox'` field type added — verify before relying on it; otherwise use `type: 'text'` with `'true'/'false'` strings.)
-- ✅ **Subscription Plans admin page is at [frontend/src/pages/admin/SubscriptionPlans.tsx:1349](frontend/src/pages/admin/SubscriptionPlans.tsx#L1349)** (not `SubscriptionPlanForm.tsx` — that file doesn't exist). Pattern: inline form state with `set('field_name', value)` and `<Input checked={form.field > 0} onChange={...} />`. PPSR adds two new numeric inputs mirroring `carjam_lookups_included` at line 493.
-- ✅ Module-gated route registration pattern at [App.tsx:414](frontend/src/App.tsx#L414):
+- ✅ **Subscription Plans admin page is at [frontend/src/pages/admin/SubscriptionPlans.tsx](frontend/src/pages/admin/SubscriptionPlans.tsx)** (not `SubscriptionPlanForm.tsx` — that file doesn't exist). The form itself is the `PlanFormModal` component at [line 338](frontend/src/pages/admin/SubscriptionPlans.tsx#L338) (line 1349 is the page-level `SubscriptionPlans` export, not the form). Pattern: inline form state with `set('field_name', value)` and `<Input checked={form.field > 0} onChange={...} />`. PPSR adds two new numeric inputs mirroring `carjam_lookups_included` at line 493.
+- ✅ Module-gated route registration pattern at [App.tsx:437](frontend/src/App.tsx#L437):
   ```tsx
   <Route path="/vehicles/:id" element={<SafePage name="vehicle-profile"><ModuleRoute moduleSlug="vehicles"><VehicleProfile /></ModuleRoute></SafePage>} />
   ```
@@ -1116,7 +1116,7 @@ Every fact below was confirmed by reading the actual file at the cited line rang
 
 ### Migration sequencing — verified
 
-- ✅ Current alembic head is **0206** ([2026_05_31_0903-0206_leave_indexes.py](alembic/versions/2026_05_31_0903-0206_leave_indexes.py)). PPSR migrations therefore land as **0207** (schema + module_registry + feature_flags + plan extension) and **0208** (CONCURRENTLY index pack).
+- ✅ Current alembic head is **0210** (`2026_05_31_0907-0210_payslip_indexes.py`). Slots 0207-0210 are taken by time-clock + payslip migrations, so PPSR migrations land as **0211** (schema + module_registry + feature_flags + plan extension) and **0212** (CONCURRENTLY index pack).
 - ✅ `CREATE INDEX CONCURRENTLY` template per [0204_staff_phase1_indexes.py](alembic/versions/2026_05_31_0901-0204_staff_phase1_indexes.py#L67) — `_run_outside_tx` helper with `op.get_context().autocommit_block()`. Mirror exactly.
 - ✅ The PPSR test endpoint `https://test.carjam.co.nz/api/car/` is the documented test surface (CarJam member docs); cannot programmatically grep this — it's an external API. Test fixtures must be captured into `tests/fixtures/carjam_ppsr_*.xml` before the E2E script runs to ensure reproducibility.
 
@@ -1142,7 +1142,7 @@ The 20 specific gaps caught by this sweep and where they were closed:
 | G-CODE-14 | `_check_carjam_rate_limit` returns `(allowed, retry_after)` tuple | §4.1 updated to unpack tuple |
 | G-CODE-15 | Adding per-org rate limit needs new constant in `app/middleware/rate_limit.py` | Tasks C5 + new task C9 added |
 | G-CODE-16 | `tradeFamily` slug confirmed `'automotive-transport'` | already aligned |
-| G-CODE-17 | Next alembic head is 0207/0208 | Migration filenames updated |
+| G-CODE-17 | Next alembic head is 0211/0212 (post-payslip-merge; head was 0210) | Migration filenames updated |
 | G-CODE-18 | `TRADE_GATED_MODULES` correctly NOT touched | already aligned |
 | G-CODE-19 | `MODULE_ENDPOINT_MAP` entry is `"/api/v2/ppsr"` (no wildcard) | C6 corrected |
 | G-CODE-20 | `audit_log` (singular) confirmed | already aligned post-G33 |

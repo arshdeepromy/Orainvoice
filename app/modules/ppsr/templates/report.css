@@ -1,0 +1,276 @@
+/* Print stylesheet for PPSR report PDFs (task C4).
+ *
+ * Why a separate file vs inline `<style>`?
+ *   The render is invoked via `HTML(string=html_content)` with no
+ *   `base_url`, so a `<link rel="stylesheet">` would 404 inside
+ *   WeasyPrint. The renderer reads this file from disk and inlines it
+ *   into a `<style>` block via the `inline_css` Jinja variable. That
+ *   keeps the CSS in its own file (good for editor tooling, lint,
+ *   diff review) while still producing a fully self-contained HTML
+ *   string at render time. Same pattern as `app/modules/payslips/
+ *   templates/payslip.css`.
+ *
+ * Page geometry mirrors the invoice / quote PDF (`@page { size: A4;
+ * margin: 18mm 14mm 22mm 14mm; }`). The `@bottom-center` slot uses
+ * WeasyPrint CSS counters to render "Page X of N" on every page.
+ */
+
+@page {
+  size: A4 portrait;
+  margin: 18mm 14mm 22mm 14mm;
+
+  @top-center {
+    content: element(reportHeader);
+  }
+
+  @bottom-center {
+    content: "Page " counter(page) " of " counter(pages);
+    font-size: 8pt;
+    color: #888;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 10pt;
+  color: #111;
+  background: #fff;
+  margin: 0;
+  padding: 0;
+}
+
+h1 {
+  font-size: 16pt;
+  font-weight: 700;
+  margin: 0 0 4mm 0;
+}
+
+h2 {
+  font-size: 12pt;
+  font-weight: 600;
+  margin: 6mm 0 2mm 0;
+  padding-bottom: 1mm;
+  border-bottom: 0.4pt solid #ccc;
+}
+
+h3 {
+  font-size: 10.5pt;
+  font-weight: 600;
+  margin: 4mm 0 2mm 0;
+}
+
+p {
+  margin: 0 0 2mm 0;
+}
+
+/* ------------------------------------------------------------------
+ * Running header — pinned to the @page top-center slot via
+ * `position: running()`.
+ * --------------------------------------------------------------- */
+
+.report-header {
+  position: running(reportHeader);
+  display: flex;
+  align-items: flex-start;
+  gap: 4mm;
+  padding-bottom: 2mm;
+  border-bottom: 0.4pt solid #999;
+  font-size: 9pt;
+}
+
+.report-header img.logo {
+  max-height: 16mm;
+  max-width: 36mm;
+  object-fit: contain;
+}
+
+.report-header .org-block {
+  flex: 1;
+  line-height: 1.35;
+}
+
+.report-header .org-name {
+  font-weight: 700;
+  font-size: 11pt;
+}
+
+.report-header .org-line {
+  font-size: 8.5pt;
+  color: #444;
+}
+
+/* ------------------------------------------------------------------
+ * Meta grid — rego / searcher / timestamp.
+ * --------------------------------------------------------------- */
+
+.meta-grid {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 2mm;
+  margin-bottom: 4mm;
+}
+
+.meta-grid td {
+  padding: 1.5mm 2mm;
+  vertical-align: top;
+  font-size: 9.5pt;
+}
+
+.meta-grid td.label {
+  width: 22%;
+  font-weight: 600;
+  color: #555;
+  background: #fafafa;
+}
+
+.meta-grid td.value {
+  background: #fff;
+}
+
+.meta-grid td.rego-value {
+  font-family: 'Inter Mono', 'Roboto Mono', Menlo, monospace;
+  font-weight: 700;
+  font-size: 11pt;
+  letter-spacing: 0.5pt;
+}
+
+/* ------------------------------------------------------------------
+ * Money-owing banner — colour driven by the match code.
+ *
+ * The headline string ("Money Owing — Match: Yes" for `match='Y'`)
+ * carries the semantic — colour is decorative-only. WCAG 1.4.1.
+ * --------------------------------------------------------------- */
+
+.banner {
+  border: 0.6pt solid;
+  border-radius: 2mm;
+  padding: 4mm 5mm;
+  margin: 3mm 0 5mm 0;
+  page-break-inside: avoid;
+}
+
+.banner-headline {
+  font-size: 13pt;
+  font-weight: 700;
+  margin-bottom: 1mm;
+}
+
+.banner-description {
+  font-size: 9.5pt;
+  margin-bottom: 1mm;
+}
+
+.banner-meta {
+  font-size: 8.5pt;
+  color: #555;
+}
+
+/* Y / PY → red. Money owing or possible-money-owing match. */
+.banner.banner-red {
+  background: #fff1f0;
+  border-color: #d83232;
+  color: #6a0d0d;
+}
+
+/* M / PM → amber. Match found but no money owing reported. */
+.banner.banner-amber {
+  background: #fff7e6;
+  border-color: #d99a1a;
+  color: #6a4500;
+}
+
+/* U → grey. Could not determine. */
+.banner.banner-grey {
+  background: #f5f5f5;
+  border-color: #999;
+  color: #333;
+}
+
+/* N → green. Clear / no money owing. */
+.banner.banner-green {
+  background: #f0fdf4;
+  border-color: #2f9e44;
+  color: #14532d;
+}
+
+/* ------------------------------------------------------------------
+ * Sections + tables.
+ * --------------------------------------------------------------- */
+
+.section {
+  margin-top: 4mm;
+  page-break-inside: avoid;
+}
+
+.kv-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1mm;
+}
+
+.kv-table td {
+  padding: 1.5mm 2mm;
+  font-size: 9.5pt;
+  vertical-align: top;
+}
+
+.kv-table td.label {
+  width: 22%;
+  font-weight: 600;
+  color: #555;
+}
+
+table.lines {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1mm;
+  font-size: 9.5pt;
+}
+
+table.lines th,
+table.lines td {
+  border-bottom: 0.3pt solid #e0e0e0;
+  padding: 1.5mm 2mm;
+  text-align: left;
+  vertical-align: top;
+}
+
+table.lines th {
+  font-weight: 600;
+  color: #444;
+  background: #fafafa;
+  border-bottom: 0.5pt solid #ccc;
+}
+
+.warning-row.warning-high td,
+.warning-row.warning-critical td {
+  background: #fff1f0;
+}
+
+.warning-row.warning-medium td {
+  background: #fff7e6;
+}
+
+/* ------------------------------------------------------------------
+ * Charges line + disclaimer footer.
+ * --------------------------------------------------------------- */
+
+.charges-line {
+  margin-top: 4mm;
+  font-size: 9pt;
+  color: #555;
+}
+
+.disclaimer {
+  margin-top: 6mm;
+  padding-top: 3mm;
+  border-top: 0.4pt solid #ccc;
+  font-size: 8pt;
+  color: #555;
+  white-space: pre-wrap;
+  line-height: 1.4;
+}

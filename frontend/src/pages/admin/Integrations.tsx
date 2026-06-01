@@ -20,7 +20,7 @@ export interface IntegrationConfig {
   name: string
   is_verified: boolean
   updated_at: string | null
-  fields: Record<string, string>
+  fields: Record<string, string | number | boolean | null>
 }
 
 export type IntegrationName = 'carjam' | 'stripe'
@@ -30,7 +30,7 @@ export type IntegrationName = 'carjam' | 'stripe'
 interface FieldDef {
   key: string
   label: string
-  type: 'text' | 'password' | 'number' | 'select'
+  type: 'text' | 'password' | 'number' | 'select' | 'checkbox'
   placeholder?: string
   helperText?: string
   backendKey?: string
@@ -48,6 +48,27 @@ const INTEGRATION_FIELDS: Record<IntegrationName, FieldDef[]> = {
     { key: 'per_lookup_cost_nzd', label: 'Basic per-lookup cost (NZD)', type: 'number', placeholder: '0.50', helperText: 'Cost charged per basic CarJam API lookup' },
     { key: 'abcd_per_lookup_cost_nzd', label: 'ABCD per-lookup cost (NZD)', type: 'number', placeholder: '0.05', helperText: 'Cost charged per ABCD (lower-cost) lookup' },
     { key: 'global_rate_limit_per_minute', label: 'Global rate limit (calls/min)', type: 'number', placeholder: '60' },
+    {
+      key: 's241_purpose_default',
+      label: 's241 purpose code',
+      type: 'password',
+      placeholder: '••••••••',
+      backendKey: 's241_purpose_default_last4',
+      helperText: 'Source from CarJam member dashboard → s241 section. Required for owner lookups.',
+    },
+    {
+      key: 'ppsr_cache_ttl_minutes',
+      label: 'PPSR cache TTL (minutes)',
+      type: 'number',
+      placeholder: '5',
+      helperText: 'How long to serve cached PPSR results before re-hitting CarJam (default 5).',
+    },
+    {
+      key: 'ppsr_owner_lookups_enabled',
+      label: 'Enable owner / ownership-history lookups',
+      type: 'checkbox',
+      helperText: 'Tick this AND set s241 purpose code before owner lookups will work.',
+    },
   ],
   stripe: [
     { key: 'publishable_key', label: 'Publishable key', type: 'password', placeholder: 'pk_test_... or pk_live_...', backendKey: 'publishable_key_last4', helperText: 'Used by the frontend for Stripe.js / Elements', group: 'api-keys' },
@@ -131,6 +152,11 @@ function IntegrationPanel({
           fieldValues[f.key] = config.fields[f.key] != null
             ? String(config.fields[f.key])
             : f.options[0]?.value ?? ''
+        } else if (f.type === 'checkbox') {
+          // Normalise boolean / string / number truthy values to 'true' / 'false'
+          const raw = config.fields[f.key]
+          const isTrue = raw === true || raw === 'true' || raw === '1' || raw === 1
+          fieldValues[f.key] = isTrue ? 'true' : 'false'
         } else {
           fieldValues[f.key] = config.fields[f.key] != null ? String(config.fields[f.key]) : ''
         }
@@ -164,7 +190,7 @@ function IntegrationPanel({
     setSaving(true)
     try {
       // Only send fields that have been changed (non-masked values) and are currently visible
-      const payload: Record<string, string | number> = {}
+      const payload: Record<string, string | number | boolean> = {}
       for (const f of fields) {
         // Skip fields hidden by visibleWhen condition
         if (f.visibleWhen) {
@@ -173,10 +199,12 @@ function IntegrationPanel({
         }
         const val = values[f.key]
         if (f.type === 'password' && val === MASKED_VALUE) continue // unchanged
-        
+
         // Convert number fields to actual numbers
         if (f.type === 'number' && val) {
           payload[f.key] = parseFloat(val)
+        } else if (f.type === 'checkbox') {
+          payload[f.key] = val === 'true'
         } else {
           payload[f.key] = val
         }
@@ -366,6 +394,21 @@ function IntegrationPanel({
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
+          </div>
+        ) : f.type === 'checkbox' ? (
+          <div className="flex flex-col gap-1">
+            <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+              <input
+                type="checkbox"
+                className="rounded border-gray-300"
+                checked={values[f.key] === 'true'}
+                onChange={(e) => handleChange(f.key, e.target.checked ? 'true' : 'false')}
+              />
+              <span>{f.label}</span>
+            </label>
+            {f.helperText && (
+              <p className="text-sm text-gray-500 ml-6">{f.helperText}</p>
+            )}
           </div>
         ) : f.type === 'password' && values[f.key] === MASKED_VALUE ? (
           <div className="flex flex-col gap-1">

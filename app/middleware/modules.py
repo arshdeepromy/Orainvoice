@@ -55,6 +55,7 @@ MODULE_ENDPOINT_MAP: dict[str, str] = {
     "/api/v2/retentions": "retentions",
     "/api/v2/variations": "variations",
     "/api/v2/compliance-docs": "compliance_docs",
+    "/api/v2/ppsr": "ppsr",
     "/api/v2/multi-currency": "multi_currency",
     "/api/v2/loyalty": "loyalty",
     "/api/v2/franchise": "franchise",

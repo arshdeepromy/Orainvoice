@@ -4,6 +4,50 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
+## [1.19.0]
+
+### Added — PPSR Vehicle Checks Module
+
+**New optional module** that lets org users run PPSR (Personal Property Securities Register) checks on NZ vehicles. Built on the existing CarJam integration — no new third-party credentials required. Universal opt-in, available to every trade family.
+
+- **Search page at `/ppsr/search`.** Rego input with live uppercase / alphanumeric normalisation, traffic-light "Money owing" banner per CarJam match code (`Y` red, `M` amber, `U` slate, `N` green), financing-statement table, warnings rows, ownership table (gated on s241 + admin opt-in), CarJam charge footer formatted via `Intl.NumberFormat`, and Export PDF / Save / New actions.
+- **Quota tracking.** Per-org `ppsr_lookups_this_month` counter against `subscription_plans.ppsr_lookups_included`, with a separate `hidden_plate` counter for the higher-cost `ppsrh=1` flag (G44). Quota strip on the search page renders a coloured progress bar; over-quota POST returns HTTP 402 `ppsr_quota_exceeded`. Counters reset at the billing-cycle boundary inside `process_recurring_billing_task` alongside the existing carjam reset.
+- **5-minute cache.** Repeat searches with the same `(org_id, rego, options_hash)` within the configured TTL return `cached:true` without consuming quota or re-hitting CarJam. `options_hash` is a sha256 of canonical-JSON so re-ordered options dicts still hit the cache. A Redis in-flight lock funnels concurrent searches for the same rego so only one CarJam call is billed.
+- **Vehicle Profile embed.** New `<PpsrCard rego={…} />` between WOF/COF and Notes that surfaces the most recent PPSR check (traffic-light chip + "Last checked" line) or an empty-state CTA. Module-gated via `<ModuleGate module="ppsr">`.
+- **CarJam admin config extension.** Three new fields on the Global Admin → Integrations → CarJam page: `s241_purpose_default` (treated as masked secret), `ppsr_cache_ttl_minutes`, and `ppsr_owner_lookups_enabled`. Mask-pattern detection prevents the masked display value from overwriting the real secret.
+- **PDF export.** `GET /api/v2/ppsr/searches/:id/export` renders a branded PDF via WeasyPrint (off the event loop via `asyncio.to_thread`). Org logo + address from `organisations.settings`, money-owing banner with literal "Money Owing — Match: Yes" headline for `match='Y'`, financing-statements table, warnings, ownership block (gated), CarJam disclaimer + Page X of N footer.
+- **Audit + retention.** Every search / cache hit / export / forget / link writes an `audit_log` row (singular table per project convention). `after_value` JSONB carries only summary fields — never decrypted owner / debtor strings or the encrypted blob. `DELETE /api/v2/ppsr/searches/:id/forget` (admin-only) wipes `response_encrypted` to NULL and stamps `forgotten_at`; subsequent detail / export requests return HTTP 410 with the timestamp.
+- **Per-org rate limit.** `POST /api/v2/ppsr/search` is rate-limited at 10 req/min per org via the existing `RateLimitMiddleware`; on 429 the response carries a `Retry-After` header.
+
+**Security and isolation.** All PPSR responses are envelope-encrypted at rest (`response_encrypted` BYTEA via `app/core/encryption.py`). RLS + tenant_isolation policy on `ppsr_searches` enforces cross-org isolation. Detail and export endpoints require admin role OR original-searcher match. Global admins (no `org_id`) are blocked with HTTP 403 `ppsr_requires_org_context`. Owner / ownership-history lookups require both `ppsr_owner_lookups_enabled=true` AND a per-request or default `s241_purpose` — schema layer rejects SQL-injection-shaped regos with HTTP 422.
+
+**New endpoints (org-scoped, all behind `ModuleService.is_enabled('ppsr')`):**
+
+- `POST /api/v2/ppsr/search` — cache-first search; 200 / 402 (quota) / 422 (config / s241) / 429 (CarJam rate limit) / 502 (CarJam upstream) / 403 (module disabled / global-admin gate).
+- `GET /api/v2/ppsr/searches` — paginated `{ items, total }` history; non-admins force-filtered to own searches; denormalised summary only.
+- `GET /api/v2/ppsr/searches/:id` — decrypted detail; 200 / 403 / 404 / 410.
+- `GET /api/v2/ppsr/searches/:id/export` — PDF download (`application/pdf`); same gating as detail.
+- `DELETE /api/v2/ppsr/searches/:id/forget` — admin-only payload wipe; 204; audit retained.
+- `POST /api/v2/ppsr/searches/:id/link-vehicle` — bind a saved search to an existing `OrgVehicle`.
+- `GET /api/v2/ppsr/quota` — `{ used, included, hidden_plate_used, hidden_plate_included, resets_at }`.
+
+**Subscription plan admin form.** Two new fieldsets on Global Admin → Subscription Plans → Plan form: "PPSR vehicle lookups" and "PPSR hidden-plate lookups", mirroring the existing carjam pattern (toggle + numeric input). New columns surface in the plan listing.
+
+### Migrations
+
+- `0211_ppsr_module.py` — `ppsr_searches` table (RLS + tenant_isolation, CHECK constraint on match enum, gap-closure columns: `options_hash`, `org_vehicle_id`, `global_vehicle_id`, `forgotten_at`); ADD COLUMN to `subscription_plans` (`ppsr_lookups_included`, `ppsr_hidden_plate_lookups_included`); ADD COLUMN to `organisations` (`ppsr_lookups_this_month`, `ppsr_hidden_plate_lookups_this_month`); idempotent `module_registry` insert with `setup_question` + `setup_question_description`; mirror `feature_flags` row; idempotent set-union on `subscription_plans.enabled_modules` for unarchived plans.
+- `0212_ppsr_indexes.py` — 4 indexes via `CREATE INDEX CONCURRENTLY ... IF NOT EXISTS` inside `op.get_context().autocommit_block()`: `idx_ppsr_searches_org_created`, `idx_ppsr_searches_org_rego_options_created` (cache lookup), `idx_ppsr_searches_user`, `idx_ppsr_searches_org_vehicle` (partial index, Vehicle Profile embed).
+
+### Tests
+
+- Unit: `tests/unit/test_carjam_lookup_ppsr.py`, `test_ppsr_service.py`, `test_ppsr_quota.py`, `test_ppsr_schemas.py`, `test_ppsr_router.py`.
+- Integration: `tests/integration/test_ppsr_pdf.py` (renders the report HTML, asserts disclaimer + "Money Owing — Match: Yes" headline + Page X of N counter).
+- Property-based (Hypothesis): `tests/test_ppsr_invariants_property.py` — quota-call equivalence, forget-then-fetch returns 410, options-hash stability under dict reordering.
+- Frontend Vitest: `frontend/src/api/__tests__/ppsr.test.ts`, `frontend/src/pages/ppsr/__tests__/PPSRSearchPage.test.tsx`, `components/__tests__/PpsrResultPanel.test.tsx`, `PpsrHistoryTable.test.tsx`, `frontend/src/pages/vehicles/components/__tests__/PpsrCard.test.tsx`.
+- E2E: `scripts/test_ppsr_module_e2e.py` covers cache-first search, admin / non-admin / cross-org detail gating, PDF export, quota exhaustion, OWASP A1–A8 (IDOR, PII leakage, SQLi, misconfig, audit), module-gate response shape (G38), global-admin gate (G8), concurrent-call lock (G27), CarJam-not-configured (G28/G49), forgotten 410 (G29), with `TEST_E2E_PPSR_*` cleanup in `finally`.
+
+---
+
 ## [1.18.0]
 
 ### Added — Roster Grid Editor

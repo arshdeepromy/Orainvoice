@@ -2,9 +2,17 @@
 
 Each task is independently mergeable, has a `**Verify:**` line per `implementation-completeness-checklist.md` Rule 9, and references back to a requirement.
 
+## Execution policy
+
+- **Scoped tests only.** Every `**Verify:**` block runs only the tests that exercise the files this spec touches — never the full repo suite. Pytest paths are explicit (e.g. `pytest tests/unit/test_ppsr_service.py`); vitest paths are explicit (e.g. `npx vitest run frontend/src/api/__tests__/ppsr.test.ts`). Do NOT use `pytest tests/unit/ -k '...'` style filters that scan every test file before excluding — pass the file paths directly.
+- **No watchers.** Use `pytest`, `npx vitest run`, `npx tsc --noEmit`. Never `--watch` flags or dev-server commands.
+- **No interactive prompts.** Every CLI uses `--yes` / `-y` / `--non-interactive` where applicable.
+- **Failure handling.** Log the failure detail to `gap-analysis.md` AND open an `ISSUE-XXX` row in `docs/ISSUE_TRACKER.md` per `.kiro/steering/issue-tracking-workflow.md`, mark the task `[~]`, continue with the next non-dependent task. Stop only after 3 consecutive failures on the same root cause.
+- **Project conventions.** `{ items, total }` list shape, `?.` + `?? []` / `?? 0` on every API consumption, `await db.refresh(obj)` after `db.flush()`, no manual `db.commit()`, audit table is `audit_log` (singular), no `as any`, AbortController on every API-issuing `useEffect`. See `.kiro/steering/safe-api-consumption.md` and `.kiro/steering/performance-and-resilience.md`.
+
 ## Workstream A — Migrations
 
-- [ ] **A1. Write Alembic migration `0207_ppsr_module.py`**
+- [x] **A1. Write Alembic migration `0211_ppsr_module.py`**
   - Creates `ppsr_searches` with RLS + tenant_isolation policy, CHECK constraint on `match` enum, all encrypted-payload columns typed `BYTEA`.
   - Includes the gap-closure columns: `options_hash text NOT NULL` (G30), `org_vehicle_id uuid REFERENCES org_vehicles(id) ON DELETE SET NULL` + `global_vehicle_id uuid REFERENCES global_vehicles(id) ON DELETE SET NULL` (G13/G39), `forgotten_at timestamptz` (G29).
   - `ALTER TABLE subscription_plans` ADD COLUMN: `ppsr_lookups_included int NOT NULL DEFAULT 0`, `ppsr_hidden_plate_lookups_included int NOT NULL DEFAULT 0` (G44 — renamed from `ppsr_money_owing_*`).
@@ -28,7 +36,7 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
        - `\d+ organisations` shows the two new ppsr counter columns (hidden_plate, not money_owing).
        - `SELECT enabled_modules FROM subscription_plans WHERE NOT is_archived` — all rows include `'ppsr'`.
 
-- [ ] **A2. Write Alembic migration `0208_ppsr_indexes.py`**
+- [x] **A2. Write Alembic migration `0212_ppsr_indexes.py`**
   - 4 indexes via `CREATE INDEX CONCURRENTLY ... IF NOT EXISTS` inside `op.get_context().autocommit_block()`. Mirrors canonical 0202 template.
   - Indexes per design §3.2: `idx_ppsr_searches_org_created`, `idx_ppsr_searches_org_rego_options_created` (cache lookup, G30), `idx_ppsr_searches_user`, `idx_ppsr_searches_org_vehicle` partial index (G13).
   - Downgrade drops via `DROP INDEX CONCURRENTLY IF EXISTS`.
@@ -37,7 +45,7 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
 
 ## Workstream B — Backend integration extension
 
-- [ ] **B1. Extend `app/integrations/carjam.py`**
+- [x] **B1. Extend `app/integrations/carjam.py`**
   - Add the `CarjamPpsrResponse` dataclass per design §4.1.
   - Add `_parse_ppsr_response(rego, xml_text, requested_options)` parser that handles `idh`, `ioh`, `ico`, `ppsr`, `ppsr_details`, `money_owing`, `warnings`, `flood`, `charges` tags. On top-level `<error>`, raise `CarjamError(message)`.
   - Add `CarjamClient.lookup_ppsr(...)` method (signature per design §4.1). Calls `_check_carjam_rate_limit` first. Always sends `ppsr=1`, `charges=1`. Validates `s241_purpose` when owner flags set.
@@ -51,10 +59,10 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
 
 ## Workstream C — Backend module `app/modules/ppsr/`
 
-- [ ] **C1. `models.py`** — `PpsrSearch` ORM model matching the migration. `response_encrypted` typed `Mapped[bytes | None]` with `LargeBinary`. `options_json` typed `Mapped[dict]` with `JSONB`.
+- [x] **C1. `models.py`** — `PpsrSearch` ORM model matching the migration. `response_encrypted` typed `Mapped[bytes | None]` with `LargeBinary`. `options_json` typed `Mapped[dict]` with `JSONB`.
   - **Verify:** `docker compose exec app python -c "from app.modules.ppsr.models import PpsrSearch; print(PpsrSearch.__table__.columns.keys())"` lists every column.
 
-- [ ] **C2. `schemas.py`** — Pydantic for:
+- [x] **C2. `schemas.py`** — Pydantic for:
   - `PpsrSearchOptions` (the input options).
   - `PpsrSearchRequest` (full POST body — wraps rego + options + force_refresh).
   - `PpsrSearchResult` (response wrapper with `cached` flag).
@@ -64,7 +72,7 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   - All response models populate field-by-field — no `model_dump(by_alias=...)` shortcuts that could leak the encrypted blob.
   - **Verify:** `pytest tests/unit/test_ppsr_schemas.py` covers happy + round-trip cases; assert encrypted payload never serialises into a list-response payload.
 
-- [ ] **C3. `service.py::PpsrService`** — full implementation per design §4.2.
+- [x] **C3. `service.py::PpsrService`** — full implementation per design §4.2.
   - `search()` — module gate, CarJam-not-configured gate (G28/G49 → `PpsrCarjamNotConfiguredError`), quota check, Redis in-flight lock (G27 — TTL 30s, wait 5s), owner-lookup gate, cache check (keyed on `options_hash` per G30; skip forgotten per G26), CarJam call, vehicle-link resolve (G23), persist (encrypted via `envelope_encrypt` — G31), increment quota (`ppsr_hidden_plate_lookups_*` rename per G44), audit (`audit_log` singular per G33/G45), return result. Wrap CarJam call in try/except that converts `CarjamNotFoundError` → `not_found=True` row stored AND audit, `CarjamRateLimitError` → 429 response with Retry-After header.
   - `_hash_options(options)` — sha256 of canonical-JSON (sort_keys=True) of `options.model_dump()` → hex digest. (G30)
   - `_find_recent_match` — Redis-cached `cache_ttl_minutes` lookup; query keyed on `(org_id, rego, options_hash)` with `response_encrypted IS NOT NULL` AND `forgotten_at IS NULL` filters (G26/G29/G30).
@@ -91,7 +99,7 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
     - hidden-plate search increments `ppsr_hidden_plate_lookups_this_month` (G44);
     - concurrent search (two coroutines for same rego/options) → only one CarJam call due to Redis lock (G27).
 
-- [ ] **C4. `pdf.py`** — Jinja template `app/modules/ppsr/templates/report.html` + `report.css`. `render_pdf(search, decrypted)` wraps WeasyPrint in `await asyncio.to_thread(...)`. Template includes:
+- [x] **C4. `pdf.py`** — Jinja template `app/modules/ppsr/templates/report.html` + `report.css`. `render_pdf(search, decrypted)` wraps WeasyPrint in `await asyncio.to_thread(...)`. Template includes:
   - Org logo, name, address from `org_settings`.
   - Searcher name + email.
   - Search timestamp.
@@ -106,7 +114,7 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
     - render a sample PPSR search → parse PDF text → assert all sections present (rego, match-description, statement count, disclaimer footer text).
     - When `money_owing.match='Y'`, assert the banner colour/style emits "Money Owing — Match: Yes" string.
 
-- [ ] **C5. `router.py`** — all endpoints from design §5. Every endpoint:
+- [x] **C5. `router.py`** — all endpoints from design §5. Every endpoint:
   - Behind `RequireAuth`.
   - Behind `ModuleService.is_enabled(org_id, 'ppsr')` (decorator or inline check).
   - **Global-admin gate (G8):** every endpoint raises `HTTPException(403, "ppsr_requires_org_context")` when `current_user.org_id is None`.
@@ -118,17 +126,17 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   - **Pydantic schema gate verification:** every service-dict field has a matching Pydantic response field (per frontend-backend-contract-alignment Rule 8). Use explicit `PpsrSearchResult(**)` constructor; do NOT rely on `model_dump(by_alias=...)` shortcuts that could leak the encrypted blob.
   - **Verify:** browser test — open `/ppsr/search`, type rego, search → result renders; check Network tab for response shape; second click within 5min → `cached: true` in response; force-refresh → fresh call. Test forgotten path: admin invokes forget → reload detail → see "(payload forgotten)" state.
 
-- [ ] **C6. Register router in `app/main.py`**. Add `/api/v2/ppsr` entry to `app/middleware/modules.py::MODULE_ENDPOINT_MAP` so the module-gate middleware knows to refuse when disabled. (Single entry; the `_resolve_module` helper matches by prefix.)
-  - **Verify:** disable the module on a test org → POST `/api/v2/ppsr/search` returns **HTTP 403** with body `{ "detail": "Module 'ppsr' is not enabled for your organisation.", "module": "ppsr" }` per the actual middleware at `app/middleware/modules.py:117-126` (G38 — corrected from earlier draft that said 404). Re-enable → 200.
+- [x] **C6. Register router in `app/main.py`**. Add `/api/v2/ppsr` entry to `app/middleware/modules.py::MODULE_ENDPOINT_MAP` so the module-gate middleware knows to refuse when disabled. (Single entry; the `_resolve_module` helper matches by prefix.)
+  - **Verify:** disable the module on a test org → POST `/api/v2/ppsr/search` returns **HTTP 403** with body `{ "detail": "Module 'ppsr' is not enabled for your organisation.", "module": "ppsr" }` per the actual middleware at `app/middleware/modules.py:121-130` (G38 — corrected from earlier draft that said 404). Re-enable → 200.
 
-- [ ] **C7. Extend CarJam admin config schema maps** — [app/modules/admin/service.py:1734-1742](app/modules/admin/service.py#L1734-L1742) (G-CODE-11 — two separate dicts, not one):
-  - Extend `_SAFE_FIELDS["carjam"]` (line 1734) to: `["endpoint_url", "per_lookup_cost_nzd", "abcd_per_lookup_cost_nzd", "global_rate_limit_per_minute", "ppsr_cache_ttl_minutes", "ppsr_owner_lookups_enabled"]` — `ppsr_cache_ttl_minutes` (int) and `ppsr_owner_lookups_enabled` (bool) are non-secret config and round-trip plainly via `get_integration_config`.
-  - Extend `_MASKED_FIELDS["carjam"]` (line 1742) to: `["api_key", "s241_purpose_default"]` — `s241_purpose_default` is treated like a secret for GUI consistency (returned as `s241_purpose_default_last4`).
+- [x] **C7. Extend CarJam admin config schema maps** — [app/modules/admin/service.py:1735-1743](app/modules/admin/service.py#L1735-L1743) (G-CODE-11 — two separate dicts, not one):
+  - Extend `_SAFE_FIELDS["carjam"]` (line 1735) to: `["endpoint_url", "per_lookup_cost_nzd", "abcd_per_lookup_cost_nzd", "global_rate_limit_per_minute", "ppsr_cache_ttl_minutes", "ppsr_owner_lookups_enabled"]` — `ppsr_cache_ttl_minutes` (int) and `ppsr_owner_lookups_enabled` (bool) are non-secret config and round-trip plainly via `get_integration_config`.
+  - Extend `_MASKED_FIELDS["carjam"]` (line 1743) to: `["api_key", "s241_purpose_default"]` — `s241_purpose_default` is treated like a secret for GUI consistency (returned as `s241_purpose_default_last4`).
   - Update the CarJam config GET/PATCH handlers in `app/modules/admin/router.py` to accept the three new fields. Mask-pattern detection per `security-hardening-checklist.md §2` already filters incoming values matching `^\*+$|^.{0,4}\*{4,}$` for masked fields, so `s241_purpose_default` is protected automatically once added to `_MASKED_FIELDS`.
   - **Refs:** R7.
   - **Verify:** PATCH `/api/v2/admin/integrations/carjam` with `s241_purpose_default='Selling vehicle'`, `ppsr_cache_ttl_minutes=10`, `ppsr_owner_lookups_enabled=true` → GET returns `s241_purpose_default_last4='hicle'`, `ppsr_cache_ttl_minutes=10`, `ppsr_owner_lookups_enabled=true`. PATCH again with `s241_purpose_default='****'` → DB row unchanged (mask-detection skipped the update). Verify decrypted full config still has the original `s241_purpose_default` value by direct psql + `envelope_decrypt_str`.
 
-- [ ] **C8. Quota-reset extension** — G-CODE-8: the reset actually fires inside [app/tasks/subscriptions.py:196 and :273](app/tasks/subscriptions.py#L196), NOT `app/tasks/scheduled.py`. The reset happens per-org at the billing-cycle boundary inside `process_due_billings` when `carjam_overage_count > 0`. Two parallel reset lines must be added next to each existing `org.carjam_lookups_this_month = 0`:
+- [x] **C8. Quota-reset extension** — G-CODE-8: the reset actually fires inside [app/tasks/subscriptions.py:196 and :273](app/tasks/subscriptions.py#L196), NOT `app/tasks/scheduled.py`. The reset happens per-org at the billing-cycle boundary inside `process_due_billings` when `carjam_overage_count > 0`. Two parallel reset lines must be added next to each existing `org.carjam_lookups_this_month = 0`:
   ```python
   if sms_overage_count > 0:
       org.sms_sent_this_month = 0
@@ -142,7 +150,7 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   Also add a `ppsr_overage_count` computation matching the existing `carjam_overage_count` pattern (line ~150 of subscriptions.py), so the counter resets aren't blindly fired every cycle.
   - **Verify:** mock `process_due_billings` with `ppsr_lookups_this_month=120, ppsr_lookups_included=100` → org gets billed for 20 PPSR overage AND counters reset to 0. Mock with `ppsr_lookups_this_month=50, included=100` → counters NOT reset (under quota).
 
-- [ ] **C9. Per-org rate limit on `POST /api/v2/ppsr/search`** (G10 + G-CODE-15) — `app/middleware/rate_limit.py` currently hard-codes prefix-mapped limits (`_PUBLIC_STAFF_ROSTER_PATH_PREFIX = 30`, `_PAYMENT_PAGE_PREFIX = 20`, etc.) — there is NO config-driven dispatcher. Add:
+- [x] **C9. Per-org rate limit on `POST /api/v2/ppsr/search`** (G10 + G-CODE-15) — `app/middleware/rate_limit.py` currently hard-codes prefix-mapped limits using a two-constant pattern: `_<NAME>_PATH = "..."` (string) + `_<NAME>_RATE_LIMIT = N` (int). Existing examples: `_PUBLIC_STAFF_ROSTER_PATH_PREFIX = "/api/v2/public/staff-roster/"` (line 71) + `_PUBLIC_STAFF_ROSTER_RATE_LIMIT = 30` (line 72); `_PAYMENT_PAGE_PREFIX = "/api/v1/public/pay/"` (line 58) + `_PAYMENT_PAGE_RATE_LIMIT = 20` (line 59). There is NO config-driven dispatcher. Add **both** constants for PPSR:
   ```python
   # PPSR search — 10 req/min per org (Phase 1 G10).
   # Cache hits in the service don't reach this middleware because the
@@ -156,12 +164,12 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
 
 ## Workstream D — Frontend
 
-- [ ] **D1. `frontend/src/api/ppsr.ts`** — typed client. Each method:
+- [x] **D1. `frontend/src/api/ppsr.ts`** — typed client. Each method:
   - Uses typed generic `apiClient.post<PpsrSearchResult>(...)` — no `as any`.
   - Returns the response payload directly.
   - **Verify:** `pnpm vitest run frontend/src/api/__tests__/ppsr.test.ts` covers happy + 402 + 422 paths.
 
-- [ ] **D2. `frontend/src/pages/ppsr/PPSRSearchPage.tsx`** — primary surface per design §6.1 + 6.2. Module-gated wrapper at top renders `FeatureNotAvailablePage` when disabled.
+- [x] **D2. `frontend/src/pages/ppsr/PPSRSearchPage.tsx`** — primary surface per design §6.1 + 6.2. Module-gated wrapper at top renders `FeatureNotAvailablePage` when disabled.
   - Quota strip refresh on mount + after every search.
   - Form fields with the documented gating (current-owner / ownership-history disabled until config is set).
   - AbortController on every API call.
@@ -169,20 +177,20 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   - **Refs:** R8.
   - **Verify:** browser test — open `/ppsr/search` → fill rego → search → result renders → check Network panel for `cached: false`; click search again within 5 min → `cached: true` chip appears; toggle force-refresh → fresh call.
 
-- [ ] **D3. `frontend/src/pages/ppsr/components/PpsrResultPanel.tsx`** — structured result renderer per design §6.3. Traffic-light banner, financing-statements table, warnings rows, ownership table (gated), charges footer, actions row (Export PDF / Save / New).
+- [x] **D3. `frontend/src/pages/ppsr/components/PpsrResultPanel.tsx`** — structured result renderer per design §6.3. Traffic-light banner, financing-statements table, warnings rows, ownership table (gated), charges footer, actions row (Export PDF / Save / New).
   - **Verify:** Storybook story or Vitest snapshot for each match level + each combination of optional sections.
 
-- [ ] **D4. `frontend/src/pages/ppsr/components/PpsrHistoryTable.tsx`** — paginated history per design §6.4. Row click opens `PpsrDetailDrawer`. Each row → GET `/searches/:id` lazy-loaded.
+- [x] **D4. `frontend/src/pages/ppsr/components/PpsrHistoryTable.tsx`** — paginated history per design §6.4. Row click opens `PpsrDetailDrawer`. Each row → GET `/searches/:id` lazy-loaded.
   - **Verify:** browser test — pagination works; row click loads detail; force-refresh repopulates.
 
-- [ ] **D5. `frontend/src/pages/vehicles/components/PpsrCard.tsx` + integration into VehicleProfile**
+- [x] **D5. `frontend/src/pages/vehicles/components/PpsrCard.tsx` + integration into VehicleProfile**
   - `PpsrCard` lazy-loaded inside `<ModuleGate module="ppsr">` (G-CODE-3 — prop is `module`, not `moduleSlug`).
   - Placement in `VehicleProfile.tsx`: between WOF/COF cards and Notes section.
   - Empty state when no prior search; latest-match summary + "Re-run check" button when prior exists.
   - **Refs:** R9.
   - **Verify:** browser test — open a vehicle profile with no prior PPSR search → "Run PPSR check now" CTA renders. Click → navigates to `/ppsr/search?rego=<rego>` with rego pre-filled. Disable the module → card disappears.
 
-- [ ] **D6. `frontend/src/pages/admin/Integrations.tsx`** extension (G-CODE-10 — actual page path; `pages/settings/integrations/CarJamConfigPage.tsx` does NOT exist):
+- [x] **D6. `frontend/src/pages/admin/Integrations.tsx`** extension (G-CODE-10 — actual page path; `pages/settings/integrations/CarJamConfigPage.tsx` does NOT exist):
   - Append three entries to the `INTEGRATION_FIELDS.carjam` array at line 45:
     ```ts
     { key: 's241_purpose_default', label: 's241 purpose code', type: 'password', placeholder: '••••••••', backendKey: 's241_purpose_default_last4', helperText: 'Source from CarJam member dashboard → s241 section. Required for owner lookups.' },
@@ -194,15 +202,15 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   - **Refs:** R7.
   - **Verify:** browser test — fill the PPSR fields, save → GET returns `s241_purpose_default_last4` (masked), `ppsr_cache_ttl_minutes` (number), `ppsr_owner_lookups_enabled` (bool); reload page → values populate correctly.
 
-- [ ] **D7. Sidebar registration** — [frontend/src/layouts/OrgLayout.tsx:43-85](frontend/src/layouts/OrgLayout.tsx#L43-L85) is a flat `navItems` array (G-CODE-9 — no nested sections). Insert a single entry immediately after the Vehicles row (line 46):
+- [x] **D7. Sidebar registration** — [frontend/src/layouts/OrgLayout.tsx:44-90](frontend/src/layouts/OrgLayout.tsx#L44-L90) is a flat `navItems` array (G-CODE-9 — no nested sections). Insert a single entry immediately after the Vehicles row (line 47):
   ```ts
   { to: '/ppsr/search', label: 'PPSR Check', icon: PpsrIcon, module: 'ppsr', flagKey: 'ppsr' },
   ```
   Create the `PpsrIcon` SVG component at `frontend/src/components/icons/PpsrIcon.tsx` (mirror the inline SVG pattern of `VehiclesIcon` already imported into OrgLayout). No tradeFamily filter — PPSR is universal.
-  The existing filter at line 161 (`isEnabled(item.module)`) already hides the item when the module is off — no extra wiring needed.
+  The existing filter at line 167 (`isEnabled(item.module)`) already hides the item when the module is off — no extra wiring needed.
   - **Verify:** module enabled → sidebar shows "PPSR Check" right after Vehicles for every trade family. Module disabled → no sidebar item, navigating directly to `/ppsr/search` → `FeatureNotAvailable`.
 
-- [ ] **D8. Route registration** — `frontend/src/App.tsx`, matching the [VehicleProfile pattern at line 414](frontend/src/App.tsx#L414):
+- [x] **D8. Route registration** — `frontend/src/App.tsx`, matching the [VehicleProfile pattern at line 437](frontend/src/App.tsx#L437):
   ```tsx
   const PPSRSearchPage = lazy(() => import('@/pages/ppsr/PPSRSearchPage'))
   // inside <Routes>:
@@ -211,14 +219,14 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
   Wrap in `SafePage` (error boundary) and `ModuleRoute` per the existing convention.
   - **Verify:** browser navigates to `/ppsr/search` → page loads; module disabled → `FeatureNotAvailable` renders; throwing a deliberate error inside `PPSRSearchPage` → `SafePage` captures it instead of white-screening.
 
-- [ ] **D9. Subscription Plans admin form extension** — actual file at `frontend/src/pages/admin/SubscriptionPlans.tsx:1349` (G-CODE-12). Add two numeric inputs mirroring the `carjam_lookups_included` pattern at line 493:
+- [x] **D9. Subscription Plans admin form extension** — actual file at `frontend/src/pages/admin/SubscriptionPlans.tsx`; the form is the `PlanFormModal` component at line 338 (G-CODE-12 — line 1349 is the page-level export, not the form). Add two numeric inputs mirroring the `carjam_lookups_included` pattern at lines 492-510:
   - `ppsr_lookups_included`
   - `ppsr_hidden_plate_lookups_included` (G44 — renamed from `ppsr_money_owing_lookups_included`)
   Each rendered as `<Input type="checkbox" checked={form.field > 0} onChange={e => set('field', e.target.checked ? 100 : 0)} />` followed by a numeric input shown when checked (mirror lines 493-509 verbatim, two more times).
   Also add to the table column list at line 1527 so the value is visible on the plan listing.
   - **Verify:** browser test — set both to 50, save → GET `/api/v2/admin/subscription-plans/:id` returns the values; org's `/ppsr/quota` reflects the new ceiling.
 
-- [ ] **D10. Frontend rebuild step** — after every `.tsx`/`.ts` change in this workstream, run the manual build step per database-migration-checklist.md:
+- [x] **D10. Frontend rebuild step** — after every `.tsx`/`.ts` change in this workstream, run the manual build step per database-migration-checklist.md:
   ```bash
   docker compose -f docker-compose.yml -f docker-compose.dev.yml exec frontend npx vite build
   ```
@@ -227,21 +235,30 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
 
 ## Workstream E — Tests
 
-- [ ] **E1. Unit-test files**:
+- [x] **E1. Unit-test files**:
   - `tests/unit/test_carjam_lookup_ppsr.py` — CarJam client extension.
   - `tests/unit/test_ppsr_service.py` — service-layer logic.
   - `tests/unit/test_ppsr_quota.py` — quota increment + reset behaviour.
   - `tests/unit/test_ppsr_schemas.py` — Pydantic serialisation (assert encrypted payload never escapes via list endpoints).
-  - **Verify:** `pytest tests/unit/ -k 'ppsr or carjam_lookup_ppsr' -v` → all green.
+  - **Verify (scoped — these four files only):**
+    ```bash
+    pytest tests/unit/test_carjam_lookup_ppsr.py \
+           tests/unit/test_ppsr_service.py \
+           tests/unit/test_ppsr_quota.py \
+           tests/unit/test_ppsr_schemas.py -v
+    ```
+    All green. Do NOT run `pytest tests/unit/ -k ...` — that scans every file in `tests/unit/` before filtering, which is slow and may surface unrelated failures from other modules.
 
-- [ ] **E2. Integration test** `tests/integration/test_ppsr_pdf.py` — render a sample PPSR search → parse PDF text → assert disclaimer + all sections present.
+- [x] **E2. Integration test** `tests/integration/test_ppsr_pdf.py` — render a sample PPSR search → parse PDF text → assert disclaimer + all sections present.
+  - **Verify (scoped):** `pytest tests/integration/test_ppsr_pdf.py -v` → all green.
 
-- [ ] **E3. Property test** `tests/property/test_ppsr_invariants.py` — Hypothesis:
+- [x] **E3. Property test** `tests/test_ppsr_invariants_property.py` — Hypothesis. (Path note: `tests/property/` does NOT exist in this repo; Hypothesis tests live flat at `tests/test_*_property.py` / `tests/test_*_properties.py`. Confirmed against `tests/test_quote_cancellation_properties.py` and `tests/test_scheduling_v2_bulk_property.py`.)
   - For any sequence of (search, cache-hit, force-refresh) events, `quota_used == count_of_carjam_calls` (cache hits don't increment).
   - For any forget-then-fetch sequence, the detail endpoint returns 410.
   - For any reordered options-JSON, `options_hash` is the same → cache hits land (G30).
+  - **Verify (scoped):** `pytest tests/test_ppsr_invariants_property.py -v` → all green.
 
-- [ ] **E4. E2E** `scripts/test_ppsr_module_e2e.py` per R11 + R11.4 (OWASP coverage).
+- [x] **E4. E2E** `scripts/test_ppsr_module_e2e.py` per R11 + R11.4 (OWASP coverage).
   - Login as org_admin → enable module → configure s241_purpose_default → POST search against test CarJam endpoint → assert response shape → second call → cached → verify quota counter = 1 → admin can fetch detail → non-admin gets 403 → export PDF (content-type=application/pdf) → set included=1 → run two searches → second returns 402.
   - **OWASP A1 IDOR (G18):** as org_B user, try `GET /api/v2/ppsr/searches/<org_A_search_id>` → assert 403 or 404.
   - **OWASP A2 PII leakage (G18):** assert list-endpoint raw response does NOT contain decrypted owner/debtor strings.
@@ -259,12 +276,12 @@ Each task is independently mergeable, has a `**Verify:**` line per `implementati
 
 ## Workstream F — Versioning + docs
 
-- [ ] **F1. Bump versions** across `pyproject.toml`, `frontend/package.json`, `mobile/package.json` — MINOR bump.
-  - **Verify:** `git grep '<old version>'` after change returns only CHANGELOG history.
+- [x] **F1. Bump versions** across `pyproject.toml`, `frontend/package.json`, `mobile/package.json` — MINOR bump.
+  - **Verify (scoped):** `grep -E "\"?version\"?\s*[:=]\s*\"<new version>\"" pyproject.toml frontend/package.json mobile/package.json` returns three matches. Do NOT run `git grep '<old version>'` — it scans the entire repo and surfaces unrelated CHANGELOG / docs hits.
 
-- [ ] **F2. Update `CHANGELOG.md`** — new entry listing: PPSR module, search page, quota tracking, vehicle-profile embed, CarJam config extension, PDF export, audit + retention.
+- [x] **F2. Update `CHANGELOG.md`** — new entry listing: PPSR module, search page, quota tracking, vehicle-profile embed, CarJam config extension, PDF export, audit + retention.
 
-- [ ] **F3. Allocate `PPSR-001`..`PPSR-007` placeholder IDs in `docs/ISSUE_TRACKER.md`** — one entry per open question in requirements.md §Open Questions, using the `issue-tracking-workflow.md` template:
+- [x] **F3. Allocate `PPSR-001`..`PPSR-007` placeholder IDs in `docs/ISSUE_TRACKER.md`** — one entry per open question in requirements.md §Open Questions, using the `issue-tracking-workflow.md` template:
   - PPSR-001: subscription-plan default quota policy — "Awaiting product decision before quota launch".
   - PPSR-002: cache TTL default validation — "Awaiting field validation after 1 month of usage".
   - PPSR-003: s241_purpose dropdown vs free-text — "Awaiting CarJam-API capability investigation".
@@ -340,18 +357,18 @@ The module is NOT done until every box is ticked. Any item that can't be ticked 
 Every backend / frontend file path and import line referenced in this tasks list was verified against the actual repo. The full evidence list lives in `design.md` §13 ("Verified-against-code addendum"). Key tasks where a path / API / column name was corrected after the audit:
 
 - **A1** — Migration now uses **actual** `feature_flags` column shape (no `default_enabled`, no `scope`); mirrors 0203 staff-phase1.
-- **A2** — Migration filename `0208_ppsr_indexes.py` (head was 0206 at audit time).
+- **A2** — Migration filename `0212_ppsr_indexes.py` (head is 0210 post-payslip-merge).
 - **C3** — Service uses `ModuleService.is_enabled` + manual raise (no `require_enabled` helper); credentials loaded via raw `IntegrationConfig` + `envelope_decrypt_str` (not `get_integration_config`, which only returns masked fields).
 - **C5** — Rate-limit tuple unpack `(allowed, retry_after) = await _check_carjam_rate_limit(...)`.
 - **C6** — `MODULE_ENDPOINT_MAP` entry is single prefix `"/api/v2/ppsr": "ppsr"`; module-disabled response is **HTTP 403** with `{detail, module}`, not 404.
-- **C7** — Two separate dicts to extend: `_SAFE_FIELDS["carjam"]` and `_MASKED_FIELDS["carjam"]` at admin/service.py:1734 and :1742.
+- **C7** — Two separate dicts to extend: `_SAFE_FIELDS["carjam"]` and `_MASKED_FIELDS["carjam"]` at admin/service.py:1735 and :1743.
 - **C8** — Reset task lives in `app/tasks/subscriptions.py` (NOT `scheduled.py`); reset is overage-conditional, not unconditional monthly.
 - **C9** — New task — per-org PPSR rate limit constant added to `app/middleware/rate_limit.py`.
 - **D5** — `PpsrCard` uses `<ModuleGate module="ppsr">` (NOT `moduleSlug`).
 - **D6** — Frontend CarJam config page lives at `frontend/src/pages/admin/Integrations.tsx`, extending `INTEGRATION_FIELDS.carjam` array.
 - **D7** — Sidebar is flat `navItems` array; single entry insert; no nested sections.
 - **D8** — Route wrapped in `SafePage` + `ModuleRoute` per existing pattern.
-- **D9** — Subscription Plans page is `frontend/src/pages/admin/SubscriptionPlans.tsx:1349` (NOT `SubscriptionPlanForm.tsx`).
+- **D9** — Subscription Plans page is `frontend/src/pages/admin/SubscriptionPlans.tsx`; the form is `PlanFormModal` at line 338 (NOT line 1349, which is the page-level export, and NOT `SubscriptionPlanForm.tsx`, which doesn't exist).
 
 ## Gap-Closure Addendum (steering sweep 2026-05-31)
 

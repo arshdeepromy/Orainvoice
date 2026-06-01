@@ -17,6 +17,7 @@ import ShiftSwapBadge from '@/pages/swaps/ShiftSwapBadge'
 import InboxBellDropdown from '@/components/notifications/InboxBellDropdown'
 import { Modal, Button } from '@/components/ui'
 import { usePageMeta } from '@/hooks/usePageMeta'
+import PpsrIcon from '@/components/icons/PpsrIcon'
 
 interface QuickAction {
   label: string
@@ -45,6 +46,7 @@ const navItems: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: DashboardIcon },
   { to: '/customers', label: 'Customers', icon: CustomersIcon },
   { to: '/vehicles', label: 'Vehicles', icon: VehiclesIcon, module: 'vehicles', flagKey: 'vehicles', tradeFamily: 'automotive-transport' },
+  { to: '/ppsr/search', label: 'PPSR Check', icon: PpsrIcon, module: 'ppsr', flagKey: 'ppsr' },
   { to: '/invoices', label: 'Invoices', icon: InvoicesIcon },
   { to: '/quotes', label: 'Quotes', icon: QuotesIcon, module: 'quotes', flagKey: 'quotes' },
   { to: '/job-cards', label: 'Job Cards', icon: JobCardsIcon, module: 'jobs', flagKey: 'jobs' },

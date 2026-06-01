@@ -21,10 +21,12 @@ Errors::
 
 from __future__ import annotations
 
+import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+from xml.etree import ElementTree as ET
 
 import httpx
 from redis.asyncio import Redis
@@ -239,6 +241,320 @@ def _parse_vehicle_response(rego: str, data: dict[str, Any], lookup_type: str = 
             data.get("subject_to_wof"),
             data.get("subject_to_cof"),
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# PPSR response container + parser
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CarjamPpsrResponse:
+    """Typed container for a CarJam PPSR response.
+
+    Holds the structured fields parsed out of a CarJam PPSR/finance-status
+    response (regardless of whether the upstream returned JSON or XML).
+
+    Attributes
+    ----------
+    rego:
+        Normalised registration plate (UPPER + stripped) the search ran against.
+    not_found:
+        ``True`` when CarJam reported no vehicle for the rego.
+    basic:
+        Basic vehicle details (the equivalent of the ``idh.vehicle`` block from
+        ``lookup_vehicle``); ``None`` when ``include_basic=False`` or the
+        upstream did not return ``idh``.
+    ownership_history:
+        Ordered list of prior owners (from ``ioh.owners``) when ``include_owners=True``.
+    current_owner:
+        Current-owner block (from ``ico``) when ``include_owner=True``.
+    ppsr_summary:
+        ``ppsr`` tag content — typically ``{"count": N, ...}``. Empty dict when absent.
+    ppsr_details:
+        Per-financing-statement entries from ``ppsr_details``. Empty list when absent.
+    money_owing:
+        ``money_owing`` block — ``{"match": "Y/PY/M/PM/U/N", "match_description": ..., "search_id": ...}``.
+        Always present (empty dict when CarJam omits it).
+    warnings:
+        Compulsory recall / warning entries (when ``warnings=1``).
+    flood:
+        Flood / fire / write-off block (when ``fws=1``).
+    charges_cents:
+        Cost CarJam reported for this call (in cents NZD), if returned.
+    raw_xml:
+        The unaltered upstream response body. Field is named ``raw_xml`` for
+        legacy compatibility with the original XML-era plan; in practice it
+        holds whatever ``response.text`` was — typically JSON when ``f=json``.
+    requested_options:
+        The query-string parameters the call was issued with, for audit and
+        reproducibility.
+    """
+
+    rego: str
+    not_found: bool
+    basic: dict | None
+    ownership_history: list[dict] | None
+    current_owner: dict | None
+    ppsr_summary: dict
+    ppsr_details: list[dict]
+    money_owing: dict
+    warnings: list[dict] | None
+    flood: dict | None
+    charges_cents: int | None
+    raw_xml: str
+    requested_options: dict = field(default_factory=dict)
+
+
+def _xml_element_to_dict(elem: ET.Element) -> Any:
+    """Convert an ``ElementTree`` element to a plain Python dict / list / str.
+
+    Mirrors the structure CarJam uses when ``f=json`` is passed: nested tags
+    become nested dicts; repeated child tags become lists. Text-only leaves
+    return the stripped text.
+    """
+    children = list(elem)
+    if not children:
+        text = (elem.text or "").strip()
+        return text if text else None
+
+    # Group children by tag — repeated tags become lists.
+    grouped: dict[str, list[Any]] = {}
+    for child in children:
+        grouped.setdefault(child.tag, []).append(_xml_element_to_dict(child))
+
+    out: dict[str, Any] = {}
+    for tag, values in grouped.items():
+        out[tag] = values[0] if len(values) == 1 else values
+    return out
+
+
+def _coerce_list(value: Any) -> list[dict]:
+    """Coerce a single dict or a list-of-dict into a list-of-dict.
+
+    CarJam's serialiser collapses single-item lists to a bare object in some
+    responses; this helper keeps callers' code simple.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, dict)]
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
+def _coerce_int(value: Any) -> int | None:
+    """Best-effort int coercion that returns ``None`` on failure."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _coerce_bool(value: Any) -> bool:
+    """Best-effort bool coercion (``"true"``/``"1"``/``True`` → ``True``)."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    s = str(value).strip().lower()
+    return s in ("true", "1", "yes", "y")
+
+
+def _parse_ppsr_response(
+    rego: str,
+    body_text: str,
+    requested_options: dict,
+) -> CarjamPpsrResponse:
+    """Parse a CarJam PPSR response body (JSON or XML) into a typed dataclass.
+
+    CarJam returns JSON when ``f=json`` is set on the request, but the upstream
+    has been observed to emit XML for some flag combinations. This parser tries
+    JSON first and falls back to XML on parse failure (per design §4.1, G-CODE-13).
+
+    Raises
+    ------
+    CarjamError
+        When the response contains a top-level ``error`` key / ``<error>`` tag.
+    """
+    rego_norm = rego.strip().upper()
+
+    # --- 1. Decode body into a dict ------------------------------------------------
+    body: dict[str, Any] | None = None
+    parse_error: Exception | None = None
+
+    text = (body_text or "").strip()
+    if text:
+        # Try JSON first.
+        try:
+            decoded = json.loads(text)
+            if isinstance(decoded, dict):
+                body = decoded
+            else:
+                parse_error = CarjamError("Carjam PPSR response was not a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            parse_error = exc
+
+        # Fall back to XML if JSON failed.
+        if body is None:
+            try:
+                root = ET.fromstring(text)
+            except ET.ParseError as exc:
+                raise CarjamError(
+                    f"Failed to parse Carjam PPSR response: {exc}"
+                ) from parse_error or exc
+            xml_dict = _xml_element_to_dict(root)
+            if isinstance(xml_dict, dict):
+                # Wrap under the root tag so downstream handling matches the
+                # JSON layout (CarJam's JSON nests everything under ``message``).
+                body = {root.tag: xml_dict} if root.tag != "message" else {"message": xml_dict}
+            else:
+                raise CarjamError("Carjam PPSR XML root had no children")
+    else:
+        raise CarjamError("Carjam PPSR response was empty")
+
+    assert body is not None  # for type-checkers
+
+    # --- 2. Top-level error -------------------------------------------------------
+    if "error" in body and isinstance(body["error"], dict):
+        err = body["error"]
+        msg = err.get("message") or err.get("description") or "Unknown Carjam error"
+        raise CarjamError(str(msg))
+
+    # CarJam wraps content under ``message`` when ``f=json``; XML root is
+    # ``<message>`` so we already normalised that above.
+    container = body.get("message") if isinstance(body.get("message"), dict) else body
+
+    # Errors may also live inside the ``message`` envelope when CarJam returns
+    # XML wrapped in ``<message><error>...</error></message>``.
+    if isinstance(container, dict) and isinstance(container.get("error"), dict):
+        err = container["error"]
+        msg = err.get("message") or err.get("description") or "Unknown Carjam error"
+        raise CarjamError(str(msg))
+
+    # --- 3. not_found indicator ---------------------------------------------------
+    not_found = False
+    idh = container.get("idh") if isinstance(container, dict) else None
+    if isinstance(idh, dict):
+        header = idh.get("header")
+        if isinstance(header, dict) and _coerce_bool(header.get("not_found")):
+            not_found = True
+    if not not_found and isinstance(container, dict):
+        # XML form: <not_found>true</not_found> at top-level message.
+        if _coerce_bool(container.get("not_found")):
+            not_found = True
+
+    # --- 4. basic (idh.vehicle) ---------------------------------------------------
+    basic: dict | None = None
+    if isinstance(idh, dict):
+        vehicle = idh.get("vehicle")
+        if isinstance(vehicle, dict) and vehicle:
+            # Reuse the existing parser to keep field-name parity with
+            # lookup_vehicle. Convert dataclass back to dict for storage.
+            try:
+                vd = _parse_vehicle_response(rego_norm, vehicle, lookup_type="basic")
+                basic = {
+                    k: v
+                    for k, v in vd.__dict__.items()
+                    if v is not None or k in ("rego", "lookup_type")
+                }
+            except Exception:
+                # Fall back to the raw vehicle dict if the structured parser
+                # chokes on an unexpected shape — never fail the whole PPSR
+                # parse on a basic-block parse error.
+                basic = dict(vehicle)
+
+    # --- 5. ownership_history (ioh.owners) ----------------------------------------
+    ownership_history: list[dict] | None = None
+    ioh = container.get("ioh") if isinstance(container, dict) else None
+    if isinstance(ioh, dict):
+        owners = ioh.get("owners")
+        if isinstance(owners, dict):
+            # XML/JSON variant: owners → owner → [list]
+            inner = owners.get("owner")
+            ownership_history = _coerce_list(inner)
+        elif isinstance(owners, list):
+            ownership_history = _coerce_list(owners)
+
+    # --- 6. current_owner (ico) ---------------------------------------------------
+    ico = container.get("ico") if isinstance(container, dict) else None
+    current_owner: dict | None = ico if isinstance(ico, dict) and ico else None
+
+    # --- 7. ppsr_summary + ppsr_details -------------------------------------------
+    ppsr_summary_raw = container.get("ppsr") if isinstance(container, dict) else None
+    ppsr_summary: dict = ppsr_summary_raw if isinstance(ppsr_summary_raw, dict) else {}
+
+    ppsr_details_raw = container.get("ppsr_details") if isinstance(container, dict) else None
+    if isinstance(ppsr_details_raw, dict):
+        # Wrapper element — pull out the inner statement list.
+        inner = (
+            ppsr_details_raw.get("financing_statement")
+            or ppsr_details_raw.get("statement")
+            or ppsr_details_raw.get("item")
+        )
+        if inner is not None:
+            ppsr_details = _coerce_list(inner)
+        elif ppsr_details_raw:
+            # Single non-empty statement dict (no wrapper key).
+            ppsr_details = [ppsr_details_raw]
+        else:
+            # Empty wrapper — no statements.
+            ppsr_details = []
+    elif isinstance(ppsr_details_raw, list):
+        ppsr_details = _coerce_list(ppsr_details_raw)
+    else:
+        ppsr_details = []
+
+    # --- 8. money_owing -----------------------------------------------------------
+    money_owing_raw = container.get("money_owing") if isinstance(container, dict) else None
+    money_owing: dict = {}
+    if isinstance(money_owing_raw, dict):
+        money_owing = {
+            "match": money_owing_raw.get("match"),
+            "match_description": money_owing_raw.get("match_description"),
+            "search_id": money_owing_raw.get("search_id"),
+        }
+
+    # --- 9. warnings --------------------------------------------------------------
+    warnings_raw = container.get("warnings") if isinstance(container, dict) else None
+    warnings: list[dict] | None = None
+    if isinstance(warnings_raw, dict):
+        inner = warnings_raw.get("warning") or warnings_raw.get("item")
+        if inner is not None:
+            warnings = _coerce_list(inner)
+        elif warnings_raw:
+            warnings = [warnings_raw]
+    elif isinstance(warnings_raw, list):
+        warnings = _coerce_list(warnings_raw)
+
+    # --- 10. flood ----------------------------------------------------------------
+    flood_raw = container.get("flood") if isinstance(container, dict) else None
+    flood: dict | None = flood_raw if isinstance(flood_raw, dict) and flood_raw else None
+
+    # --- 11. charges --------------------------------------------------------------
+    charges_cents: int | None = None
+    charges_raw = container.get("charges") if isinstance(container, dict) else None
+    if isinstance(charges_raw, dict):
+        charges_cents = _coerce_int(charges_raw.get("cents"))
+
+    return CarjamPpsrResponse(
+        rego=rego_norm,
+        not_found=not_found,
+        basic=basic,
+        ownership_history=ownership_history,
+        current_owner=current_owner,
+        ppsr_summary=ppsr_summary,
+        ppsr_details=ppsr_details,
+        money_owing=money_owing,
+        warnings=warnings,
+        flood=flood,
+        charges_cents=charges_cents,
+        raw_xml=body_text,
+        requested_options=dict(requested_options or {}),
     )
 
 
@@ -556,3 +872,166 @@ class CarjamClient:
             raise CarjamNotFoundError(rego)
 
         return _parse_vehicle_response(rego, body, lookup_type="abcd")
+
+    async def lookup_ppsr(
+        self,
+        rego: str,
+        *,
+        include_basic: bool = True,
+        include_owners: bool = False,
+        include_owner: bool = False,
+        include_warnings: bool = True,
+        include_fws: bool = False,
+        check_hidden_plates: bool = False,
+        s241_purpose: str | None = None,
+        translate: bool = True,
+        use_cache: int | str | None = None,
+    ) -> CarjamPpsrResponse:
+        """Run a PPSR (Personal Property Securities Register) check via CarJam.
+
+        Reuses the same rate-limited HTTP path as ``lookup_vehicle``; PPSR
+        searches count against the platform-wide CarJam budget.
+
+        Parameters
+        ----------
+        rego:
+            NZ registration plate. Normalised to UPPER + stripped.
+        include_basic:
+            Sends ``basic=1`` so the response includes ``idh.vehicle`` (default ``True``).
+        include_owners:
+            Sends ``owners=1``. Requires ``s241_purpose`` to be set.
+        include_owner:
+            Sends ``owner=1``. Requires ``s241_purpose`` to be set.
+        include_warnings:
+            Sends ``warnings=1`` (default ``True``).
+        include_fws:
+            Sends ``fws=1`` (fire / water / write-off).
+        check_hidden_plates:
+            Sends ``ppsrh=1``. Charged at a higher rate by CarJam.
+        s241_purpose:
+            s241 authorisation reason — required when ``include_owners``
+            or ``include_owner`` is true.
+        translate:
+            Sends ``translate=1`` so the response includes human-readable
+            ``hidh``/``hioh``/``hico``/``hirh`` blocks.
+        use_cache:
+            Maps to CarJam's ``cache`` parameter (``0`` = no cache, ``1`` =
+            default 10 years, or a ``strtotime`` string like ``-1 month``).
+
+        Raises
+        ------
+        ValueError
+            When owner / ownership-history is requested without ``s241_purpose``.
+        CarjamRateLimitError
+            When the platform-wide CarJam rate limit is exhausted.
+        CarjamError
+            On upstream errors, parse failures, or HTTP non-2xx responses.
+        """
+        if (include_owners or include_owner) and not s241_purpose:
+            raise ValueError(
+                "s241_purpose required when include_owners or include_owner is true"
+            )
+
+        rego_norm = rego.strip().upper()
+        if not rego_norm:
+            raise CarjamError("Registration plate cannot be empty")
+
+        # --- Rate limit check (G-CODE-14: tuple unpack) ---
+        allowed, retry_after = await _check_carjam_rate_limit(
+            self._redis, self._rate_limit,
+        )
+        if not allowed:
+            logger.warning(
+                "Carjam global rate limit hit (%d/min) — retry after %ds",
+                self._rate_limit,
+                retry_after,
+            )
+            raise CarjamRateLimitError(retry_after=retry_after)
+
+        # --- Build query-string parameters ---
+        params: dict[str, str] = {
+            "key": self._api_key,
+            "plate": rego_norm,
+            "basic": "1" if include_basic else "0",
+            "ppsr": "1",
+            "f": "json",
+            "charges": "1",
+        }
+        if include_owners:
+            params["owners"] = "1"
+        if include_owner:
+            params["owner"] = "1"
+        if include_warnings:
+            params["warnings"] = "1"
+        if include_fws:
+            params["fws"] = "1"
+        if check_hidden_plates:
+            params["ppsrh"] = "1"
+        if s241_purpose:
+            params["s241_purpose"] = s241_purpose
+        if translate:
+            params["translate"] = "1"
+        if use_cache is not None:
+            params["cache"] = str(use_cache)
+
+        # --- HTTP call (same path as lookup_vehicle per G-CODE-13) ---
+        url = f"{self._base_url}/api/car/"
+
+        # Avoid logging the api_key.
+        log_params = {k: ("<redacted>" if k == "key" else v) for k, v in params.items()}
+        logger.info("Carjam PPSR API call: URL=%s, params=%s", url, log_params)
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, follow_redirects=True,
+            ) as http:
+                response = await http.get(url, params=params)
+                logger.info(
+                    "Carjam PPSR API response: status=%d, final_url=%s",
+                    response.status_code,
+                    response.url,
+                )
+        except httpx.TimeoutException:
+            logger.error("Carjam PPSR API timeout for rego=%s", rego_norm)
+            raise CarjamError(
+                f"Carjam PPSR API timed out for rego '{rego_norm}'"
+            )
+        except httpx.HTTPError as exc:
+            logger.error("Carjam PPSR HTTP error for rego=%s: %s", rego_norm, exc)
+            raise CarjamError(f"Carjam PPSR HTTP error: {exc}") from exc
+
+        # --- Handle response status ---
+        if response.status_code == 404:
+            raise CarjamNotFoundError(rego_norm)
+
+        if response.status_code == 429:
+            retry_hdr = response.headers.get("Retry-After", "60")
+            try:
+                retry_secs = int(retry_hdr)
+            except ValueError:
+                retry_secs = 60
+            logger.warning(
+                "Carjam PPSR API returned 429 for rego=%s — retry after %ds",
+                rego_norm,
+                retry_secs,
+            )
+            raise CarjamRateLimitError(retry_after=retry_secs)
+
+        if response.status_code != 200:
+            logger.error(
+                "Carjam PPSR API unexpected status %d for rego=%s: %s",
+                response.status_code,
+                rego_norm,
+                response.text[:500],
+            )
+            raise CarjamError(
+                f"Carjam PPSR API returned status {response.status_code}"
+            )
+
+        body_text = response.text
+        # Redact the api_key from the params we record on the response so the
+        # raw_xml/requested_options blob is safe to persist.
+        recorded_options = {
+            k: ("<redacted>" if k == "key" else v) for k, v in params.items()
+        }
+        return _parse_ppsr_response(rego_norm, body_text, recorded_options)
