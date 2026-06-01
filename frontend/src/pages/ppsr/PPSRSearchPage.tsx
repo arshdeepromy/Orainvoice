@@ -137,6 +137,8 @@ function QuotaStrip({ refreshKey, onQuotaChange }: QuotaStripProps) {
           hidden_plate_used: res?.hidden_plate_used ?? 0,
           hidden_plate_included: res?.hidden_plate_included ?? 0,
           resets_at: res?.resets_at ?? null,
+          owner_lookups_enabled: res?.owner_lookups_enabled ?? false,
+          s241_purpose_configured: res?.s241_purpose_configured ?? false,
         }
         setQuota(safe)
         onQuotaChange?.(safe)
@@ -509,81 +511,41 @@ function SearchForm({
 
           {/* Current owner */}
           <label
-            className={`inline-flex items-start gap-2 text-sm ${
-              ownerCheckboxesDisabled
-                ? 'cursor-not-allowed text-gray-400 dark:text-gray-500'
-                : 'text-gray-700 dark:text-gray-300'
-            }`}
-            title={ownerTooltip || undefined}
+            className="inline-flex items-start gap-2 text-sm cursor-not-allowed text-gray-400 dark:text-gray-500"
           >
             <input
               type="checkbox"
-              checked={form.include_current_owner}
-              disabled={ownerCheckboxesDisabled}
-              onChange={(e) =>
-                setForm((prev) => ({
-                  ...prev,
-                  include_current_owner: e.target.checked,
-                }))
-              }
+              checked={false}
+              disabled
               className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700"
               data-testid="ppsr-include-current-owner"
-              aria-describedby={
-                ownerCheckboxesDisabled
-                  ? 'ppsr-owner-disabled-help'
-                  : undefined
-              }
             />
             <span>
               Current owner
-              {ownerCheckboxesDisabled && (
-                <span className="ml-1 text-xs text-gray-500 dark:text-gray-400">
-                  (configure CarJam)
-                </span>
-              )}
+              <span className="ml-1 text-xs text-gray-400 dark:text-gray-500">
+                — Not available
+              </span>
             </span>
           </label>
 
           {/* Ownership history */}
           <label
-            className={`inline-flex items-start gap-2 text-sm ${
-              ownerCheckboxesDisabled
-                ? 'cursor-not-allowed text-gray-400 dark:text-gray-500'
-                : 'text-gray-700 dark:text-gray-300'
-            }`}
-            title={ownerTooltip || undefined}
+            className="inline-flex items-start gap-2 text-sm cursor-not-allowed text-gray-400 dark:text-gray-500"
           >
             <input
               type="checkbox"
-              checked={form.include_ownership_history}
-              disabled={ownerCheckboxesDisabled}
-              onChange={(e) =>
-                setForm((prev) => ({
-                  ...prev,
-                  include_ownership_history: e.target.checked,
-                }))
-              }
+              checked={false}
+              disabled
               className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700"
               data-testid="ppsr-include-ownership-history"
             />
             <span>
               Ownership history
-              {ownerCheckboxesDisabled && (
-                <span className="ml-1 text-xs text-gray-500 dark:text-gray-400">
-                  (configure CarJam)
-                </span>
-              )}
+              <span className="ml-1 text-xs text-gray-400 dark:text-gray-500">
+                — Not available
+              </span>
             </span>
           </label>
-
-          {ownerCheckboxesDisabled && (
-            <p
-              id="ppsr-owner-disabled-help"
-              className="text-xs text-gray-500 dark:text-gray-400"
-            >
-              {ownerTooltip}
-            </p>
-          )}
         </fieldset>
       </div>
 
@@ -737,8 +699,8 @@ export function PPSRSearchPage() {
         initialRego={initialRego}
         loading={isSearching}
         quotaExhausted={quotaExhausted}
-        ownerLookupsEnabled={CARJAM_CONFIG_FALLBACK.ppsr_owner_lookups_enabled}
-        s241PurposeDefault={CARJAM_CONFIG_FALLBACK.s241_purpose_default}
+        ownerLookupsEnabled={quota?.owner_lookups_enabled ?? false}
+        s241PurposeDefault={quota?.s241_purpose_configured ? 'Configured' : null}
         onSearch={handleSearch}
       />
 

@@ -326,9 +326,10 @@ export function PpsrHistoryTable({
                       .charges_cents ?? null)
                   : null
               const userLabel =
+                (row as unknown as { user_display_name?: string | null })
+                  ?.user_display_name ??
                 (row as unknown as { user_email?: string | null })
                   ?.user_email ??
-                row?.user_id ??
                 '—'
               return (
                 <tr

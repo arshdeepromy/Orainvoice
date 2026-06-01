@@ -335,7 +335,15 @@ class PpsrService:
 
             money_owing = carjam_resp.money_owing or {}
             ppsr_summary = carjam_resp.ppsr_summary or {}
-            statement_count = self._safe_int(ppsr_summary.get("count")) or 0
+            # CarJam nests the count at ppsr_summary.search_result.@attributes.fs_count
+            # OR at ppsr_summary.count (test fixtures). Handle both.
+            statement_count = self._safe_int(ppsr_summary.get("count"))
+            if statement_count is None:
+                sr = ppsr_summary.get("search_result")
+                if isinstance(sr, dict):
+                    attrs = sr.get("@attributes") or sr
+                    statement_count = self._safe_int(attrs.get("fs_count"))
+            statement_count = statement_count or len(carjam_resp.ppsr_details or [])
 
             search = PpsrSearch(
                 org_id=org_id,
@@ -454,7 +462,24 @@ class PpsrService:
         rows = (await self.db.execute(rows_q)).scalars().all()
         total = (await self.db.execute(count_base)).scalar_one() or 0
 
-        items = [PpsrSearchSummary.model_validate(r) for r in rows]
+        # Resolve user emails for the "By" column display.
+        from app.modules.auth.models import User
+        user_ids = list({r.user_id for r in rows if r.user_id})
+        user_map: dict[UUID, str] = {}
+        if user_ids:
+            user_q = await self.db.execute(
+                select(User.id, User.first_name, User.last_name, User.email)
+                .where(User.id.in_(user_ids))
+            )
+            for uid, first, last, email in user_q.all():
+                name = f"{first or ''} {last or ''}".strip()
+                user_map[uid] = name or email or str(uid)
+
+        items = []
+        for r in rows:
+            summary = PpsrSearchSummary.model_validate(r)
+            summary.user_display_name = user_map.get(r.user_id)
+            items.append(summary)
         return PpsrSearchListResponse(items=items, total=int(total))
 
     async def get_search(
@@ -699,9 +724,25 @@ class PpsrService:
         )
 
     async def get_quota(self, org_id: UUID) -> PpsrQuotaResponse:
-        """Public alias used by the router."""
+        """Public alias used by the router.
 
-        return await self._load_quota(org_id)
+        Also surfaces the owner-lookup config flags so the frontend can
+        gate the checkboxes without a separate admin-only fetch.
+        """
+
+        quota = await self._load_quota(org_id)
+
+        # Surface the owner-lookup config flags for the frontend form gating.
+        try:
+            cfg = await self._load_carjam_config_fields()
+            quota.owner_lookups_enabled = bool(cfg.get("ppsr_owner_lookups_enabled") or False)
+            quota.s241_purpose_configured = bool((cfg.get("s241_purpose_default") or "").strip())
+        except Exception:
+            # If CarJam isn't configured at all, leave defaults (False/False).
+            quota.owner_lookups_enabled = False
+            quota.s241_purpose_configured = False
+
+        return quota
 
     async def _load_carjam_config_fields(self) -> dict[str, Any]:
         """Decrypt ``integration_configs[name='carjam']`` fields (G28/G49).

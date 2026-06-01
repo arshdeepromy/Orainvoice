@@ -220,6 +220,7 @@ class PpsrSearchSummary(BaseModel):
     forgotten_at: datetime | None = None
     org_vehicle_id: UUID | None = None
     user_id: UUID
+    user_display_name: str | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -255,6 +256,10 @@ class PpsrQuotaResponse(BaseModel):
     hidden_plate_used: int = 0
     hidden_plate_included: int = 0
     resets_at: datetime | None = None
+    # Owner-lookup config flags — surfaced so the frontend can gate
+    # the checkboxes without a separate admin-only config fetch.
+    owner_lookups_enabled: bool = False
+    s241_purpose_configured: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

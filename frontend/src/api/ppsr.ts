@@ -144,6 +144,10 @@ export interface PpsrQuotaResponse {
   hidden_plate_used: number
   hidden_plate_included: number
   resets_at: string | null
+  /** Whether owner/ownership-history lookups are enabled in CarJam config. */
+  owner_lookups_enabled?: boolean
+  /** Whether s241_purpose_default is configured (non-empty). */
+  s241_purpose_configured?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +291,8 @@ export async function getQuota(signal?: AbortSignal): Promise<PpsrQuotaResponse>
     hidden_plate_used: res.data?.hidden_plate_used ?? 0,
     hidden_plate_included: res.data?.hidden_plate_included ?? 0,
     resets_at: res.data?.resets_at ?? null,
+    owner_lookups_enabled: res.data?.owner_lookups_enabled ?? false,
+    s241_purpose_configured: res.data?.s241_purpose_configured ?? false,
   }
 }
 

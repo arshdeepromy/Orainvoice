@@ -365,6 +365,77 @@ def _coerce_bool(value: Any) -> bool:
     return s in ("true", "1", "yes", "y")
 
 
+def _flatten_financing_statement(fs: dict) -> dict:
+    """Flatten a deeply-nested CarJam financing statement into frontend-friendly keys.
+
+    CarJam returns:
+      fs.secured_party_details.secured_party[0].sp_organisation.name
+      fs.collateral_details.collateral[0].type_description
+      fs.fs_details.registered_date / expiry_date / status
+
+    The frontend PpsrResultPanel reads:
+      secured_party_name, collateral_description, registration_date, status
+    """
+    if not isinstance(fs, dict):
+        return fs
+
+    flat = dict(fs)  # keep all original keys too
+
+    # Secured party name
+    spd = fs.get("secured_party_details")
+    if isinstance(spd, dict):
+        parties = spd.get("secured_party")
+        if isinstance(parties, list) and parties:
+            sp = parties[0]
+            org = sp.get("sp_organisation") if isinstance(sp, dict) else None
+            if isinstance(org, dict):
+                flat["secured_party_name"] = org.get("name", "")
+            elif isinstance(sp, dict):
+                flat["secured_party_name"] = sp.get("name", "")
+        elif isinstance(parties, dict):
+            org = parties.get("sp_organisation")
+            if isinstance(org, dict):
+                flat["secured_party_name"] = org.get("name", "")
+
+    # Collateral description
+    cd = fs.get("collateral_details")
+    if isinstance(cd, dict):
+        collaterals = cd.get("collateral")
+        if isinstance(collaterals, list) and collaterals:
+            c = collaterals[0]
+            flat["collateral_description"] = c.get("type_description", "") if isinstance(c, dict) else ""
+        elif isinstance(collaterals, dict):
+            flat["collateral_description"] = collaterals.get("type_description", "")
+
+    # Also check @attributes on the fs itself for motor_vehicle collateral
+    if not flat.get("collateral_description"):
+        mv = fs.get("motor_vehicle")
+        if isinstance(mv, dict):
+            attrs = mv.get("@attributes", mv)
+            desc_parts = [attrs.get("make", ""), attrs.get("model", "")]
+            flat["collateral_description"] = " ".join(p for p in desc_parts if p).strip() or "Motor vehicle"
+
+    # Registration date + status from fs_details
+    fsd = fs.get("fs_details")
+    if isinstance(fsd, dict):
+        flat["registration_date"] = fsd.get("registered_date", "")
+        raw_status = fsd.get("status", "")
+        # Map status codes: R=Registered, D=Discharged, etc.
+        status_map = {"R": "Registered", "D": "Discharged", "E": "Expired", "S": "Subordinated"}
+        flat["status"] = status_map.get(raw_status, raw_status)
+        if not flat.get("registration_date"):
+            flat["registration_date"] = fsd.get("expiry_date", "")
+
+    # Fallback: if secured_party_name still empty, try @attributes pattern
+    if not flat.get("secured_party_name"):
+        attrs = fs.get("@attributes")
+        if isinstance(attrs, dict):
+            flat.setdefault("secured_party_name", attrs.get("secured_party", ""))
+            flat.setdefault("registration_date", attrs.get("registered_date", ""))
+
+    return flat
+
+
 def _parse_ppsr_response(
     rego: str,
     body_text: str,
@@ -420,10 +491,29 @@ def _parse_ppsr_response(
     assert body is not None  # for type-checkers
 
     # --- 2. Top-level error -------------------------------------------------------
+    # CarJam error responses come in two shapes:
+    #   A) Nested: {"error": {"code": -1, "message": "...", "class": "wterror"}}
+    #   B) Flat:   {"code": -1, "message": "Invalid API Key", "class": "wterror"}
+    # Shape B is the actual production format when f=json is set. We must
+    # detect both.
     if "error" in body and isinstance(body["error"], dict):
         err = body["error"]
         msg = err.get("message") or err.get("description") or "Unknown Carjam error"
         raise CarjamError(str(msg))
+
+    # Flat error shape: top-level "class"=="wterror" or negative "code" with
+    # a "message" field and NO "message" sub-dict (which would indicate a
+    # successful response envelope).
+    if (
+        isinstance(body.get("class"), str)
+        and body["class"] == "wterror"
+        or (isinstance(body.get("code"), int) and body["code"] < 0)
+    ):
+        msg = body.get("message") or body.get("scode") or "Unknown Carjam error"
+        # Don't confuse a flat error with a successful response that happens
+        # to have a "message" key containing a dict (the success envelope).
+        if not isinstance(msg, dict):
+            raise CarjamError(str(msg))
 
     # CarJam wraps content under ``message`` when ``f=json``; XML root is
     # ``<message>`` so we already normalised that above.
@@ -491,11 +581,18 @@ def _parse_ppsr_response(
     ppsr_details_raw = container.get("ppsr_details") if isinstance(container, dict) else None
     if isinstance(ppsr_details_raw, dict):
         # Wrapper element — pull out the inner statement list.
+        # CarJam returns: ppsr_details.search_details_result.finance_statement[...]
         inner = (
             ppsr_details_raw.get("financing_statement")
             or ppsr_details_raw.get("statement")
             or ppsr_details_raw.get("item")
+            or ppsr_details_raw.get("finance_statement")
         )
+        # Also check the nested search_details_result wrapper (real prod format).
+        if inner is None:
+            sdr = ppsr_details_raw.get("search_details_result")
+            if isinstance(sdr, dict):
+                inner = sdr.get("finance_statement") or sdr.get("financing_statement")
         if inner is not None:
             ppsr_details = _coerce_list(inner)
         elif ppsr_details_raw:
@@ -505,9 +602,25 @@ def _parse_ppsr_response(
             # Empty wrapper — no statements.
             ppsr_details = []
     elif isinstance(ppsr_details_raw, list):
-        ppsr_details = _coerce_list(ppsr_details_raw)
+        # CarJam can return ppsr_details as a list (one entry per plate when ppsrh=1).
+        # Each entry may be a wrapper: {"search_details_result": {"finance_statement": [...]}}
+        # or a direct financing statement dict.
+        ppsr_details = []
+        for item in ppsr_details_raw:
+            if isinstance(item, dict):
+                sdr = item.get("search_details_result")
+                if isinstance(sdr, dict):
+                    fs = sdr.get("finance_statement") or sdr.get("financing_statement")
+                    ppsr_details.extend(_coerce_list(fs))
+                else:
+                    ppsr_details.append(item)
     else:
         ppsr_details = []
+
+    # Flatten each financing statement into the field names the frontend expects.
+    # CarJam nests data under secured_party_details.secured_party[0].sp_organisation.name
+    # but the frontend reads flat keys like "secured_party_name", "collateral_description", etc.
+    ppsr_details = [_flatten_financing_statement(fs) for fs in ppsr_details]
 
     # --- 8. money_owing -----------------------------------------------------------
     money_owing_raw = container.get("money_owing") if isinstance(container, dict) else None
