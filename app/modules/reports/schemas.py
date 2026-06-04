@@ -35,6 +35,11 @@ class ExportFormat(str, Enum):
 # Revenue Summary  (GET /reports/revenue)
 # ---------------------------------------------------------------------------
 
+class RevenueMonthPoint(BaseModel):
+    month: str = Field(description="Calendar month in YYYY-MM format")
+    revenue: Decimal = Field(description="GST-inclusive revenue total for the month in NZD")
+
+
 class RevenueSummaryResponse(BaseModel):
     total_revenue: Decimal = Field(description="Total revenue (ex-GST) for the period")
     total_gst: Decimal = Field(description="Total GST collected")
@@ -45,6 +50,8 @@ class RevenueSummaryResponse(BaseModel):
     refund_gst: Decimal = Field(default=Decimal("0"), description="GST component of refunds")
     net_revenue: Decimal = Field(default=Decimal("0"), description="Revenue after refunds (ex-GST)")
     net_gst: Decimal = Field(default=Decimal("0"), description="GST after refunds")
+    total_invoices: int = Field(0, description="Alias of invoice_count for frontend compatibility")
+    monthly_breakdown: list[RevenueMonthPoint] = Field(default_factory=list)
     period_start: date
     period_end: date
 
@@ -169,6 +176,11 @@ class CarjamUsageResponse(BaseModel):
 # SMS Usage  (GET /reports/sms-usage)
 # ---------------------------------------------------------------------------
 
+class SmsDailyPoint(BaseModel):
+    date: date
+    sms_count: int
+
+
 class SmsUsageResponse(BaseModel):
     total_sent: int
     included_in_plan: int
@@ -178,6 +190,7 @@ class SmsUsageResponse(BaseModel):
     overage_charge_nzd: float
     per_sms_cost_nzd: float
     reset_at: datetime | None
+    daily_breakdown: list[SmsDailyPoint] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -201,12 +214,21 @@ class StorageUsageResponse(BaseModel):
 # Fleet Account Report  (GET /reports/fleet/{id})
 # ---------------------------------------------------------------------------
 
+class FleetVehicleRow(BaseModel):
+    rego: str
+    make: str | None
+    model: str | None
+    total_spend: Decimal
+    last_service_date: date | None
+
+
 class FleetReportResponse(BaseModel):
     fleet_account_id: uuid.UUID
     fleet_name: str
     total_spend: Decimal
     vehicles_serviced: int
     outstanding_balance: Decimal
+    vehicles: list[FleetVehicleRow] = Field(default_factory=list)
     period_start: date
     period_end: date
 

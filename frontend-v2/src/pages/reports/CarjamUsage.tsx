@@ -6,11 +6,11 @@ import ExportButtons from './ExportButtons'
 import SimpleBarChart from './SimpleBarChart'
 
 interface CarjamData {
-  total_lookups: number
-  included_in_plan: number
-  overage_lookups: number
-  overage_charge: number
-  daily_breakdown: { date: string; lookups: number }[]
+  total_lookups?: number
+  included_in_plan?: number
+  overage_lookups?: number
+  overage_charge?: number
+  daily_breakdown?: { date: string; lookups: number }[]
 }
 
 function defaultRange(): DateRange {
@@ -23,7 +23,11 @@ const fmt = (v: number | undefined) => v != null ? `$${v.toLocaleString('en-NZ',
 
 /**
  * Carjam API usage report — lookups, included, overage, and daily breakdown.
- * Requirements: 45.1
+ *
+ * Fetches use AbortController (D1) and consume responses with `?? 0` /
+ * `?? []` (D3).
+ *
+ * Requirements: 14.1, 14.2, 14.4, 19.1, 19.2, 19.3, 19.5
  */
 export default function CarjamUsage() {
   const [range, setRange] = useState<DateRange>(defaultRange)
@@ -31,22 +35,27 @@ export default function CarjamUsage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
     setError('')
     try {
       const res = await apiClient.get<CarjamData>('/reports/carjam-usage', {
         params: { from: range.from, to: range.to },
+        signal,
       })
-      setData(res.data)
+      setData(res.data ?? null)
     } catch {
-      setError('Failed to load Carjam usage report.')
+      if (!signal?.aborted) setError('Failed to load Carjam usage report.')
     } finally {
-      setLoading(false)
+      if (!signal?.aborted) setLoading(false)
     }
   }, [range])
 
-  useEffect(() => { fetchData() }, [fetchData])
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchData(controller.signal)
+    return () => controller.abort()
+  }, [fetchData])
 
   return (
     <div data-print-content>
@@ -73,30 +82,30 @@ export default function CarjamUsage() {
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-6">
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Total Lookups</p>
-              <p className="text-2xl font-semibold text-text mono">{data.total_lookups}</p>
+              <p className="text-2xl font-semibold text-text mono">{data.total_lookups ?? 0}</p>
             </div>
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Included in Plan</p>
-              <p className="text-2xl font-semibold text-text mono">{data.included_in_plan}</p>
+              <p className="text-2xl font-semibold text-text mono">{data.included_in_plan ?? 0}</p>
             </div>
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Overage Lookups</p>
-              <p className="text-2xl font-semibold text-warn mono">{data.overage_lookups}</p>
+              <p className="text-2xl font-semibold text-warn mono">{data.overage_lookups ?? 0}</p>
             </div>
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Overage Charge</p>
-              <p className="text-2xl font-semibold text-danger mono">{fmt(data.overage_charge)}</p>
+              <p className="text-2xl font-semibold text-danger mono">{fmt(data.overage_charge ?? 0)}</p>
             </div>
           </div>
 
           <div className="rounded-card border border-border bg-card p-4 shadow-card">
             <h3 className="text-sm font-medium text-text mb-3">Daily Lookups</h3>
-            {data.daily_breakdown && data.daily_breakdown.length > 0 ? (
+            {(data.daily_breakdown ?? []).length > 0 ? (
               <SimpleBarChart
                 title="Daily Carjam lookups"
-                items={data.daily_breakdown.map((d) => ({
+                items={(data.daily_breakdown ?? []).map((d) => ({
                   label: new Date(d.date).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' }),
-                  value: d.lookups,
+                  value: d.lookups ?? 0,
                 }))}
               />
             ) : (

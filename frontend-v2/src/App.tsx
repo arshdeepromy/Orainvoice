@@ -364,6 +364,25 @@ const TaxReturnReport = lazy(() => import('@/pages/reports/TaxReturnReport'))
 const ScheduledReports = lazy(() => import('@/pages/reports/ScheduledReports'))
 const WageVariancePage = lazy(() => import('@/pages/reports/WageVariancePage'))
 
+// Reports — in-hub tab routes (Task 20.1). The rebuilt ReportsPage (Task 19.2)
+// is now a landing — it no longer renders the Tabs UI — so the grouped
+// ReportLibrary (Task 20.1) deep-links to standalone routes for each in-hub
+// tab. Each route renders the existing tab component wrapped in a thin
+// ReportTabPage wrapper that adds a "Back to Reports" link + heading. The
+// `vehicles`/`sms` modules gate Carjam / Fleet / SMS routes to mirror the
+// original ReportsPage's per-tab gating; the rest are ungated.
+const ReportTabPage = lazy(() => import('@/pages/reports/ReportTabPage'))
+const RevenueSummary = lazy(() => import('@/pages/reports/RevenueSummary'))
+const InvoiceStatus = lazy(() => import('@/pages/reports/InvoiceStatus'))
+const OutstandingInvoices = lazy(() => import('@/pages/reports/OutstandingInvoices'))
+const TopServices = lazy(() => import('@/pages/reports/TopServices'))
+const GstReturnSummary = lazy(() => import('@/pages/reports/GstReturnSummary'))
+const CustomerStatement = lazy(() => import('@/pages/reports/CustomerStatement'))
+const CarjamUsage = lazy(() => import('@/pages/reports/CarjamUsage'))
+const SmsUsage = lazy(() => import('@/pages/reports/SmsUsage'))
+const StorageUsage = lazy(() => import('@/pages/reports/StorageUsage'))
+const FleetReport = lazy(() => import('@/pages/reports/FleetReport'))
+
 // Accounting + Banking + Tax + Expenses (Tasks 49-51) — mirrors
 // frontend/src/App.tsx exactly. Expenses is gated by the `expenses` module;
 // everything else (Chart of Accounts, Journal Entries + detail, Accounting
@@ -1447,6 +1466,133 @@ function AppRoutes() {
           <Route
             path="reports/wage-variance"
             element={<ModuleRoute moduleSlug="payroll"><WageVariancePage /></ModuleRoute>}
+          />
+
+          {/* Reports — in-hub tab routes (Task 20.1). The rebuilt
+              ReportsPage (Task 19.2) is a landing now and no longer renders
+              the Tabs UI; the grouped ReportLibrary navigates to these direct
+              routes. Each tab component (RevenueSummary, InvoiceStatus, …) is
+              wrapped in ReportTabPage to add a "Back to Reports" link and a
+              page heading. Carjam + Fleet are gated by the `vehicles` module
+              (mirroring the original ReportsPage which conditionally rendered
+              those tabs only when `vehicles` was enabled). The other tabs
+              (revenue, invoice-status, outstanding, top-services, gst-return,
+              customer-statement, sms-usage, storage) are ungated, matching
+              the original ReportsPage which always rendered them. Static
+              /reports/* paths score above any dynamic segment. */}
+          <Route
+            path="reports/revenue"
+            element={
+              <ReportTabPage
+                title="Revenue summary"
+                description="Total revenue, GST collected, and monthly breakdown."
+              >
+                <RevenueSummary />
+              </ReportTabPage>
+            }
+          />
+          <Route
+            path="reports/invoice-status"
+            element={
+              <ReportTabPage
+                title="Invoice status"
+                description="Pipeline of invoices by status."
+              >
+                <InvoiceStatus />
+              </ReportTabPage>
+            }
+          />
+          <Route
+            path="reports/outstanding"
+            element={
+              <ReportTabPage
+                title="Outstanding invoices"
+                description="Unpaid and overdue invoices."
+              >
+                <OutstandingInvoices />
+              </ReportTabPage>
+            }
+          />
+          <Route
+            path="reports/top-services"
+            element={
+              <ReportTabPage
+                title="Top services"
+                description="Best-sellers ranked by revenue."
+              >
+                <TopServices />
+              </ReportTabPage>
+            }
+          />
+          <Route
+            path="reports/gst-return"
+            element={
+              <ReportTabPage
+                title="GST return"
+                description="Period summary for IRD GST filing."
+              >
+                <GstReturnSummary />
+              </ReportTabPage>
+            }
+          />
+          <Route
+            path="reports/customer-statement"
+            element={
+              <ReportTabPage
+                title="Customer statement"
+                description="Per-account statement of activity."
+              >
+                <CustomerStatement />
+              </ReportTabPage>
+            }
+          />
+          <Route
+            path="reports/carjam-usage"
+            element={
+              <ModuleRoute moduleSlug="vehicles">
+                <ReportTabPage
+                  title="CARJAM usage"
+                  description="Vehicle data lookups and overage."
+                >
+                  <CarjamUsage />
+                </ReportTabPage>
+              </ModuleRoute>
+            }
+          />
+          <Route
+            path="reports/sms-usage"
+            element={
+              <ReportTabPage
+                title="SMS usage"
+                description="Messages sent, packages, and spend."
+              >
+                <SmsUsage />
+              </ReportTabPage>
+            }
+          />
+          <Route
+            path="reports/storage"
+            element={
+              <ReportTabPage
+                title="Storage usage"
+                description="Files, attachments, and storage breakdown."
+              >
+                <StorageUsage />
+              </ReportTabPage>
+            }
+          />
+          <Route
+            path="reports/fleet"
+            element={
+              <ModuleRoute moduleSlug="vehicles">
+                <ReportTabPage
+                  title="Fleet report"
+                  description="Spend, vehicles serviced, and outstanding balance per fleet account."
+                >
+                  <FleetReport />
+                </ReportTabPage>
+              </ModuleRoute>
+            }
           />
 
           {/* Expenses (Task 51) — gated by the `expenses` module, mirroring

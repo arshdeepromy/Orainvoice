@@ -28,9 +28,11 @@ import apiClient from '@/api/client'
 import { Button, Badge, Spinner, Modal, Tabs, Input, Select } from '@/components/ui'
 import { useTenant } from '@/contexts/TenantContext'
 import { useModules } from '@/contexts/ModuleContext'
+import { useAuth } from '@/contexts/AuthContext'
 import { useCustomerClaims } from '@/hooks/useCustomerClaims'
 import { CustomerEditModal } from '@/components/customers/CustomerEditModal'
 import { VehiclePickerModal } from '@/components/customers/VehiclePickerModal'
+import { HardDeleteModal } from '@/components/customers/HardDeleteModal'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -64,6 +66,7 @@ interface CustomerProfile {
   id: string
   first_name: string
   last_name: string
+  display_name: string | null
   email: string | null
   phone: string | null
   address: string | null
@@ -290,6 +293,8 @@ export default function CustomerProfilePage() {
   const navigate = useNavigate()
   const { tradeFamily } = useTenant()
   const { isEnabled: isModuleEnabled } = useModules()
+  const { user } = useAuth()
+  const isOrgAdmin = user?.role === 'org_admin'
   const smsEnabled = isModuleEnabled('sms')
   const vehiclesEnabled = isModuleEnabled('vehicles')
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
@@ -302,6 +307,9 @@ export default function CustomerProfilePage() {
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
+
+  /* Hard delete (customer-hard-delete spec) */
+  const [hardDeleteOpen, setHardDeleteOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
@@ -815,9 +823,16 @@ export default function CustomerProfilePage() {
               <Button size="sm" variant="ghost" onClick={() => setExportOpen(true)}>
                 Export Customer Data
               </Button>
-              <Button size="sm" variant="danger" onClick={() => setDeleteOpen(true)}>
-                Process Deletion Request
-              </Button>
+              {isOrgAdmin && (
+                <>
+                  <Button size="sm" variant="danger" onClick={() => setHardDeleteOpen(true)}>
+                    Hard Delete Customer
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setDeleteOpen(true)}>
+                    Anonymise (Privacy Act)
+                  </Button>
+                </>
+              )}
             </>
           )}
         </div>
@@ -1121,8 +1136,8 @@ export default function CustomerProfilePage() {
         )}
       </Modal>
 
-      {/* ---- Privacy Act: Deletion Confirmation Modal ---- */}
-      <Modal open={deleteOpen} onClose={() => { setDeleteOpen(false); setDeleteError('') }} title="Process Deletion Request">
+      {/* ---- Privacy Act: Anonymise Confirmation Modal ---- */}
+      <Modal open={deleteOpen} onClose={() => { setDeleteOpen(false); setDeleteError('') }} title="Anonymise (Privacy Act)">
         <div className="space-y-3">
           <div className="rounded-ctl border border-warn/30 bg-warn-soft px-4 py-3 text-[13px] text-warn">
             <p className="mb-1 font-medium">Privacy Act 2020 — Customer Data Deletion</p>
@@ -1437,6 +1452,15 @@ export default function CustomerProfilePage() {
         customerId={editOpen ? customer.id : null}
         onClose={() => setEditOpen(false)}
         onSaved={() => { setEditOpen(false); fetchProfile() }}
+      />
+
+      {/* ---- Hard Delete Modal (customer-hard-delete spec) ---- */}
+      <HardDeleteModal
+        open={hardDeleteOpen}
+        customerId={customer.id}
+        customerName={customer.display_name || fullName}
+        onClose={() => setHardDeleteOpen(false)}
+        onDeleted={() => { setHardDeleteOpen(false); navigate('/customers') }}
       />
 
       <VehiclePickerModal

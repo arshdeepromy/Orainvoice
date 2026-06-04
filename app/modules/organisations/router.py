@@ -41,6 +41,7 @@ from app.modules.organisations.schemas import (
     OrgSettingsResponse,
     OrgSettingsUpdateRequest,
     OrgSettingsUpdateResponse,
+    PlanSmsPricingResponse,
     SalespersonItem,
     SalespersonListResponse,
     SeatLimitResponse,
@@ -1447,6 +1448,53 @@ async def get_org_sms_usage(
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     return OrgSmsUsageResponse(**usage)
+
+
+@router.get(
+    "/plan-sms-pricing",
+    response_model=PlanSmsPricingResponse,
+    summary="Organisation plan SMS package pricing tiers",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    dependencies=[require_role("org_admin")],
+)
+async def get_org_plan_sms_pricing(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the organisation plan's SMS package pricing tiers.
+
+    Exposes the plan's ``sms_package_pricing`` so the SMS usage report can
+    render its purchase section. Returns an empty list when the plan has no
+    configured tiers.
+
+    Requirements: 8.1, 8.2.
+    """
+    from sqlalchemy import select
+
+    from app.modules.admin.models import Organisation, SubscriptionPlan
+
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid org_id format"})
+
+    row = (
+        await db.execute(
+            select(SubscriptionPlan.sms_package_pricing)
+            .select_from(Organisation)
+            .join(SubscriptionPlan, Organisation.plan_id == SubscriptionPlan.id)
+            .where(Organisation.id == org_uuid)
+        )
+    ).scalar_one_or_none()
+
+    return PlanSmsPricingResponse(sms_package_pricing=row or [])
 
 
 @router.get(

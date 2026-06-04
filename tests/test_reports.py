@@ -145,7 +145,14 @@ class TestRevenueSummary:
         pay_result = MagicMock()
         pay_result.scalar.return_value = Decimal("0")
 
-        db.execute.side_effect = [inv_result, cn_result, pay_result]
+        # Monthly breakdown query (added by reports-remediation): GST-inclusive
+        # revenue grouped by calendar month. Mirrors the period total.
+        month_result = MagicMock()
+        month_result.all.return_value = [
+            _mock_row(month="2024-01", revenue=Decimal("1150.00")),
+        ]
+
+        db.execute.side_effect = [inv_result, cn_result, pay_result, month_result]
 
         data = await get_revenue_summary(
             db, org_id, date(2024, 1, 1), date(2024, 1, 31)
@@ -156,6 +163,11 @@ class TestRevenueSummary:
         assert data["invoice_count"] == 5
         assert data["average_invoice"] == Decimal("230.00")
         assert data["currency"] == "NZD"
+        # reports-remediation additive fields
+        assert data["total_invoices"] == 5
+        assert data["monthly_breakdown"] == [
+            {"month": "2024-01", "revenue": Decimal("1150.00")}
+        ]
 
     @pytest.mark.asyncio
     async def test_revenue_summary_zero_invoices(self):
@@ -176,13 +188,20 @@ class TestRevenueSummary:
         pay_result = MagicMock()
         pay_result.scalar.return_value = Decimal("0")
 
-        db.execute.side_effect = [inv_result, cn_result, pay_result]
+        # Monthly breakdown query (added by reports-remediation) — no rows in an
+        # empty period.
+        month_result = MagicMock()
+        month_result.all.return_value = []
+
+        db.execute.side_effect = [inv_result, cn_result, pay_result, month_result]
 
         data = await get_revenue_summary(
             db, org_id, date(2024, 1, 1), date(2024, 1, 31)
         )
         assert data["invoice_count"] == 0
         assert data["average_invoice"] == Decimal("0")
+        assert data["total_invoices"] == 0
+        assert data["monthly_breakdown"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -439,31 +458,49 @@ class TestCarjamUsage:
     async def test_carjam_usage_with_overage(self):
         db = _mock_db()
         org_id = uuid.uuid4()
-        row = _mock_row(
-            carjam_lookups_this_month=150,
-            carjam_lookups_included=100,
-            carjam_lookups_reset_at=datetime(2024, 2, 1, tzinfo=timezone.utc),
-        )
-        result_mock = MagicMock()
-        result_mock.one_or_none.return_value = row
-        db.execute.return_value = result_mock
+
+        # 1. Plan info query → included lookups
+        plan_row = _mock_row(carjam_lookups_included=100)
+        plan_result = MagicMock()
+        plan_result.one_or_none.return_value = plan_row
+
+        # 2. Total lookups count (from audit log)
+        total_result = MagicMock()
+        total_result.scalar.return_value = 150
+
+        # 3. Per-lookup cost config lookup (get_carjam_per_lookup_cost) → no config
+        cost_result = MagicMock()
+        cost_result.scalar_one_or_none.return_value = None
+
+        # 4. Daily breakdown query
+        daily_result = MagicMock()
+        daily_result.all.return_value = []
+
+        db.execute.side_effect = [plan_result, total_result, cost_result, daily_result]
 
         data = await get_carjam_usage(db, org_id)
-        assert data["lookups_this_month"] == 150
-        assert data["lookups_included"] == 100
+        assert data["total_lookups"] == 150
+        assert data["included_in_plan"] == 100
         assert data["overage_lookups"] == 50
 
     @pytest.mark.asyncio
     async def test_carjam_usage_no_overage(self):
         db = _mock_db()
-        row = _mock_row(
-            carjam_lookups_this_month=50,
-            carjam_lookups_included=100,
-            carjam_lookups_reset_at=None,
-        )
-        result_mock = MagicMock()
-        result_mock.one_or_none.return_value = row
-        db.execute.return_value = result_mock
+
+        plan_row = _mock_row(carjam_lookups_included=100)
+        plan_result = MagicMock()
+        plan_result.one_or_none.return_value = plan_row
+
+        total_result = MagicMock()
+        total_result.scalar.return_value = 50
+
+        cost_result = MagicMock()
+        cost_result.scalar_one_or_none.return_value = None
+
+        daily_result = MagicMock()
+        daily_result.all.return_value = []
+
+        db.execute.side_effect = [plan_result, total_result, cost_result, daily_result]
 
         data = await get_carjam_usage(db, uuid.uuid4())
         assert data["overage_lookups"] == 0
@@ -471,12 +508,26 @@ class TestCarjamUsage:
     @pytest.mark.asyncio
     async def test_carjam_usage_org_not_found(self):
         db = _mock_db()
-        result_mock = MagicMock()
-        result_mock.one_or_none.return_value = None
-        db.execute.return_value = result_mock
+
+        # Plan info query → no row (org/plan not found)
+        plan_result = MagicMock()
+        plan_result.one_or_none.return_value = None
+
+        total_result = MagicMock()
+        total_result.scalar.return_value = 0
+
+        cost_result = MagicMock()
+        cost_result.scalar_one_or_none.return_value = None
+
+        daily_result = MagicMock()
+        daily_result.all.return_value = []
+
+        db.execute.side_effect = [plan_result, total_result, cost_result, daily_result]
 
         data = await get_carjam_usage(db, uuid.uuid4())
-        assert data["lookups_this_month"] == 0
+        assert data["total_lookups"] == 0
+        assert data["included_in_plan"] == 0
+        assert data["overage_lookups"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -491,22 +542,38 @@ class TestStorageUsage:
         db = _mock_db()
         org_id = uuid.uuid4()
 
-        # Mock calculate_org_storage
-        with patch(
-            "app.modules.reports.service.calculate_org_storage",
-            new_callable=AsyncMock,
-            return_value=500_000_000,
-        ):
-            # Mock quota query
-            quota_result = MagicMock()
-            quota_result.scalar.return_value = 5  # 5 GB
-            db.execute.return_value = quota_result
+        # Org row query: storage_used_bytes + storage_quota_gb
+        org_row = _mock_row(
+            storage_used_bytes=500_000_000,
+            storage_quota_gb=5,  # 5 GB
+        )
+        org_result = MagicMock()
+        org_result.one_or_none.return_value = org_row
+        db.execute.return_value = org_result
 
+        # calculate_org_storage is imported inside get_storage_usage from
+        # app.modules.storage.service, so patch it at its source module.
+        with patch(
+            "app.modules.storage.service.calculate_org_storage",
+            new_callable=AsyncMock,
+            return_value={
+                "total_bytes": 500_000_000,
+                "breakdown": [
+                    {"category": "Invoices", "bytes": 400_000_000},
+                    {"category": "Customers", "bytes": 100_000_000},
+                ],
+            },
+        ):
             data = await get_storage_usage(db, org_id)
-            assert data["storage_used_bytes"] == 500_000_000
-            assert data["storage_quota_bytes"] == 5 * 1_073_741_824
-            assert data["alert_level"] == "none"
-            assert data["usage_percentage"] < 80
+            assert data["used_bytes"] == 500_000_000
+            assert data["quota_gb"] == 5
+            # 500MB of a 5GB quota → under 80%
+            assert data["usage_percent"] < 80
+            # breakdown now sourced from calculate_org_storage
+            assert data["breakdown"] == [
+                {"category": "Invoices", "bytes": 400_000_000},
+                {"category": "Customers", "bytes": 100_000_000},
+            ]
 
 
 # ---------------------------------------------------------------------------
@@ -557,7 +624,28 @@ class TestFleetReport:
         vehicle_result = MagicMock()
         vehicle_result.scalar.return_value = 8
 
-        db.execute.side_effect = [fleet_result, cust_result, spend_result, vehicle_result]
+        # Per-vehicle aggregate query (added by reports-remediation)
+        veh_result = MagicMock()
+        veh_result.all.return_value = [
+            _mock_row(
+                rego="ABC123",
+                make="Toyota",
+                model="Hilux",
+                total_spend=Decimal("9000.00"),
+                last_service_date=date(2024, 11, 1),
+            ),
+            _mock_row(
+                rego="XYZ789",
+                make="Ford",
+                model="Ranger",
+                total_spend=Decimal("6000.00"),
+                last_service_date=date(2024, 10, 1),
+            ),
+        ]
+
+        db.execute.side_effect = [
+            fleet_result, cust_result, spend_result, vehicle_result, veh_result,
+        ]
 
         data = await get_fleet_report(
             db, org_id, fleet_id, date(2024, 1, 1), date(2024, 12, 31)
@@ -567,6 +655,11 @@ class TestFleetReport:
         assert data["total_spend"] == Decimal("15000.00")
         assert data["vehicles_serviced"] == 8
         assert data["outstanding_balance"] == Decimal("2000.00")
+        # reports-remediation per-vehicle breakdown
+        assert len(data["vehicles"]) == 2
+        assert data["vehicles"][0]["rego"] == "ABC123"
+        assert data["vehicles"][0]["total_spend"] == Decimal("9000.00")
+        assert data["vehicles"][0]["last_service_date"] == date(2024, 11, 1)
 
     @pytest.mark.asyncio
     async def test_fleet_report_no_customers(self):

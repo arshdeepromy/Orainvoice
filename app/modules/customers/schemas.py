@@ -840,3 +840,168 @@ class FleetAccountDeleteResponse(BaseModel):
 
     message: str
     fleet_account_id: str
+
+
+# ---------------------------------------------------------------------------
+# Task 1.1 — Customer hard delete schemas
+# Requirements: 1.2, 2.2, 2.3, 3.1, 4.1, 5.x, 6.1, 8.3
+# ---------------------------------------------------------------------------
+
+
+class CustomerHardDeleteRequest(BaseModel):
+    """POST /api/v1/customers/{id}/hard-delete request body.
+
+    Guarded hard delete request with mandatory reason and confirmation.
+    Requirements: 4.1, 5.x
+    """
+
+    reason: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="Mandatory deletion reason for audit trail",
+    )
+    confirmation: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="Confirmation text (must match customer name or 'DELETE')",
+    )
+
+
+class DeletionBlockingInvoice(BaseModel):
+    """An issued invoice blocking customer deletion.
+
+    Requirements: 2.2
+    """
+
+    id: str = Field(..., description="Invoice UUID")
+    invoice_number: Optional[str] = Field(None, description="Invoice number")
+    status: str = Field(..., description="Invoice status")
+
+
+class DeletionBlockingClaim(BaseModel):
+    """A customer claim blocking customer deletion.
+
+    Requirements: 2.2
+    """
+
+    id: str = Field(..., description="Claim UUID")
+    claim_number: Optional[str] = Field(None, description="Claim number")
+    status: str = Field(..., description="Claim status")
+
+
+class DeletionBlockingJobCard(BaseModel):
+    """A job card blocking customer deletion.
+
+    Requirements: 2.2
+    """
+
+    id: str = Field(..., description="Job card UUID")
+    status: str = Field(..., description="Job card status")
+
+
+class DeletionBlockingFleetChecklist(BaseModel):
+    """A fleet checklist submission blocking customer deletion.
+
+    Requirements: 2.2
+    """
+
+    id: str = Field(..., description="Fleet checklist submission UUID")
+    vehicle_rego: Optional[str] = Field(None, description="Vehicle registration")
+
+
+class DeletionOrphanVehicle(BaseModel):
+    """A vehicle that will be orphaned by customer deletion.
+
+    Requirements: 6.1
+    """
+
+    id: str = Field(..., description="Vehicle UUID")
+    rego: Optional[str] = Field(None, description="Registration number")
+    make: Optional[str] = Field(None, description="Vehicle make")
+    model: Optional[str] = Field(None, description="Vehicle model")
+    source: Literal["global", "org"] = Field(..., description="Vehicle storage location")
+
+
+class CustomerDeletionPreflightResponse(BaseModel):
+    """GET /api/v1/customers/{id}/deletion-preflight response.
+
+    Preflight checks showing what blocks deletion and what will be affected.
+    Requirements: 2.2, 2.3, 3.1, 6.1
+    """
+
+    can_delete: bool = Field(..., description="Whether the customer can be deleted now")
+    blocking_invoices: list[DeletionBlockingInvoice] = Field(
+        default_factory=list, description="Issued invoices that must be deleted first"
+    )
+    blocking_invoice_count: int = Field(0, description="Count of blocking invoices")
+    blocking_claims: list[DeletionBlockingClaim] = Field(
+        default_factory=list, description="Claims that must be resolved first"
+    )
+    blocking_job_cards: list[DeletionBlockingJobCard] = Field(
+        default_factory=list, description="Job cards that must be resolved first"
+    )
+    blocking_fleet_checklists: list[DeletionBlockingFleetChecklist] = Field(
+        default_factory=list, description="Fleet checklists that must be resolved first"
+    )
+    draft_invoices: list[DeletionBlockingInvoice] = Field(
+        default_factory=list, description="Draft invoices that can be deleted"
+    )
+    orphan_vehicles: list[DeletionOrphanVehicle] = Field(
+        default_factory=list, description="Vehicles that will be orphaned but preserved"
+    )
+    nz_retention_warning: str = Field(
+        ..., description="NZ IRD retention warning text"
+    )
+
+
+class CustomerHardDeleteResponse(BaseModel):
+    """POST /api/v1/customers/{id}/hard-delete response.
+
+    Requirements: 1.2, 8.3
+    """
+
+    message: str = Field(..., description="Success message")
+    deleted: bool = Field(True, description="Always True on success")
+    customer_id: str = Field(..., description="UUID of the deleted customer")
+    vehicle_links_removed: int = Field(
+        0, description="Number of customer-vehicle links removed"
+    )
+    draft_invoices_deleted: int = Field(
+        0, description="Number of draft invoices user deleted before hard delete"
+    )
+    orphaned_vehicle_ids: list[str] = Field(
+        default_factory=list, description="UUIDs of vehicles orphaned by the deletion"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 1.2 — CustomerDeletionBlockedError exception
+# Requirements: 2.2, 2.3
+# ---------------------------------------------------------------------------
+
+
+class CustomerDeletionBlockedError(Exception):
+    """Raised by the service when a hard delete is blocked by existing
+    legally-retained documents (issued invoices, open claims, job cards,
+    or fleet checklist submissions).
+
+    The router catches this and returns HTTP 409 with a structured body:
+        {"detail": exc.message, "blocking": exc.payload}
+
+    Attributes:
+        message: Human-readable explanation of why deletion is blocked,
+                 including the instruction to delete listed documents first
+                 (Requirements: 2.3).
+        payload: Machine-readable blocking details structured as a dict
+                 matching the preflight response shape (blocking_invoices,
+                 blocking_claims, blocking_job_cards, blocking_fleet_checklists,
+                 and counts) so the UI can re-render the blocking state
+                 (Requirements: 2.2).
+    """
+
+    def __init__(self, message: str, payload: dict) -> None:
+        super().__init__(message)
+        self.message = message
+        self.payload = payload

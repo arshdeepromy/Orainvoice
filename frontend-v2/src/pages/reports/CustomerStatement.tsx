@@ -3,6 +3,7 @@ import apiClient from '@/api/client'
 import { Spinner, PrintButton } from '@/components/ui'
 import DateRangeFilter, { type DateRange } from './DateRangeFilter'
 import ExportButtons from './ExportButtons'
+import { useBranch } from '@/contexts/BranchContext'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -21,22 +22,22 @@ interface Customer {
 }
 
 interface StatementLine {
-  date: string | null
-  description: string
-  reference: string | null
-  debit: number
-  credit: number
-  balance: number
+  date?: string | null
+  description?: string
+  reference?: string | null
+  debit?: number
+  credit?: number
+  balance?: number
 }
 
 interface StatementData {
-  customer_id: string
-  customer_name: string
-  items: StatementLine[]
-  opening_balance: number
-  closing_balance: number
-  period_start: string
-  period_end: string
+  customer_id?: string
+  customer_name?: string
+  items?: StatementLine[]
+  opening_balance?: number
+  closing_balance?: number
+  period_start?: string
+  period_end?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -187,38 +188,47 @@ function CustomerSearchInput({
 /**
  * Customer statement — search for a customer, view invoices, payments,
  * and refunds in a date range with running balance. Printable.
- * Requirements: 45.7
+ *
+ * Branch is sourced from `useBranch().selectedBranchId` (B3) and included
+ * in the fetch params, useCallback deps, and ExportButtons params so the
+ * statement refetches on branch change. Fetches use AbortController (D1).
+ *
+ * Requirements: 13.1, 13.2, 13.3, 14.1, 14.2, 14.3, 14.4, 19.1, 19.2, 19.3, 19.4, 19.5
  */
 export default function CustomerStatement() {
+  const { selectedBranchId } = useBranch()
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [range, setRange] = useState<DateRange>(defaultRange)
   const [data, setData] = useState<StatementData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const fetchStatement = useCallback(async () => {
+  const fetchStatement = useCallback(async (signal?: AbortSignal) => {
     if (!customer) return
     setLoading(true)
     setError('')
     try {
       const params: Record<string, string> = { start_date: range.from, end_date: range.to }
-      const branchId = localStorage.getItem('selected_branch_id')
-      if (branchId && branchId !== 'all') params.branch_id = branchId
+      if (selectedBranchId) params.branch_id = selectedBranchId
       const res = await apiClient.get<StatementData>(`/reports/customer-statement/${customer.id}`, {
         params,
+        signal,
       })
-      setData(res.data)
+      setData(res.data ?? null)
     } catch {
-      setError('Failed to load customer statement. Please check the customer and try again.')
+      if (!signal?.aborted) setError('Failed to load customer statement. Please check the customer and try again.')
     } finally {
-      setLoading(false)
+      if (!signal?.aborted) setLoading(false)
     }
-  }, [customer, range])
+  }, [customer, range, selectedBranchId])
 
-  // Auto-fetch when customer or range changes
+  // Auto-fetch when customer, range, or branch changes
   useEffect(() => {
-    if (customer) fetchStatement()
-  }, [customer, range, fetchStatement])
+    if (!customer) return
+    const controller = new AbortController()
+    fetchStatement(controller.signal)
+    return () => controller.abort()
+  }, [customer, range, selectedBranchId, fetchStatement])
 
   return (
     <div data-print-content>
@@ -238,7 +248,11 @@ export default function CustomerStatement() {
           {customer && (
             <ExportButtons
               endpoint={`/reports/customer-statement/${customer.id}`}
-              params={{ start_date: range.from, end_date: range.to }}
+              params={{
+                start_date: range.from,
+                end_date: range.to,
+                ...(selectedBranchId ? { branch_id: selectedBranchId } : {}),
+              }}
             />
           )}
           <PrintButton label="Print Statement" />
@@ -265,7 +279,7 @@ export default function CustomerStatement() {
           <div className="rounded-card border border-border bg-card p-4 mb-4 shadow-card">
             <div className="flex items-start justify-between">
               <div>
-                <h3 className="text-lg font-semibold text-text">{data.customer_name}</h3>
+                <h3 className="text-lg font-semibold text-text">{data.customer_name ?? ''}</h3>
                 {customer.email && <p className="text-sm text-muted">{customer.email}</p>}
                 {customer.phone && <p className="text-sm text-muted">{customer.phone}</p>}
                 {customer.company_name && <p className="text-sm text-muted">{customer.company_name}</p>}
@@ -281,17 +295,17 @@ export default function CustomerStatement() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Opening Balance</p>
-              <p className="text-xl font-semibold text-text mono">{fmt(data.opening_balance)}</p>
+              <p className="text-xl font-semibold text-text mono">{fmt(data.opening_balance ?? 0)}</p>
             </div>
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Closing Balance</p>
-              <p className={`text-xl font-semibold mono ${data.closing_balance > 0 ? 'text-danger' : 'text-ok'}`}>
-                {fmt(data.closing_balance)}
+              <p className={`text-xl font-semibold mono ${(data.closing_balance ?? 0) > 0 ? 'text-danger' : 'text-ok'}`}>
+                {fmt(data.closing_balance ?? 0)}
               </p>
             </div>
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Transactions</p>
-              <p className="text-xl font-semibold text-text mono">{data.items?.length || 0}</p>
+              <p className="text-xl font-semibold text-text mono">{(data.items ?? []).length}</p>
             </div>
           </div>
 
@@ -310,25 +324,25 @@ export default function CustomerStatement() {
                 </tr>
               </thead>
               <tbody>
-                {!data.items || data.items.length === 0 ? (
+                {(data.items ?? []).length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-12 text-center text-sm text-muted">
                       No transactions for this period.
                     </td>
                   </tr>
                 ) : (
-                  data.items.map((line, i) => (
+                  (data.items ?? []).map((line, i) => (
                     <tr key={i} className="border-b border-border last:border-b-0 hover:bg-canvas">
-                      <td className="whitespace-nowrap px-4 py-3 text-sm text-muted mono">{formatDate(line.date)}</td>
-                      <td className="px-4 py-3 text-sm text-text">{line.description}</td>
-                      <td className="px-4 py-3 text-sm text-muted-2">{line.reference || '—'}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-muted mono">{formatDate(line?.date)}</td>
+                      <td className="px-4 py-3 text-sm text-text">{line?.description ?? ''}</td>
+                      <td className="px-4 py-3 text-sm text-muted-2">{line?.reference || '—'}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-right mono">
-                        {line.debit > 0 ? <span className="text-danger">{fmt(line.debit)}</span> : '—'}
+                        {(line?.debit ?? 0) > 0 ? <span className="text-danger">{fmt(line?.debit ?? 0)}</span> : '—'}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-sm text-right mono">
-                        {line.credit > 0 ? <span className="text-ok">{fmt(line.credit)}</span> : '—'}
+                        {(line?.credit ?? 0) > 0 ? <span className="text-ok">{fmt(line?.credit ?? 0)}</span> : '—'}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-right text-text mono">{fmt(line.balance)}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-right text-text mono">{fmt(line?.balance ?? 0)}</td>
                     </tr>
                   ))
                 )}

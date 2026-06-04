@@ -18,22 +18,91 @@ Language is fixed by the design: **Python 3.11 + async SQLAlchemy** (backend) an
 - **This touches PROD code.** All multi-row work is transactional and safe.
 - Frontend follows **`safe-api-consumption.md`** (typed generics, `?.` / `?? []` / `?? 0`, `AbortController`, no `as any`).
 
+## Task Dependency Graph
+
+```mermaid
+graph TD
+    T1[1. Backend schemas + blocking exception]
+    T2[2. Backend service — constants + read-only preflight]
+    T3[3. Backend service — hard_delete_customer]
+    T4[4. Backend router endpoints]
+    T5[5. Checkpoint — backend]
+    T6[6. Frontend — HardDeleteModal, AnonymiseModal relabel, danger-zone wiring]
+    T7[7. Frontend tests]
+    T8[8. Checkpoint — final verification]
+    T9[9. Optional reminder_queue migration]
+
+    T1 --> T2
+    T2 --> T3
+    T3 --> T4
+    T4 --> T5
+    T5 --> T6
+    T6 --> T7
+    T7 --> T8
+    T8 -.optional.-> T9
+```
+
+```json
+{
+  "waves": [
+    {
+      "wave": 1,
+      "tasks": ["1.1", "1.2"]
+    },
+    {
+      "wave": 2,
+      "tasks": ["2.1"]
+    },
+    {
+      "wave": 3,
+      "tasks": ["3.1", "3.5", "3.9"]
+    },
+    {
+      "wave": 4,
+      "tasks": ["4.1"]
+    },
+    {
+      "wave": 5,
+      "tasks": ["5"]
+    },
+    {
+      "wave": 6,
+      "tasks": ["6.1", "6.2", "6.3"]
+    },
+    {
+      "wave": 7,
+      "tasks": ["8"]
+    }
+  ]
+}
+```
+
+**Dependency Rules:**
+- Task 1 must complete before Task 2 (schemas needed by service)
+- Task 2 must complete before Task 3 (preflight logic informs delete validation)
+- Task 3 must complete before Task 4 (service functions consumed by router)
+- Task 4 must complete before Task 5 (backend checkpoint validates API)
+- Task 5 must complete before Task 6 (frontend consumes validated API)
+- Task 6 must complete before Task 7 (tests validate UI components)
+- Task 7 must complete before Task 8 (final verification)
+- Task 9 is optional and independent (migration not required for first cut)
+
 ## Tasks
 
-- [ ] 1. Backend schemas + blocking exception (`app/modules/customers/schemas.py`)
-  - [ ] 1.1 Add request/response Pydantic models for hard delete and preflight
+- [x] 1. Backend schemas + blocking exception (`app/modules/customers/schemas.py`)
+  - [x] 1.1 Add request/response Pydantic models for hard delete and preflight
     - Add `CustomerHardDeleteRequest` (`reason: str` min_length 1 max_length 2000; `confirmation: str` min_length 1 max_length 255).
     - Add nested models `DeletionBlockingInvoice` (id, invoice_number?, status), `DeletionBlockingClaim` (id, claim_number?, status), `DeletionBlockingJobCard` (id, status), `DeletionBlockingFleetChecklist` (id, vehicle_rego?), `DeletionOrphanVehicle` (id, rego?, make?, model?, source).
     - Add `CustomerDeletionPreflightResponse` (`can_delete`, `blocking_invoices[]`, `blocking_invoice_count`, `blocking_claims[]`, `blocking_job_cards[]`, `blocking_fleet_checklists[]`, `draft_invoices[]`, `orphan_vehicles[]`, `nz_retention_warning`) using `default_factory=list` for arrays.
     - Add `CustomerHardDeleteResponse` (`message`, `deleted=True`, `customer_id`, `vehicle_links_removed`, `draft_invoices_deleted`, `orphaned_vehicle_ids[]`).
     - Field names MUST match the frontend types exactly (NFR3.2). Follow the project wrapped-response shape (NFR2.4).
     - _Design: New Pydantic schemas. Requirements: 1.2, 2.2, 2.3, 3.1, 4.1, 5.x, 6.1, 8.3_
-  - [ ] 1.2 Add the `CustomerDeletionBlockedError` exception
+  - [x] 1.2 Add the `CustomerDeletionBlockedError` exception
     - Module-level `Exception` subclass carrying `message: str` and `payload: dict` so the router can emit a structured 409 distinct from plain 400/404. Place it where both service and router can import it (service module per design import in router).
     - _Design: Backend — router endpoints (409 handling). Requirements: 2.2, 2.3_
 
-- [ ] 2. Backend service — constants + read-only preflight (`app/modules/customers/service.py`)
-  - [ ] 2.1 Add `ISSUED_INVOICE_STATUSES`, `NZ_RETENTION_WARNING`, and implement `preflight_customer_deletion(db, *, org_id, customer_id)`
+- [x] 2. Backend service — constants + read-only preflight (`app/modules/customers/service.py`)
+  - [x] 2.1 Add `ISSUED_INVOICE_STATUSES`, `NZ_RETENTION_WARNING`, and implement `preflight_customer_deletion(db, *, org_id, customer_id)`
     - `ISSUED_INVOICE_STATUSES = (issued, partially_paid, paid, overdue, voided, refunded, partially_refunded)` — everything that is NOT `draft`.
     - `NZ_RETENTION_WARNING` text stating the IRD ~7-year retention obligation and "cannot be undone".
     - Load customer org-scoped; raise `ValueError("Customer not found")` when absent (R9.4/R10.2).
@@ -54,8 +123,8 @@ Language is fixed by the design: **Python 3.11 + async SQLAlchemy** (backend) an
     - ≥100 examples; tag `# Feature: customer-hard-delete, Property 12: Drafts and quotes never block`.
     - **Validates: Requirements 2.5, 2.6**
 
-- [ ] 3. Backend service — `hard_delete_customer` (`app/modules/customers/service.py`)
-  - [ ] 3.1 Implement guard validation (load, reason, confirmation, blocking re-check)
+- [x] 3. Backend service — `hard_delete_customer` (`app/modules/customers/service.py`)
+  - [x] 3.1 Implement guard validation (load, reason, confirmation, blocking re-check)
     - Signature: `hard_delete_customer(db, *, org_id, customer_id, user_id, reason, confirmation, ip_address=None)`.
     - Order: (1) load customer org-scoped → `ValueError("Customer not found")` if absent (R9.4); (2) `reason.strip()` empty → `ValueError("A deletion reason is required")` (R4.1/4.2); (3) confirmation missing/invalid (must equal customer display name case-insensitive trimmed, or literal `DELETE`) → `ValueError("Confirmation does not match")` (R5.2); (4) re-count issued invoices + open claims + job_cards + fleet checklist submissions → raise `CustomerDeletionBlockedError(message, payload)` carrying the preflight-shaped blocking payload (R2.1–2.3, R11.4).
     - All checks run before any mutation so an early raise leaves data untouched (R9.2).
@@ -72,7 +141,7 @@ Language is fixed by the design: **Python 3.11 + async SQLAlchemy** (backend) an
     - **Property 13: Idempotent not-found** — `test_idempotent_not_found`; random non-existent / already-deleted ids; assert deterministic not-found, no state change, re-issue returns same result.
     - ≥100 examples; tag `# Feature: customer-hard-delete, Property 13: Idempotent not-found`.
     - **Validates: Requirements 9.4**
-  - [ ] 3.5 Implement the in-transaction deletion order (Referential Integrity Matrix)
+  - [x] 3.5 Implement the in-transaction deletion order (Referential Integrity Matrix)
     - Children first, all org-scoped, inside the caller's `session.begin()`, using `flush()` (never `commit()`):
       - `customer_vehicles`: delete links for this customer (capture orphaned vehicle ids first) — preserve vehicle rows (R6.1, R6.2, R6.4).
       - delete-with-customer: `quotes` (+ `quote_line_items`), `recurring_schedules`, `reminder_queue`, and `loyalty_transactions` (Row 19 — `customer_id` is NOT NULL so it cannot be nulled; flag for reviewer per design note).
@@ -93,7 +162,7 @@ Language is fixed by the design: **Python 3.11 + async SQLAlchemy** (backend) an
     - **Property 8: No financial rows destroyed by the delete itself** — `test_delete_removes_no_financial_rows`; random drafts/quotes graph (no issued); assert zero `invoices`/`payments`/`credit_notes` removed by the delete itself.
     - ≥100 examples; tag `# Feature: customer-hard-delete, Property 8: No financial rows destroyed by the delete itself`.
     - **Validates: Requirements 7.1, 7.2, 11.2**
-  - [ ] 3.9 Implement the success audit write (distinct action, no PII)
+  - [x] 3.9 Implement the success audit write (distinct action, no PII)
     - One `write_audit_log` with `action="customer.hard_deleted"`, `entity_id=customer_id`; `before_value` = booleans/type only (`had_email`, `had_phone`, `customer_type`); `after_value` = `reason`, `prerequisite_deleted_invoice_ids`, `orphaned_vehicle_ids`, `vehicle_links_removed`; pass `ip_address`.
     - Write happens inside the same transaction so a rollback also removes it (R9.3). No name/email/phone values (R8.5/NFR4.2).
     - _Design: Audit log entry. Requirements: 8.1, 8.2, 8.3, 8.4, 8.5_
@@ -114,8 +183,8 @@ Language is fixed by the design: **Python 3.11 + async SQLAlchemy** (backend) an
     - ≥100 examples; tag `# Feature: customer-hard-delete, Property 11: Org isolation`.
     - **Validates: Requirements 10.2, 10.3**
 
-- [ ] 4. Backend router endpoints (`app/modules/customers/router.py`)
-  - [ ] 4.1 Add the preflight + hard-delete endpoints (declared BEFORE the bare `/{customer_id}` routes)
+- [x] 4. Backend router endpoints (`app/modules/customers/router.py`)
+  - [x] 4.1 Add the preflight + hard-delete endpoints (declared BEFORE the bare `/{customer_id}` routes)
     - `GET /{customer_id}/deletion-preflight` → `CustomerDeletionPreflightResponse`; `POST /{customer_id}/hard-delete` (body `CustomerHardDeleteRequest`) → `CustomerHardDeleteResponse`.
     - Both `dependencies=[require_role("org_admin")]`. **Route ordering note (design):** declare both static-suffix routes co-located with `/{customer_id}/export|merge|notify`, BEFORE the bare `/{customer_id}` GET/PUT/DELETE, since FastAPI matches in declaration order.
     - Use `_extract_org_context`; 403 when no org context; 400 on invalid UUID.
@@ -132,8 +201,8 @@ Language is fixed by the design: **Python 3.11 + async SQLAlchemy** (backend) an
 - [ ] 5. Checkpoint — backend
   - Run only this feature's new tests: `pytest tests/test_hard_delete_property.py tests/test_hard_delete_integration.py` (the 13 property tests + the integration tests). Do not run the full suite. Ensure these pass; ask the user if questions arise.
 
-- [ ] 6. Frontend — HardDeleteModal, AnonymiseModal relabel, danger-zone wiring (redesign `frontend-v2/`, per D4)
-  - [ ] 6.1 Build `HardDeleteModal.tsx` (`frontend-v2/src/components/customers/HardDeleteModal.tsx`, colocated with the existing `CustomerEditModal`/`VehiclePickerModal`)
+- [x] 6. Frontend — HardDeleteModal, AnonymiseModal relabel, danger-zone wiring (redesign `frontend-v2/`, per D4)
+  - [x] 6.1 Build `HardDeleteModal.tsx` (`frontend-v2/src/components/customers/HardDeleteModal.tsx`, colocated with the existing `CustomerEditModal`/`VehiclePickerModal`)
     - Use the v2 design-system primitives (`Modal`, `Button`, `Input`, `Badge`, `Spinner` from `@/components/ui`) and the shared axios instance `apiClient` from `@/api/client`. The v2 `Button` has no `secondary` variant — use `variant="danger"` for the destructive button and `variant="ghost"` for cancel.
     - Props: `customerId`, `customerName`, `open`, `onClose`, `onDeleted`.
     - On open: `GET /customers/{id}/deletion-preflight` inside a `useEffect` with `AbortController`; typed generic `apiClient.get<DeletionPreflight>(...)`; guard every read with `?.` and `?? []` / `?? false` / default warning; no `as any` (NFR3, safe-api-consumption Patterns 5 & 7).
@@ -141,10 +210,10 @@ Language is fixed by the design: **Python 3.11 + async SQLAlchemy** (backend) an
     - **Deletable state** (`can_delete === true`): render NZ retention warning, orphan-vehicle preview ("N vehicle(s) will be unlinked but preserved"), required **reason** textarea, and **type-to-confirm** input (must equal `customerName` case-insensitive trimmed, or `DELETE`). Enable the destructive button **iff** reason non-empty AND confirmation matches.
     - On confirm: `POST /customers/{id}/hard-delete { reason, confirmation }`; success → `onDeleted()` (navigate to `/customers`); 409 → re-show blocking state from the returned payload; 400/404 → inline error.
     - _Design: Frontend component tree; safe-API-consumption compliance. Requirements: 1.5, 2.2, 2.3, 3.1, 4.1, 5.1, 5.2, 6.1, NFR3.1, NFR3.2_
-  - [ ] 6.2 Relabel the existing anonymise flow to "Anonymise (Privacy Act)"
+  - [x] 6.2 Relabel the existing anonymise flow to "Anonymise (Privacy Act)"
     - In the v2 `CustomerProfile.tsx`, the inline `deleteOpen` modal (currently titled "Process Deletion Request", confirm button "Confirm Anonymisation", `handleProcessDeletion` → `DELETE /customers/{id}`) is relabelled to "Anonymise (Privacy Act)"; endpoint and behaviour preserved (R12.1). Extracting it to `frontend-v2/src/components/customers/AnonymiseModal.tsx` is preferred for symmetry but optional.
     - _Design: Frontend component tree (AnonymiseModal). Requirements: 12.1, 12.2_
-  - [ ] 6.3 Wire two distinct danger-zone buttons into the v2 `CustomerProfile.tsx`
+  - [x] 6.3 Wire two distinct danger-zone buttons into the v2 `CustomerProfile.tsx`
     - Replace the single "Process Deletion Request" header button with **"Hard Delete Customer"** (`variant="danger"`, opens `HardDeleteModal`) and **"Anonymise (Privacy Act)"** (`variant="ghost"`, opens the relabelled anonymise modal); gate both on `org_admin` via `useAuth()` (`user?.role === 'org_admin'`, the pattern used in `Settings.tsx`) AND `!customer.is_anonymised`. On hard-delete success, `fetchProfile()`/navigate to `/customers`. No route/sidebar changes.
     - _Design: Navigation & access. Requirements: 1.5, 10.1, 12.2, 12.3_
 
@@ -157,7 +226,7 @@ Language is fixed by the design: **Python 3.11 + async SQLAlchemy** (backend) an
     - Blocking state renders the issued-invoice list + NZ warning and disables the destructive button; deletable state renders the orphan-vehicle preview. Safe-consumption: feeding `{}` / `undefined` / missing-array preflight responses produces an empty render with no crash (NFR3). Use the shared `frontend-v2/src/test/providers.tsx` harness (its preview user is already `org_admin`).
     - _Requirements: 2.2, 2.3, 3.1, 6.1, NFR3.1_
 
-- [ ] 8. Checkpoint — final verification (relevant tests only)
+- [x] 8. Checkpoint — final verification (relevant tests only)
   - Backend: run only the new tests for this feature — `pytest tests/test_hard_delete_property.py tests/test_hard_delete_integration.py` (the 13 properties + integration). Frontend (`frontend-v2/`, `cwd: frontend-v2`, never `cd`): `npm run build` (must exit 0) and run only this feature's specs — `npx vitest run src/components/customers/HardDeleteModal.test.tsx` (plus any colocated new spec). Do NOT run unrelated suites, and do NOT touch docker/nginx or the production `frontend/`. Ensure the relevant tests pass; ask the user if questions arise.
 
 - [ ]* 9. (Optional) `reminder_queue` ON DELETE CASCADE migration

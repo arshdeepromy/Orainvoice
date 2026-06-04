@@ -142,12 +142,40 @@ async def get_revenue_summary(
     net_revenue = total_revenue_ex - refund_ex_gst
     net_gst = total_gst - refund_gst
 
+    # Monthly breakdown: GST-inclusive revenue grouped by calendar month (NZD).
+    # Reuses the same filters as the totals query (non-voided, non-draft,
+    # issue_date in range, branch scoping).
+    month_query = select(
+        func.to_char(Invoice.issue_date, "YYYY-MM").label("month"),
+        func.coalesce(
+            func.sum(Invoice.total * Invoice.exchange_rate_to_nzd), 0
+        ).label("revenue"),
+    ).where(
+        Invoice.org_id == org_id,
+        Invoice.status != "voided",
+        Invoice.status != "draft",
+        Invoice.issue_date >= period_start,
+        Invoice.issue_date <= period_end,
+    )
+    if branch_id is not None:
+        month_query = month_query.where(Invoice.branch_id == branch_id)
+    month_query = month_query.group_by("month").order_by("month")
+    month_rows = (await db.execute(month_query)).all()
+    monthly_breakdown = [
+        {
+            "month": r.month,
+            "revenue": Decimal(str(r.revenue or 0)).quantize(Decimal("0.01")),
+        }
+        for r in month_rows
+    ]
+
     return {
         "currency": "NZD",
         "total_revenue": total_revenue_ex,
         "total_gst": total_gst,
         "total_inclusive": total_rev,
         "invoice_count": count,
+        "total_invoices": count,
         "average_invoice": avg,
         "total_refunds": total_refunds,
         "refund_gst": refund_gst,
@@ -155,6 +183,7 @@ async def get_revenue_summary(
         "net_gst": net_gst,
         "period_start": period_start,
         "period_end": period_end,
+        "monthly_breakdown": monthly_breakdown,
     }
 
 
@@ -742,6 +771,25 @@ async def get_sms_usage(
     )
     total_sent = int(msg_result.scalar() or 0)
 
+    # Daily breakdown over the period, counting per day from the SAME two
+    # sources used for total_sent so the series sums to total_sent.
+    daily_rows = (
+        await db.execute(
+            _text(
+                "SELECT d::date AS day, "
+                " (SELECT COUNT(*) FROM sms_messages WHERE org_id = :oid AND direction = 'outbound' "
+                "    AND created_at::date = d::date) "
+                " + (SELECT COUNT(*) FROM notification_log WHERE org_id = :oid AND channel = 'sms' "
+                "    AND status != 'failed' AND created_at::date = d::date) AS cnt "
+                "FROM generate_series(CAST(:dstart AS date), CAST(:dend AS date), '1 day') d"
+            ),
+            {"oid": str(org_id), "dstart": date_from, "dend": date_to},
+        )
+    ).all()
+    daily_breakdown = [
+        {"date": r.day, "sms_count": int(r.cnt or 0)} for r in daily_rows if r.cnt
+    ]
+
     # Get plan included quota
     result = await db.execute(
         select(
@@ -788,6 +836,7 @@ async def get_sms_usage(
         "overage_charge_nzd": overage_charge,
         "per_sms_cost_nzd": per_sms_cost,
         "reset_at": reset_at,
+        "daily_breakdown": daily_breakdown,
     }
 
 
@@ -822,12 +871,18 @@ async def get_storage_usage(
     percentage = (used_bytes / quota_bytes * 100) if quota_bytes > 0 else 0.0
     used_gb = round(used_bytes / 1_073_741_824, 4)
 
+    # Per-category breakdown sourced from the existing storage calculation
+    # (Invoices / Customers / Vehicles), returning [{category, bytes}] rows.
+    from app.modules.storage.service import calculate_org_storage
+
+    storage = await calculate_org_storage(db, org_id)
+
     return {
         "used_bytes": used_bytes,
         "used_gb": used_gb,
         "quota_gb": quota_gb,
         "usage_percent": round(percentage, 2),
-        "breakdown": [],
+        "breakdown": storage["breakdown"],
     }
 
 
@@ -873,6 +928,7 @@ async def get_fleet_report(
             "total_spend": Decimal("0"),
             "vehicles_serviced": 0,
             "outstanding_balance": Decimal("0"),
+            "vehicles": [],
             "period_start": period_start,
             "period_end": period_end,
         }
@@ -909,12 +965,44 @@ async def get_fleet_report(
     )
     vehicles_serviced = vehicle_result.scalar() or 0
 
+    # Per-vehicle aggregate: spend and last service date grouped by vehicle
+    veh_rows = (await db.execute(
+        select(
+            Invoice.vehicle_rego.label("rego"),
+            Invoice.vehicle_make.label("make"),
+            Invoice.vehicle_model.label("model"),
+            func.coalesce(func.sum(Invoice.total), 0).label("total_spend"),
+            func.max(Invoice.issue_date).label("last_service_date"),
+        )
+        .where(
+            Invoice.org_id == org_id,
+            Invoice.customer_id.in_(customer_ids),
+            Invoice.status.notin_(["voided", "draft"]),
+            Invoice.vehicle_rego.isnot(None),
+            Invoice.issue_date >= period_start,
+            Invoice.issue_date <= period_end,
+        )
+        .group_by(Invoice.vehicle_rego, Invoice.vehicle_make, Invoice.vehicle_model)
+        .order_by(func.sum(Invoice.total).desc())
+    )).all()
+    vehicles = [
+        {
+            "rego": r.rego,
+            "make": r.make,
+            "model": r.model,
+            "total_spend": Decimal(str(r.total_spend or 0)),
+            "last_service_date": r.last_service_date,
+        }
+        for r in veh_rows
+    ]
+
     return {
         "fleet_account_id": fleet_id,
         "fleet_name": fleet.name,
         "total_spend": Decimal(str(spend_row.total_spend or 0)),
         "vehicles_serviced": vehicles_serviced,
         "outstanding_balance": Decimal(str(spend_row.outstanding or 0)),
+        "vehicles": vehicles,
         "period_start": period_start,
         "period_end": period_end,
     }

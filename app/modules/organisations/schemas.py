@@ -7,6 +7,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
+from app.modules.admin.schemas import SmsPackageTierPricing
+
 
 class OnboardingStepRequest(BaseModel):
     """POST /api/v1/org/onboarding request body.
@@ -938,3 +940,21 @@ class KioskPasswordResetResponse(BaseModel):
     message: str = Field(..., description="Success message")
     user_id: str = Field(..., description="UUID of the user whose password was reset")
     sessions_invalidated: int = Field(0, description="Number of sessions terminated")
+
+
+# ---------------------------------------------------------------------------
+# Plan SMS Pricing schema (reports-remediation spec — C3)
+# Requirements: 8.1, 8.2
+# ---------------------------------------------------------------------------
+
+
+class PlanSmsPricingResponse(BaseModel):
+    """GET /api/v1/org/plan-sms-pricing response.
+
+    Exposes the organisation plan's SMS package tiers to org users so the
+    SMS report can render its purchase section. Reuses the admin tier schema
+    shape (``SmsPackageTierPricing``). When the org plan has no configured
+    tiers, ``sms_package_pricing`` serialises to ``[]`` (R8.2).
+    """
+
+    sms_package_pricing: list[SmsPackageTierPricing] = Field(default_factory=list)

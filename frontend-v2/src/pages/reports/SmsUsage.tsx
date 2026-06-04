@@ -6,14 +6,14 @@ import ExportButtons from './ExportButtons'
 import SimpleBarChart from './SimpleBarChart'
 
 interface SmsUsageData {
-  total_sent: number
-  included_in_plan: number
-  package_credits_remaining: number
-  effective_quota: number
-  overage_count: number
-  overage_charge_nzd: number
-  per_sms_cost_nzd: number
-  reset_at: string | null
+  total_sent?: number
+  included_in_plan?: number
+  package_credits_remaining?: number
+  effective_quota?: number
+  overage_count?: number
+  overage_charge_nzd?: number
+  per_sms_cost_nzd?: number
+  reset_at?: string | null
   daily_breakdown?: { date: string; sms_count: number }[]
 }
 
@@ -38,11 +38,15 @@ function defaultRange(): DateRange {
   return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
 }
 
-const fmt = (v: number | undefined) => v != null ? `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}` : '$0.00'
+const fmt = (v: number | undefined) =>
+  `$${(v ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`
 
 /**
  * SMS usage report — sent count, included quota, overage, packages, and daily breakdown.
- * Requirements: 7.1, 7.2, 7.3
+ * Tiers are sourced from the org plan via `GET /org/plan-sms-pricing`; the daily chart
+ * is sourced from `data.daily_breakdown` returned by `GET /reports/sms-usage`.
+ *
+ * Requirements: 8.3, 8.4, 9.3, 9.4, 14.1, 14.2, 19.1, 19.3, 21.1
  */
 export default function SmsUsage() {
   const [range, setRange] = useState<DateRange>(defaultRange)
@@ -55,39 +59,51 @@ export default function SmsUsage() {
   const [confirmTier, setConfirmTier] = useState<SmsPackageTier | null>(null)
   const [purchaseError, setPurchaseError] = useState('')
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
     setError('')
     try {
       const [usageRes, pkgRes] = await Promise.all([
         apiClient.get<SmsUsageData>('/reports/sms-usage', {
           params: { start_date: range.from, end_date: range.to },
+          signal,
         }),
-        apiClient.get<SmsPackage[]>('/org/sms-packages'),
+        apiClient.get<SmsPackage[]>('/org/sms-packages', { signal }),
       ])
-      setData(usageRes.data)
-      setPackages(pkgRes.data)
+      setData(usageRes.data ?? null)
+      setPackages(pkgRes.data ?? [])
     } catch {
-      setError('Failed to load SMS usage report.')
+      if (!signal?.aborted) setError('Failed to load SMS usage report.')
     } finally {
-      setLoading(false)
+      if (!signal?.aborted) setLoading(false)
     }
   }, [range])
 
-  const fetchTiers = useCallback(async () => {
-    try {
-      const res = await apiClient.get<{ sms_package_pricing?: SmsPackageTier[] }>('/org/sms-usage')
-      // Tiers come from the plan; fall back to empty if not present
-      if (res.data && Array.isArray((res.data as Record<string, unknown>).sms_package_pricing)) {
-        setTiers((res.data as Record<string, unknown>).sms_package_pricing as SmsPackageTier[])
-      }
-    } catch {
-      // Tiers are optional — silently ignore
-    }
-  }, [])
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchData(controller.signal)
+    return () => controller.abort()
+  }, [fetchData])
 
-  useEffect(() => { fetchData() }, [fetchData])
-  useEffect(() => { fetchTiers() }, [fetchTiers])
+  // Source SMS package tiers from the org plan (GET /org/plan-sms-pricing).
+  // Read `sms_package_pricing ?? []` so the purchase section is gated on tier presence.
+  useEffect(() => {
+    const controller = new AbortController()
+    const run = async () => {
+      try {
+        const res = await apiClient.get<{ sms_package_pricing?: SmsPackageTier[] }>(
+          '/org/plan-sms-pricing',
+          { signal: controller.signal },
+        )
+        setTiers(res.data?.sms_package_pricing ?? [])
+      } catch {
+        // Tiers are optional — silently ignore so the rest of the report renders.
+        if (!controller.signal.aborted) setTiers([])
+      }
+    }
+    run()
+    return () => controller.abort()
+  }, [])
 
   const handlePurchase = async () => {
     if (!confirmTier) return
@@ -96,7 +112,9 @@ export default function SmsUsage() {
     try {
       await apiClient.post('/org/sms-packages/purchase', { tier_name: confirmTier.tier_name })
       setConfirmTier(null)
-      fetchData()
+      // Refetch usage + packages so the new credits show up
+      const controller = new AbortController()
+      fetchData(controller.signal)
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
       setPurchaseError(msg || 'Purchase failed. Please try again.')
@@ -104,6 +122,8 @@ export default function SmsUsage() {
       setPurchasing(false)
     }
   }
+
+  const daily = data?.daily_breakdown ?? []
 
   return (
     <div data-print-content>
@@ -131,15 +151,15 @@ export default function SmsUsage() {
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-6">
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Total SMS Sent</p>
-              <p className="text-2xl font-semibold text-text mono">{data.total_sent}</p>
+              <p className="text-2xl font-semibold text-text mono">{data.total_sent ?? 0}</p>
             </div>
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Included in Plan</p>
-              <p className="text-2xl font-semibold text-text mono">{data.included_in_plan}</p>
+              <p className="text-2xl font-semibold text-text mono">{data.included_in_plan ?? 0}</p>
             </div>
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Overage Count</p>
-              <p className="text-2xl font-semibold text-warn mono">{data.overage_count}</p>
+              <p className="text-2xl font-semibold text-warn mono">{data.overage_count ?? 0}</p>
             </div>
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Overage Charge</p>
@@ -148,18 +168,20 @@ export default function SmsUsage() {
           </div>
 
           {/* Daily breakdown bar chart */}
-          {data.daily_breakdown && data.daily_breakdown.length > 0 && (
-            <div className="rounded-card border border-border bg-card p-4 mb-6 shadow-card">
-              <h3 className="text-sm font-medium text-text mb-3">Daily SMS Sent</h3>
+          <div className="rounded-card border border-border bg-card p-4 mb-6 shadow-card">
+            <h3 className="text-sm font-medium text-text mb-3">Daily SMS Sent</h3>
+            {daily.length > 0 ? (
               <SimpleBarChart
                 title="Daily SMS sent"
-                items={data.daily_breakdown.map((d) => ({
+                items={daily.map((d) => ({
                   label: new Date(d.date).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' }),
-                  value: d.sms_count,
+                  value: d.sms_count ?? 0,
                 }))}
               />
-            </div>
-          )}
+            ) : (
+              <p className="text-sm text-muted py-8 text-center">No daily SMS data for this period.</p>
+            )}
+          </div>
 
           {/* Active SMS packages */}
           <div className="rounded-card border border-border bg-card p-4 mb-6 shadow-card">
@@ -185,7 +207,7 @@ export default function SmsUsage() {
                           {new Date(pkg.purchased_at).toLocaleDateString('en-NZ')}
                         </td>
                         <td className="py-2 pr-4 text-right text-text mono">
-                          {pkg.credits_remaining} / {pkg.sms_quantity}
+                          {pkg.credits_remaining ?? 0} / {pkg.sms_quantity ?? 0}
                         </td>
                         <td className="py-2 text-right text-muted mono">{fmt(pkg.price_nzd)}</td>
                       </tr>
@@ -196,7 +218,7 @@ export default function SmsUsage() {
             )}
           </div>
 
-          {/* Purchase SMS packages */}
+          {/* Purchase SMS packages — gated on tier presence (≥1) */}
           {tiers.length > 0 && (
             <div className="rounded-card border border-border bg-card p-4 mb-6 shadow-card">
               <h3 className="text-sm font-medium text-text mb-3">Purchase SMS Package</h3>
@@ -207,7 +229,7 @@ export default function SmsUsage() {
                     className="rounded-card border border-border p-4 flex flex-col items-center gap-2"
                   >
                     <p className="font-medium text-text">{tier.tier_name}</p>
-                    <p className="text-sm text-muted">{tier.sms_quantity} SMS credits</p>
+                    <p className="text-sm text-muted">{tier.sms_quantity ?? 0} SMS credits</p>
                     <p className="text-lg font-semibold text-text mono">{fmt(tier.price_nzd)}</p>
                     <button
                       type="button"

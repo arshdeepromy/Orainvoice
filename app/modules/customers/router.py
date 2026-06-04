@@ -18,7 +18,11 @@ from app.modules.customers.schemas import (
     CustomerAnonymiseResponse,
     CustomerCreateRequest,
     CustomerCreateResponse,
+    CustomerDeletionBlockedError,
+    CustomerDeletionPreflightResponse,
     CustomerExportResponse,
+    CustomerHardDeleteRequest,
+    CustomerHardDeleteResponse,
     CustomerListResponse,
     CustomerMergeRequest,
     CustomerMergeResponse,
@@ -49,9 +53,11 @@ from app.modules.customers.service import (
     get_customer_profile,
     get_customer_reminder_config,
     get_fleet_account,
+    hard_delete_customer,
     list_fleet_accounts,
     merge_customers,
     notify_customer,
+    preflight_customer_deletion,
     search_customers,
     send_portal_link,
     tag_vehicle_to_customer,
@@ -941,6 +947,110 @@ async def notify_customer_endpoint(
         )
 
     return CustomerNotifyResponse(**result)
+
+
+# ---------------------------------------------------------------------------
+# Task 4.1 — Hard delete preflight + execution endpoints
+# Requirements: 1.5, 2.2, 2.3, 4.1, 5.2, 9.4, 10.1, 12.1, 12.2, 12.3
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{customer_id}/deletion-preflight",
+    response_model=CustomerDeletionPreflightResponse,
+    responses={
+        400: {"description": "Invalid customer ID format"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Customer not found"},
+    },
+    summary="Preflight checks for hard-deleting a customer",
+    dependencies=[require_role("org_admin")],
+)
+async def customer_deletion_preflight_endpoint(
+    customer_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Read-only assessment for the hard-delete confirmation screen.
+
+    Returns whether the customer can be hard-deleted now, the blocking
+    documents that must be removed/resolved first, the deletable draft
+    invoices, and the vehicles that would be orphaned.
+
+    Only Org_Admin can access this endpoint (it reveals invoice numbers).
+
+    Requirements: 2.2, 2.3, 3.1, 12.1, 12.2, 12.3
+    """
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+    try:
+        cust_uuid = uuid.UUID(customer_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid customer ID format"})
+    try:
+        data = await preflight_customer_deletion(db, org_id=org_uuid, customer_id=cust_uuid)
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    return CustomerDeletionPreflightResponse(**data)
+
+
+@router.post(
+    "/{customer_id}/hard-delete",
+    response_model=CustomerHardDeleteResponse,
+    responses={
+        400: {"description": "Validation error (bad reason, bad confirmation, draft invoices remain)"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Customer not found"},
+        409: {"description": "Blocked by legally-retained documents"},
+    },
+    summary="Guarded hard delete of a customer (irreversible)",
+    dependencies=[require_role("org_admin")],
+)
+async def hard_delete_customer_endpoint(
+    customer_id: str,
+    payload: CustomerHardDeleteRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Guarded hard delete of a customer within one transaction.
+
+    Permanently removes the customer row and all non-financial dependent
+    rows. Blocks when legally-retained financial documents exist (issued
+    invoices, open claims, job cards, fleet checklist submissions).
+    Requires a mandatory reason and an irreversible confirmation string.
+    Orphans linked vehicles instead of destroying them.
+
+    Only Org_Admin can perform this irreversible action.
+
+    Requirements: 1.5, 2.2, 2.3, 4.1, 5.2, 9.4, 10.1
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+    try:
+        cust_uuid = uuid.UUID(customer_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid customer ID format"})
+    try:
+        result = await hard_delete_customer(
+            db,
+            org_id=org_uuid,
+            customer_id=cust_uuid,
+            user_id=user_uuid or uuid.uuid4(),
+            reason=payload.reason,
+            confirmation=payload.confirmation,
+            ip_address=ip_address,
+        )
+    except CustomerDeletionBlockedError as exc:
+        return JSONResponse(status_code=409, content={"detail": exc.message, "blocking": exc.payload})
+    except ValueError as exc:
+        msg = str(exc)
+        status = 404 if "not found" in msg.lower() else 400
+        return JSONResponse(status_code=status, content={"detail": msg})
+    return CustomerHardDeleteResponse(**result)
 
 
 # ---------------------------------------------------------------------------

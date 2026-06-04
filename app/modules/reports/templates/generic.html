@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+{#
+  Generic report PDF template (reports-remediation C1).
+
+  Renders any report `data` dict reasonably:
+    - Title (prettified report_key), org name, generated_at timestamp.
+    - Scalar fields rendered as a key/value table.
+    - Known list fields (monthly_breakdown, breakdown, vehicles, services,
+      invoices, items, daily_breakdown) rendered as their own tables, each
+      with a humanised column header per key.
+    - Any other list-of-dict fields rendered generically.
+
+  Visual style approximates the v2 design system (OraInvoice_Handoff/app/ds.css):
+  neutral palette, IBM-Plex-style typography, soft borders, accent #2F62F0.
+  CSS is inlined because WeasyPrint renders this standalone (no external links).
+
+  Requirements: 10.4, 20.5 · Design §"C1 — Export layer".
+#}
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>{{ report_title }} — {{ org_name }}</title>
+<style>
+  @page {
+    size: A4;
+    margin: 22mm 16mm 18mm;
+    @bottom-center {
+      content: "Page " counter(page) " of " counter(pages);
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+      font-size: 9px;
+      color: #97A0AE;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    color: #111722;
+    font-size: 11px;
+    line-height: 1.45;
+    margin: 0;
+  }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 2px solid #2F62F0;
+    padding-bottom: 12px;
+    margin-bottom: 18px;
+  }
+  .header .org { font-size: 16px; font-weight: 700; color: #0B1220; }
+  .header .eyebrow {
+    font-size: 9px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: #97A0AE; margin-bottom: 4px;
+  }
+  .header .title { font-size: 20px; font-weight: 700; color: #0B1220; letter-spacing: -0.02em; }
+  .header .meta { text-align: right; font-size: 9.5px; color: #687283; }
+  .header .meta .gen { margin-top: 4px; }
+
+  h2.section {
+    font-size: 12px; font-weight: 700; color: #0B1220;
+    margin: 20px 0 8px; letter-spacing: -0.01em;
+  }
+  table {
+    width: 100%; border-collapse: collapse; margin-bottom: 6px;
+  }
+  thead th {
+    text-align: left; font-size: 8.5px; font-weight: 600;
+    letter-spacing: 0.06em; text-transform: uppercase; color: #97A0AE;
+    padding: 7px 10px; border-bottom: 1px solid #D7DCE3;
+    background: #F5F6F8;
+  }
+  thead th.num, tbody td.num { text-align: right; }
+  tbody td {
+    padding: 7px 10px; border-bottom: 1px solid #E8EBF0;
+    font-size: 10.5px; vertical-align: top;
+  }
+  tbody tr:nth-child(even) td { background: #FAFBFC; }
+  .kv td.k { color: #687283; width: 45%; font-weight: 500; }
+  .kv td.v { font-weight: 600; color: #111722; }
+  .num { font-variant-numeric: tabular-nums; }
+  .empty {
+    color: #97A0AE; font-style: italic; font-size: 10.5px;
+    padding: 10px 0;
+  }
+  .footer-note {
+    margin-top: 24px; padding-top: 10px; border-top: 1px solid #E8EBF0;
+    font-size: 8.5px; color: #97A0AE;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <div class="eyebrow">OraInvoice Report</div>
+      <div class="title">{{ report_title }}</div>
+    </div>
+    <div class="meta">
+      <div class="org">{{ org_name }}</div>
+      <div class="gen">Generated {{ generated_at }}</div>
+      {% if data.period_start and data.period_end %}
+      <div>Period: {{ data.period_start }} → {{ data.period_end }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {#-- Scalar summary fields (everything that is not a list/dict). --#}
+  {% set scalar_keys = [] %}
+  {% for key, value in (data or {}).items() %}
+    {% if value is not mapping and value is not sequence or value is string %}
+      {% set _ = scalar_keys.append(key) %}
+    {% endif %}
+  {% endfor %}
+  {% if scalar_keys %}
+  <h2 class="section">Summary</h2>
+  <table class="kv">
+    <tbody>
+      {% for key in scalar_keys %}
+      <tr>
+        <td class="k">{{ key.replace('_', ' ').replace('-', ' ').title() }}</td>
+        <td class="v num">{{ data.get(key) if data.get(key) is not none else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {#-- Revenue: monthly_breakdown [{month, revenue}] --#}
+  {% if 'monthly_breakdown' in (data or {}) %}
+  <h2 class="section">Monthly Breakdown</h2>
+  {% set rows = data.monthly_breakdown or [] %}
+  {% if rows %}
+  <table>
+    <thead><tr><th>Month</th><th class="num">Revenue (NZD)</th></tr></thead>
+    <tbody>
+      {% for m in rows %}
+      <tr><td>{{ m.get('month', '—') }}</td><td class="num">{{ m.get('revenue') | money }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">No monthly data for this period.</div>{% endif %}
+  {% endif %}
+
+  {#-- Invoice status / storage: breakdown rows --#}
+  {% if 'breakdown' in (data or {}) %}
+  <h2 class="section">Breakdown</h2>
+  {% set rows = data.breakdown or [] %}
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        {% if rows[0].get('status') is not none %}
+        <th>Status</th><th class="num">Count</th><th class="num">Total (NZD)</th>
+        {% elif rows[0].get('category') is not none %}
+        <th>Category</th><th class="num">Bytes</th>
+        {% else %}
+        {% for col in rows[0].keys() %}<th class="num">{{ col.replace('_', ' ').title() }}</th>{% endfor %}
+        {% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        {% if r.get('status') is not none %}
+        <td>{{ r.get('status', '—') }}</td><td class="num">{{ r.get('count', 0) }}</td><td class="num">{{ r.get('total') | money }}</td>
+        {% elif r.get('category') is not none %}
+        <td>{{ r.get('category', '—') }}</td><td class="num">{{ r.get('bytes', 0) }}</td>
+        {% else %}
+        {% for col in rows[0].keys() %}<td class="num">{{ r.get(col) if r.get(col) is not none else '—' }}</td>{% endfor %}
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">No breakdown data available.</div>{% endif %}
+  {% endif %}
+
+  {#-- Fleet: vehicles [{rego, make, model, total_spend, last_service_date}] --#}
+  {% if 'vehicles' in (data or {}) %}
+  <h2 class="section">Vehicles</h2>
+  {% set rows = data.vehicles or [] %}
+  {% if rows %}
+  <table>
+    <thead><tr><th>Rego</th><th>Make</th><th>Model</th><th class="num">Total Spend (NZD)</th><th>Last Service</th></tr></thead>
+    <tbody>
+      {% for v in rows %}
+      <tr>
+        <td>{{ v.get('rego', '—') }}</td>
+        <td>{{ v.get('make') or '—' }}</td>
+        <td>{{ v.get('model') or '—' }}</td>
+        <td class="num">{{ v.get('total_spend') | money }}</td>
+        <td>{{ v.get('last_service_date') or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">No vehicles serviced in this period.</div>{% endif %}
+  {% endif %}
+
+  {#-- Top services: services [{description, count, total_revenue}] --#}
+  {% if 'services' in (data or {}) %}
+  <h2 class="section">Top Services</h2>
+  {% set rows = data.services or [] %}
+  {% if rows %}
+  <table>
+    <thead><tr><th>Service</th><th class="num">Count</th><th class="num">Revenue (NZD)</th></tr></thead>
+    <tbody>
+      {% for s in rows %}
+      <tr>
+        <td>{{ s.get('description', '—') }}</td>
+        <td class="num">{{ s.get('count', 0) }}</td>
+        <td class="num">{{ s.get('total_revenue') | money }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">No services for this period.</div>{% endif %}
+  {% endif %}
+
+  {#-- Outstanding: invoices [...] --#}
+  {% if 'invoices' in (data or {}) %}
+  <h2 class="section">Outstanding Invoices</h2>
+  {% set rows = data.invoices or [] %}
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Invoice</th><th>Customer</th><th>Vehicle</th><th>Due Date</th>
+        <th class="num">Total (NZD)</th><th class="num">Balance (NZD)</th><th class="num">Days Overdue</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for inv in rows %}
+      <tr>
+        <td>{{ inv.get('invoice_number') or '—' }}</td>
+        <td>{{ inv.get('customer_name', '—') }}</td>
+        <td>{{ inv.get('vehicle_rego') or '—' }}</td>
+        <td>{{ inv.get('due_date') or '—' }}</td>
+        <td class="num">{{ inv.get('total') | money }}</td>
+        <td class="num">{{ inv.get('balance_due') | money }}</td>
+        <td class="num">{{ inv.get('days_overdue', 0) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">No outstanding invoices.</div>{% endif %}
+  {% endif %}
+
+  {#-- Customer statement: items [...] --#}
+  {% if 'items' in (data or {}) %}
+  <h2 class="section">Statement Lines</h2>
+  {% set rows = data['items'] or [] %}
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th><th>Description</th><th>Reference</th>
+        <th class="num">Debit (NZD)</th><th class="num">Credit (NZD)</th><th class="num">Balance (NZD)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in rows %}
+      <tr>
+        <td>{{ item.get('date') or '—' }}</td>
+        <td>{{ item.get('description', '—') }}</td>
+        <td>{{ item.get('reference') or '—' }}</td>
+        <td class="num">{{ item.get('debit') | money }}</td>
+        <td class="num">{{ item.get('credit') | money }}</td>
+        <td class="num">{{ item.get('balance') | money }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">No statement lines for this period.</div>{% endif %}
+  {% endif %}
+
+  {#-- SMS / Carjam: daily_breakdown [{date, sms_count|lookups}] --#}
+  {% if 'daily_breakdown' in (data or {}) %}
+  <h2 class="section">Daily Breakdown</h2>
+  {% set rows = data.daily_breakdown or [] %}
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        {% if rows[0].get('sms_count') is not none %}<th class="num">SMS Count</th>
+        {% elif rows[0].get('lookups') is not none %}<th class="num">Lookups</th>
+        {% else %}<th class="num">Count</th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in rows %}
+      <tr>
+        <td>{{ p.get('date', '—') }}</td>
+        {% if p.get('sms_count') is not none %}<td class="num">{{ p.get('sms_count', 0) }}</td>
+        {% elif p.get('lookups') is not none %}<td class="num">{{ p.get('lookups', 0) }}</td>
+        {% else %}<td class="num">0</td>{% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">No daily activity for this period.</div>{% endif %}
+  {% endif %}
+
+  <div class="footer-note">
+    This report was generated by OraInvoice for {{ org_name }} on {{ generated_at }}.
+    Figures are in NZD and reflect the data available at generation time.
+  </div>
+</body>
+</html>

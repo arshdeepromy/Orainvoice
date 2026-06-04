@@ -2357,3 +2357,781 @@ async def send_portal_link(
         "message": "Portal link sent successfully",
         "recipient": customer.email,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 2.1 — Hard delete constants + preflight
+# Requirements: 2.2, 2.3, 2.5, 2.6, 3.1, 6.1, 10.2, 10.3, 11.4
+# ---------------------------------------------------------------------------
+
+# Every invoice status that is NOT 'draft' — i.e. a legally-retained
+# Financial_Document that blocks a customer hard delete (R2.1, R2.5).
+ISSUED_INVOICE_STATUSES = (
+    "issued",
+    "partially_paid",
+    "paid",
+    "overdue",
+    "voided",
+    "refunded",
+    "partially_refunded",
+)
+
+# New Zealand IRD seven-year retention warning shown before any hard-delete
+# action (R3.1, R3.3).
+NZ_RETENTION_WARNING = (
+    "New Zealand tax law (IRD) requires tax invoices and business records to be "
+    "kept for approximately 7 years. Deleting issued invoices or a customer with "
+    "issued invoices may breach your record-keeping obligations. This action cannot "
+    "be undone."
+)
+
+
+async def preflight_customer_deletion(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    customer_id: uuid.UUID,
+) -> dict:
+    """Read-only assessment for the hard-delete confirmation screen.
+
+    Returns whether the customer can be hard-deleted right now, the blocking
+    documents that must be removed/resolved first (issued invoices, open
+    claims, job cards, and fleet checklist submissions), the deletable draft
+    invoices, and the vehicles that would be orphaned on a successful delete.
+
+    Raises ``ValueError("Customer not found")`` when the customer does not
+    exist within the requesting organisation (R9.4, R10.2).
+
+    Requirements: 2.2, 2.3, 2.5, 2.6, 3.1, 6.1, 10.2, 10.3, 11.4
+    """
+    from app.modules.claims.models import CustomerClaim
+    from app.modules.fleet_portal.models import FleetChecklistSubmission
+    from app.modules.invoices.models import Invoice
+    from app.modules.job_cards.models import JobCard
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
+    from app.modules.admin.models import GlobalVehicle
+
+    # ------------------------------------------------------------------
+    # 1. Load the customer — org-scoped (R10.2, R10.3)
+    # ------------------------------------------------------------------
+    result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.org_id == org_id,
+        )
+    )
+    customer = result.scalar_one_or_none()
+    if customer is None:
+        raise ValueError("Customer not found")
+
+    # ------------------------------------------------------------------
+    # 2. Issued (blocking) invoices — status IN ISSUED_INVOICE_STATUSES
+    #    (R2.1, R2.2, R2.5)
+    # ------------------------------------------------------------------
+    issued_stmt = select(Invoice).where(
+        Invoice.customer_id == customer_id,
+        Invoice.org_id == org_id,
+        Invoice.status.in_(ISSUED_INVOICE_STATUSES),
+    )
+    issued_result = await db.execute(issued_stmt)
+    issued_invoices = issued_result.scalars().all()
+    blocking_invoices = [
+        {
+            "id": str(inv.id),
+            "invoice_number": inv.invoice_number,
+            "status": inv.status,
+        }
+        for inv in issued_invoices
+    ]
+
+    # ------------------------------------------------------------------
+    # 3. Draft invoices — surfaced so the UI can offer to delete them
+    #    before proceeding (R2.5; drafts are non-blocking but require
+    #    prior delete, per the Referential Integrity Matrix Row 2)
+    # ------------------------------------------------------------------
+    draft_stmt = select(Invoice).where(
+        Invoice.customer_id == customer_id,
+        Invoice.org_id == org_id,
+        Invoice.status == "draft",
+    )
+    draft_result = await db.execute(draft_stmt)
+    draft_invoices_orm = draft_result.scalars().all()
+    draft_invoices = [
+        {
+            "id": str(inv.id),
+            "invoice_number": inv.invoice_number,
+            "status": inv.status,
+        }
+        for inv in draft_invoices_orm
+    ]
+
+    # ------------------------------------------------------------------
+    # 4. Open customer claims — legal/financial records that block (D3,
+    #    R11.4, Matrix Row 9)
+    # ------------------------------------------------------------------
+    claims_stmt = select(CustomerClaim).where(
+        CustomerClaim.customer_id == customer_id,
+        CustomerClaim.org_id == org_id,
+    )
+    claims_result = await db.execute(claims_stmt)
+    claims_orm = claims_result.scalars().all()
+    blocking_claims = [
+        {
+            "id": str(c.id),
+            "claim_number": c.reference,
+            "status": c.status,
+        }
+        for c in claims_orm
+    ]
+
+    # ------------------------------------------------------------------
+    # 5. Job cards — work-order history blocks the delete (Matrix Row 8)
+    # ------------------------------------------------------------------
+    jc_stmt = select(JobCard).where(
+        JobCard.customer_id == customer_id,
+        JobCard.org_id == org_id,
+    )
+    jc_result = await db.execute(jc_stmt)
+    jc_orm = jc_result.scalars().all()
+    blocking_job_cards = [
+        {
+            "id": str(jc.id),
+            "status": jc.status,
+        }
+        for jc in jc_orm
+    ]
+
+    # ------------------------------------------------------------------
+    # 6. Fleet checklist submissions for the customer's vehicles —
+    #    NZTA pre-trip inspection records block the delete (Matrix Row 20).
+    #    These are linked via customer_vehicles.id, not directly via
+    #    customer_id, so we first collect the customer's vehicle link IDs
+    #    then query submissions for those IDs.
+    # ------------------------------------------------------------------
+    cv_stmt = select(CustomerVehicle).where(
+        CustomerVehicle.customer_id == customer_id,
+        CustomerVehicle.org_id == org_id,
+    )
+    cv_result = await db.execute(cv_stmt)
+    customer_vehicles_all = cv_result.scalars().all()
+    cv_ids = [cv.id for cv in customer_vehicles_all]
+
+    blocking_fleet_checklists: list[dict] = []
+    if cv_ids:
+        fcs_stmt = select(FleetChecklistSubmission).where(
+            FleetChecklistSubmission.customer_vehicle_id.in_(cv_ids),
+        )
+        fcs_result = await db.execute(fcs_stmt)
+        fcs_orm = fcs_result.scalars().all()
+
+        # Build a quick lookup: customer_vehicle_id → rego
+        cv_to_rego: dict[uuid.UUID, str | None] = {}
+        for cv in customer_vehicles_all:
+            # Resolve rego from the linked vehicle row
+            rego: str | None = None
+            if cv.global_vehicle_id:
+                gv_r = await db.execute(
+                    select(GlobalVehicle.rego).where(
+                        GlobalVehicle.id == cv.global_vehicle_id
+                    )
+                )
+                rego = gv_r.scalar_one_or_none()
+            elif cv.org_vehicle_id:
+                ov_r = await db.execute(
+                    select(OrgVehicle.rego).where(
+                        OrgVehicle.id == cv.org_vehicle_id,
+                        OrgVehicle.org_id == org_id,
+                    )
+                )
+                rego = ov_r.scalar_one_or_none()
+            cv_to_rego[cv.id] = rego
+
+        blocking_fleet_checklists = [
+            {
+                "id": str(fcs.id),
+                "vehicle_rego": cv_to_rego.get(fcs.customer_vehicle_id),
+            }
+            for fcs in fcs_orm
+        ]
+
+    # ------------------------------------------------------------------
+    # 7. Orphan vehicles — vehicles that would be unlinked (but preserved)
+    #    after the hard delete (R6.1, R6.2)
+    # ------------------------------------------------------------------
+    orphan_vehicles: list[dict] = []
+    for cv in customer_vehicles_all:
+        if cv.global_vehicle_id:
+            gv_r = await db.execute(
+                select(GlobalVehicle).where(GlobalVehicle.id == cv.global_vehicle_id)
+            )
+            gv = gv_r.scalar_one_or_none()
+            if gv:
+                orphan_vehicles.append({
+                    "id": str(gv.id),
+                    "rego": gv.rego,
+                    "make": gv.make,
+                    "model": gv.model,
+                    "source": "global",
+                })
+        elif cv.org_vehicle_id:
+            ov_r = await db.execute(
+                select(OrgVehicle).where(
+                    OrgVehicle.id == cv.org_vehicle_id,
+                    OrgVehicle.org_id == org_id,
+                )
+            )
+            ov = ov_r.scalar_one_or_none()
+            if ov:
+                orphan_vehicles.append({
+                    "id": str(ov.id),
+                    "rego": ov.rego,
+                    "make": ov.make,
+                    "model": ov.model,
+                    "source": "org",
+                })
+
+    # ------------------------------------------------------------------
+    # 8. can_delete — True only when no blocking sources present
+    # ------------------------------------------------------------------
+    can_delete = (
+        len(blocking_invoices) == 0
+        and len(blocking_claims) == 0
+        and len(blocking_job_cards) == 0
+        and len(blocking_fleet_checklists) == 0
+    )
+
+    return {
+        "can_delete": can_delete,
+        "blocking_invoices": blocking_invoices,
+        "blocking_invoice_count": len(blocking_invoices),
+        "blocking_claims": blocking_claims,
+        "blocking_job_cards": blocking_job_cards,
+        "blocking_fleet_checklists": blocking_fleet_checklists,
+        "draft_invoices": draft_invoices,
+        "orphan_vehicles": orphan_vehicles,
+        "nz_retention_warning": NZ_RETENTION_WARNING,
+    }
+
+
+async def hard_delete_customer(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    user_id: uuid.UUID,
+    reason: str,
+    confirmation: str,
+    ip_address: str | None = None,
+) -> dict:
+    """Guarded hard delete of a customer within one transaction.
+
+    This function implements a secure, transactional customer deletion with
+    multiple validation guards. The deletion order ensures referential
+    integrity and preserves legally-retained financial records.
+
+    Order of operations (all within the caller's session.begin()):
+      1. Load customer (org-scoped). Not found -> ValueError (R9.4).
+      2. Validate reason non-empty after strip (R4.1, R4.2) -> ValueError.
+      3. Validate confirmation present/valid (R5.2) -> ValueError.
+      4. Re-count blocking documents: issued invoices (R2.1), open claims
+         (matrix Row 9), job_cards (Row 8), and fleet checklist submissions
+         for the customer's vehicles (Row 20). If any -> CustomerDeletionBlockedError
+         carrying the blocking payload (R2.2/2.3).
+      5. [Task 3.5] Resolve each referencing table per the matrix (children first).
+      6. [Task 3.5] Delete the customers row (R1.1).
+      7. [Task 3.9] write_audit_log(action="customer.hard_deleted", ...) (R8).
+      8. flush() — no commit (NFR2.2).
+
+    Returns the result dict (R1.2).
+
+    Requirements: 1.1, 1.2, 1.3, 2.x, 4.x, 5.x, 6.x, 7.x, 8.x, 9.x, 10.x, 11.x
+    """
+    from app.modules.claims.models import CustomerClaim
+    from app.modules.customers.schemas import CustomerDeletionBlockedError
+    from app.modules.fleet_portal.models import FleetChecklistSubmission
+    from app.modules.invoices.models import Invoice
+    from app.modules.job_cards.models import JobCard
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
+    from app.modules.admin.models import GlobalVehicle
+
+    # ------------------------------------------------------------------
+    # STEP 1: Load customer org-scoped (R9.4, R10.2)
+    # ------------------------------------------------------------------
+    result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.org_id == org_id,
+        )
+    )
+    customer = result.scalar_one_or_none()
+    if customer is None:
+        raise ValueError("Customer not found")
+
+    # ------------------------------------------------------------------
+    # STEP 2: Validate reason non-empty after strip (R4.1, R4.2)
+    # ------------------------------------------------------------------
+    if not reason or not reason.strip():
+        raise ValueError("A deletion reason is required")
+
+    # ------------------------------------------------------------------
+    # STEP 3: Validate confirmation (R5.2)
+    #
+    # Confirmation must equal the customer's display name (case-insensitive,
+    # trimmed) OR the literal string "DELETE". The customer display name
+    # falls back to "first_name last_name" if display_name is not set.
+    # ------------------------------------------------------------------
+    expected_name = customer.display_name
+    if not expected_name or not expected_name.strip():
+        # Fallback: construct from first_name + last_name
+        expected_name = f"{customer.first_name or ''} {customer.last_name or ''}".strip()
+
+    confirmation_normalized = confirmation.strip().lower() if confirmation else ""
+    expected_normalized = expected_name.strip().lower() if expected_name else ""
+    literal_delete = "delete"
+
+    if confirmation_normalized not in (expected_normalized, literal_delete):
+        raise ValueError("Confirmation does not match")
+
+    # ------------------------------------------------------------------
+    # STEP 4: Re-count blocking documents (R2.1, R2.2, R2.3, R11.4)
+    #
+    # Even if preflight said can_delete=true, the state may have changed
+    # between preflight and hard-delete. Re-validate:
+    #   - Issued (non-draft) invoices
+    #   - Open customer claims
+    #   - Job cards
+    #   - Fleet checklist submissions for this customer's vehicles
+    # ------------------------------------------------------------------
+
+    # 4a. Issued invoices
+    issued_stmt = select(Invoice).where(
+        Invoice.customer_id == customer_id,
+        Invoice.org_id == org_id,
+        Invoice.status.in_(ISSUED_INVOICE_STATUSES),
+    )
+    issued_result = await db.execute(issued_stmt)
+    issued_invoices = issued_result.scalars().all()
+
+    # 4b. Customer claims
+    claims_stmt = select(CustomerClaim).where(
+        CustomerClaim.customer_id == customer_id,
+        CustomerClaim.org_id == org_id,
+    )
+    claims_result = await db.execute(claims_stmt)
+    claims_orm = claims_result.scalars().all()
+
+    # 4c. Job cards
+    jc_stmt = select(JobCard).where(
+        JobCard.customer_id == customer_id,
+        JobCard.org_id == org_id,
+    )
+    jc_result = await db.execute(jc_stmt)
+    jc_orm = jc_result.scalars().all()
+
+    # 4d. Fleet checklist submissions for the customer's vehicles
+    cv_stmt = select(CustomerVehicle).where(
+        CustomerVehicle.customer_id == customer_id,
+        CustomerVehicle.org_id == org_id,
+    )
+    cv_result = await db.execute(cv_stmt)
+    customer_vehicles_all = cv_result.scalars().all()
+    cv_ids = [cv.id for cv in customer_vehicles_all]
+
+    fcs_orm: list = []
+    if cv_ids:
+        fcs_stmt = select(FleetChecklistSubmission).where(
+            FleetChecklistSubmission.customer_vehicle_id.in_(cv_ids),
+        )
+        fcs_result = await db.execute(fcs_stmt)
+        fcs_orm = fcs_result.scalars().all()
+
+    # If ANY blocking documents exist, raise CustomerDeletionBlockedError
+    if issued_invoices or claims_orm or jc_orm or fcs_orm:
+        # Build the blocking payload (same shape as preflight)
+        blocking_invoices = [
+            {
+                "id": str(inv.id),
+                "invoice_number": inv.invoice_number,
+                "status": inv.status,
+            }
+            for inv in issued_invoices
+        ]
+
+        blocking_claims = [
+            {
+                "id": str(c.id),
+                "claim_number": c.reference,
+                "status": c.status,
+            }
+            for c in claims_orm
+        ]
+
+        blocking_job_cards = [
+            {
+                "id": str(jc.id),
+                "status": jc.status,
+            }
+            for jc in jc_orm
+        ]
+
+        # Build rego lookup for fleet checklists
+        cv_to_rego: dict[uuid.UUID, str | None] = {}
+        for cv in customer_vehicles_all:
+            rego: str | None = None
+            if cv.global_vehicle_id:
+                gv_r = await db.execute(
+                    select(GlobalVehicle.rego).where(
+                        GlobalVehicle.id == cv.global_vehicle_id
+                    )
+                )
+                rego = gv_r.scalar_one_or_none()
+            elif cv.org_vehicle_id:
+                ov_r = await db.execute(
+                    select(OrgVehicle.rego).where(
+                        OrgVehicle.id == cv.org_vehicle_id,
+                        OrgVehicle.org_id == org_id,
+                    )
+                )
+                rego = ov_r.scalar_one_or_none()
+            cv_to_rego[cv.id] = rego
+
+        blocking_fleet_checklists = [
+            {
+                "id": str(fcs.id),
+                "vehicle_rego": cv_to_rego.get(fcs.customer_vehicle_id),
+            }
+            for fcs in fcs_orm
+        ]
+
+        payload = {
+            "blocking_invoices": blocking_invoices,
+            "blocking_invoice_count": len(blocking_invoices),
+            "blocking_claims": blocking_claims,
+            "blocking_job_cards": blocking_job_cards,
+            "blocking_fleet_checklists": blocking_fleet_checklists,
+        }
+
+        message = (
+            "Customer has documents that must be resolved before deletion. "
+            "Please delete or resolve the blocking items listed."
+        )
+
+        raise CustomerDeletionBlockedError(message, payload)
+
+    # ------------------------------------------------------------------
+    # STEP 5: Capture orphaned vehicle IDs (before deleting links)
+    #
+    # For each customer_vehicles link, resolve the vehicle ID from either
+    # global_vehicle_id or org_vehicle_id. These will be returned in the
+    # result dict and written to the audit log.
+    # ------------------------------------------------------------------
+    orphaned_vehicle_ids: list[str] = []
+    for cv in customer_vehicles_all:
+        vehicle_id = cv.global_vehicle_id or cv.org_vehicle_id
+        if vehicle_id:
+            orphaned_vehicle_ids.append(str(vehicle_id))
+
+    # ------------------------------------------------------------------
+    # STEP 6: Delete customer_vehicles links (R6.1, R6.2, R6.4)
+    #
+    # Remove the customer→vehicle links but preserve the vehicle rows.
+    # customer_vehicles_all is already loaded from step 4.
+    # ------------------------------------------------------------------
+    vehicle_links_removed = len(customer_vehicles_all)
+    for cv in customer_vehicles_all:
+        await db.delete(cv)
+    await db.flush()
+
+    # ------------------------------------------------------------------
+    # STEP 7: Delete-with-customer: quotes + quote_line_items
+    #
+    # Quotes are not financial records (R2.6), so we delete them.
+    # First delete quote_line_items for those quotes, then delete the quotes.
+    # ------------------------------------------------------------------
+    try:
+        from app.modules.quotes.models import Quote, QuoteLineItem
+        from sqlalchemy import delete as sql_delete
+
+        # Find all quotes for this customer
+        quotes_stmt = select(Quote).where(
+            Quote.customer_id == customer_id,
+            Quote.org_id == org_id,
+        )
+        quotes_result = await db.execute(quotes_stmt)
+        quotes = quotes_result.scalars().all()
+
+        if quotes:
+            quote_ids = [q.id for q in quotes]
+
+            # Delete quote_line_items first (child records)
+            qli_delete_stmt = sql_delete(QuoteLineItem).where(
+                QuoteLineItem.quote_id.in_(quote_ids)
+            )
+            await db.execute(qli_delete_stmt)
+
+            # Delete quotes
+            for q in quotes:
+                await db.delete(q)
+            await db.flush()
+    except ImportError:
+        # Quotes module not installed — skip gracefully
+        pass
+
+    # ------------------------------------------------------------------
+    # STEP 8: Delete-with-customer: recurring_schedules
+    #
+    # Recurring schedules for a deleted customer are dead config.
+    # ------------------------------------------------------------------
+    try:
+        from app.modules.quotes.models import RecurringSchedule
+        from sqlalchemy import delete as sql_delete
+
+        rs_delete_stmt = sql_delete(RecurringSchedule).where(
+            RecurringSchedule.customer_id == customer_id,
+            RecurringSchedule.org_id == org_id,
+        )
+        await db.execute(rs_delete_stmt)
+        await db.flush()
+    except ImportError:
+        # Recurring schedules module not available
+        pass
+
+    # ------------------------------------------------------------------
+    # STEP 9: Delete-with-customer: reminder_queue
+    #
+    # Queued reminders for a gone customer are noise.
+    # ------------------------------------------------------------------
+    try:
+        from app.modules.notifications.models import ReminderQueue
+        from sqlalchemy import delete as sql_delete
+
+        rq_delete_stmt = sql_delete(ReminderQueue).where(
+            ReminderQueue.customer_id == customer_id,
+            ReminderQueue.org_id == org_id,
+        )
+        await db.execute(rq_delete_stmt)
+        await db.flush()
+    except ImportError:
+        # Reminder queue module not available
+        pass
+
+    # ------------------------------------------------------------------
+    # STEP 10: Delete-with-customer: loyalty_transactions
+    #
+    # Loyalty transactions have customer_id NOT NULL, so they cannot be
+    # set to NULL. Since the customer is gone, these ledger rows are
+    # meaningless and must be deleted.
+    # ------------------------------------------------------------------
+    try:
+        from app.modules.loyalty.models import LoyaltyTransaction
+        from sqlalchemy import delete as sql_delete
+
+        lt_delete_stmt = sql_delete(LoyaltyTransaction).where(
+            LoyaltyTransaction.customer_id == customer_id,
+            LoyaltyTransaction.org_id == org_id,
+        )
+        await db.execute(lt_delete_stmt)
+        await db.flush()
+    except ImportError:
+        # Loyalty module not available
+        pass
+
+    # ------------------------------------------------------------------
+    # STEP 11: Set-null: pos_transactions
+    #
+    # POS sale rows are financial records but customer_id is nullable.
+    # Keep the sale, drop the customer link.
+    # ------------------------------------------------------------------
+    try:
+        from app.modules.pos.models import POSTransaction
+        from sqlalchemy import update as sql_update
+
+        pos_update_stmt = sql_update(POSTransaction).where(
+            POSTransaction.customer_id == customer_id,
+            POSTransaction.org_id == org_id,
+        ).values(customer_id=None)
+        await db.execute(pos_update_stmt)
+        await db.flush()
+    except ImportError:
+        # POS module not available
+        pass
+
+    # ------------------------------------------------------------------
+    # STEP 12: Set-null: bookings
+    #
+    # Keep the booking history; customer_name is denormalised on the row.
+    # ------------------------------------------------------------------
+    try:
+        from app.modules.bookings_v2.models import Booking
+        from sqlalchemy import update as sql_update
+
+        booking_update_stmt = sql_update(Booking).where(
+            Booking.customer_id == customer_id,
+            Booking.org_id == org_id,
+        ).values(customer_id=None)
+        await db.execute(booking_update_stmt)
+        await db.flush()
+    except ImportError:
+        # Bookings module not available
+        pass
+
+    # ------------------------------------------------------------------
+    # STEP 13: Set-null: projects
+    #
+    # No declared FK, nullable customer_id. Must set to NULL to avoid
+    # dangling reference (R11.3).
+    # ------------------------------------------------------------------
+    try:
+        from app.modules.projects.models import Project
+        from sqlalchemy import update as sql_update
+
+        project_update_stmt = sql_update(Project).where(
+            Project.customer_id == customer_id,
+            Project.org_id == org_id,
+        ).values(customer_id=None)
+        await db.execute(project_update_stmt)
+        await db.flush()
+    except ImportError:
+        # Projects module not available
+        pass
+
+    # ------------------------------------------------------------------
+    # STEP 14: Set-null: pricing_rules
+    #
+    # No declared FK, nullable customer_id. Must set to NULL to avoid
+    # dangling reference.
+    # ------------------------------------------------------------------
+    try:
+        from app.modules.pricing_rules.models import PricingRule
+        from sqlalchemy import update as sql_update
+
+        pr_update_stmt = sql_update(PricingRule).where(
+            PricingRule.customer_id == customer_id,
+            PricingRule.org_id == org_id,
+        ).values(customer_id=None)
+        await db.execute(pr_update_stmt)
+        await db.flush()
+    except ImportError:
+        # Pricing rules module not available
+        pass
+
+    # ------------------------------------------------------------------
+    # STEP 15: Set-null: expenses
+    #
+    # No declared FK, nullable customer_id. Keep the expense as a
+    # financial record; only the customer link drops (R11.2).
+    # ------------------------------------------------------------------
+    try:
+        from app.modules.expenses.models import Expense
+        from sqlalchemy import update as sql_update
+
+        expense_update_stmt = sql_update(Expense).where(
+            Expense.customer_id == customer_id,
+            Expense.org_id == org_id,
+        ).values(customer_id=None)
+        await db.execute(expense_update_stmt)
+        await db.flush()
+    except ImportError:
+        # Expenses module not available
+        pass
+
+    # ------------------------------------------------------------------
+    # STEP 16: Set-null: jobs (jobs_v2 table)
+    #
+    # No declared FK, nullable customer_id. Keep the job/work-order
+    # history; only the customer link drops.
+    # ------------------------------------------------------------------
+    try:
+        from app.modules.jobs_v2.models import Job
+        from sqlalchemy import update as sql_update
+
+        job_update_stmt = sql_update(Job).where(
+            Job.customer_id == customer_id,
+            Job.org_id == org_id,
+        ).values(customer_id=None)
+        await db.execute(job_update_stmt)
+        await db.flush()
+    except ImportError:
+        # Jobs module not available
+        pass
+
+    # ------------------------------------------------------------------
+    # STEP 17: Set-null: assets
+    #
+    # No declared FK, nullable customer_id. Asset survives, ownership
+    # link dropped (mirrors the vehicle-orphaning intent, R6).
+    # ------------------------------------------------------------------
+    try:
+        from app.modules.assets.models import Asset
+        from sqlalchemy import update as sql_update
+
+        asset_update_stmt = sql_update(Asset).where(
+            Asset.customer_id == customer_id,
+            Asset.org_id == org_id,
+        ).values(customer_id=None)
+        await db.execute(asset_update_stmt)
+        await db.flush()
+    except ImportError:
+        # Assets module not available
+        pass
+
+    # ------------------------------------------------------------------
+    # STEP 18: Delete the customers row (R1.1)
+    #
+    # portal_sessions, portal_accounts, portal_fleet_accounts cascade
+    # via DB-level ON DELETE CASCADE (no app action needed).
+    #
+    # Capture PII-safe booleans BEFORE deletion (R8.5, NFR4.2).
+    # After db.delete() SQLAlchemy expires the ORM attributes, so we must
+    # read them now while the object is still live in the session.
+    # ------------------------------------------------------------------
+    _had_email = customer.email is not None
+    _had_phone = customer.phone is not None
+    _customer_type = customer.customer_type
+    await db.delete(customer)
+    await db.flush()
+
+    # ------------------------------------------------------------------
+    # STEP 19: Build the result dict for CustomerHardDeleteResponse
+    # ------------------------------------------------------------------
+    result_dict = {
+        "message": "Customer permanently deleted",
+        "deleted": True,
+        "customer_id": str(customer_id),
+        "vehicle_links_removed": vehicle_links_removed,
+        "draft_invoices_deleted": 0,  # User already deleted them before this call
+        "orphaned_vehicle_ids": orphaned_vehicle_ids,
+    }
+
+    # ------------------------------------------------------------------
+    # STEP 20: Write the success audit log (R8.1–8.5)
+    #
+    # Distinct action "customer.hard_deleted" (R8.4).
+    # before_value uses the PII-safe booleans captured before deletion.
+    # after_value holds reason + ids only — no PII (R8.5, NFR4.2).
+    # Inside the same session.begin() transaction, so if something raises
+    # after this the audit row is also rolled back (R9.3).
+    # flush() only — get_db_session commit handles the final commit (NFR2.2).
+    # ------------------------------------------------------------------
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="customer.hard_deleted",
+        entity_type="customer",
+        entity_id=customer_id,
+        before_value={
+            "had_email": _had_email,
+            "had_phone": _had_phone,
+            "customer_type": _customer_type,
+        },
+        after_value={
+            "reason": reason,
+            "prerequisite_deleted_invoice_ids": [],   # user deleted them before this call
+            "orphaned_vehicle_ids": orphaned_vehicle_ids,
+            "vehicle_links_removed": vehicle_links_removed,
+        },
+        ip_address=ip_address,
+    )
+
+    return result_dict

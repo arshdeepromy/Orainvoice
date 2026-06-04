@@ -6,15 +6,15 @@ import ExportButtons from './ExportButtons'
 import { useBranch } from '@/contexts/BranchContext'
 
 interface GstData {
-  total_sales: number
-  standard_rated_sales: number
-  zero_rated_sales: number
-  total_gst_collected: number
-  net_gst: number
-  total_refunds: number
-  refund_gst: number
-  adjusted_total_sales: number
-  adjusted_gst_collected: number
+  total_sales?: number
+  standard_rated_sales?: number
+  zero_rated_sales?: number
+  total_gst_collected?: number
+  net_gst?: number
+  total_refunds?: number
+  refund_gst?: number
+  adjusted_total_sales?: number
+  adjusted_gst_collected?: number
 }
 
 function defaultRange(): DateRange {
@@ -30,7 +30,12 @@ const fmtNeg = (v: number | undefined) => v != null && v > 0 ? `-$${v.toLocaleSt
 /**
  * GST return summary — total sales, GST collected, standard vs zero-rated,
  * formatted to support manual IRD GST return filing.
- * Requirements: 45.6
+ *
+ * Branch is sourced from `useBranch().selectedBranchId` and included in the
+ * fetch deps so the summary refetches on branch change (D2). Fetches use
+ * AbortController (D1).
+ *
+ * Requirements: 13.1, 13.2, 13.3, 14.1, 14.2, 14.3, 19.1, 19.2, 19.3, 19.5
  */
 export default function GstReturnSummary() {
   const { selectedBranchId } = useBranch()
@@ -39,22 +44,26 @@ export default function GstReturnSummary() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
     setError('')
     try {
       const params: Record<string, string> = { start_date: range.from, end_date: range.to }
       if (selectedBranchId) params.branch_id = selectedBranchId
-      const res = await apiClient.get<GstData>('/reports/gst-return', { params })
-      setData(res.data)
+      const res = await apiClient.get<GstData>('/reports/gst-return', { params, signal })
+      setData(res.data ?? null)
     } catch {
-      setError('Failed to load GST return summary.')
+      if (!signal?.aborted) setError('Failed to load GST return summary.')
     } finally {
-      setLoading(false)
+      if (!signal?.aborted) setLoading(false)
     }
-  }, [range])
+  }, [range, selectedBranchId])
 
-  useEffect(() => { fetchData() }, [fetchData])
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchData(controller.signal)
+    return () => controller.abort()
+  }, [fetchData])
 
   return (
     <div data-print-content>
@@ -65,7 +74,14 @@ export default function GstReturnSummary() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-6 no-print">
         <DateRangeFilter value={range} onChange={setRange} />
         <div className="flex items-center gap-2">
-          <ExportButtons endpoint="/reports/gst-return" params={{ start_date: range.from, end_date: range.to }} />
+          <ExportButtons
+            endpoint="/reports/gst-return"
+            params={{
+              start_date: range.from,
+              end_date: range.to,
+              ...(selectedBranchId ? { branch_id: selectedBranchId } : {}),
+            }}
+          />
           <PrintButton label="Print Report" />
         </div>
       </div>
@@ -91,43 +107,43 @@ export default function GstReturnSummary() {
             <tbody>
               <tr className="border-b border-border hover:bg-canvas">
                 <td className="px-4 py-3 text-sm text-text">Total Sales (incl. GST)</td>
-                <td className="px-4 py-3 text-sm text-text text-right mono">{fmt(data.total_sales)}</td>
+                <td className="px-4 py-3 text-sm text-text text-right mono">{fmt(data.total_sales ?? 0)}</td>
               </tr>
               <tr className="border-b border-border hover:bg-canvas">
                 <td className="px-4 py-3 text-sm text-muted pl-8">Standard-rated sales (15%)</td>
-                <td className="px-4 py-3 text-sm text-muted text-right mono">{fmt(data.standard_rated_sales)}</td>
+                <td className="px-4 py-3 text-sm text-muted text-right mono">{fmt(data.standard_rated_sales ?? 0)}</td>
               </tr>
               <tr className="border-b border-border hover:bg-canvas">
                 <td className="px-4 py-3 text-sm text-muted pl-8">Zero-rated sales</td>
-                <td className="px-4 py-3 text-sm text-muted text-right mono">{fmt(data.zero_rated_sales)}</td>
+                <td className="px-4 py-3 text-sm text-muted text-right mono">{fmt(data.zero_rated_sales ?? 0)}</td>
               </tr>
               <tr className="border-b border-border hover:bg-canvas bg-accent-soft">
                 <td className="px-4 py-3 text-sm font-medium text-text">Total GST Collected</td>
-                <td className="px-4 py-3 text-sm font-medium text-text text-right mono">{fmt(data.total_gst_collected)}</td>
+                <td className="px-4 py-3 text-sm font-medium text-text text-right mono">{fmt(data.total_gst_collected ?? 0)}</td>
               </tr>
-              {data.total_refunds > 0 && (
+              {(data.total_refunds ?? 0) > 0 && (
                 <>
                   <tr className="border-b border-border hover:bg-canvas bg-danger-soft">
                     <td className="px-4 py-3 text-sm font-medium text-danger">Refunds / Credit Notes</td>
-                    <td className="px-4 py-3 text-sm font-medium text-danger text-right mono">{fmtNeg(data.total_refunds)}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-danger text-right mono">{fmtNeg(data.total_refunds ?? 0)}</td>
                   </tr>
                   <tr className="border-b border-border hover:bg-canvas">
                     <td className="px-4 py-3 text-sm text-danger pl-8">GST on refunds</td>
-                    <td className="px-4 py-3 text-sm text-danger text-right mono">{fmtNeg(data.refund_gst)}</td>
+                    <td className="px-4 py-3 text-sm text-danger text-right mono">{fmtNeg(data.refund_gst ?? 0)}</td>
                   </tr>
                   <tr className="border-b border-border hover:bg-canvas bg-canvas">
                     <td className="px-4 py-3 text-sm font-medium text-text">Adjusted Sales (incl. GST)</td>
-                    <td className="px-4 py-3 text-sm font-medium text-text text-right mono">{fmt(data.adjusted_total_sales)}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-text text-right mono">{fmt(data.adjusted_total_sales ?? 0)}</td>
                   </tr>
                   <tr className="border-b border-border hover:bg-canvas bg-canvas">
                     <td className="px-4 py-3 text-sm font-medium text-text">Adjusted GST Collected</td>
-                    <td className="px-4 py-3 text-sm font-medium text-text text-right mono">{fmt(data.adjusted_gst_collected)}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-text text-right mono">{fmt(data.adjusted_gst_collected ?? 0)}</td>
                   </tr>
                 </>
               )}
               <tr className="border-b border-border last:border-b-0 hover:bg-canvas bg-ok-soft">
                 <td className="px-4 py-3 text-sm font-semibold text-text">Net GST Payable</td>
-                <td className="px-4 py-3 text-sm font-semibold text-text text-right mono">{fmt(data.net_gst)}</td>
+                <td className="px-4 py-3 text-sm font-semibold text-text text-right mono">{fmt(data.net_gst ?? 0)}</td>
               </tr>
             </tbody>
           </table>

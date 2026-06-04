@@ -7,20 +7,26 @@ import SimpleBarChart from './SimpleBarChart'
 import { useBranch } from '@/contexts/BranchContext'
 
 interface RevenueData {
-  total_revenue: number
-  total_gst: number
-  total_invoices: number
-  monthly_breakdown: { month: string; revenue: number }[]
-  total_refunds: number
-  refund_gst: number
-  net_revenue: number
-  net_gst: number
+  total_revenue?: number
+  total_gst?: number
+  // Backend returns both `invoice_count` (legacy) and `total_invoices` (alias) — read either.
+  invoice_count?: number
+  total_invoices?: number
+  monthly_breakdown?: { month: string; revenue: number }[]
+  total_refunds?: number
+  refund_gst?: number
+  net_revenue?: number
+  net_gst?: number
 }
 
+// Seed the initial range to match DateRangeFilter's `presetRange('month')` semantics
+// (first day of last month → last day of last month) so the dropdown label
+// ('Last month') and the queried data agree on mount.
 function defaultRange(): DateRange {
   const now = new Date()
   const from = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-  return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) }
+  const to = new Date(now.getFullYear(), now.getMonth(), 0)
+  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) }
 }
 
 const fmt = (v: number) => `$${v.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}`
@@ -28,7 +34,7 @@ const fmt = (v: number) => `$${v.toLocaleString('en-NZ', { minimumFractionDigits
 /**
  * Revenue summary report — total revenue, GST collected, invoice count,
  * and monthly breakdown bar chart.
- * Requirements: 45.1, 45.2, 45.3, 45.4
+ * Requirements: 1.4, 1.5, 1.6, 14.1, 14.2, 19.1, 19.2, 19.3, 19.5, 21.1
  */
 export default function RevenueSummary() {
   const { selectedBranchId } = useBranch()
@@ -37,22 +43,30 @@ export default function RevenueSummary() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const fetch = useCallback(async () => {
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
     setError('')
     try {
       const params: Record<string, string> = { start_date: range.from, end_date: range.to }
       if (selectedBranchId) params.branch_id = selectedBranchId
-      const res = await apiClient.get<RevenueData>('/reports/revenue', { params })
-      setData(res.data)
+      const res = await apiClient.get<RevenueData>('/reports/revenue', { params, signal })
+      setData(res.data ?? null)
     } catch {
-      setError('Failed to load revenue report.')
+      if (!signal?.aborted) setError('Failed to load revenue report.')
     } finally {
-      setLoading(false)
+      if (!signal?.aborted) setLoading(false)
     }
   }, [range, selectedBranchId])
 
-  useEffect(() => { fetch() }, [fetch])
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchData(controller.signal)
+    return () => controller.abort()
+  }, [fetchData])
+
+  const invoiceCount = data?.total_invoices ?? data?.invoice_count ?? 0
+  const months = data?.monthly_breakdown ?? []
+  const totalRefunds = data?.total_refunds ?? 0
 
   return (
     <div data-print-content>
@@ -80,37 +94,37 @@ export default function RevenueSummary() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Total Revenue</p>
-              <p className="text-2xl font-semibold text-text mono">{fmt(data.total_revenue)}</p>
-              {data.total_refunds > 0 && (
-                <p className="text-sm text-danger mt-1 mono">Refunds: -${data.total_refunds?.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}</p>
+              <p className="text-2xl font-semibold text-text mono">{fmt(data.total_revenue ?? 0)}</p>
+              {totalRefunds > 0 && (
+                <p className="text-sm text-danger mt-1 mono">Refunds: -${(data.total_refunds ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2 })}</p>
               )}
-              {data.net_revenue != null && data.total_refunds > 0 && (
-                <p className="text-sm font-medium text-ok mt-1 mono">Net: {fmt(data.net_revenue)}</p>
+              {data.net_revenue != null && totalRefunds > 0 && (
+                <p className="text-sm font-medium text-ok mt-1 mono">Net: {fmt(data.net_revenue ?? 0)}</p>
               )}
             </div>
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">GST Collected</p>
-              <p className="text-2xl font-semibold text-text mono">{fmt(data.total_gst)}</p>
-              {data.refund_gst > 0 && (
-                <p className="text-sm text-danger mt-1 mono">Refund GST: -${data.refund_gst?.toLocaleString('en-NZ', { minimumFractionDigits: 2 })}</p>
+              <p className="text-2xl font-semibold text-text mono">{fmt(data.total_gst ?? 0)}</p>
+              {(data.refund_gst ?? 0) > 0 && (
+                <p className="text-sm text-danger mt-1 mono">Refund GST: -${(data.refund_gst ?? 0).toLocaleString('en-NZ', { minimumFractionDigits: 2 })}</p>
               )}
-              {data.net_gst != null && data.total_refunds > 0 && (
-                <p className="text-sm font-medium text-ok mt-1 mono">Net: {fmt(data.net_gst)}</p>
+              {data.net_gst != null && totalRefunds > 0 && (
+                <p className="text-sm font-medium text-ok mt-1 mono">Net: {fmt(data.net_gst ?? 0)}</p>
               )}
             </div>
             <div className="rounded-card border border-border bg-card p-4 shadow-card">
               <p className="text-sm text-muted">Invoices</p>
-              <p className="text-2xl font-semibold text-text mono">{data.total_invoices}</p>
+              <p className="text-2xl font-semibold text-text mono">{invoiceCount}</p>
             </div>
           </div>
 
           {/* Monthly chart */}
           <div className="rounded-card border border-border bg-card p-4 shadow-card">
             <h3 className="text-sm font-medium text-text mb-3">Monthly Revenue</h3>
-            {data.monthly_breakdown && data.monthly_breakdown.length > 0 ? (
+            {months.length > 0 ? (
               <SimpleBarChart
                 title="Monthly revenue breakdown"
-                items={data.monthly_breakdown.map((m) => ({ label: m.month, value: m.revenue }))}
+                items={months.map((m) => ({ label: m.month, value: m.revenue ?? 0 }))}
                 formatValue={fmt}
               />
             ) : (

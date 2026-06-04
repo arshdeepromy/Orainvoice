@@ -12,11 +12,14 @@ import uuid
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.modules.admin.models import Organisation
 from app.modules.auth.rbac import require_role
+from app.modules.reports.export import render_report_csv, render_report_pdf
 from app.modules.reports.schemas import (
     AgedReceivablesResponse,
     BalanceSheetResponse,
@@ -97,6 +100,45 @@ def _parse_date(value: str | None) -> "date | None":
         return None
 
 
+async def _maybe_export(
+    report_key: str,
+    export: ExportFormat | None,
+    data: dict,
+    db: AsyncSession,
+    org_id: uuid.UUID,
+) -> StreamingResponse | None:
+    """Return a StreamingResponse when export is requested, else None.
+
+    When ``export`` is ``None`` the caller falls through to its normal
+    ``response_model`` return path, so behaviour is unchanged for clients that
+    omit the param (R18.5). When set, renders the report dict to CSV (pure) or
+    PDF (WeasyPrint off the event loop) and streams it as a file download with a
+    ``Content-Disposition`` filename of ``{report_key}_{YYYY-MM-DD}.{ext}``.
+
+    Requirements: 10.3, 10.4, 18.5, 20.6
+    Design: §"C1 — Export layer" router pseudocode, §"Request / Response Contracts"
+    """
+    if export is None:
+        return None
+    today = date.today().isoformat()
+    ext = export.value  # "csv" or "pdf"
+    filename = f"{report_key}_{today}.{ext}"
+    if export == ExportFormat.csv:
+        body = render_report_csv(report_key, data)
+        media = "text/csv"
+    else:  # pdf
+        org = (
+            await db.execute(select(Organisation).where(Organisation.id == org_id))
+        ).scalar_one()
+        body = await render_report_pdf(report_key, data, org)
+        media = "application/pdf"
+    return StreamingResponse(
+        iter([body]),
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ---------------------------------------------------------------------------
 # GET /reports/revenue — Revenue Summary
 # ---------------------------------------------------------------------------
@@ -139,6 +181,9 @@ async def revenue_report(
         _parse_date(end_date),
     )
     data = await get_revenue_summary(db, org_id, period_start, period_end, branch_id=branch_uuid)
+    maybe = await _maybe_export("revenue", export, data, db, org_id)
+    if maybe is not None:
+        return maybe
     return RevenueSummaryResponse(**data)
 
 
@@ -174,6 +219,9 @@ async def invoice_status_report(
         _parse_date(end_date),
     )
     data = await get_invoice_status_report(db, org_id, period_start, period_end)
+    maybe = await _maybe_export("invoice_status", export, data, db, org_id)
+    if maybe is not None:
+        return maybe
     return InvoiceStatusReportResponse(**data)
 
 
@@ -190,6 +238,7 @@ async def invoice_status_report(
 async def outstanding_invoices_report(
     request: Request,
     branch_id: str | None = Query(None, description="Optional branch UUID to scope report"),
+    export: ExportFormat | None = Query(None, description="Export format"),
     db: AsyncSession = Depends(get_db_session),
 ):
     """Outstanding invoices report with one-click reminder button.
@@ -210,6 +259,9 @@ async def outstanding_invoices_report(
         branch_uuid = _resolve_branch_id(request, None)
 
     data = await get_outstanding_invoices(db, org_id, branch_id=branch_uuid)
+    maybe = await _maybe_export("outstanding", export, data, db, org_id)
+    if maybe is not None:
+        return maybe
     return OutstandingInvoicesResponse(**data)
 
 
@@ -246,6 +298,9 @@ async def top_services_report(
         _parse_date(end_date),
     )
     data = await get_top_services(db, org_id, period_start, period_end, limit=limit)
+    maybe = await _maybe_export("top_services", export, data, db, org_id)
+    if maybe is not None:
+        return maybe
     return TopServicesResponse(**data)
 
 
@@ -289,6 +344,9 @@ async def gst_return_report(
         _parse_date(end_date),
     )
     data = await get_gst_return(db, org_id, period_start, period_end, branch_id=branch_uuid)
+    maybe = await _maybe_export("gst_return", export, data, db, org_id)
+    if maybe is not None:
+        return maybe
     return GSTReturnResponse(**data)
 
 
@@ -335,6 +393,9 @@ async def customer_statement_report(
     data = await get_customer_statement(db, org_id, customer_id, period_start, period_end, branch_id=branch_uuid)
     if data is None:
         return JSONResponse(status_code=404, content={"detail": "Customer not found"})
+    maybe = await _maybe_export("customer_statement", export, data, db, org_id)
+    if maybe is not None:
+        return maybe
     return CustomerStatementResponse(**data)
 
 
@@ -353,6 +414,7 @@ async def carjam_usage_report(
     db: AsyncSession = Depends(get_db_session),
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
+    export: ExportFormat | None = Query(None, description="Export format"),
 ):
     """Carjam API usage for the organisation.
 
@@ -366,6 +428,9 @@ async def carjam_usage_report(
     date_to = date.fromisoformat(to_date) if to_date else None
 
     data = await get_carjam_usage(db, org_id, date_from=date_from, date_to=date_to)
+    maybe = await _maybe_export("carjam", export, data, db, org_id)
+    if maybe is not None:
+        return maybe
     return CarjamUsageResponse(**data)
 
 
@@ -384,6 +449,7 @@ async def sms_usage_report(
     db: AsyncSession = Depends(get_db_session),
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
+    export: ExportFormat | None = Query(None, description="Export format"),
 ):
     """SMS usage for the organisation.
 
@@ -401,6 +467,9 @@ async def sms_usage_report(
         date_from=_parse_date(start_date),
         date_to=_parse_date(end_date),
     )
+    maybe = await _maybe_export("sms", export, data, db, org_id)
+    if maybe is not None:
+        return maybe
     return SmsUsageResponse(**data)
 
 
@@ -417,6 +486,7 @@ async def sms_usage_report(
 async def storage_usage_report(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
+    export: ExportFormat | None = Query(None, description="Export format"),
 ):
     """Storage usage for the organisation.
 
@@ -427,6 +497,9 @@ async def storage_usage_report(
         return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
 
     data = await get_storage_usage(db, org_id)
+    maybe = await _maybe_export("storage", export, data, db, org_id)
+    if maybe is not None:
+        return maybe
     return StorageUsageResponse(**data)
 
 
@@ -465,6 +538,9 @@ async def fleet_report(
     data = await get_fleet_report(db, org_id, fleet_id, period_start, period_end)
     if data is None:
         return JSONResponse(status_code=404, content={"detail": "Fleet account not found"})
+    maybe = await _maybe_export("fleet", export, data, db, org_id)
+    if maybe is not None:
+        return maybe
     return FleetReportResponse(**data)
 
 

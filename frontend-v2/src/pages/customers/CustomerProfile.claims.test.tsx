@@ -35,6 +35,12 @@ vi.mock('@/contexts/ModuleContext', () => ({
   useModules: () => ({ isEnabled: (slug: string) => slug === 'vehicles' || slug === 'sms' }),
 }))
 
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({
+    user: { id: 'u1', email: 'admin@test.com', name: 'Admin', role: 'org_admin', org_id: 'org-1' },
+  }),
+}))
+
 import apiClient from '@/api/client'
 import CustomerProfilePage from './CustomerProfile'
 
